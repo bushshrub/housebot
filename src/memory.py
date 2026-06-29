@@ -9,7 +9,7 @@ MEMORY_DIR = Path(os.getenv("DATA_DIR", "data")) / "memories"
 
 
 def _memory_path(user_id: int | str) -> Path:
-    MEMORY_DIR.mkdir(parents=True, exist_ok=True)
+    os.makedirs(MEMORY_DIR, exist_ok=True)
     return MEMORY_DIR / f"{user_id}.md"
 
 

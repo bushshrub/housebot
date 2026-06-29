@@ -3,6 +3,7 @@
 import json
 import os
 from pathlib import Path
+
 from typing import Any
 
 import aiofiles
@@ -12,7 +13,7 @@ MAX_TURNS = int(os.getenv("MAX_HISTORY_TURNS", "30"))
 
 
 def _history_path(user_id: int | str) -> Path:
-    HISTORY_DIR.mkdir(parents=True, exist_ok=True)
+    os.makedirs(HISTORY_DIR, exist_ok=True)
     return HISTORY_DIR / f"{user_id}.jsonl"
 
 

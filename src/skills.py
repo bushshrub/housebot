@@ -1,6 +1,7 @@
 """Global custom skills stored as a JSON file."""
 
 import json
+import os
 from pathlib import Path
 from typing import Any
 
@@ -25,7 +26,7 @@ async def get(name: str) -> dict[str, Any] | None:
 async def save_skill(skill: dict[str, Any]) -> None:
     all_skills = await load_all()
     all_skills[skill["name"]] = skill
-    SKILLS_PATH.parent.mkdir(parents=True, exist_ok=True)
+    os.makedirs(SKILLS_PATH.parent, exist_ok=True)
     async with aiofiles.open(SKILLS_PATH, "w") as f:
         await f.write(json.dumps(all_skills, indent=2))
 
@@ -35,7 +36,7 @@ async def delete_skill(name: str) -> bool:
     if name not in all_skills:
         return False
     del all_skills[name]
-    SKILLS_PATH.parent.mkdir(parents=True, exist_ok=True)
+    os.makedirs(SKILLS_PATH.parent, exist_ok=True)
     async with aiofiles.open(SKILLS_PATH, "w") as f:
         await f.write(json.dumps(all_skills, indent=2))
     return True

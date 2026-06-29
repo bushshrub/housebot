@@ -1,6 +1,8 @@
 """Discord bot interface."""
 
+import asyncio
 import base64
+import collections
 import logging
 import os
 import re
@@ -46,6 +48,27 @@ class ApprovalView(ui.View):
         self.approved = None
 
 
+class FileIssueView(ui.View):
+    def __init__(self) -> None:
+        super().__init__(timeout=APPROVAL_TIMEOUT)
+        self.file_issue: bool | None = None
+
+    @ui.button(label="File Issue", style=discord.ButtonStyle.primary, emoji="🐛")
+    async def file_issue_btn(self, interaction: discord.Interaction, button: ui.Button) -> None:
+        self.file_issue = True
+        await interaction.response.edit_message(content="Filing issue...", view=None)
+        self.stop()
+
+    @ui.button(label="Dismiss", style=discord.ButtonStyle.secondary, emoji="✖️")
+    async def dismiss(self, interaction: discord.Interaction, button: ui.Button) -> None:
+        self.file_issue = False
+        await interaction.response.edit_message(content="Dismissed.", view=None)
+        self.stop()
+
+    async def on_timeout(self) -> None:
+        self.file_issue = None
+
+
 class HouseBot(discord.Client):
     def __init__(self) -> None:
         intents = discord.Intents.default()
@@ -55,6 +78,10 @@ class HouseBot(discord.Client):
         self.issue_reporter = GitHubIssueReporter()
         # Maps (channel_id, user_id) -> last activity timestamp
         self._active_conversations: dict[tuple[int, int], float] = {}
+        # Message IDs currently being processed — prevents concurrent duplicate handling
+        self._processing_messages: set[int] = set()
+        # Recently responded message IDs — catches gateway replays after processing finishes
+        self._responded_messages: collections.deque[int] = collections.deque(maxlen=200)
 
     async def setup_hook(self) -> None:
         await self.agent.start()
@@ -80,16 +107,29 @@ class HouseBot(discord.Client):
     def _mark_conversation_active(self, channel_id: int, user_id: int) -> None:
         self._active_conversations[(channel_id, user_id)] = time.monotonic()
 
-    async def _report_error(self, exc: Exception) -> None:
+    def _report_error(self, exc: Exception) -> None:
         sentry_event_id = sentry_sdk.capture_exception(exc)
         logger.info("Captured error in Sentry (event: %s)", sentry_event_id)
-        issue_url = await self.issue_reporter.create_error_issue(sentry_event_id)
-        if issue_url and OWNER_ID:
-            try:
-                owner = await self.fetch_user(OWNER_ID)
-                await owner.send(f"Error report filed: {issue_url}")
-            except Exception:
-                logger.exception("Failed to DM owner about error issue")
+        if OWNER_ID:
+            asyncio.get_event_loop().create_task(self._notify_owner_of_error(sentry_event_id))
+
+    async def _notify_owner_of_error(self, sentry_event_id: str) -> None:
+        try:
+            owner = await self.fetch_user(OWNER_ID)
+            view = FileIssueView()
+            await owner.send(
+                f"An error occurred (Sentry: `{sentry_event_id}`). File a GitHub issue?",
+                view=view,
+            )
+            await view.wait()
+            if view.file_issue:
+                issue_url = await self.issue_reporter.create_error_issue(sentry_event_id)
+                if issue_url:
+                    await owner.send(f"Issue filed: {issue_url}")
+                else:
+                    await owner.send("Failed to file issue (GitHub reporter not configured?).")
+        except Exception:
+            logger.exception("Failed to DM owner about error")
 
     async def _handle_skill_command(self, message: discord.Message) -> None:
         content = message.content.strip()
@@ -217,6 +257,17 @@ class HouseBot(discord.Client):
         if not (is_dm or is_mentioned or is_reply_to_bot or is_name_mentioned or is_active):
             return
 
+        if message.id in self._processing_messages or message.id in self._responded_messages:
+            logger.warning("Duplicate on_message for %s — skipping", message.id)
+            return
+        self._processing_messages.add(message.id)
+        try:
+            await self._handle_message(message)
+        finally:
+            self._processing_messages.discard(message.id)
+            self._responded_messages.append(message.id)
+
+    async def _handle_message(self, message: discord.Message) -> None:
         text = message.content
         if self.user:
             text = text.replace(f"<@{self.user.id}>", "").replace(
@@ -304,16 +355,10 @@ class HouseBot(discord.Client):
             except Exception as exc:
                 logger.exception("Agent error for user %s", message.author.id)
                 result = AgentResult(text="Sorry, something went wrong. Please try again.")
-                await self._report_error(exc)
-
-        if progress_msg is not None:
-            try:
-                await progress_msg.delete()
-            except discord.HTTPException:
-                pass
+                self._report_error(exc)
 
         self._mark_conversation_active(message.channel.id, message.author.id)
-        await _send_long_message(message.channel, result.text, reply_to=message)
+        await _send_final_message(message.channel, result.text, progress_msg=progress_msg, reply_to=message)
 
         # Upload artifacts
         for path in result.artifact_paths:
@@ -371,6 +416,28 @@ async def _extract_images(message: discord.Message) -> list[dict[str, str]]:
             logger.exception("Failed to download attachment %s", attachment.filename)
 
     return images
+
+
+async def _send_final_message(
+    channel: discord.abc.Messageable,
+    text: str,
+    progress_msg: discord.Message | None = None,
+    reply_to: discord.Message | None = None,
+) -> None:
+    """Send the final response, reusing the progress message when possible to avoid double-posting."""
+    chunks = _split_text(text)
+    if progress_msg is not None:
+        try:
+            await progress_msg.edit(content=chunks[0])
+            for chunk in chunks[1:]:
+                await channel.send(chunk)
+            return
+        except discord.HTTPException:
+            try:
+                await progress_msg.delete()
+            except discord.HTTPException:
+                pass
+    await _send_long_message(channel, text, reply_to=reply_to)
 
 
 async def _send_long_message(
