@@ -9,11 +9,12 @@ on:
         description: Issue number to implement
         required: true
         type: number
-      opencode_config:
-        description: >
-          OpenCode model config as JSON. Overrides default
-          (deepseek-v4-flash-free via opencode.ai/zen/v1).
-          Example: {"model":"gemma-4-12b","api":"http://host:8080/v1"}
+      model:
+        description: Model name for opencode.json
+        required: false
+        default: opencode/deepseek-v4-flash-free
+      model_config:
+        description: Extra config fields (JSON object merged into opencode.json)
         required: false
         type: string
 
@@ -27,7 +28,7 @@ jobs:
     if: |
       github.event_name == 'workflow_dispatch' ||
       (github.event.issue.pull_request == null &&
-       startsWith(github.event.comment.body, '/implement'))
+       contains(github.event.comment.body, '/implement'))
     outputs:
       allowed: ${{ steps.check.outputs.allowed }}
       issue_number: ${{ steps.resolve.outputs.issue_number }}
@@ -73,16 +74,18 @@ jobs:
       pull-requests: write
       issues: write
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 1
 
       - uses: actions/setup-node@v5
         with:
           node-version: '22'
 
-      - name: Install OpenCode
+      - name: Install opencode
         run: npm install -g opencode-ai
 
-      - name: Fetch issue + write config + prompt
+      - name: Fetch issue and write config
         uses: actions/github-script@v8
         with:
           script: |
@@ -95,35 +98,30 @@ jobs:
 
             const fs = require('fs');
 
-            // --- model config ---
-            let config = {};
+            // Resolve model config
+            const model =
+              process.env.DISPATCH_MODEL ||
+              process.env.REPO_MODEL ||
+              'opencode/deepseek-v4-flash-free';
 
-            const commentBody = process.env.COMMENT_BODY || '';
-            if (commentBody.startsWith('/implement')) {
-              const jsonPart = commentBody.replace(/^\/implement\s*/, '');
-              if (jsonPart) { try { config = JSON.parse(jsonPart); } catch {} }
-            }
+            let extra = {};
+            const dispatchExtra = process.env.DISPATCH_EXTRA || '';
+            if (dispatchExtra) { try { extra = JSON.parse(dispatchExtra); } catch {} }
 
-            const dispatchConfig = process.env.DISPATCH_CONFIG || '';
-            if (dispatchConfig) { try { config = JSON.parse(dispatchConfig); } catch {} }
-
-            const repoVar = process.env.OPENCODE_MODEL_CONFIG;
-            if (repoVar && Object.keys(config).length === 0) {
-              try { config = JSON.parse(repoVar); } catch {}
-            }
-
-            const merged = {
-              model: 'deepseek-v4-flash-free',
-              api: 'https://opencode.ai/zen/v1',
+            const config = {
+              model,
               max_tokens: 65536,
-              ...config,
+              ...extra,
             };
 
-            fs.writeFileSync('opencode.json', JSON.stringify(merged, null, 2));
-            console.log('Config:', JSON.stringify(merged));
+            fs.writeFileSync('opencode.json', JSON.stringify(config, null, 2));
+            console.log('Config:', JSON.stringify(config));
 
-            // --- prompt file ---
-            const prompt = [
+            // Write prompt file
+            const trigger = process.env.COMMENT_BODY || '';
+            const commentText = trigger.replace(/^\/implement\s*/, '').trim();
+
+            const prompt = commentText || [
               `Implement the feature described in GitHub issue #${issueNumber}.`,
               '',
               `Issue title: ${issue.title}`,
@@ -131,36 +129,32 @@ jobs:
               'Issue body:',
               issue.body || '(no body)',
               '',
-              'Make all necessary code changes to implement this feature. Follow the existing',
-              'code style and conventions in the repository. Commit your changes when done.',
+              'Make all necessary code changes. Follow the existing code style',
+              'and conventions in the repository. Commit your changes.',
             ].join('\n');
 
             fs.writeFileSync('${{ runner.temp }}/opencode_prompt.txt', prompt);
             console.log('Prompt written.');
         env:
           COMMENT_BODY: ${{ github.event.comment.body }}
-          DISPATCH_CONFIG: ${{ github.event.inputs.opencode_config }}
-          OPENCODE_MODEL_CONFIG: ${{ vars.OPENCODE_MODEL_CONFIG }}
+          DISPATCH_MODEL: ${{ github.event.inputs.model }}
+          DISPATCH_EXTRA: ${{ github.event.inputs.model_config }}
+          REPO_MODEL: ${{ vars.OPENCODE_MODEL }}
 
-      - name: Run OpenCode on issue
+      - name: Run opencode
         run: |
           python3 -c "
           import subprocess, sys
-          prompt_file = '${{ runner.temp }}/opencode_prompt.txt'
-          with open(prompt_file) as f:
+          with open('${{ runner.temp }}/opencode_prompt.txt') as f:
               prompt = f.read()
-          result = subprocess.run(
-              ['opencode', '--prompt', prompt, '--allowed-tools', 'Bash,Read,Write,Edit', '--yes'],
-              capture_output=False,
-          )
-          sys.exit(result.returncode)
+          subprocess.run(['opencode', 'run', prompt], check=True)
           "
         env:
-          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
-          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           OPENAI_BASE_URL: ${{ secrets.OPENAI_BASE_URL }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
 
-      - name: Clean up opencode config
+      - name: Clean up config
         run: rm -f opencode.json
 
       - name: Create Pull Request
