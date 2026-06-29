@@ -140,7 +140,7 @@ class Agent:
             kwargs: dict[str, Any] = {
                 "model": LLM_MODEL,
                 "messages": messages,
-                "max_tokens": 8096,
+                "max_tokens": 4096,
                 "stream": True,
             }
             if tools:
@@ -459,7 +459,7 @@ Current user: {username} (ID: {user_id}){memory_section}
 - Be conversational and friendly.
 - Use Jellyfin tools for any media questions before guessing.
 - Use DuckDuckGo for factual or current-events questions.
-- For any coding request that goes beyond a trivial one-liner, immediately use run_opencode — don't write code yourself. If in doubt, use it.
+- For ANY programming or coding task — including trivial one-liners, scripts, debugging, code review, or anything that involves writing or analyzing code — immediately use run_opencode. Never write or analyze code yourself in your response. Always delegate to the tool.
 - run_claude_code is only available to the bot owner (user ID: {OWNER_ID}). Do not offer or attempt it for any other user.
 - Update memory when you learn something worth remembering.
 - Keep responses concise unless asked for detail.
