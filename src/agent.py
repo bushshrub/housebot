@@ -20,6 +20,7 @@ from mcp.client.stdio import StdioServerParameters, stdio_client
 _approval_hook_cv = contextvars.ContextVar("approval_hook", default=None)
 _progress_hook_cv = contextvars.ContextVar("progress_hook", default=None)
 _tool_notification_hook_cv = contextvars.ContextVar("tool_notification_hook", default=None)
+_text_stream_hook_cv = contextvars.ContextVar("text_stream_hook", default=None)
 
 from . import history, memory, skills
 from .tools.opencode import TOOL_DEFINITION as OPENCODE_TOOL, ProgressCallback, run_opencode
@@ -28,6 +29,7 @@ from .tools.feature_request import TOOL_DEFINITION as FEATURE_REQUEST_TOOL, crea
 
 ApprovalCallback = Callable[[str, dict[str, Any]], Awaitable[bool]]
 ToolNotificationCallback = Callable[[str, dict[str, Any]], Awaitable[None]]
+TextStreamCallback = Callable[[str], Awaitable[None]]
 
 logger = logging.getLogger(__name__)
 
@@ -80,17 +82,20 @@ class Agent:
         approval_hook: ApprovalCallback | None = None,
         progress_hook: ProgressCallback | None = None,
         tool_notification_hook: ToolNotificationCallback | None = None,
+        text_stream_hook: TextStreamCallback | None = None,
     ) -> AgentResult:
         # Set per-task hook context so concurrent messages don't trample
         prev_approval = _approval_hook_cv.set(approval_hook)
         prev_progress = _progress_hook_cv.set(progress_hook)
         prev_tool_notification = _tool_notification_hook_cv.set(tool_notification_hook)
+        prev_text_stream = _text_stream_hook_cv.set(text_stream_hook)
         try:
             return await self._run_inner(user_id, username, text, image_data)
         finally:
             _approval_hook_cv.reset(prev_approval)
             _progress_hook_cv.reset(prev_progress)
             _tool_notification_hook_cv.reset(prev_tool_notification)
+            _text_stream_hook_cv.reset(prev_text_stream)
 
     async def _run_inner(
         self,
@@ -135,23 +140,62 @@ class Agent:
                 "model": LLM_MODEL,
                 "messages": messages,
                 "max_tokens": 8096,
+                "stream": True,
             }
             if tools:
                 kwargs["tools"] = tools
                 kwargs["tool_choice"] = "auto"
 
+            text_stream_hook = _text_stream_hook_cv.get()
+
             try:
-                response = await self._client.chat.completions.create(**kwargs)  # type: ignore[arg-type]
+                stream = await self._client.chat.completions.create(**kwargs)  # type: ignore[arg-type]
             except openai.APIConnectionError:
                 logger.warning("LLM API connection error, retrying once...")
-                response = await self._client.chat.completions.create(**kwargs)  # type: ignore[arg-type]
+                stream = await self._client.chat.completions.create(**kwargs)  # type: ignore[arg-type]
 
-            choice = response.choices[0]
-            msg = choice.message
+            # Accumulate streaming response
+            content_parts: list[str] = []
+            tool_calls_acc: dict[int, dict[str, Any]] = {}
+            finish_reason: str | None = None
+
+            async for chunk in stream:
+                ch_choice = chunk.choices[0]
+                if ch_choice.finish_reason:
+                    finish_reason = ch_choice.finish_reason
+                delta = ch_choice.delta
+                if delta.content:
+                    content_parts.append(delta.content)
+                    if text_stream_hook:
+                        await text_stream_hook("".join(content_parts))
+                if delta.tool_calls:
+                    for tc_delta in delta.tool_calls:
+                        idx = tc_delta.index
+                        if idx not in tool_calls_acc:
+                            tool_calls_acc[idx] = {"id": "", "name": "", "arguments": ""}
+                        if tc_delta.id:
+                            tool_calls_acc[idx]["id"] = tc_delta.id
+                        if tc_delta.function:
+                            if tc_delta.function.name:
+                                tool_calls_acc[idx]["name"] += tc_delta.function.name
+                            if tc_delta.function.arguments:
+                                tool_calls_acc[idx]["arguments"] += tc_delta.function.arguments
+
+            content_text = "".join(content_parts) or None
+            reconstructed_tool_calls = [
+                type("ToolCall", (), {
+                    "id": v["id"],
+                    "function": type("Fn", (), {
+                        "name": v["name"],
+                        "arguments": v["arguments"],
+                    })(),
+                })()
+                for v in (tool_calls_acc[i] for i in sorted(tool_calls_acc))
+            ] if tool_calls_acc else None
 
             # Serialize assistant message for history and next API call
-            assistant_message: dict[str, Any] = {"role": "assistant", "content": msg.content}
-            if msg.tool_calls:
+            assistant_message: dict[str, Any] = {"role": "assistant", "content": content_text}
+            if reconstructed_tool_calls:
                 assistant_message["tool_calls"] = [
                     {
                         "id": tc.id,
@@ -161,19 +205,19 @@ class Agent:
                             "arguments": tc.function.arguments,
                         },
                     }
-                    for tc in msg.tool_calls
+                    for tc in reconstructed_tool_calls
                 ]
 
             messages.append(assistant_message)
             turn_messages.append(assistant_message)
 
-            if choice.finish_reason == "stop" or not msg.tool_calls:
-                final_text = msg.content or ""
+            if finish_reason == "stop" or not reconstructed_tool_calls:
+                final_text = content_text or ""
                 break
 
-            if choice.finish_reason == "tool_calls":
+            if finish_reason == "tool_calls":
                 tool_result_messages = await self._execute_tools(
-                    msg.tool_calls, user_id, user_memory
+                    reconstructed_tool_calls, user_id, user_memory
                 )
                 # Check for memory updates and artifacts before appending
                 for trm in tool_result_messages:
@@ -186,7 +230,7 @@ class Agent:
                 messages.extend(m for m in tool_result_messages if isinstance(m, dict))
                 turn_messages.extend(m for m in tool_result_messages if isinstance(m, dict))
             else:
-                final_text = msg.content or ""
+                final_text = content_text or ""
                 break
 
         try:

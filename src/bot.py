@@ -110,8 +110,8 @@ class HouseBot(discord.Client):
     def _report_error(self, exc: Exception) -> None:
         sentry_event_id = sentry_sdk.capture_exception(exc)
         logger.info("Captured error in Sentry (event: %s)", sentry_event_id)
-        if OWNER_ID:
-            asyncio.get_event_loop().create_task(self._notify_owner_of_error(sentry_event_id))
+        if OWNER_ID and sentry_event_id:
+            asyncio.get_running_loop().create_task(self._notify_owner_of_error(sentry_event_id))
 
     async def _notify_owner_of_error(self, sentry_event_id: str) -> None:
         try:
@@ -281,6 +281,8 @@ class HouseBot(discord.Client):
 
         progress_msg: discord.Message | None = None
         progress_lines: list[str] = []
+        _last_stream_edit: float = 0.0
+        _STREAM_EDIT_INTERVAL = 1.2  # seconds between Discord edits while streaming
 
         async def on_tool_called(tool_name: str, args: dict) -> None:
             nonlocal progress_msg, progress_lines
@@ -304,6 +306,22 @@ class HouseBot(discord.Client):
             progress_lines.append(clean)
             tail = "".join(progress_lines[-50:])[-1800:]
             content = f"⚙️ **Working...**\n```\n{tail}\n```"
+            try:
+                if progress_msg is None:
+                    progress_msg = await message.reply(content, mention_author=False)
+                else:
+                    await progress_msg.edit(content=content)
+            except discord.HTTPException:
+                pass
+
+        async def on_text_stream(partial_text: str) -> None:
+            nonlocal progress_msg, _last_stream_edit
+            now = asyncio.get_event_loop().time()
+            if now - _last_stream_edit < _STREAM_EDIT_INTERVAL:
+                return
+            _last_stream_edit = now
+            chunks = _split_text(partial_text)
+            content = chunks[0] + ("…" if len(chunks) > 1 else "")
             try:
                 if progress_msg is None:
                     progress_msg = await message.reply(content, mention_author=False)
@@ -351,6 +369,7 @@ class HouseBot(discord.Client):
                     approval_hook=on_approval,
                     progress_hook=on_progress,
                     tool_notification_hook=on_tool_called,
+                    text_stream_hook=on_text_stream,
                 )
             except Exception as exc:
                 logger.exception("Agent error for user %s", message.author.id)
