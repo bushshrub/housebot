@@ -24,7 +24,7 @@ MAX_MESSAGE_LENGTH = 2000
 OWNER_ID = int(os.getenv("OWNER_DISCORD_ID", "0"))
 _ANSI_RE = re.compile(r"\x1b\[[0-9;]*[a-zA-Z]|\x1b[()][AB012]|\r")
 APPROVAL_TIMEOUT = 300  # seconds
-CONVERSATION_IDLE_TIMEOUT = int(os.getenv("CONVERSATION_IDLE_TIMEOUT", "1800"))  # 30 min default
+CONVERSATION_IDLE_TIMEOUT = int(os.getenv("CONVERSATION_IDLE_TIMEOUT", "300"))  # 5 min default
 
 
 class ApprovalView(ui.View):
@@ -95,14 +95,23 @@ class HouseBot(discord.Client):
         logger.info("Logged in as %s (ID: %s)", self.user, self.user.id)
 
     def _is_in_active_conversation(self, channel_id: int, user_id: int) -> bool:
+        """Return True if the conversation is still within the idle window."""
         key = (channel_id, user_id)
         last_active = self._active_conversations.get(key)
         if last_active is None:
             return False
         if time.monotonic() - last_active > CONVERSATION_IDLE_TIMEOUT:
-            del self._active_conversations[key]
             return False
         return True
+
+    def _pop_timed_out_conversation(self, channel_id: int, user_id: int) -> bool:
+        """Remove an expired conversation entry and return True if one existed."""
+        key = (channel_id, user_id)
+        last_active = self._active_conversations.get(key)
+        if last_active is not None and time.monotonic() - last_active > CONVERSATION_IDLE_TIMEOUT:
+            del self._active_conversations[key]
+            return True
+        return False
 
     def _mark_conversation_active(self, channel_id: int, user_id: int) -> None:
         self._active_conversations[(channel_id, user_id)] = time.monotonic()
@@ -253,6 +262,7 @@ class HouseBot(discord.Client):
         is_name_mentioned = bool(bot_name) and bot_name in message.content.lower()
 
         is_active = self._is_in_active_conversation(message.channel.id, message.author.id)
+        session_expired = not is_active and self._pop_timed_out_conversation(message.channel.id, message.author.id)
 
         if not (is_dm or is_mentioned or is_reply_to_bot or is_name_mentioned or is_active):
             return
@@ -262,12 +272,12 @@ class HouseBot(discord.Client):
             return
         self._processing_messages.add(message.id)
         try:
-            await self._handle_message(message)
+            await self._handle_message(message, session_expired=session_expired)
         finally:
             self._processing_messages.discard(message.id)
             self._responded_messages.append(message.id)
 
-    async def _handle_message(self, message: discord.Message) -> None:
+    async def _handle_message(self, message: discord.Message, *, session_expired: bool = False) -> None:
         text = message.content
         if self.user:
             text = text.replace(f"<@{self.user.id}>", "").replace(
@@ -276,6 +286,12 @@ class HouseBot(discord.Client):
 
         if not text and not message.attachments:
             return
+
+        if session_expired:
+            try:
+                await self.agent.start_new_session(message.author.id)
+            except Exception:
+                logger.exception("Failed to start new session for user %s", message.author.id)
 
         with sentry_sdk.new_scope() as scope:
             scope.set_user({"id": str(message.author.id), "username": message.author.display_name})

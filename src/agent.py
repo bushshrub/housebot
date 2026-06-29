@@ -73,6 +73,48 @@ class Agent:
     async def stop(self) -> None:
         await self._exit_stack.__aexit__(None, None, None)
 
+    async def start_new_session(self, user_id: int | str) -> None:
+        """Summarize the previous conversation into memory and clear history."""
+        past_messages = await history.load(user_id)
+        if not past_messages:
+            return
+
+        user_memory = await memory.load(user_id)
+        convo_text = "\n".join(
+            f"{m['role'].upper()}: {m['content'] if isinstance(m['content'], str) else '[media]'}"
+            for m in past_messages
+            if isinstance(m.get("content"), str)
+        )
+
+        prompt = (
+            "The following is a conversation that has ended. "
+            "Write a concise bullet-point summary of the key facts, preferences, and decisions "
+            "discussed. This will be appended to the user's memory for future reference. "
+            "Be brief — 3-8 bullets max.\n\n"
+            f"CONVERSATION:\n{convo_text[:6000]}"
+        )
+        try:
+            response = await self._client.chat.completions.create(
+                model=LLM_MODEL,
+                messages=[{"role": "user", "content": prompt}],
+                max_tokens=512,
+            )
+            summary = response.choices[0].message.content or ""
+        except Exception:
+            logger.exception("Failed to summarize conversation for user %s", user_id)
+            summary = ""
+
+        if summary:
+            now = datetime.now().strftime("%Y-%m-%d %H:%M")
+            updated_memory = (
+                (user_memory.rstrip() + "\n\n" if user_memory.strip() else "")
+                + f"## Conversation summary ({now})\n{summary}"
+            )
+            await memory.save(user_id, updated_memory)
+
+        await history.clear(user_id)
+        logger.info("New session started for user %s — history cleared, summary saved", user_id)
+
     async def run(
         self,
         user_id: int | str,

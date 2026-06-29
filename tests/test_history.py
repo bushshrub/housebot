@@ -58,6 +58,18 @@ async def test_append_turn_accumulates():
     assert result[-1] == asst2[0]
 
 
+async def test_clear_removes_history():
+    msgs = [{"role": "user", "content": "hello"}]
+    await history_mod.save("user_clear", msgs)
+    assert await history_mod.load("user_clear") == msgs
+    await history_mod.clear("user_clear")
+    assert await history_mod.load("user_clear") == []
+
+
+async def test_clear_noop_for_unknown_user():
+    await history_mod.clear("never_existed")  # should not raise
+
+
 async def test_append_turn_trims_to_max_turns(monkeypatch):
     monkeypatch.setattr(history_mod, "MAX_TURNS", 1)
     user1 = {"role": "user", "content": "first"}

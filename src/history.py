@@ -43,6 +43,12 @@ async def save(user_id: int | str, messages: list[dict[str, Any]]) -> None:
             await f.write(json.dumps(msg) + "\n")
 
 
+async def clear(user_id: int | str) -> None:
+    path = _history_path(user_id)
+    if path.exists():
+        path.unlink()
+
+
 async def append_turn(
     user_id: int | str,
     user_message: dict[str, Any],
