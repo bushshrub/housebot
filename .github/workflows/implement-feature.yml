@@ -110,7 +110,6 @@ jobs:
 
             const config = {
               model,
-              max_tokens: 65536,
               ...extra,
             };
 
