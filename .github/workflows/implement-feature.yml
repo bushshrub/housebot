@@ -1,22 +1,42 @@
-name: Implement feature issue
+name: Implement Issue with OpenCode
 
 on:
   issue_comment:
     types: [created]
+  workflow_dispatch:
+    inputs:
+      issue_number:
+        description: Issue number to implement
+        required: true
+        type: number
+      opencode_config:
+        description: >
+          OpenCode model config as JSON.
+          Example: {"model":"gemma-4-12b","base_url":"http://host:8080/v1"}
+        required: false
+        type: string
+
+concurrency:
+  group: opencode-issue-${{ github.event.issue.number || github.event.inputs.issue_number }}
+  cancel-in-progress: true
 
 jobs:
   check-permission:
     runs-on: ubuntu-latest
     if: |
-      github.event.issue.pull_request == null &&
-      startsWith(github.event.comment.body, '/implement')
+      github.event_name == 'workflow_dispatch' ||
+      (github.event.issue.pull_request == null &&
+       startsWith(github.event.comment.body, '/implement'))
     outputs:
       allowed: ${{ steps.check.outputs.allowed }}
+      issue_number: ${{ steps.resolve.outputs.issue_number }}
     steps:
-      - name: Check commenter is repo owner
+      - name: Check owner
         id: check
         run: |
-          if [ "${{ github.event.comment.author_association }}" = "OWNER" ]; then
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "allowed=true" >> "$GITHUB_OUTPUT"
+          elif [ "${{ github.event.comment.author_association }}" = "OWNER" ]; then
             echo "allowed=true" >> "$GITHUB_OUTPUT"
           else
             echo "allowed=false" >> "$GITHUB_OUTPUT"
@@ -34,6 +54,15 @@ jobs:
               body: '❌ Only the repository owner can trigger `/implement`.',
             });
 
+      - name: Resolve issue number
+        id: resolve
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "issue_number=${{ github.event.inputs.issue_number }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "issue_number=${{ github.event.issue.number }}" >> "$GITHUB_OUTPUT"
+          fi
+
   implement:
     needs: check-permission
     if: needs.check-permission.outputs.allowed == 'true'
@@ -43,24 +72,111 @@ jobs:
       pull-requests: write
       issues: write
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-      - name: Run Claude Code on issue
-        uses: anthropics/claude-code-action@v1
+      - uses: actions/setup-node@v4
         with:
-          prompt: |
-            Implement the feature described in GitHub issue #${{ github.event.issue.number }}.
+          node-version: '20'
 
-            Issue title: ${{ github.event.issue.title }}
+      - name: Install OpenCode
+        run: npm install -g @anthropic-ai/opencode
 
-            Issue body:
-            ${{ github.event.issue.body }}
+      - name: Fetch issue + write config + prompt
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const issueNumber = ${{ needs.check-permission.outputs.issue_number }};
+            const { data: issue } = await github.rest.issues.get({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: issueNumber,
+            });
 
-            Make all necessary code changes to implement this feature. Follow the existing
-            code style and conventions in the repository. When done, open a pull request
-            with a clear description of what was changed.
-          allowed_tools: "Bash,Read,Write,Edit"
+            const fs = require('fs');
+
+            // --- model config ---
+            let config = {};
+
+            const commentBody = process.env.COMMENT_BODY || '';
+            if (commentBody.startsWith('/implement')) {
+              const jsonPart = commentBody.replace(/^\/implement\s*/, '');
+              if (jsonPart) { try { config = JSON.parse(jsonPart); } catch {} }
+            }
+
+            const dispatchConfig = process.env.DISPATCH_CONFIG || '';
+            if (dispatchConfig) { try { config = JSON.parse(dispatchConfig); } catch {} }
+
+            const repoVar = process.env.OPENCODE_MODEL_CONFIG;
+            if (repoVar && Object.keys(config).length === 0) {
+              try { config = JSON.parse(repoVar); } catch {}
+            }
+
+            const merged = {
+              model: 'claude-sonnet-4-20250514',
+              max_tokens: 65536,
+              ...config,
+            };
+
+            fs.writeFileSync('opencode.json', JSON.stringify(merged, null, 2));
+            console.log('Config:', JSON.stringify(merged));
+
+            // --- prompt file ---
+            const prompt = [
+              `Implement the feature described in GitHub issue #${issueNumber}.`,
+              '',
+              `Issue title: ${issue.title}`,
+              '',
+              'Issue body:',
+              issue.body || '(no body)',
+              '',
+              'Make all necessary code changes to implement this feature. Follow the existing',
+              'code style and conventions in the repository. Commit your changes when done.',
+            ].join('\n');
+
+            fs.writeFileSync('${{ runner.temp }}/opencode_prompt.txt', prompt);
+            console.log('Prompt written.');
         env:
-          CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          COMMENT_BODY: ${{ github.event.comment.body }}
+          DISPATCH_CONFIG: ${{ github.event.inputs.opencode_config }}
+          OPENCODE_MODEL_CONFIG: ${{ vars.OPENCODE_MODEL_CONFIG }}
+
+      - name: Run OpenCode on issue
+        run: |
+          python3 -c "
+          import subprocess, sys
+          prompt_file = '${{ runner.temp }}/opencode_prompt.txt'
+          with open(prompt_file) as f:
+              prompt = f.read()
+          result = subprocess.run(
+              ['opencode', '--prompt', prompt, '--allowed-tools', 'Bash,Read,Write,Edit', '--yes'],
+              capture_output=False,
+          )
+          sys.exit(result.returncode)
+          "
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          OPENAI_BASE_URL: ${{ secrets.OPENAI_BASE_URL }}
+
+      - name: Clean up opencode config
+        run: rm -f opencode.json
+
+      - name: Create Pull Request
+        uses: peter-evans/create-pull-request@v7
+        with:
+          commit-message: |
+            feat: implement #${{ needs.check-permission.outputs.issue_number }}
+          title: |
+            Implement #${{ needs.check-permission.outputs.issue_number }}
+          body: |
+            Closes #${{ needs.check-permission.outputs.issue_number }}
+
+            Auto-implemented by **OpenCode**.
+
+            | | |
+            |---|---|
+            | Triggered by | @${{ github.event.comment.user.login || github.actor }} |
+            | Issue | #${{ needs.check-permission.outputs.issue_number }} |
+          branch: opencode/issue-${{ needs.check-permission.outputs.issue_number }}
+          base: ${{ github.default_branch || 'main' }}
+          delete-branch: true
