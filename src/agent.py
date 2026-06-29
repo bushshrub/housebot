@@ -334,8 +334,11 @@ class Agent:
         user_memory: str,
     ) -> Any:
         if name == "run_opencode":
+            task = args.get("task")
+            if not task:
+                return "Error: 'task' argument is required for run_opencode. Please provide a description of the coding task to perform."
             return await run_opencode(
-                task=args["task"],
+                task=task,
                 model=args.get("model"),
                 repo_url=args.get("repo_url"),
                 files=args.get("files"),
@@ -343,13 +346,16 @@ class Agent:
             )
 
         if name == "run_claude_code":
+            task = args.get("task")
+            if not task:
+                return "Error: 'task' argument is required for run_claude_code. Please provide a description of the coding task to perform."
             approval_hook = _approval_hook_cv.get()
             if approval_hook is not None:
                 approved = await approval_hook("run_claude_code", args)
                 if not approved:
                     return "run_claude_code was not approved by the owner."
             return await run_claude_code(
-                task=args["task"],
+                task=task,
                 model=args.get("model"),
                 repo_url=args.get("repo_url"),
                 files=args.get("files"),
