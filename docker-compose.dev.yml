@@ -1,0 +1,15 @@
+services:
+  house-chatbot:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    env_file: .env
+    volumes:
+      - ./data:/app/data
+      - /var/run/docker.sock:/var/run/docker.sock
+    environment:
+      - DATA_DIR=/app/data
+      - SANDBOX_IMAGE=ghcr.io/bushshrub/housebot/sandbox:latest
+      - DOCKER_NETWORK=house-chatbot_default
+      - SANDBOX_TIMEOUT=${SANDBOX_TIMEOUT:-300}

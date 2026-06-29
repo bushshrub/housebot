@@ -129,6 +129,20 @@ class HouseBot(discord.Client):
         progress_msg: discord.Message | None = None
         progress_lines: list[str] = []
 
+        async def on_tool_called(tool_name: str, args: dict) -> None:
+            nonlocal progress_msg, progress_lines
+            hint = _tool_hint(tool_name, args)
+            content = f"⚙️ **`{tool_name}`**{hint}"
+            try:
+                if progress_msg is None:
+                    progress_msg = await message.reply(content, mention_author=False)
+                else:
+                    await progress_msg.edit(content=content)
+            except discord.HTTPException:
+                pass
+            # Reset log lines so sandbox output starts fresh below the tool header
+            progress_lines.clear()
+
         async def on_progress(line: str) -> None:
             nonlocal progress_msg, progress_lines
             clean = _ANSI_RE.sub("", line)
@@ -176,6 +190,7 @@ class HouseBot(discord.Client):
 
         self.agent.approval_hook = on_approval
         self.agent.progress_hook = on_progress
+        self.agent.tool_notification_hook = on_tool_called
         try:
             async with message.channel.typing():
                 try:
@@ -192,6 +207,7 @@ class HouseBot(discord.Client):
         finally:
             self.agent.approval_hook = None
             self.agent.progress_hook = None
+            self.agent.tool_notification_hook = None
 
         if progress_msg is not None:
             try:
@@ -209,6 +225,19 @@ class HouseBot(discord.Client):
                 await message.channel.send(f"📦 **Artifacts:** `{os.path.basename(path)}`", file=file)
             except Exception:
                 logger.exception("Failed to upload artifact %s", path)
+
+
+def _tool_hint(tool_name: str, args: dict) -> str:
+    """Return a short human-readable suffix describing the tool call args."""
+    # Show the most meaningful single argument as a hint
+    for key in ("query", "task", "repo_url", "memory_content", "url"):
+        val = args.get(key)
+        if val and isinstance(val, str):
+            preview = val[:80].replace("\n", " ")
+            if len(val) > 80:
+                preview += "…"
+            return f" — {preview}"
+    return ""
 
 
 async def _extract_images(message: discord.Message) -> list[dict[str, str]]:

@@ -20,6 +20,7 @@ from .tools.opencode import TOOL_DEFINITION as OPENCODE_TOOL, ProgressCallback, 
 from .tools.claude_code import TOOL_DEFINITION as CLAUDE_CODE_TOOL, run_claude_code
 
 ApprovalCallback = Callable[[str, dict[str, Any]], Awaitable[bool]]
+ToolNotificationCallback = Callable[[str, dict[str, Any]], Awaitable[None]]
 
 logger = logging.getLogger(__name__)
 
@@ -44,6 +45,7 @@ class Agent:
         self._client = AsyncOpenAI(base_url=LLM_BASE_URL, api_key=LLM_API_KEY)
         self.progress_hook: ProgressCallback | None = None
         self.approval_hook: ApprovalCallback | None = None
+        self.tool_notification_hook: ToolNotificationCallback | None = None
 
     async def start(self) -> None:
         await self._exit_stack.__aenter__()
@@ -186,6 +188,8 @@ class Agent:
             try:
                 args = json.loads(tc.function.arguments)
                 logger.info("Tool call: %s args=%s", tc.function.name, json.dumps(args)[:200])
+                if self.tool_notification_hook is not None:
+                    await self.tool_notification_hook(tc.function.name, args)
                 result = await self._dispatch_tool(tc.function.name, args, user_id, user_memory)
                 if isinstance(result, dict) and "_memory_update" in result:
                     return {
