@@ -9,13 +9,30 @@ A Discord-based house assistant bot. The LLM backend is a local llama.cpp server
 ```bash
 # First-time setup
 cp .env.example .env          # fill in required values
-docker compose build sandbox  # build the sandbox image once
+docker compose build sandbox  # build the sandbox image locally
 
 # Start
 docker compose up -d
 ```
 
 Logs: `docker compose logs -f house-chatbot`
+
+## Docker publish pipeline
+
+Pushes both Docker images to GitHub Container Registry (GHCR) on push to `main`/`master` or on tags (`v*`).
+
+Images published:
+- `ghcr.io/bushshrub/housebot:latest` (main bot)
+- `ghcr.io/bushshrub/housebot/sandbox:latest` (coding sandbox)
+
+Each push also gets a `sha-<commit>` tag. Tags get an exact version tag (e.g. `v1.0.0`).
+
+To use a published image instead of building locally, set in `.env`:
+```
+SANDBOX_IMAGE=ghcr.io/bushshrub/housebot/sandbox:latest
+```
+
+Trigger manually: `Actions` tab → `Build and publish Docker images` → `Run workflow`.
 
 ---
 
