@@ -1,50 +1,22 @@
-"""GitHub App integration for automatic error issue creation."""
+"""GitHub App integration for creating issues. Errors go to Sentry; issues reference the event ID."""
 
-import hashlib
 import logging
 import os
 import time
-import traceback
-from datetime import datetime, timezone
 
 import aiohttp
 import jwt
 
 logger = logging.getLogger(__name__)
 
-# Don't re-file the same error within this window (seconds)
-_DEDUP_WINDOW = 3600
-_recent_errors: dict[str, float] = {}
-
-
-def _error_fingerprint(exc: BaseException) -> str:
-    tb = traceback.extract_tb(exc.__traceback__)
-    # Use type + last few frames as the fingerprint
-    key_frames = "".join(f"{f.filename}:{f.lineno}:{f.name}" for f in tb[-3:])
-    raw = f"{type(exc).__name__}:{key_frames}"
-    return hashlib.sha256(raw.encode()).hexdigest()[:16]
-
-
-def _is_duplicate(fingerprint: str) -> bool:
-    now = time.monotonic()
-    # Prune stale entries
-    expired = [k for k, t in _recent_errors.items() if now - t > _DEDUP_WINDOW]
-    for k in expired:
-        del _recent_errors[k]
-    if fingerprint in _recent_errors:
-        return True
-    _recent_errors[fingerprint] = now
-    return False
-
 
 class GitHubIssueReporter:
     def __init__(self) -> None:
         self.app_id = os.getenv("GITHUB_APP_ID", "")
         raw_key = os.getenv("GITHUB_APP_PRIVATE_KEY", "")
-        # Support both literal newlines and escaped \n (e.g. from .env files)
         self.private_key = raw_key.replace("\\n", "\n")
         self.installation_id = os.getenv("GITHUB_INSTALLATION_ID", "")
-        self.repo = os.getenv("GITHUB_REPO", "")  # "owner/repo"
+        self.repo = os.getenv("GITHUB_REPO", "")
         self._installation_token: str | None = None
         self._token_expires_at: float = 0
 
@@ -102,7 +74,7 @@ class GitHubIssueReporter:
             payload = {
                 "title": title,
                 "body": body,
-                "labels": labels or ["bug", "auto-reported"],
+                "labels": labels or ["bug"],
             }
             async with aiohttp.ClientSession() as session:
                 async with session.post(url, headers=headers, json=payload) as resp:
@@ -115,50 +87,14 @@ class GitHubIssueReporter:
             logger.exception("Failed to create GitHub issue")
             return None
 
-    async def report_error(
-        self,
-        exc: BaseException,
-        context: dict[str, str] | None = None,
-    ) -> str | None:
-        """File an issue for exc unless a matching one was filed recently.
-
-        Returns the issue URL if one was created, or None.
-        """
+    async def create_error_issue(self, sentry_event_id: str) -> str | None:
+        """Create a GitHub issue referencing a Sentry event. No sensitive data in the body."""
         if not self.is_configured:
             return None
 
-        fingerprint = _error_fingerprint(exc)
-        if _is_duplicate(fingerprint):
-            logger.debug("Skipping duplicate error report for fingerprint %s", fingerprint)
-            return None
-
-        ts = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
-        exc_type = type(exc).__name__
-        exc_msg = str(exc)[:300]
-        tb_text = "".join(traceback.format_exception(type(exc), exc, exc.__traceback__))
-
-        title = f"[Auto] {exc_type}: {exc_msg[:80]}"
-
-        ctx_section = ""
-        if context:
-            lines = "\n".join(f"- **{k}**: `{v}`" for k, v in context.items())
-            ctx_section = f"\n## Context\n\n{lines}\n"
-
-        body = f"""\
-## Error Report
-
-**Type:** `{exc_type}`
-**Message:** {exc_msg}
-**Fingerprint:** `{fingerprint}`
-**Timestamp:** {ts}
-{ctx_section}
-## Traceback
-
-```
-{tb_text}
-```
-
----
-*Auto-reported by house-chatbot*"""
-
-        return await self.create_issue(title, body, labels=["bug", "auto-reported"])
+        title = f"Bot error — Sentry event {sentry_event_id}"
+        body = (
+            "An error occurred in the bot. Details are available in Sentry.\n\n"
+            f"Sentry Event ID: `{sentry_event_id}`\n"
+        )
+        return await self.create_issue(title, body, labels=["bug"])

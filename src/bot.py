@@ -9,6 +9,7 @@ from io import BytesIO
 
 import aiohttp
 import discord
+import sentry_sdk
 from discord import ui
 
 from .agent import Agent, AgentResult
@@ -79,18 +80,14 @@ class HouseBot(discord.Client):
     def _mark_conversation_active(self, channel_id: int, user_id: int) -> None:
         self._active_conversations[(channel_id, user_id)] = time.monotonic()
 
-    async def _report_error(self, exc: Exception, message: discord.Message) -> None:
-        """File a GitHub issue for exc and DM the owner a link if configured."""
-        context = {
-            "user": f"{message.author.display_name} ({message.author.id})",
-            "channel": str(message.channel),
-            "message_preview": message.content[:200],
-        }
-        issue_url = await self.issue_reporter.report_error(exc, context=context)
+    async def _report_error(self, exc: Exception) -> None:
+        sentry_event_id = sentry_sdk.capture_exception(exc)
+        logger.info("Captured error in Sentry (event: %s)", sentry_event_id)
+        issue_url = await self.issue_reporter.create_error_issue(sentry_event_id)
         if issue_url and OWNER_ID:
             try:
                 owner = await self.fetch_user(OWNER_ID)
-                await owner.send(f"🐛 Auto-filed error report: {issue_url}")
+                await owner.send(f"Error report filed: {issue_url}")
             except Exception:
                 logger.exception("Failed to DM owner about error issue")
 
@@ -293,26 +290,21 @@ class HouseBot(discord.Client):
                 logger.exception("Approval flow failed for %s — denying", tool_name)
                 return False
 
-        self.agent.approval_hook = on_approval
-        self.agent.progress_hook = on_progress
-        self.agent.tool_notification_hook = on_tool_called
-        try:
-            async with message.channel.typing():
-                try:
-                    result: AgentResult = await self.agent.run(
-                        user_id=message.author.id,
-                        username=message.author.display_name,
-                        text=text or "(no text)",
-                        image_data=image_data or None,
-                    )
-                except Exception as exc:
-                    logger.exception("Agent error for user %s", message.author.id)
-                    result = AgentResult(text="Sorry, something went wrong. Please try again.")
-                    await self._report_error(exc, message)
-        finally:
-            self.agent.approval_hook = None
-            self.agent.progress_hook = None
-            self.agent.tool_notification_hook = None
+        async with message.channel.typing():
+            try:
+                result: AgentResult = await self.agent.run(
+                    user_id=message.author.id,
+                    username=message.author.display_name,
+                    text=text or "(no text)",
+                    image_data=image_data or None,
+                    approval_hook=on_approval,
+                    progress_hook=on_progress,
+                    tool_notification_hook=on_tool_called,
+                )
+            except Exception as exc:
+                logger.exception("Agent error for user %s", message.author.id)
+                result = AgentResult(text="Sorry, something went wrong. Please try again.")
+                await self._report_error(exc)
 
         if progress_msg is not None:
             try:

@@ -1,6 +1,7 @@
 """Agent using OpenAI-compatible API (llama.cpp) with MCP tool integration."""
 
 import asyncio
+import contextvars
 import json
 import logging
 import os
@@ -14,6 +15,11 @@ import openai
 from openai import AsyncOpenAI
 from mcp import ClientSession
 from mcp.client.stdio import StdioServerParameters, stdio_client
+
+# Per-task hook context so concurrent message handling doesn't trample
+_approval_hook_cv = contextvars.ContextVar("approval_hook", default=None)
+_progress_hook_cv = contextvars.ContextVar("progress_hook", default=None)
+_tool_notification_hook_cv = contextvars.ContextVar("tool_notification_hook", default=None)
 
 from . import history, memory, skills
 from .tools.opencode import TOOL_DEFINITION as OPENCODE_TOOL, ProgressCallback, run_opencode
@@ -44,9 +50,6 @@ class Agent:
         self._exit_stack = AsyncExitStack()
         self._mcp_sessions: list[tuple[str, ClientSession]] = []
         self._client = AsyncOpenAI(base_url=LLM_BASE_URL, api_key=LLM_API_KEY)
-        self.progress_hook: ProgressCallback | None = None
-        self.approval_hook: ApprovalCallback | None = None
-        self.tool_notification_hook: ToolNotificationCallback | None = None
 
     async def start(self) -> None:
         await self._exit_stack.__aenter__()
@@ -68,6 +71,28 @@ class Agent:
         await self._exit_stack.__aexit__(None, None, None)
 
     async def run(
+        self,
+        user_id: int | str,
+        username: str,
+        text: str,
+        image_data: list[dict[str, str]] | None = None,
+        *,
+        approval_hook: ApprovalCallback | None = None,
+        progress_hook: ProgressCallback | None = None,
+        tool_notification_hook: ToolNotificationCallback | None = None,
+    ) -> AgentResult:
+        # Set per-task hook context so concurrent messages don't trample
+        prev_approval = _approval_hook_cv.set(approval_hook)
+        prev_progress = _progress_hook_cv.set(progress_hook)
+        prev_tool_notification = _tool_notification_hook_cv.set(tool_notification_hook)
+        try:
+            return await self._run_inner(user_id, username, text, image_data)
+        finally:
+            _approval_hook_cv.reset(prev_approval)
+            _progress_hook_cv.reset(prev_progress)
+            _tool_notification_hook_cv.reset(prev_tool_notification)
+
+    async def _run_inner(
         self,
         user_id: int | str,
         username: str,
@@ -115,7 +140,11 @@ class Agent:
                 kwargs["tools"] = tools
                 kwargs["tool_choice"] = "auto"
 
-            response = await self._client.chat.completions.create(**kwargs)  # type: ignore[arg-type]
+            try:
+                response = await self._client.chat.completions.create(**kwargs)  # type: ignore[arg-type]
+            except openai.APIConnectionError:
+                logger.warning("LLM API connection error, retrying once...")
+                response = await self._client.chat.completions.create(**kwargs)  # type: ignore[arg-type]
 
             choice = response.choices[0]
             msg = choice.message
@@ -148,17 +177,22 @@ class Agent:
                 )
                 # Check for memory updates and artifacts before appending
                 for trm in tool_result_messages:
+                    if isinstance(trm, BaseException):
+                        continue
                     if "_memory_update" in trm:
                         user_memory = trm.pop("_memory_update")
                     if "_artifact_paths" in trm:
                         all_artifacts.extend(trm.pop("_artifact_paths"))
-                messages.extend(tool_result_messages)
-                turn_messages.extend(tool_result_messages)
+                messages.extend(m for m in tool_result_messages if isinstance(m, dict))
+                turn_messages.extend(m for m in tool_result_messages if isinstance(m, dict))
             else:
                 final_text = msg.content or ""
                 break
 
-        await history.append_turn(user_id, new_user_message, turn_messages)
+        try:
+            await history.append_turn(user_id, new_user_message, turn_messages)
+        except Exception:
+            logger.exception("Failed to save history for user %s", user_id)
         return AgentResult(text=final_text or "(no response)", artifact_paths=all_artifacts)
 
     async def _build_tools(self) -> list[dict[str, Any]]:
@@ -192,8 +226,9 @@ class Agent:
             try:
                 args = json.loads(tc.function.arguments)
                 logger.info("Tool call: %s args=%s", tc.function.name, json.dumps(args)[:200])
-                if self.tool_notification_hook is not None:
-                    await self.tool_notification_hook(tc.function.name, args)
+                tool_notification_hook = _tool_notification_hook_cv.get()
+                if tool_notification_hook is not None:
+                    await tool_notification_hook(tc.function.name, args)
                 result = await self._dispatch_tool(tc.function.name, args, user_id, user_memory)
                 if isinstance(result, dict) and "_memory_update" in result:
                     return {
@@ -225,7 +260,11 @@ class Agent:
                     "content": f"Error: {exc}",
                 }
 
-        return list(await asyncio.gather(*[run_one(tc) for tc in tool_calls]))
+        try:
+            return list(await asyncio.gather(*[run_one(tc) for tc in tool_calls], return_exceptions=True))
+        except Exception as exc:
+            logger.exception("asyncio.gather in _execute_tools failed")
+            return [{"role": "tool", "tool_call_id": tc.id, "content": f"Error: {exc}"} for tc in tool_calls]
 
     async def _dispatch_tool(
         self,
@@ -240,12 +279,13 @@ class Agent:
                 model=args.get("model"),
                 repo_url=args.get("repo_url"),
                 files=args.get("files"),
-                on_progress=self.progress_hook,
+                on_progress=_progress_hook_cv.get(),
             )
 
         if name == "run_claude_code":
-            if self.approval_hook is not None:
-                approved = await self.approval_hook("run_claude_code", args)
+            approval_hook = _approval_hook_cv.get()
+            if approval_hook is not None:
+                approved = await approval_hook("run_claude_code", args)
                 if not approved:
                     return "run_claude_code was not approved by the owner."
             return await run_claude_code(
@@ -253,7 +293,7 @@ class Agent:
                 model=args.get("model"),
                 repo_url=args.get("repo_url"),
                 files=args.get("files"),
-                on_progress=self.progress_hook,
+                on_progress=_progress_hook_cv.get(),
             )
 
         if name == "update_memory":

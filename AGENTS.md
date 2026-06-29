@@ -45,7 +45,7 @@ src/
   agent.py                # agentic loop, MCP sessions, tool dispatch, AgentResult
   history.py              # per-user conversation JSONL (data/history/<user_id>.jsonl)
   memory.py               # per-user persistent markdown (data/memories/<user_id>.md)
-  github_issues.py        # GitHub App JWT auth + automatic error issue filing
+  github_issues.py        # GitHub App JWT auth + Sentry-backed error issue filing
   tools/
     opencode.py           # run_opencode — Docker sandbox, streams logs, returns artifacts
     claude_code.py        # run_claude_code — same sandbox, owner-approval required
@@ -74,7 +74,8 @@ data/
 | `DOCKER_NETWORK` | no | `house-chatbot_default` | Network sandboxes join |
 | `SANDBOX_TIMEOUT` | no | `300` | Sandbox execution timeout (seconds) |
 | `LLAMA_CPP_URL` / `LLAMA_CPP_MODEL` | no | — | Passed into sandbox for OpenCode |
-| `GITHUB_APP_ID` | no | — | GitHub App ID for error auto-reporting |
+| `SENTRY_DSN` | yes | — | Sentry DSN for error tracking |
+| `GITHUB_APP_ID` | no | — | GitHub App ID for issue filing |
 | `GITHUB_APP_PRIVATE_KEY` | no | — | PEM key (escape newlines as `\n`) |
 | `GITHUB_INSTALLATION_ID` | no | — | GitHub App installation ID |
 | `GITHUB_REPO` | no | — | `owner/repo` to file issues against |
@@ -124,9 +125,11 @@ Container limits: 2 CPUs (`cpu_quota=200000`), 1 GB RAM. After exit, the workspa
 
 MCP servers are connected once at startup (`Agent.start()`) via stdio. Tool names are namespaced: `{server}__{tool}` (e.g. `ddg__search`, `jellyfin__get_movies`). A failed MCP startup is logged and skipped — the bot continues without that server.
 
-### Error self-reporting
+### Error reporting
 
-`GitHubIssueReporter` in `src/github_issues.py` uses GitHub App JWT auth (RS256) to obtain an installation token, then POSTs to the GitHub Issues API. Issues are deduplicated by a SHA-256 fingerprint of the exception type + last 3 traceback frames; the same error won't be re-filed within 1 hour. On a new issue, the owner is DMed the URL.
+Errors are captured by **Sentry** via `sentry_sdk.capture_exception()`. The Sentry event ID is then used to create a GitHub issue via `GitHubIssueReporter.create_error_issue()` — the issue body contains only the Sentry event ID and no sensitive data. The owner is DMed the issue URL on creation.
+
+`GitHubIssueReporter` in `src/github_issues.py` uses GitHub App JWT auth (RS256) to obtain an installation token, then POSTs to the GitHub Issues API.
 
 ---
 
