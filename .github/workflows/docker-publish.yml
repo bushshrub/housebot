@@ -8,8 +8,6 @@ on:
 
 env:
   REGISTRY: ghcr.io
-  IMAGE_MAIN: ${{ github.repository }}
-  IMAGE_SANDBOX: ${{ github.repository }}/sandbox
 
 jobs:
   build:
@@ -17,6 +15,16 @@ jobs:
     permissions:
       contents: read
       packages: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: main
+            context: .
+            image-suffix: ""
+          - name: sandbox
+            context: ./sandbox
+            image-suffix: /sandbox
 
     steps:
       - name: Checkout repository
@@ -29,50 +37,27 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Extract metadata
-        id: meta
-        uses: docker/metadata-action@v5
-        with:
-          images: ${{ env.REGISTRY }}/${{ github.repository }}
-
       - name: Set up Docker Buildx
-        id: buildx
         uses: docker/setup-buildx-action@v3
         with:
           driver: docker-container
 
-      - name: Extract sandbox metadata
-        id: sandbox-meta
+      - name: Extract metadata
+        id: meta
         uses: docker/metadata-action@v5
         with:
-          images: ${{ env.REGISTRY }}/${{ github.repository }}/sandbox
+          images: ${{ env.REGISTRY }}/${{ github.repository }}${{ matrix.image-suffix }}
 
-      - name: Build and push main image
+      - name: Build and push
         uses: docker/build-push-action@v6
         with:
-          builder: ${{ steps.buildx.outputs.name }}
-          context: .
+          context: ${{ matrix.context }}
           platforms: linux/amd64,linux/arm64
           push: true
           tags: |
-            ${{ env.REGISTRY }}/${{ github.repository }}:latest
-            ${{ env.REGISTRY }}/${{ github.repository }}:sha-${{ github.sha }}
-            ${{ github.ref_type == 'tag' && format('{0}/{1}:{2}', env.REGISTRY, github.repository, github.ref_name) || '' }}
+            ${{ env.REGISTRY }}/${{ github.repository }}${{ matrix.image-suffix }}:latest
+            ${{ env.REGISTRY }}/${{ github.repository }}${{ matrix.image-suffix }}:sha-${{ github.sha }}
+            ${{ github.ref_type == 'tag' && format('{0}/{1}{2}:{3}', env.REGISTRY, github.repository, matrix.image-suffix, github.ref_name) || '' }}
           labels: ${{ steps.meta.outputs.labels }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
-
-      - name: Build and push sandbox image
-        uses: docker/build-push-action@v6
-        with:
-          builder: ${{ steps.buildx.outputs.name }}
-          context: ./sandbox
-          platforms: linux/amd64,linux/arm64
-          push: true
-          tags: |
-            ${{ env.REGISTRY }}/${{ github.repository }}/sandbox:latest
-            ${{ env.REGISTRY }}/${{ github.repository }}/sandbox:sha-${{ github.sha }}
-            ${{ github.ref_type == 'tag' && format('{0}/{1}/sandbox:{2}', env.REGISTRY, github.repository, github.ref_name) || '' }}
-          labels: ${{ steps.sandbox-meta.outputs.labels }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+          cache-from: type=gha,scope=${{ matrix.name }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.name }}
