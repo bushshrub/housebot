@@ -1,3 +1,5 @@
+name: house-chatbot
+
 services:
   house-chatbot:
     build:
@@ -10,6 +12,6 @@ services:
       - /var/run/docker.sock:/var/run/docker.sock
     environment:
       - DATA_DIR=/app/data
-      - SANDBOX_IMAGE=ghcr.io/bushshrub/housebot/sandbox:latest
+      - SANDBOX_IMAGE=house-chatbot-sandbox:latest
       - DOCKER_NETWORK=house-chatbot_default
       - SANDBOX_TIMEOUT=${SANDBOX_TIMEOUT:-300}

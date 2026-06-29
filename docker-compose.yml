@@ -1,3 +1,5 @@
+name: house-chatbot
+
 services:
   house-chatbot:
     image: ghcr.io/bushshrub/housebot:latest

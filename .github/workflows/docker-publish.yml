@@ -52,6 +52,7 @@ jobs:
         with:
           builder: ${{ steps.buildx.outputs.name }}
           context: .
+          platforms: linux/amd64,linux/arm64
           push: true
           tags: |
             ${{ env.REGISTRY }}/${{ github.repository }}:latest
@@ -66,6 +67,7 @@ jobs:
         with:
           builder: ${{ steps.buildx.outputs.name }}
           context: ./sandbox
+          platforms: linux/amd64,linux/arm64
           push: true
           tags: |
             ${{ env.REGISTRY }}/${{ github.repository }}/sandbox:latest

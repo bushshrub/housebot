@@ -12,6 +12,7 @@ from datetime import datetime
 from typing import Any
 
 import openai
+import sentry_sdk
 from openai import AsyncOpenAI
 from mcp import ClientSession
 from mcp.client.stdio import StdioServerParameters, stdio_client
@@ -291,6 +292,10 @@ class Agent:
                 content = str(result)
                 if content.startswith("Error:"):
                     logger.error("Tool '%s' returned error: %s", tc.function.name, content)
+                    sentry_sdk.capture_message(
+                        f"Tool error [{tc.function.name}]: {content}",
+                        level="error",
+                    )
                 return {
                     "role": "tool",
                     "tool_call_id": tc.id,
@@ -298,6 +303,7 @@ class Agent:
                 }
             except Exception as exc:
                 logger.exception("Tool '%s' raised an exception", tc.function.name)
+                sentry_sdk.capture_exception(exc)
                 return {
                     "role": "tool",
                     "tool_call_id": tc.id,
