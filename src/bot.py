@@ -13,6 +13,7 @@ from discord import ui
 
 from .agent import Agent, AgentResult
 from .github_issues import GitHubIssueReporter
+from . import skills
 
 logger = logging.getLogger(__name__)
 
@@ -93,8 +94,112 @@ class HouseBot(discord.Client):
             except Exception:
                 logger.exception("Failed to DM owner about error issue")
 
+    async def _handle_skill_command(self, message: discord.Message) -> None:
+        content = message.content.strip()
+        lines = content.split("\n", 1)
+        first_line = lines[0].strip()
+        rest = lines[1].strip() if len(lines) > 1 else ""
+
+        parts = first_line.split(None, 2)
+        if len(parts) < 2:
+            await message.reply(
+                "Usage: `!skill list` | `!skill add <name>` | `!skill delete <name>` | `!skill info <name>`",
+                mention_author=False,
+            )
+            return
+
+        subcmd = parts[1].lower()
+
+        if subcmd == "list":
+            all_skills = await skills.load_all()
+            if not all_skills:
+                await message.reply(
+                    "No skills defined yet. Use `!skill add <name>` (with the prompt on the next line).",
+                    mention_author=False,
+                )
+                return
+            lines_out = ["**Skills:**"]
+            for s in all_skills.values():
+                desc = s.get("description", "")[:80]
+                lines_out.append(f"• **{s['name']}** — {desc}")
+            await message.reply("\n".join(lines_out), mention_author=False)
+            return
+
+        if subcmd == "info":
+            if len(parts) < 3:
+                await message.reply("Usage: `!skill info <name>`", mention_author=False)
+                return
+            skill_name = parts[2].lower()
+            skill = await skills.get(skill_name)
+            if skill is None:
+                await message.reply(f"Skill `{skill_name}` not found.", mention_author=False)
+                return
+            prompt_preview = skill["prompt"][:500]
+            if len(skill["prompt"]) > 500:
+                prompt_preview += "…"
+            await message.reply(
+                f"**Skill: {skill['name']}**\n"
+                f"Description: {skill.get('description', '(none)')}\n"
+                f"```\n{prompt_preview}\n```",
+                mention_author=False,
+            )
+            return
+
+        if subcmd == "add":
+            if len(parts) < 3:
+                await message.reply(
+                    "Usage: `!skill add <name>` with the skill prompt on the next line.",
+                    mention_author=False,
+                )
+                return
+            skill_name = parts[2].lower().strip()
+            if not re.match(r"^[a-z0-9_]+$", skill_name):
+                await message.reply(
+                    "Skill name must be lowercase letters, numbers, and underscores only.",
+                    mention_author=False,
+                )
+                return
+            if not rest:
+                await message.reply(
+                    "Please include the skill prompt on a new line after the command.\n"
+                    "Example:\n```\n!skill add my_skill\nYou are a helpful assistant that...\n```",
+                    mention_author=False,
+                )
+                return
+            description = rest[:100] + ("…" if len(rest) > 100 else "")
+            skill = {
+                "name": skill_name,
+                "description": description,
+                "prompt": rest,
+                "created_by": str(message.author.id),
+            }
+            await skills.save_skill(skill)
+            await message.reply(f"✅ Skill **{skill_name}** saved.", mention_author=False)
+            return
+
+        if subcmd == "delete":
+            if len(parts) < 3:
+                await message.reply("Usage: `!skill delete <name>`", mention_author=False)
+                return
+            skill_name = parts[2].lower()
+            deleted = await skills.delete_skill(skill_name)
+            if deleted:
+                await message.reply(f"✅ Skill **{skill_name}** deleted.", mention_author=False)
+            else:
+                await message.reply(f"Skill `{skill_name}` not found.", mention_author=False)
+            return
+
+        await message.reply(
+            f"Unknown subcommand `{subcmd}`. Options: `list`, `add`, `delete`, `info`",
+            mention_author=False,
+        )
+
     async def on_message(self, message: discord.Message) -> None:
         if message.author == self.user:
+            return
+
+        if message.content.startswith("!skill"):
+            await self._handle_skill_command(message)
             return
 
         is_dm = isinstance(message.channel, discord.DMChannel)
@@ -229,7 +334,10 @@ class HouseBot(discord.Client):
 
 def _tool_hint(tool_name: str, args: dict) -> str:
     """Return a short human-readable suffix describing the tool call args."""
-    # Show the most meaningful single argument as a hint
+    if tool_name == "run_skill":
+        name = args.get("name", "")
+        inp = args.get("input", "")[:60].replace("\n", " ")
+        return f" — {name}: {inp}" if name else ""
     for key in ("query", "task", "repo_url", "memory_content", "url"):
         val = args.get(key)
         if val and isinstance(val, str):

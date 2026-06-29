@@ -15,9 +15,10 @@ from openai import AsyncOpenAI
 from mcp import ClientSession
 from mcp.client.stdio import StdioServerParameters, stdio_client
 
-from . import history, memory
+from . import history, memory, skills
 from .tools.opencode import TOOL_DEFINITION as OPENCODE_TOOL, ProgressCallback, run_opencode
 from .tools.claude_code import TOOL_DEFINITION as CLAUDE_CODE_TOOL, run_claude_code
+from .tools.feature_request import TOOL_DEFINITION as FEATURE_REQUEST_TOOL, create_feature_request
 
 ApprovalCallback = Callable[[str, dict[str, Any]], Awaitable[bool]]
 ToolNotificationCallback = Callable[[str, dict[str, Any]], Awaitable[None]]
@@ -75,10 +76,11 @@ class Agent:
     ) -> AgentResult:
         user_memory = await memory.load(user_id)
         past_messages = await history.load(user_id)
+        all_skills = await skills.load_all()
 
         system_message: dict[str, Any] = {
             "role": "system",
-            "content": _build_system_prompt(username, user_id, user_memory),
+            "content": _build_system_prompt(username, user_id, user_memory, all_skills),
         }
 
         # Build user message — images use OpenAI's image_url format
@@ -176,6 +178,8 @@ class Agent:
         tools.append(_to_openai_tool(**_flatten_tool(OPENCODE_TOOL)))
         tools.append(_to_openai_tool(**_flatten_tool(CLAUDE_CODE_TOOL)))
         tools.append(_to_openai_tool(**_flatten_tool(_update_memory_tool())))
+        tools.append(_to_openai_tool(**_flatten_tool(_run_skill_tool())))
+        tools.append(_to_openai_tool(**_flatten_tool(FEATURE_REQUEST_TOOL)))
         return tools
 
     async def _execute_tools(
@@ -257,6 +261,29 @@ class Agent:
             await memory.save(user_id, new_content)
             return {"content": "Memory updated.", "_memory_update": new_content}
 
+        if name == "create_feature_request":
+            return await create_feature_request(
+                title=args["title"],
+                description=args["description"],
+                requested_by=str(user_id),
+            )
+
+        if name == "run_skill":
+            skill_name = args["name"]
+            skill_input = args.get("input", "")
+            skill = await skills.get(skill_name)
+            if skill is None:
+                return f"Error: Skill '{skill_name}' not found."
+            response = await self._client.chat.completions.create(
+                model=LLM_MODEL,
+                messages=[
+                    {"role": "system", "content": skill["prompt"]},
+                    {"role": "user", "content": skill_input},
+                ],
+                max_tokens=4096,
+            )
+            return response.choices[0].message.content or ""
+
         # MCP tools — name format: "<server_prefix>__<tool_name>"
         if "__" in name:
             prefix, tool_name = name.split("__", 1)
@@ -296,11 +323,24 @@ def _mcp_server_configs() -> list[tuple[str, StdioServerParameters]]:
     return configs
 
 
-def _build_system_prompt(username: str, user_id: int | str, user_memory: str) -> str:
+def _build_system_prompt(
+    username: str,
+    user_id: int | str,
+    user_memory: str,
+    all_skills: dict[str, Any] | None = None,
+) -> str:
     now = datetime.now().strftime("%Y-%m-%d %H:%M")
     memory_section = (
         f"\n\n## Your memory about {username}\n{user_memory}" if user_memory.strip() else ""
     )
+    if all_skills:
+        skill_lines = "\n".join(
+            f"  - **{s['name']}**: {s.get('description', s['name'])}"
+            for s in all_skills.values()
+        )
+        skills_section = f"\n- run_skill — Execute a custom skill by name with an input string. Available skills:\n{skill_lines}"
+    else:
+        skills_section = "\n- run_skill — Execute a custom skill by name. No skills are defined yet; users can add them with `!skill add`."
     return f"""\
 You are a helpful house assistant bot in a Discord server. You help with media, web search, and software development tasks.
 
@@ -313,6 +353,7 @@ Current user: {username} (ID: {user_id}){memory_section}
 - run_opencode — Run a coding task using OpenCode + local llama.cpp model. Good for quick scripts and general work.
 - run_claude_code — Run a coding task using Claude Code (Anthropic). Best for complex, multi-file, or reasoning-heavy work.
 - update_memory — Persist important facts about the current user for future conversations. Write the full memory each time.
+- create_feature_request — File a GitHub issue for a feature the user wants added to this bot. Use whenever a user asks for a new feature or improvement.{skills_section}
 
 ## Guidelines
 - Be conversational and friendly.
@@ -322,6 +363,7 @@ Current user: {username} (ID: {user_id}){memory_section}
 - run_claude_code is only available to the bot owner (user ID: {OWNER_ID}). Do not offer or attempt it for any other user.
 - Update memory when you learn something worth remembering.
 - Keep responses concise unless asked for detail.
+- If a user requests a feature or improvement to this bot, immediately call create_feature_request with a clear title and description, then tell them the issue URL.
 - If a tool returns an error message (starts with "Error:"), quote it exactly — do not paraphrase or soften it.
 """
 
@@ -342,6 +384,30 @@ def _update_memory_tool() -> dict[str, Any]:
                 }
             },
             "required": ["memory_content"],
+        },
+    }
+
+
+def _run_skill_tool() -> dict[str, Any]:
+    return {
+        "name": "run_skill",
+        "description": (
+            "Execute a named skill — a custom prompt template saved by users. "
+            "Pass the skill name and the text input to process."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "name": {
+                    "type": "string",
+                    "description": "The skill name to execute.",
+                },
+                "input": {
+                    "type": "string",
+                    "description": "The text input to pass to the skill.",
+                },
+            },
+            "required": ["name", "input"],
         },
     }
 
