@@ -20,9 +20,44 @@ from . import skills
 
 logger = logging.getLogger(__name__)
 
+# Collect secret values from env vars whose names suggest they contain credentials.
+# Built once at import time so we don't re-scan os.environ on every message.
+_SECRET_PATTERNS: list[re.Pattern[str]] = []
+
+def _build_secret_patterns() -> None:
+    _secret_keywords = ("token", "key", "secret", "password", "dsn", "api_key", "oauth")
+    for name, value in os.environ.items():
+        if not value or len(value) < 8:
+            continue
+        if any(kw in name.lower() for kw in _secret_keywords):
+            _SECRET_PATTERNS.append(re.compile(re.escape(value)))
+
+_build_secret_patterns()
+
+
+def _redact_secrets(text: str) -> str:
+    for pat in _SECRET_PATTERNS:
+        text = pat.sub("[REDACTED]", text)
+    return text
+
+
 MAX_MESSAGE_LENGTH = 2000
 OWNER_ID = int(os.getenv("OWNER_DISCORD_ID", "0"))
 _ANSI_RE = re.compile(r"\x1b\[[0-9;]*[a-zA-Z]|\x1b[()][AB012]|\r")
+_CODE_FENCE_RE = re.compile(r"```(\w*)\n(.*?)(?:```|$)", re.DOTALL)
+CODE_FILE_THRESHOLD = 800  # extract code blocks larger than this many characters
+
+_LANG_EXT_MAP = {
+    "python": ".py", "py": ".py",
+    "javascript": ".js", "js": ".js",
+    "typescript": ".ts", "ts": ".ts",
+    "bash": ".sh", "sh": ".sh", "shell": ".sh",
+    "rust": ".rs", "go": ".go", "java": ".java",
+    "c": ".c", "cpp": ".cpp", "c++": ".cpp",
+    "html": ".html", "css": ".css", "json": ".json",
+    "yaml": ".yaml", "yml": ".yml", "toml": ".toml",
+    "sql": ".sql", "ruby": ".rb", "rb": ".rb", "php": ".php",
+}
 APPROVAL_TIMEOUT = 300  # seconds
 CONVERSATION_IDLE_TIMEOUT = int(os.getenv("CONVERSATION_IDLE_TIMEOUT", "300"))  # 5 min default
 
@@ -413,13 +448,29 @@ class HouseBot(discord.Client):
                         self._report_error(exc)
 
                 self._mark_conversation_active(message.channel.id, message.author.id)
-                await _send_final_message(message.channel, result.text, progress_msg=progress_msg, reply_to=message)
+                safe_text = _redact_secrets(result.text)
+                display_text, code_files = _extract_code_files(safe_text)
+                await _send_final_message(message.channel, display_text, progress_msg=progress_msg, reply_to=message)
 
-                # Upload artifacts
+                # Upload extracted code files (redacted)
+                for filename, content in code_files:
+                    try:
+                        safe_content = _redact_secrets(content.decode(errors="replace")).encode()
+                        await message.channel.send(file=discord.File(BytesIO(safe_content), filename=filename))
+                    except Exception:
+                        logger.exception("Failed to upload code file %s", filename)
+
+                # Upload workspace files — strip the uid_ prefix for display, redact contents
                 for path in result.artifact_paths:
                     try:
-                        file = discord.File(path)
-                        await message.channel.send(f"📦 **Artifacts:** `{os.path.basename(path)}`", file=file)
+                        raw_name = os.path.basename(path)
+                        display_name = raw_name.split("_", 1)[1] if "_" in raw_name else raw_name
+                        with open(path, "rb") as f:
+                            raw = f.read()
+                        safe = _redact_secrets(raw.decode(errors="replace")).encode()
+                        await message.channel.send(
+                            file=discord.File(BytesIO(safe), filename=display_name)
+                        )
                     except Exception:
                         logger.exception("Failed to upload artifact %s", path)
 
@@ -506,6 +557,26 @@ async def _send_long_message(
             await reply_to.reply(chunk, mention_author=False)
         else:
             await channel.send(chunk)
+
+
+def _extract_code_files(text: str) -> tuple[str, list[tuple[str, bytes]]]:
+    """Replace large fenced code blocks with file references; return modified text + files."""
+    files: list[tuple[str, bytes]] = []
+    counter = [0]
+
+    def replace(m: re.Match) -> str:
+        lang = m.group(1).lower()
+        code = m.group(2)
+        if len(code) < CODE_FILE_THRESHOLD:
+            return m.group(0)
+        counter[0] += 1
+        ext = _LANG_EXT_MAP.get(lang, ".txt")
+        filename = f"script_{counter[0]}{ext}"
+        files.append((filename, code.encode()))
+        return f"*(see attached: `{filename}`)*"
+
+    modified = _CODE_FENCE_RE.sub(replace, text)
+    return modified, files
 
 
 def _split_text(text: str, limit: int = MAX_MESSAGE_LENGTH) -> list[str]:

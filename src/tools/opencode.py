@@ -3,7 +3,6 @@
 import asyncio
 import os
 import shutil
-import tempfile
 from collections.abc import Awaitable, Callable
 from pathlib import Path
 from uuid import uuid4
@@ -20,6 +19,12 @@ SANDBOX_CPU_QUOTA = int(os.getenv("SANDBOX_CPU_QUOTA", "200000"))  # 2 CPUs (100
 SANDBOX_MEM_LIMIT = os.getenv("SANDBOX_MEM_LIMIT", "1g")
 ARTIFACTS_DIR = os.getenv("ARTIFACTS_DIR", "data/artifacts")
 MAX_ARTIFACT_SIZE_MB = int(os.getenv("MAX_ARTIFACT_SIZE_MB", "24"))
+
+# HOST_DATA_DIR is the host-side absolute path to ./data, needed because sandbox containers
+# are Docker siblings — volume paths must be resolvable by the Docker daemon on the host,
+# not inside this container's filesystem.
+HOST_DATA_DIR = os.getenv("HOST_DATA_DIR", "")
+CONTAINER_DATA_DIR = os.getenv("DATA_DIR", "data")
 
 TOOL_DEFINITION: dict[str, Any] = {
     "name": "run_opencode",
@@ -86,22 +91,45 @@ async def _call_sandbox(
     return await loop.run_in_executor(None, _run_container_sync, agent, task, repo_url, files, model, on_progress, loop)
 
 
-def _zip_workspace(tmpdir: str) -> list[str]:
-    """Zip workspace contents into ARTIFACTS_DIR; returns list of zip paths."""
-    workspace_files = os.listdir(tmpdir)
-    if not workspace_files:
-        return []
+def _make_workspace() -> tuple[str, str]:
+    """Create a workspace dir and return (host_path, container_path).
 
+    The host_path is passed to Docker as the volume source (visible to the daemon).
+    The container_path is where this process reads/writes the same directory.
+    They point to the same filesystem location via the ./data bind mount.
+    """
+    uid = uuid4().hex[:8]
+    container_path = os.path.join(CONTAINER_DATA_DIR, "workspaces", uid)
+    os.makedirs(container_path, exist_ok=True)
+    os.chmod(container_path, 0o777)
+    host_path = os.path.join(HOST_DATA_DIR, "workspaces", uid) if HOST_DATA_DIR else container_path
+    return host_path, container_path
+
+
+_EXCLUDED_FILENAMES = {"opencode.json", ".opencode.json"}
+
+def _collect_workspace_files(container_workspace: str) -> list[str]:
+    """Copy individual workspace files into ARTIFACTS_DIR; return their paths."""
+    collected: list[str] = []
+    uid = uuid4().hex[:8]
     os.makedirs(ARTIFACTS_DIR, exist_ok=True)
-    base = os.path.join(ARTIFACTS_DIR, f"sandbox-{uuid4().hex[:8]}")
-    zip_path = shutil.make_archive(base, "zip", tmpdir)
 
-    size_mb = os.path.getsize(zip_path) / (1024 * 1024)
-    if size_mb > MAX_ARTIFACT_SIZE_MB:
-        os.remove(zip_path)
-        return []
+    for root, _dirs, files in os.walk(container_workspace):
+        _dirs[:] = [d for d in _dirs if not d.startswith(".")]
+        for filename in files:
+            if filename in _EXCLUDED_FILENAMES or filename.startswith("."):
+                continue
+            src = os.path.join(root, filename)
+            size_mb = os.path.getsize(src) / (1024 * 1024)
+            if size_mb > MAX_ARTIFACT_SIZE_MB:
+                continue
+            rel = os.path.relpath(src, container_workspace)
+            flat = rel.replace(os.sep, "_")
+            dst = os.path.join(ARTIFACTS_DIR, f"{uid}_{flat}")
+            shutil.copy2(src, dst)
+            collected.append(dst)
 
-    return [zip_path]
+    return collected
 
 
 def _run_container_sync(
@@ -134,13 +162,13 @@ def _run_container_sync(
     if cc_token:
         environment["CLAUDE_CODE_OAUTH_TOKEN"] = cc_token
 
-    with tempfile.TemporaryDirectory() as tmpdir:
+    host_workspace, container_workspace = _make_workspace()
+    try:
         if files:
             for rel, content in files.items():
-                p = Path(tmpdir) / rel
+                p = Path(container_workspace) / rel
                 p.parent.mkdir(parents=True, exist_ok=True)
                 p.write_text(content)
-        os.chmod(tmpdir, 0o777)
 
         try:
             container = client.containers.run(
@@ -148,7 +176,7 @@ def _run_container_sync(
                 name=f"sandbox-{uuid4().hex[:8]}",
                 network=DOCKER_NETWORK,
                 environment=environment,
-                volumes={tmpdir: {"bind": "/workspace", "mode": "rw"}},
+                volumes={host_workspace: {"bind": "/workspace", "mode": "rw"}},
                 detach=True,
                 remove=False,  # we remove manually after streaming logs
                 cpu_quota=SANDBOX_CPU_QUOTA,
@@ -175,8 +203,7 @@ def _run_container_sync(
                 output = "".join(lines).strip()
                 return f"Error: sandbox exited with code {exit_code}.\n{output}"
 
-            # Zip workspace artifacts
-            artifact_paths = _zip_workspace(tmpdir)
+            artifact_paths = _collect_workspace_files(container_workspace)
         except Exception as exc:
             try:
                 container.kill()
@@ -188,6 +215,8 @@ def _run_container_sync(
                 container.remove(force=True)
             except Exception:
                 pass
+    finally:
+        shutil.rmtree(container_workspace, ignore_errors=True)
 
     output = "".join(lines).strip() or "(no output)"
     result = {"content": output}

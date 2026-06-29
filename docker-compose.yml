@@ -13,3 +13,4 @@ services:
       - SANDBOX_IMAGE=ghcr.io/bushshrub/housebot/sandbox:latest
       - DOCKER_NETWORK=house-chatbot_default
       - SANDBOX_TIMEOUT=${SANDBOX_TIMEOUT:-300}
+      - HOST_DATA_DIR=${HOST_DATA_DIR}

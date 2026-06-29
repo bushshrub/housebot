@@ -55,7 +55,8 @@ sandbox/
 data/
   history/                # runtime — gitignored
   memories/               # runtime — gitignored
-  artifacts/              # sandbox zip outputs — gitignored
+  artifacts/              # individual workspace files from sandbox — gitignored
+  workspaces/             # ephemeral sandbox working dirs (created & deleted per run)
 ```
 
 ---
@@ -73,6 +74,7 @@ data/
 | `SANDBOX_IMAGE` | no | `house-chatbot-sandbox:latest` | Docker image for coding sandboxes |
 | `DOCKER_NETWORK` | no | `house-chatbot_default` | Network sandboxes join |
 | `SANDBOX_TIMEOUT` | no | `300` | Sandbox execution timeout (seconds) |
+| `HOST_DATA_DIR` | yes* | — | Absolute host path to `./data`; required so sibling sandbox containers can share the workspace volume |
 | `LLAMA_CPP_URL` / `LLAMA_CPP_MODEL` | no | — | Passed into sandbox for OpenCode |
 | `SENTRY_DSN` | yes | — | Sentry DSN for error tracking |
 | `GITHUB_APP_ID` | no | — | GitHub App ID for issue filing |
@@ -81,6 +83,8 @@ data/
 | `GITHUB_REPO` | no | — | `owner/repo` to file issues against |
 
 All four `GITHUB_*` vars must be set together; the reporter silently no-ops if any is missing.
+
+`HOST_DATA_DIR` must match the host-side absolute path of the `./data` volume mount (e.g. `/home/user/housebot/data`). Without it, sandbox workspace files won't be visible to the bot after the container exits.
 
 ---
 
@@ -111,7 +115,7 @@ Discord message
 `_dispatch_tool` returns either a plain string or a dict with special sideband keys:
 
 - `{"content": str, "_memory_update": str}` — triggers a memory write before the next LLM call
-- `{"content": str, "_artifact_paths": list[str]}` — zipped workspace files uploaded to Discord
+- `{"content": str, "_artifact_paths": list[str]}` — individual workspace files uploaded to Discord as attachments
 
 The `_` keys are stripped from the message before it reaches the LLM.
 
@@ -119,7 +123,13 @@ The `_` keys are stripped from the message before it reaches the LLM.
 
 `run_opencode` / `run_claude_code` both call `_call_sandbox()` in `opencode.py`. Execution is synchronous Docker SDK work offloaded to a thread via `run_in_executor` so it doesn't block the async event loop. Log lines stream back to the Discord progress message in real time via `run_coroutine_threadsafe`.
 
-Container limits: 2 CPUs (`cpu_quota=200000`), 1 GB RAM. After exit, the workspace is zipped and saved to `data/artifacts/` if under 24 MB.
+Container limits: 2 CPUs (`cpu_quota=200000`), 1 GB RAM.
+
+**Workspace sharing:** The sandbox mounts a directory from `data/workspaces/<uid>/` (host path via `HOST_DATA_DIR`) as `/workspace`. Because the sandbox is a Docker sibling (not a child), volume paths must be resolvable by the Docker daemon on the host — a plain `tempfile.TemporaryDirectory()` inside the bot container would not be visible. After the sandbox exits, individual files (excluding `opencode.json` and dotfiles) are copied into `data/artifacts/` and uploaded to Discord. Files over 24 MB are skipped. The workspace dir is always cleaned up on exit.
+
+**Secret redaction:** All text sent to Discord — LLM responses, inline code blocks, and file contents — is passed through `_redact_secrets()` before delivery. This scans `os.environ` at startup for any variable whose name contains `token`, `key`, `secret`, `password`, `dsn`, or `oauth`, and replaces any matching value in outbound text with `[REDACTED]`.
+
+**Large code responses:** If the LLM's final reply contains a fenced code block larger than 800 characters, `_extract_code_files()` pulls it out, infers a file extension from the language specifier (e.g. ` ```python` → `.py`), and uploads it as a Discord file attachment instead of pasting it inline. Unclosed code blocks (LLM hit token limit) are handled via `(?:```|$)` in the regex.
 
 ### MCP servers
 
@@ -156,6 +166,6 @@ Tools from that server will appear as `prefix__tool_name` automatically.
 
 - **History** (`data/history/<user_id>.jsonl`): one JSON object per turn, trimmed to `MAX_HISTORY_TURNS` (default 30) pairs. Format is raw OpenAI message dicts.
 - **Memory** (`data/memories/<user_id>.md`): free-form markdown, rewritten in full on each `update_memory` call.
-- **Artifacts** (`data/artifacts/sandbox-*.zip`): ephemeral — not cleaned up automatically beyond the 24 MB gate.
+- **Artifacts** (`data/artifacts/<uid>_<filename>`): individual files copied out of the sandbox workspace after each run. Not cleaned up automatically beyond the 24 MB per-file gate. `opencode.json` and dotfiles are excluded.
 
 Both `data/` paths are volume-mounted in docker-compose so they survive container restarts.
