@@ -2,15 +2,23 @@
 
 import asyncio
 import os
+import shutil
 import tempfile
 from collections.abc import Awaitable, Callable
 from pathlib import Path
 from uuid import uuid4
 from typing import Any
 
+import docker
+import docker.errors
+
 SANDBOX_IMAGE = os.getenv("SANDBOX_IMAGE", "house-chatbot-sandbox:latest")
 DOCKER_NETWORK = os.getenv("DOCKER_NETWORK", "house-chatbot_default")
 TIMEOUT = int(os.getenv("SANDBOX_TIMEOUT", "300"))
+SANDBOX_CPU_QUOTA = int(os.getenv("SANDBOX_CPU_QUOTA", "200000"))  # 2 CPUs (100000 = 1 CPU per 100ms period)
+SANDBOX_MEM_LIMIT = os.getenv("SANDBOX_MEM_LIMIT", "1g")
+ARTIFACTS_DIR = os.getenv("ARTIFACTS_DIR", "data/artifacts")
+MAX_ARTIFACT_SIZE_MB = int(os.getenv("MAX_ARTIFACT_SIZE_MB", "24"))
 
 TOOL_DEFINITION: dict[str, Any] = {
     "name": "run_opencode",
@@ -30,7 +38,7 @@ TOOL_DEFINITION: dict[str, Any] = {
                 "type": "string",
                 "description": (
                     "Model to use, e.g. server-slop/qwen3.6-35b or server-slop/ornith-1.0-35b. "
-                    "Defaults to server-slop/qwen3.6-35b."
+                    "Defaults to server-slop/gemma-4-12b-qat-q4kxl."
                 ),
             },
             "repo_url": {
@@ -56,7 +64,7 @@ async def run_opencode(
     repo_url: str | None = None,
     files: dict[str, str] | None = None,
     on_progress: ProgressCallback | None = None,
-) -> str:
+) -> dict[str, Any] | str:
     return await _call_sandbox("opencode", task, repo_url, files, model=model, on_progress=on_progress)
 
 
@@ -67,67 +75,116 @@ async def _call_sandbox(
     files: dict[str, str] | None,
     model: str | None = None,
     on_progress: ProgressCallback | None = None,
-) -> str:
+) -> dict[str, Any] | str:
+    loop = asyncio.get_running_loop()
+    return await loop.run_in_executor(None, _run_container_sync, agent, task, repo_url, files, model, on_progress, loop)
+
+
+def _zip_workspace(tmpdir: str) -> list[str]:
+    """Zip workspace contents into ARTIFACTS_DIR; returns list of zip paths."""
+    workspace_files = os.listdir(tmpdir)
+    if not workspace_files:
+        return []
+
+    os.makedirs(ARTIFACTS_DIR, exist_ok=True)
+    base = os.path.join(ARTIFACTS_DIR, f"sandbox-{uuid4().hex[:8]}")
+    zip_path = shutil.make_archive(base, "zip", tmpdir)
+
+    size_mb = os.path.getsize(zip_path) / (1024 * 1024)
+    if size_mb > MAX_ARTIFACT_SIZE_MB:
+        os.remove(zip_path)
+        return []
+
+    return [zip_path]
+
+
+def _run_container_sync(
+    agent: str,
+    task: str,
+    repo_url: str | None,
+    files: dict[str, str] | None,
+    model: str | None,
+    on_progress: ProgressCallback | None,
+    loop: asyncio.AbstractEventLoop,
+) -> dict[str, Any] | str:
+    try:
+        client = docker.from_env()
+    except docker.errors.DockerException as exc:
+        return f"Error: cannot connect to Docker socket: {exc}"
+
+    environment: dict[str, str] = {
+        "AGENT": agent,
+        "TASK": task,
+        "REPO_URL": repo_url or "",
+        "MODEL": model or "",
+        "NO_COLOR": "1",
+        "TERM": "dumb",
+    }
+    for var in ("LLAMA_CPP_URL", "LLAMA_CPP_MODEL"):
+        val = os.getenv(var, "")
+        if val:
+            environment[var] = val
+    cc_token = os.getenv("CC_OAUTH_TOKEN") or os.getenv("CLAUDE_CODE_OAUTH_TOKEN", "")
+    if cc_token:
+        environment["CLAUDE_CODE_OAUTH_TOKEN"] = cc_token
+
     with tempfile.TemporaryDirectory() as tmpdir:
-        # Seed files so the container can find them at /workspace/<rel>
         if files:
             for rel, content in files.items():
                 p = Path(tmpdir) / rel
                 p.parent.mkdir(parents=True, exist_ok=True)
                 p.write_text(content)
-        # World-writable so the container's non-root sandbox user can write freely
         os.chmod(tmpdir, 0o777)
 
-        env_args: list[str] = [
-            "-e", f"AGENT={agent}",
-            "-e", f"TASK={task}",
-            "-e", f"REPO_URL={repo_url or ''}",
-            "-e", f"MODEL={model or ''}",
-        ]
-
-        for var in ("LLAMA_CPP_URL", "LLAMA_CPP_MODEL"):
-            val = os.getenv(var, "")
-            if val:
-                env_args += ["-e", f"{var}={val}"]
-
-        cc_token = os.getenv("CC_OAUTH_TOKEN") or os.getenv("CLAUDE_CODE_OAUTH_TOKEN", "")
-        if cc_token:
-            env_args += ["-e", f"CLAUDE_CODE_OAUTH_TOKEN={cc_token}"]
-
-        cmd = [
-            "docker", "run", "--rm",
-            "--name", f"sandbox-{uuid4().hex[:8]}",
-            "--network", DOCKER_NETWORK,
-            "-v", f"{tmpdir}:/workspace",
-            *env_args,
-            SANDBOX_IMAGE,
-        ]
+        try:
+            container = client.containers.run(
+                SANDBOX_IMAGE,
+                name=f"sandbox-{uuid4().hex[:8]}",
+                network=DOCKER_NETWORK,
+                environment=environment,
+                volumes={tmpdir: {"bind": "/workspace", "mode": "rw"}},
+                detach=True,
+                remove=False,  # we remove manually after streaming logs
+                cpu_quota=SANDBOX_CPU_QUOTA,
+                cpu_period=100000,
+                mem_limit=SANDBOX_MEM_LIMIT,
+            )
+        except docker.errors.ImageNotFound:
+            return f"Error: sandbox image '{SANDBOX_IMAGE}' not found — run: docker compose build sandbox"
+        except docker.errors.APIError as exc:
+            return f"Error: Docker API error: {exc}"
 
         lines: list[str] = []
+        artifact_paths: list[str] = []
         try:
-            proc = await asyncio.create_subprocess_exec(
-                *cmd,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.STDOUT,
-            )
+            for raw in container.logs(stream=True, follow=True):
+                line = raw.decode(errors="replace")
+                lines.append(line)
+                if on_progress:
+                    asyncio.run_coroutine_threadsafe(on_progress(line), loop).result(timeout=5)
 
-            async with asyncio.timeout(TIMEOUT):
-                async for raw in proc.stdout:
-                    line = raw.decode(errors="replace")
-                    lines.append(line)
-                    if on_progress:
-                        await on_progress(line)
+            result = container.wait(timeout=TIMEOUT)
+            exit_code = result.get("StatusCode", -1)
+            if exit_code != 0:
+                output = "".join(lines).strip()
+                return f"Error: sandbox exited with code {exit_code}.\n{output}"
 
-            await proc.wait()
-        except asyncio.TimeoutError:
+            # Zip workspace artifacts
+            artifact_paths = _zip_workspace(tmpdir)
+        except Exception as exc:
             try:
-                proc.kill()
+                container.kill()
             except Exception:
                 pass
-            return f"Error: sandbox timed out after {TIMEOUT}s."
-        except FileNotFoundError:
-            return "Error: docker not found — is the Docker CLI installed and the socket mounted?"
-        except Exception as exc:
-            return f"Error running sandbox: {exc}"
+            return f"Error: sandbox failed: {exc}"
+        finally:
+            try:
+                container.remove(force=True)
+            except Exception:
+                pass
 
-    return "".join(lines).strip() or "(no output)"
+    output = "".join(lines).strip() or "(no output)"
+    result = {"content": output}
+    if artifact_paths:
+        result["_artifact_paths"] = artifact_paths
+    return result

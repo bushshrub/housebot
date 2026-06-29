@@ -9,7 +9,6 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     git \
     curl \
     ca-certificates \
-    docker.io \
     && rm -rf /var/lib/apt/lists/*
 
 # Copy jellyfin-mcp binary from builder stage

@@ -5,6 +5,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     git \
     curl \
     ca-certificates \
+    build-essential \
     && rm -rf /var/lib/apt/lists/*
 
 RUN npm install -g @anthropic-ai/claude-code opencode-ai
@@ -13,6 +14,12 @@ RUN npm install -g @anthropic-ai/claude-code opencode-ai
 RUN useradd -m -s /bin/bash sandbox \
     && mkdir -p /workspace \
     && chown -R sandbox:sandbox /workspace
+
+# Install Rust toolchain for the sandbox user
+USER sandbox
+RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain stable
+ENV PATH="/home/sandbox/.cargo/bin:${PATH}"
+USER root
 
 COPY entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh

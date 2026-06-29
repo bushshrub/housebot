@@ -6,6 +6,7 @@ import logging
 import os
 from collections.abc import Awaitable, Callable
 from contextlib import AsyncExitStack
+from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any
 
@@ -25,6 +26,13 @@ logger = logging.getLogger(__name__)
 LLM_BASE_URL = os.getenv("LLM_BASE_URL", "http://server-slop:8080/v1")
 LLM_MODEL = os.getenv("LLM_MODEL", "gemma-4-12b-qat-q4kxl")
 LLM_API_KEY = os.getenv("LLM_API_KEY", "not-required")
+OWNER_ID = int(os.getenv("OWNER_DISCORD_ID", "0"))
+
+
+@dataclass
+class AgentResult:
+    text: str
+    artifact_paths: list[str] = field(default_factory=list)
 
 
 class Agent:
@@ -62,7 +70,7 @@ class Agent:
         username: str,
         text: str,
         image_data: list[dict[str, str]] | None = None,
-    ) -> str:
+    ) -> AgentResult:
         user_memory = await memory.load(user_id)
         past_messages = await history.load(user_id)
 
@@ -91,6 +99,7 @@ class Agent:
 
         turn_messages: list[dict[str, Any]] = []
         final_text = ""
+        all_artifacts: list[str] = []
 
         while True:
             kwargs: dict[str, Any] = {
@@ -133,10 +142,12 @@ class Agent:
                 tool_result_messages = await self._execute_tools(
                     msg.tool_calls, user_id, user_memory
                 )
-                # Check for memory updates before appending
+                # Check for memory updates and artifacts before appending
                 for trm in tool_result_messages:
                     if "_memory_update" in trm:
                         user_memory = trm.pop("_memory_update")
+                    if "_artifact_paths" in trm:
+                        all_artifacts.extend(trm.pop("_artifact_paths"))
                 messages.extend(tool_result_messages)
                 turn_messages.extend(tool_result_messages)
             else:
@@ -144,7 +155,7 @@ class Agent:
                 break
 
         await history.append_turn(user_id, new_user_message, turn_messages)
-        return final_text or "(no response)"
+        return AgentResult(text=final_text or "(no response)", artifact_paths=all_artifacts)
 
     async def _build_tools(self) -> list[dict[str, Any]]:
         tools: list[dict[str, Any]] = []
@@ -174,6 +185,7 @@ class Agent:
         async def run_one(tc: Any) -> dict[str, Any]:
             try:
                 args = json.loads(tc.function.arguments)
+                logger.info("Tool call: %s args=%s", tc.function.name, json.dumps(args)[:200])
                 result = await self._dispatch_tool(tc.function.name, args, user_id, user_memory)
                 if isinstance(result, dict) and "_memory_update" in result:
                     return {
@@ -181,6 +193,13 @@ class Agent:
                         "tool_call_id": tc.id,
                         "content": result["content"],
                         "_memory_update": result["_memory_update"],
+                    }
+                if isinstance(result, dict) and "_artifact_paths" in result:
+                    return {
+                        "role": "tool",
+                        "tool_call_id": tc.id,
+                        "content": result["content"],
+                        "_artifact_paths": result["_artifact_paths"],
                     }
                 content = str(result)
                 if content.startswith("Error:"):
@@ -263,6 +282,7 @@ def _mcp_server_configs() -> list[tuple[str, StdioServerParameters]]:
             "jellyfin",
             StdioServerParameters(
                 command="jellyfin-mcp",
+                args=["--read-only"],
                 env={"JELLYFIN_URL": jellyfin_url, "JELLYFIN_API_KEY": jellyfin_key},
             ),
         ))
@@ -285,7 +305,7 @@ Current user: {username} (ID: {user_id}){memory_section}
 
 ## Tools
 - ddg__* — Search the web via DuckDuckGo for current information.
-- jellyfin__* — Query the household Jellyfin media server for movies, shows, music.
+- jellyfin__* — Query the household Jellyfin media server for movies, shows, music. READ ONLY — only call get_* / search_* / list_* methods; never call create_*, add_*, remove_*, update_*, revoke_*, restore_*, or any mutating action.
 - run_opencode — Run a coding task using OpenCode + local llama.cpp model. Good for quick scripts and general work.
 - run_claude_code — Run a coding task using Claude Code (Anthropic). Best for complex, multi-file, or reasoning-heavy work.
 - update_memory — Persist important facts about the current user for future conversations. Write the full memory each time.
@@ -294,7 +314,8 @@ Current user: {username} (ID: {user_id}){memory_section}
 - Be conversational and friendly.
 - Use Jellyfin tools for any media questions before guessing.
 - Use DuckDuckGo for factual or current-events questions.
-- Use run_opencode for coding tasks.
+- For any coding request that goes beyond a trivial one-liner, immediately use run_opencode — don't write code yourself. If in doubt, use it.
+- run_claude_code is only available to the bot owner (user ID: {OWNER_ID}). Do not offer or attempt it for any other user.
 - Update memory when you learn something worth remembering.
 - Keep responses concise unless asked for detail.
 - If a tool returns an error message (starts with "Error:"), quote it exactly — do not paraphrase or soften it.

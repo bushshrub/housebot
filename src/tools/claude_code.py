@@ -42,5 +42,5 @@ async def run_claude_code(
     repo_url: str | None = None,
     files: dict[str, str] | None = None,
     on_progress: ProgressCallback | None = None,
-) -> str:
+) -> dict[str, Any] | str:
     return await _call_sandbox("claude", task, repo_url, files, model=model, on_progress=on_progress)

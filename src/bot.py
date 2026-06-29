@@ -3,19 +3,24 @@
 import base64
 import logging
 import os
+import re
+import time
 from io import BytesIO
 
 import aiohttp
 import discord
 from discord import ui
 
-from .agent import Agent
+from .agent import Agent, AgentResult
+from .github_issues import GitHubIssueReporter
 
 logger = logging.getLogger(__name__)
 
 MAX_MESSAGE_LENGTH = 2000
 OWNER_ID = int(os.getenv("OWNER_DISCORD_ID", "0"))
+_ANSI_RE = re.compile(r"\x1b\[[0-9;]*[a-zA-Z]|\x1b[()][AB012]|\r")
 APPROVAL_TIMEOUT = 300  # seconds
+CONVERSATION_IDLE_TIMEOUT = int(os.getenv("CONVERSATION_IDLE_TIMEOUT", "1800"))  # 30 min default
 
 
 class ApprovalView(ui.View):
@@ -45,6 +50,9 @@ class HouseBot(discord.Client):
         intents.message_content = True
         super().__init__(intents=intents)
         self.agent = Agent()
+        self.issue_reporter = GitHubIssueReporter()
+        # Maps (channel_id, user_id) -> last activity timestamp
+        self._active_conversations: dict[tuple[int, int], float] = {}
 
     async def setup_hook(self) -> None:
         await self.agent.start()
@@ -57,11 +65,38 @@ class HouseBot(discord.Client):
     async def on_ready(self) -> None:
         logger.info("Logged in as %s (ID: %s)", self.user, self.user.id)
 
+    def _is_in_active_conversation(self, channel_id: int, user_id: int) -> bool:
+        key = (channel_id, user_id)
+        last_active = self._active_conversations.get(key)
+        if last_active is None:
+            return False
+        if time.monotonic() - last_active > CONVERSATION_IDLE_TIMEOUT:
+            del self._active_conversations[key]
+            return False
+        return True
+
+    def _mark_conversation_active(self, channel_id: int, user_id: int) -> None:
+        self._active_conversations[(channel_id, user_id)] = time.monotonic()
+
+    async def _report_error(self, exc: Exception, message: discord.Message) -> None:
+        """File a GitHub issue for exc and DM the owner a link if configured."""
+        context = {
+            "user": f"{message.author.display_name} ({message.author.id})",
+            "channel": str(message.channel),
+            "message_preview": message.content[:200],
+        }
+        issue_url = await self.issue_reporter.report_error(exc, context=context)
+        if issue_url and OWNER_ID:
+            try:
+                owner = await self.fetch_user(OWNER_ID)
+                await owner.send(f"🐛 Auto-filed error report: {issue_url}")
+            except Exception:
+                logger.exception("Failed to DM owner about error issue")
+
     async def on_message(self, message: discord.Message) -> None:
-        if message.author.bot:
+        if message.author == self.user:
             return
 
-        # Respond to DMs always; in guilds only when mentioned or replied to
         is_dm = isinstance(message.channel, discord.DMChannel)
         is_mentioned = self.user in message.mentions
         is_reply_to_bot = (
@@ -71,7 +106,13 @@ class HouseBot(discord.Client):
             and message.reference.resolved.author == self.user
         )
 
-        if not (is_dm or is_mentioned or is_reply_to_bot):
+        # Check if bot's name appears in the message text (case-insensitive)
+        bot_name = (self.user.display_name if self.user else "").lower()
+        is_name_mentioned = bool(bot_name) and bot_name in message.content.lower()
+
+        is_active = self._is_in_active_conversation(message.channel.id, message.author.id)
+
+        if not (is_dm or is_mentioned or is_reply_to_bot or is_name_mentioned or is_active):
             return
 
         text = message.content
@@ -90,7 +131,10 @@ class HouseBot(discord.Client):
 
         async def on_progress(line: str) -> None:
             nonlocal progress_msg, progress_lines
-            progress_lines.append(line)
+            clean = _ANSI_RE.sub("", line)
+            if not clean.strip():
+                return
+            progress_lines.append(clean)
             tail = "".join(progress_lines[-50:])[-1800:]
             content = f"⚙️ **Working...**\n```\n{tail}\n```"
             try:
@@ -105,6 +149,9 @@ class HouseBot(discord.Client):
             if not OWNER_ID:
                 logger.warning("OWNER_DISCORD_ID not set — auto-approving %s", tool_name)
                 return True
+            if message.author.id != OWNER_ID:
+                logger.info("User %s is not the owner — denying %s", message.author.id, tool_name)
+                return False
             try:
                 owner = await self.fetch_user(OWNER_ID)
                 task_preview = args.get("task", "")[:400]
@@ -132,15 +179,16 @@ class HouseBot(discord.Client):
         try:
             async with message.channel.typing():
                 try:
-                    response_text = await self.agent.run(
+                    result: AgentResult = await self.agent.run(
                         user_id=message.author.id,
                         username=message.author.display_name,
                         text=text or "(no text)",
                         image_data=image_data or None,
                     )
-                except Exception:
+                except Exception as exc:
                     logger.exception("Agent error for user %s", message.author.id)
-                    response_text = "Sorry, something went wrong. Please try again."
+                    result = AgentResult(text="Sorry, something went wrong. Please try again.")
+                    await self._report_error(exc, message)
         finally:
             self.agent.approval_hook = None
             self.agent.progress_hook = None
@@ -151,7 +199,16 @@ class HouseBot(discord.Client):
             except discord.HTTPException:
                 pass
 
-        await _send_long_message(message.channel, response_text, reply_to=message)
+        self._mark_conversation_active(message.channel.id, message.author.id)
+        await _send_long_message(message.channel, result.text, reply_to=message)
+
+        # Upload artifacts
+        for path in result.artifact_paths:
+            try:
+                file = discord.File(path)
+                await message.channel.send(f"📦 **Artifacts:** `{os.path.basename(path)}`", file=file)
+            except Exception:
+                logger.exception("Failed to upload artifact %s", path)
 
 
 async def _extract_images(message: discord.Message) -> list[dict[str, str]]:
