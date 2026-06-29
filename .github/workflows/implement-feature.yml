@@ -11,8 +11,9 @@ on:
         type: number
       opencode_config:
         description: >
-          OpenCode model config as JSON.
-          Example: {"model":"gemma-4-12b","base_url":"http://host:8080/v1"}
+          OpenCode model config as JSON. Overrides default
+          (deepseek-v4-flash-free via opencode.ai/zen/v1).
+          Example: {"model":"gemma-4-12b","api":"http://host:8080/v1"}
         required: false
         type: string
 
@@ -112,7 +113,8 @@ jobs:
             }
 
             const merged = {
-              model: 'claude-sonnet-4-20250514',
+              model: 'deepseek-v4-flash-free',
+              api: 'https://opencode.ai/zen/v1',
               max_tokens: 65536,
               ...config,
             };
