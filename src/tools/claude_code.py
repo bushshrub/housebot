@@ -2,6 +2,8 @@
 
 from typing import Any
 
+import sentry_sdk
+
 from .opencode import ProgressCallback, _call_sandbox
 
 TOOL_DEFINITION: dict[str, Any] = {
@@ -43,4 +45,9 @@ async def run_claude_code(
     files: dict[str, str] | None = None,
     on_progress: ProgressCallback | None = None,
 ) -> dict[str, Any] | str:
-    return await _call_sandbox("claude", task, repo_url, files, model=model, on_progress=on_progress)
+    with sentry_sdk.start_span(op="sandbox.run", name="run_claude_code") as span:
+        span.set_data("task", task[:500])
+        span.set_data("model", model or "default")
+        span.set_data("repo_url", repo_url or "")
+        span.set_data("seed_files", list(files.keys()) if files else [])
+        return await _call_sandbox("claude", task, repo_url, files, model=model, on_progress=on_progress)

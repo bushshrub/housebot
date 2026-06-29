@@ -149,38 +149,45 @@ class Agent:
 
             text_stream_hook = _text_stream_hook_cv.get()
 
-            try:
-                stream = await self._client.chat.completions.create(**kwargs)  # type: ignore[arg-type]
-            except openai.APIConnectionError:
-                logger.warning("LLM API connection error, retrying once...")
-                stream = await self._client.chat.completions.create(**kwargs)  # type: ignore[arg-type]
-
             # Accumulate streaming response
             content_parts: list[str] = []
             tool_calls_acc: dict[int, dict[str, Any]] = {}
             finish_reason: str | None = None
 
-            async for chunk in stream:
-                ch_choice = chunk.choices[0]
-                if ch_choice.finish_reason:
-                    finish_reason = ch_choice.finish_reason
-                delta = ch_choice.delta
-                if delta.content:
-                    content_parts.append(delta.content)
-                    if text_stream_hook:
-                        await text_stream_hook("".join(content_parts))
-                if delta.tool_calls:
-                    for tc_delta in delta.tool_calls:
-                        idx = tc_delta.index
-                        if idx not in tool_calls_acc:
-                            tool_calls_acc[idx] = {"id": "", "name": "", "arguments": ""}
-                        if tc_delta.id:
-                            tool_calls_acc[idx]["id"] = tc_delta.id
-                        if tc_delta.function:
-                            if tc_delta.function.name:
-                                tool_calls_acc[idx]["name"] += tc_delta.function.name
-                            if tc_delta.function.arguments:
-                                tool_calls_acc[idx]["arguments"] += tc_delta.function.arguments
+            with sentry_sdk.start_span(op="llm.completion", name=f"LLM/{LLM_MODEL}") as llm_span:
+                llm_span.set_data("model", LLM_MODEL)
+                llm_span.set_data("message_count", len(messages))
+                llm_span.set_data("has_tools", bool(tools))
+                try:
+                    stream = await self._client.chat.completions.create(**kwargs)  # type: ignore[arg-type]
+                except openai.APIConnectionError:
+                    logger.warning("LLM API connection error, retrying once...")
+                    stream = await self._client.chat.completions.create(**kwargs)  # type: ignore[arg-type]
+
+                async for chunk in stream:
+                    ch_choice = chunk.choices[0]
+                    if ch_choice.finish_reason:
+                        finish_reason = ch_choice.finish_reason
+                    delta = ch_choice.delta
+                    if delta.content:
+                        content_parts.append(delta.content)
+                        if text_stream_hook:
+                            await text_stream_hook("".join(content_parts))
+                    if delta.tool_calls:
+                        for tc_delta in delta.tool_calls:
+                            idx = tc_delta.index
+                            if idx not in tool_calls_acc:
+                                tool_calls_acc[idx] = {"id": "", "name": "", "arguments": ""}
+                            if tc_delta.id:
+                                tool_calls_acc[idx]["id"] = tc_delta.id
+                            if tc_delta.function:
+                                if tc_delta.function.name:
+                                    tool_calls_acc[idx]["name"] += tc_delta.function.name
+                                if tc_delta.function.arguments:
+                                    tool_calls_acc[idx]["arguments"] += tc_delta.function.arguments
+
+                llm_span.set_data("finish_reason", finish_reason)
+                llm_span.set_data("tool_calls_count", len(tool_calls_acc))
 
             content_text = "".join(content_parts) or None
             reconstructed_tool_calls = [
@@ -217,9 +224,12 @@ class Agent:
                 break
 
             if finish_reason == "tool_calls":
-                tool_result_messages = await self._execute_tools(
-                    reconstructed_tool_calls, user_id, user_memory
-                )
+                tool_names = [tc.function.name for tc in reconstructed_tool_calls]
+                with sentry_sdk.start_span(op="agent.tools", name=f"tools/{','.join(tool_names)}") as tools_span:
+                    tools_span.set_data("tools", tool_names)
+                    tool_result_messages = await self._execute_tools(
+                        reconstructed_tool_calls, user_id, user_memory
+                    )
                 # Check for memory updates and artifacts before appending
                 for trm in tool_result_messages:
                     if isinstance(trm, BaseException):

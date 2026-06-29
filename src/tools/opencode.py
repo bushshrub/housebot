@@ -11,6 +11,7 @@ from typing import Any
 
 import docker
 import docker.errors
+import sentry_sdk
 
 SANDBOX_IMAGE = os.getenv("SANDBOX_IMAGE", "house-chatbot-sandbox:latest")
 DOCKER_NETWORK = os.getenv("DOCKER_NETWORK", "house-chatbot_default")
@@ -65,7 +66,12 @@ async def run_opencode(
     files: dict[str, str] | None = None,
     on_progress: ProgressCallback | None = None,
 ) -> dict[str, Any] | str:
-    return await _call_sandbox("opencode", task, repo_url, files, model=model, on_progress=on_progress)
+    with sentry_sdk.start_span(op="sandbox.run", name="run_opencode") as span:
+        span.set_data("task", task[:500])
+        span.set_data("model", model or "default")
+        span.set_data("repo_url", repo_url or "")
+        span.set_data("seed_files", list(files.keys()) if files else [])
+        return await _call_sandbox("opencode", task, repo_url, files, model=model, on_progress=on_progress)
 
 
 async def _call_sandbox(

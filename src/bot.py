@@ -277,115 +277,135 @@ class HouseBot(discord.Client):
         if not text and not message.attachments:
             return
 
-        image_data = await _extract_images(message)
+        with sentry_sdk.new_scope() as scope:
+            scope.set_user({"id": str(message.author.id), "username": message.author.display_name})
+            scope.set_context("discord", {
+                "message_id": str(message.id),
+                "channel": getattr(message.channel, "name", "DM"),
+                "channel_id": str(message.channel.id),
+                "content": text[:1000],
+                "author": message.author.display_name,
+                "author_id": str(message.author.id),
+                "has_attachments": bool(message.attachments),
+            })
 
-        progress_msg: discord.Message | None = None
-        progress_lines: list[str] = []
-        _last_stream_edit: float = 0.0
-        _STREAM_EDIT_INTERVAL = 1.2  # seconds between Discord edits while streaming
+            image_data = await _extract_images(message)
 
-        async def on_tool_called(tool_name: str, args: dict) -> None:
-            nonlocal progress_msg, progress_lines
-            hint = _tool_hint(tool_name, args)
-            content = f"⚙️ **`{tool_name}`**{hint}"
-            try:
-                if progress_msg is None:
-                    progress_msg = await message.reply(content, mention_author=False)
-                else:
-                    await progress_msg.edit(content=content)
-            except discord.HTTPException:
-                pass
-            # Reset log lines so sandbox output starts fresh below the tool header
-            progress_lines.clear()
+            progress_msg: discord.Message | None = None
+            progress_lines: list[str] = []
+            _last_stream_edit: float = 0.0
+            _STREAM_EDIT_INTERVAL = 1.2  # seconds between Discord edits while streaming
 
-        async def on_progress(line: str) -> None:
-            nonlocal progress_msg, progress_lines
-            clean = _ANSI_RE.sub("", line)
-            if not clean.strip():
-                return
-            progress_lines.append(clean)
-            tail = "".join(progress_lines[-50:])[-1800:]
-            content = f"⚙️ **Working...**\n```\n{tail}\n```"
-            try:
-                if progress_msg is None:
-                    progress_msg = await message.reply(content, mention_author=False)
-                else:
-                    await progress_msg.edit(content=content)
-            except discord.HTTPException:
-                pass
+            async def on_tool_called(tool_name: str, args: dict) -> None:
+                nonlocal progress_msg, progress_lines
+                hint = _tool_hint(tool_name, args)
+                content = f"⚙️ **`{tool_name}`**{hint}"
+                try:
+                    if progress_msg is None:
+                        progress_msg = await message.reply(content, mention_author=False)
+                    else:
+                        await progress_msg.edit(content=content)
+                except discord.HTTPException:
+                    pass
+                # Reset log lines so sandbox output starts fresh below the tool header
+                progress_lines.clear()
 
-        async def on_text_stream(partial_text: str) -> None:
-            nonlocal progress_msg, _last_stream_edit
-            now = asyncio.get_event_loop().time()
-            if now - _last_stream_edit < _STREAM_EDIT_INTERVAL:
-                return
-            _last_stream_edit = now
-            chunks = _split_text(partial_text)
-            content = chunks[0] + ("…" if len(chunks) > 1 else "")
-            try:
-                if progress_msg is None:
-                    progress_msg = await message.reply(content, mention_author=False)
-                else:
-                    await progress_msg.edit(content=content)
-            except discord.HTTPException:
-                pass
+            async def on_progress(line: str) -> None:
+                nonlocal progress_msg, progress_lines
+                clean = _ANSI_RE.sub("", line)
+                if not clean.strip():
+                    return
+                progress_lines.append(clean)
+                tail = "".join(progress_lines[-50:])[-1800:]
+                content = f"⚙️ **Working...**\n```\n{tail}\n```"
+                try:
+                    if progress_msg is None:
+                        progress_msg = await message.reply(content, mention_author=False)
+                    else:
+                        await progress_msg.edit(content=content)
+                except discord.HTTPException:
+                    pass
 
-        async def on_approval(tool_name: str, args: dict) -> bool:
-            if not OWNER_ID:
-                logger.warning("OWNER_DISCORD_ID not set — auto-approving %s", tool_name)
-                return True
-            if message.author.id != OWNER_ID:
-                logger.info("User %s is not the owner — denying %s", message.author.id, tool_name)
-                return False
-            try:
-                owner = await self.fetch_user(OWNER_ID)
-                task_preview = args.get("task", "")[:400]
-                view = ApprovalView()
-                approval_msg = await owner.send(
-                    f"**Approval required: `{tool_name}`**\n"
-                    f"Requested by **{message.author.display_name}**\n\n"
-                    f"**Task:**\n```\n{task_preview}\n```",
-                    view=view,
-                )
-                await view.wait()
-                if view.approved is None:
-                    await approval_msg.edit(
-                        content=f"⏰ Approval timed out — `{tool_name}` was not run.",
-                        view=None,
-                    )
+            async def on_text_stream(partial_text: str) -> None:
+                nonlocal progress_msg, _last_stream_edit
+                now = asyncio.get_event_loop().time()
+                if now - _last_stream_edit < _STREAM_EDIT_INTERVAL:
+                    return
+                _last_stream_edit = now
+                chunks = _split_text(partial_text)
+                content = chunks[0] + ("…" if len(chunks) > 1 else "")
+                try:
+                    if progress_msg is None:
+                        progress_msg = await message.reply(content, mention_author=False)
+                    else:
+                        await progress_msg.edit(content=content)
+                except discord.HTTPException:
+                    pass
+
+            async def on_approval(tool_name: str, args: dict) -> bool:
+                if not OWNER_ID:
+                    logger.warning("OWNER_DISCORD_ID not set — auto-approving %s", tool_name)
+                    return True
+                if message.author.id != OWNER_ID:
+                    logger.info("User %s is not the owner — denying %s", message.author.id, tool_name)
                     return False
-                return view.approved
-            except Exception:
-                logger.exception("Approval flow failed for %s — denying", tool_name)
-                return False
+                try:
+                    owner = await self.fetch_user(OWNER_ID)
+                    task_preview = args.get("task", "")[:400]
+                    view = ApprovalView()
+                    approval_msg = await owner.send(
+                        f"**Approval required: `{tool_name}`**\n"
+                        f"Requested by **{message.author.display_name}**\n\n"
+                        f"**Task:**\n```\n{task_preview}\n```",
+                        view=view,
+                    )
+                    await view.wait()
+                    if view.approved is None:
+                        await approval_msg.edit(
+                            content=f"⏰ Approval timed out — `{tool_name}` was not run.",
+                            view=None,
+                        )
+                        return False
+                    return view.approved
+                except Exception:
+                    logger.exception("Approval flow failed for %s — denying", tool_name)
+                    return False
 
-        async with message.channel.typing():
-            try:
-                result: AgentResult = await self.agent.run(
-                    user_id=message.author.id,
-                    username=message.author.display_name,
-                    text=text or "(no text)",
-                    image_data=image_data or None,
-                    approval_hook=on_approval,
-                    progress_hook=on_progress,
-                    tool_notification_hook=on_tool_called,
-                    text_stream_hook=on_text_stream,
-                )
-            except Exception as exc:
-                logger.exception("Agent error for user %s", message.author.id)
-                result = AgentResult(text="Sorry, something went wrong. Please try again.")
-                self._report_error(exc)
+            with sentry_sdk.start_transaction(
+                op="discord.message",
+                name=f"on_message/{message.author.display_name}",
+            ) as txn:
+                txn.set_tag("author_id", str(message.author.id))
+                txn.set_data("content", text[:500])
+                txn.set_data("channel", getattr(message.channel, "name", "DM"))
 
-        self._mark_conversation_active(message.channel.id, message.author.id)
-        await _send_final_message(message.channel, result.text, progress_msg=progress_msg, reply_to=message)
+                async with message.channel.typing():
+                    try:
+                        result: AgentResult = await self.agent.run(
+                            user_id=message.author.id,
+                            username=message.author.display_name,
+                            text=text or "(no text)",
+                            image_data=image_data or None,
+                            approval_hook=on_approval,
+                            progress_hook=on_progress,
+                            tool_notification_hook=on_tool_called,
+                            text_stream_hook=on_text_stream,
+                        )
+                    except Exception as exc:
+                        logger.exception("Agent error for user %s", message.author.id)
+                        result = AgentResult(text="Sorry, something went wrong. Please try again.")
+                        self._report_error(exc)
 
-        # Upload artifacts
-        for path in result.artifact_paths:
-            try:
-                file = discord.File(path)
-                await message.channel.send(f"📦 **Artifacts:** `{os.path.basename(path)}`", file=file)
-            except Exception:
-                logger.exception("Failed to upload artifact %s", path)
+                self._mark_conversation_active(message.channel.id, message.author.id)
+                await _send_final_message(message.channel, result.text, progress_msg=progress_msg, reply_to=message)
+
+                # Upload artifacts
+                for path in result.artifact_paths:
+                    try:
+                        file = discord.File(path)
+                        await message.channel.send(f"📦 **Artifacts:** `{os.path.basename(path)}`", file=file)
+                    except Exception:
+                        logger.exception("Failed to upload artifact %s", path)
 
 
 def _tool_hint(tool_name: str, args: dict) -> str:
