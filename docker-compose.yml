@@ -1,0 +1,24 @@
+services:
+  house-chatbot:
+    build: .
+    restart: unless-stopped
+    env_file: .env
+    volumes:
+      - ./data:/app/data
+      - /var/run/docker.sock:/var/run/docker.sock
+    environment:
+      - DATA_DIR=/app/data
+      - SANDBOX_IMAGE=house-chatbot-sandbox:latest
+      - DOCKER_NETWORK=house-chatbot_default
+      - SANDBOX_TIMEOUT=${SANDBOX_TIMEOUT:-300}
+      - LLAMA_CPP_URL=${LLAMA_CPP_URL}
+      - LLAMA_CPP_MODEL=${LLAMA_CPP_MODEL}
+      - CC_OAUTH_TOKEN=${CC_OAUTH_TOKEN:-}
+
+  # Build-only — never started automatically, just ensures the image is built.
+  # Run: docker compose build sandbox
+  sandbox:
+    build: ./sandbox
+    image: house-chatbot-sandbox:latest
+    profiles:
+      - sandbox
