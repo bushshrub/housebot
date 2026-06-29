@@ -45,7 +45,7 @@ jobs:
 
       - name: Reject non-owner
         if: steps.check.outputs.allowed == 'false'
-        uses: actions/github-script@v7
+        uses: actions/github-script@v8
         with:
           script: |
             await github.rest.issues.createComment({
@@ -73,17 +73,17 @@ jobs:
       pull-requests: write
       issues: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v5
         with:
-          node-version: '20'
+          node-version: '22'
 
       - name: Install OpenCode
-        run: npm install -g @anthropic-ai/opencode
+        run: npm install -g opencode-ai
 
       - name: Fetch issue + write config + prompt
-        uses: actions/github-script@v7
+        uses: actions/github-script@v8
         with:
           script: |
             const issueNumber = ${{ needs.check-permission.outputs.issue_number }};
