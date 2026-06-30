@@ -292,14 +292,20 @@ class HouseBot(discord.Client):
             and message.reference.resolved.author == self.user
         )
 
-        # Check if bot's name appears in the message text (case-insensitive)
-        bot_name = (self.user.display_name if self.user else "").lower()
-        is_name_mentioned = bool(bot_name) and bot_name in message.content.lower()
-
         is_active = self._is_in_active_conversation(message.channel.id, message.author.id)
         session_expired = not is_active and self._pop_timed_out_conversation(message.channel.id, message.author.id)
 
-        if not (is_dm or is_mentioned or is_reply_to_bot or is_name_mentioned or is_active):
+        if is_dm:
+            # DMs always go through
+            pass
+        elif is_mentioned or is_reply_to_bot:
+            # Explicit mention or reply in a server channel starts/continues a conversation
+            pass
+        elif is_active:
+            # Continuation of an existing conversation in a server channel
+            pass
+        else:
+            # Not a DM, not mentioned, not replying, no active conversation — ignore
             return
 
         if message.id in self._processing_messages or message.id in self._responded_messages:
