@@ -1,11 +1,10 @@
 """Tests for pure helpers in src/bot.py."""
 
 import os
-import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
 import discord
 
-from src.bot import _split_text, _tool_hint, _send_final_message, _send_long_message, _extract_code_files
+from src.bot import _split_text, _tool_hint, _send_final_message, _extract_code_files
 
 
 class TestSplitText:
@@ -94,10 +93,14 @@ class TestSendFinalMessage:
         reply_to = AsyncMock()
         reply_to.reply = AsyncMock()
         progress_msg = AsyncMock()
-        progress_msg.edit = AsyncMock(side_effect=discord.HTTPException(MagicMock(), "fail"))
+        progress_msg.edit = AsyncMock(
+            side_effect=discord.HTTPException(MagicMock(), "fail")
+        )
         progress_msg.delete = AsyncMock()
 
-        await _send_final_message(channel, "hello", progress_msg=progress_msg, reply_to=reply_to)
+        await _send_final_message(
+            channel, "hello", progress_msg=progress_msg, reply_to=reply_to
+        )
 
         reply_to.reply.assert_called_once_with("hello", mention_author=False)
 
@@ -179,7 +182,6 @@ class TestExtractCodeFiles:
 
 class TestRedactSecrets:
     def test_known_secret_is_redacted(self):
-        import importlib
         import src.bot as bot_module
 
         fake_token = "super-secret-token-abc123xyz"
@@ -240,6 +242,7 @@ class TestConversationState:
     def test_mark_active_and_query(self):
         state = self._make_state()
         import time
+
         state[(999, 222)] = time.monotonic()
         assert (999, 222) in state
         assert state[(999, 222)] > 0

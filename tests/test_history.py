@@ -1,7 +1,5 @@
 """Tests for src/history.py."""
 
-import json
-import os
 import pytest
 
 import src.history as history_mod

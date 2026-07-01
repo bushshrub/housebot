@@ -1,0 +1,116 @@
+name: Rollback HomeLab
+
+# Manual rollback to a specific image tag or the last saved checkpoint.
+#
+# Usage:
+#   image_tag  — leave blank to use the checkpoint saved before the last deploy.
+#                Supply e.g. "sha-abc1234" or "v1.2.3" for an explicit target.
+#   reason     — free-text audit note visible in the Actions run log.
+
+on:
+  workflow_dispatch:
+    inputs:
+      image_tag:
+        description: "Image tag to roll back to (e.g. sha-abc1234, v1.2.3). Leave blank for last checkpoint."
+        required: false
+        type: string
+      reason:
+        description: "Reason for rollback (audit log)"
+        required: false
+        type: string
+
+concurrency:
+  group: homelab-deploy
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  rollback:
+    name: "Rollback to ${{ inputs.image_tag || 'checkpoint' }}"
+    runs-on: ubuntu-latest
+    environment: homelab
+
+    steps:
+      - name: Log rollback intent
+        run: |
+          echo "Rollback requested by : ${{ github.actor }}"
+          echo "Target tag            : ${{ inputs.image_tag || '(checkpoint)' }}"
+          echo "Reason                : ${{ inputs.reason || '(not specified)' }}"
+          echo "Run                   : ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+
+      - name: Execute rollback via SSH
+        uses: appleboy/ssh-action@v1.2.0
+        with:
+          host: ${{ secrets.HOMELAB_HOST }}
+          username: ${{ secrets.HOMELAB_USER }}
+          key: ${{ secrets.HOMELAB_SSH_KEY }}
+          port: ${{ secrets.HOMELAB_SSH_PORT || '22' }}
+          command_timeout: 10m
+          script_stop: true
+          script: |
+            set -euo pipefail
+            cd "${{ secrets.HOMELAB_DEPLOY_PATH }}"
+
+            IMAGE_BASE="ghcr.io/bushshrub/housebot"
+            TAG="${{ inputs.image_tag }}"
+
+            if [ -n "$TAG" ]; then
+                TARGET="${IMAGE_BASE}:${TAG}"
+                printf '=== Rolling back to explicit tag: %s ===\n' "$TARGET"
+                docker pull "$TARGET"
+                docker tag "$TARGET" "${IMAGE_BASE}:latest"
+            else
+                CHECKPOINT=$(cat .prev_image_digest 2>/dev/null || echo "")
+                if [ -z "$CHECKPOINT" ] || [ "$CHECKPOINT" = "none" ]; then
+                    echo "ERROR: No saved checkpoint and no image_tag provided" >&2
+                    exit 1
+                fi
+                printf '=== Rolling back to checkpoint: %s ===\n' "$CHECKPOINT"
+                docker pull "$CHECKPOINT"
+                docker tag "$CHECKPOINT" "${IMAGE_BASE}:latest"
+            fi
+
+            echo "=== Restarting service ==="
+            docker compose up -d --remove-orphans
+            sleep 15
+
+            if ! docker compose ps | grep -q "Up"; then
+                echo "ERROR: Container not running after rollback" >&2
+                docker compose logs --tail=50 >&2
+                exit 1
+            fi
+
+            docker compose ps
+            echo "=== Rollback complete ==="
+
+      - name: Notify Discord
+        if: always()
+        env:
+          WEBHOOK: ${{ secrets.DISCORD_DEPLOY_WEBHOOK }}
+          STATUS: ${{ job.status }}
+        run: |
+          [ -z "$WEBHOOK" ] && exit 0
+          if [ "$STATUS" = "success" ]; then
+            COLOR=3066993
+            TITLE="Rollback succeeded"
+          else
+            COLOR=15158332
+            TITLE="Rollback FAILED"
+          fi
+          RUN_URL="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          curl -s -f -X POST "$WEBHOOK" \
+            -H "Content-Type: application/json" \
+            -d "{
+              \"embeds\": [{
+                \"title\": \"${TITLE}\",
+                \"color\": ${COLOR},
+                \"fields\": [
+                  {\"name\": \"Target\", \"value\": \"${{ inputs.image_tag || 'checkpoint' }}\", \"inline\": true},
+                  {\"name\": \"Actor\",  \"value\": \"${{ github.actor }}\", \"inline\": true},
+                  {\"name\": \"Reason\", \"value\": \"${{ inputs.reason || '(none)' }}\", \"inline\": false},
+                  {\"name\": \"Run\",    \"value\": \"[View logs](${RUN_URL})\", \"inline\": false}
+                ]
+              }]
+            }"

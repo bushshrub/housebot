@@ -50,4 +50,6 @@ async def run_claude_code(
         span.set_data("model", model or "default")
         span.set_data("repo_url", repo_url or "")
         span.set_data("seed_files", list(files.keys()) if files else [])
-        return await _call_sandbox("claude", task, repo_url, files, model=model, on_progress=on_progress)
+        return await _call_sandbox(
+            "claude", task, repo_url, files, model=model, on_progress=on_progress
+        )

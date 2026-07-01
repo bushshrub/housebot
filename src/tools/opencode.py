@@ -15,7 +15,9 @@ import sentry_sdk
 SANDBOX_IMAGE = os.getenv("SANDBOX_IMAGE", "house-chatbot-sandbox:latest")
 DOCKER_NETWORK = os.getenv("DOCKER_NETWORK", "house-chatbot_default")
 TIMEOUT = int(os.getenv("SANDBOX_TIMEOUT", "300"))
-SANDBOX_CPU_QUOTA = int(os.getenv("SANDBOX_CPU_QUOTA", "200000"))  # 2 CPUs (100000 = 1 CPU per 100ms period)
+SANDBOX_CPU_QUOTA = int(
+    os.getenv("SANDBOX_CPU_QUOTA", "200000")
+)  # 2 CPUs (100000 = 1 CPU per 100ms period)
 SANDBOX_MEM_LIMIT = os.getenv("SANDBOX_MEM_LIMIT", "1g")
 ARTIFACTS_DIR = os.getenv("ARTIFACTS_DIR", "data/artifacts")
 MAX_ARTIFACT_SIZE_MB = int(os.getenv("MAX_ARTIFACT_SIZE_MB", "24"))
@@ -76,7 +78,9 @@ async def run_opencode(
         span.set_data("model", model or "default")
         span.set_data("repo_url", repo_url or "")
         span.set_data("seed_files", list(files.keys()) if files else [])
-        return await _call_sandbox("opencode", task, repo_url, files, model=model, on_progress=on_progress)
+        return await _call_sandbox(
+            "opencode", task, repo_url, files, model=model, on_progress=on_progress
+        )
 
 
 async def _call_sandbox(
@@ -88,7 +92,17 @@ async def _call_sandbox(
     on_progress: ProgressCallback | None = None,
 ) -> dict[str, Any] | str:
     loop = asyncio.get_running_loop()
-    return await loop.run_in_executor(None, _run_container_sync, agent, task, repo_url, files, model, on_progress, loop)
+    return await loop.run_in_executor(
+        None,
+        _run_container_sync,
+        agent,
+        task,
+        repo_url,
+        files,
+        model,
+        on_progress,
+        loop,
+    )
 
 
 def _make_workspace() -> tuple[str, str]:
@@ -102,11 +116,16 @@ def _make_workspace() -> tuple[str, str]:
     container_path = os.path.join(CONTAINER_DATA_DIR, "workspaces", uid)
     os.makedirs(container_path, exist_ok=True)
     os.chmod(container_path, 0o777)
-    host_path = os.path.join(HOST_DATA_DIR, "workspaces", uid) if HOST_DATA_DIR else container_path
+    host_path = (
+        os.path.join(HOST_DATA_DIR, "workspaces", uid)
+        if HOST_DATA_DIR
+        else container_path
+    )
     return host_path, container_path
 
 
 _EXCLUDED_FILENAMES = {"opencode.json", ".opencode.json"}
+
 
 def _collect_workspace_files(container_workspace: str) -> list[str]:
     """Copy individual workspace files into ARTIFACTS_DIR; return their paths."""
@@ -195,7 +214,9 @@ def _run_container_sync(
                 line = raw.decode(errors="replace")
                 lines.append(line)
                 if on_progress:
-                    asyncio.run_coroutine_threadsafe(on_progress(line), loop).result(timeout=5)
+                    asyncio.run_coroutine_threadsafe(on_progress(line), loop).result(
+                        timeout=5
+                    )
 
             result = container.wait(timeout=TIMEOUT)
             exit_code = result.get("StatusCode", -1)

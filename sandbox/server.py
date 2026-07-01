@@ -36,8 +36,8 @@ def _check_key(key: str = Security(_key_header)) -> None:
 
 class RunRequest(BaseModel):
     task: str
-    agent: str = "opencode"          # "opencode" | "claude"
-    model: Optional[str] = None      # claude model override
+    agent: str = "opencode"  # "opencode" | "claude"
+    model: Optional[str] = None  # claude model override
     repo_url: Optional[str] = None
     files: Optional[dict[str, str]] = None
 
@@ -45,6 +45,7 @@ class RunRequest(BaseModel):
 @app.post("/run")
 async def run(req: RunRequest, _: None = Security(_check_key)) -> StreamingResponse:
     """Stream output as newline-delimited JSON: {"line": "..."} per line, then {"done": true, "exit_code": N}."""
+
     async def generate():
         async with _lock:
             async for chunk in _run_stream(req):
@@ -65,12 +66,14 @@ async def list_files(_: None = Security(_check_key)) -> dict:
     files = sorted(
         str(p.relative_to(WORKSPACE))
         for p in WORKSPACE.rglob("*")
-        if p.is_file() and not any(part.startswith(".") for part in p.parts[len(WORKSPACE.parts):])
+        if p.is_file()
+        and not any(part.startswith(".") for part in p.parts[len(WORKSPACE.parts) :])
     )
     return {"files": files}
 
 
 # ── internals ────────────────────────────────────────────────────────────────
+
 
 def _clear_workspace() -> None:
     """Clear workspace contents without removing the directory itself
@@ -88,13 +91,21 @@ async def _run_stream(req: RunRequest) -> AsyncIterator[dict]:
     if req.repo_url:
         yield {"line": f"Cloning {req.repo_url}...\n"}
         proc = await asyncio.create_subprocess_exec(
-            "git", "clone", "--depth=1", req.repo_url, str(WORKSPACE),
+            "git",
+            "clone",
+            "--depth=1",
+            req.repo_url,
+            str(WORKSPACE),
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )
         _, stderr = await asyncio.wait_for(proc.communicate(), timeout=120)
         if proc.returncode != 0:
-            yield {"done": True, "exit_code": proc.returncode, "error": f"git clone failed: {stderr.decode().strip()}"}
+            yield {
+                "done": True,
+                "exit_code": proc.returncode,
+                "error": f"git clone failed: {stderr.decode().strip()}",
+            }
             return
 
     for rel, content in (req.files or {}).items():
@@ -119,25 +130,34 @@ async def _stream_opencode(task: str) -> AsyncIterator[dict]:
 
     cfg_path = WORKSPACE / "opencode.json"
     if not cfg_path.exists():
-        cfg_path.write_text(json.dumps({
-            "model": f"llamacpp/{LLAMA_CPP_MODEL}",
-            "provider": {
-                "llamacpp": {
-                    "npm": "@ai-sdk/openai-compatible",
-                    "name": "llama.cpp",
-                    "options": {
-                        "baseURL": LLAMA_CPP_URL.rstrip("/") + "/v1",
-                        "apiKey": "not-required",
+        cfg_path.write_text(
+            json.dumps(
+                {
+                    "model": f"llamacpp/{LLAMA_CPP_MODEL}",
+                    "provider": {
+                        "llamacpp": {
+                            "npm": "@ai-sdk/openai-compatible",
+                            "name": "llama.cpp",
+                            "options": {
+                                "baseURL": LLAMA_CPP_URL.rstrip("/") + "/v1",
+                                "apiKey": "not-required",
+                            },
+                            "models": {
+                                LLAMA_CPP_MODEL: {
+                                    "name": f"llama.cpp / {LLAMA_CPP_MODEL}"
+                                },
+                            },
+                        }
                     },
-                    "models": {
-                        LLAMA_CPP_MODEL: {"name": f"llama.cpp / {LLAMA_CPP_MODEL}"},
-                    },
-                }
-            },
-        }, indent=2))
+                },
+                indent=2,
+            )
+        )
 
     async for chunk in _stream_exec(
-        "opencode", "run", task,
+        "opencode",
+        "run",
+        task,
         f"--model=llamacpp/{LLAMA_CPP_MODEL}",
         "--dangerously-skip-permissions",
     ):

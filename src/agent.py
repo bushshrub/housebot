@@ -13,20 +13,29 @@ from typing import Any
 
 import openai
 import sentry_sdk
-from openai import AsyncOpenAI
 from mcp import ClientSession
 from mcp.client.stdio import StdioServerParameters, stdio_client
+from openai import AsyncOpenAI
+
+from . import history, memory, skills
+from .tools.claude_code import TOOL_DEFINITION as CLAUDE_CODE_TOOL, run_claude_code
+from .tools.feature_request import (
+    TOOL_DEFINITION as FEATURE_REQUEST_TOOL,
+    create_feature_request,
+)
+from .tools.opencode import (
+    TOOL_DEFINITION as OPENCODE_TOOL,
+    ProgressCallback,
+    run_opencode,
+)
 
 # Per-task hook context so concurrent message handling doesn't trample
 _approval_hook_cv = contextvars.ContextVar("approval_hook", default=None)
 _progress_hook_cv = contextvars.ContextVar("progress_hook", default=None)
-_tool_notification_hook_cv = contextvars.ContextVar("tool_notification_hook", default=None)
+_tool_notification_hook_cv = contextvars.ContextVar(
+    "tool_notification_hook", default=None
+)
 _text_stream_hook_cv = contextvars.ContextVar("text_stream_hook", default=None)
-
-from . import history, memory, skills
-from .tools.opencode import TOOL_DEFINITION as OPENCODE_TOOL, ProgressCallback, run_opencode
-from .tools.claude_code import TOOL_DEFINITION as CLAUDE_CODE_TOOL, run_claude_code
-from .tools.feature_request import TOOL_DEFINITION as FEATURE_REQUEST_TOOL, create_feature_request
 
 ApprovalCallback = Callable[[str, dict[str, Any]], Awaitable[bool]]
 ToolNotificationCallback = Callable[[str, dict[str, Any]], Awaitable[None]]
@@ -107,13 +116,14 @@ class Agent:
         if summary:
             now = datetime.now().strftime("%Y-%m-%d %H:%M")
             updated_memory = (
-                (user_memory.rstrip() + "\n\n" if user_memory.strip() else "")
-                + f"## Conversation summary ({now})\n{summary}"
-            )
+                user_memory.rstrip() + "\n\n" if user_memory.strip() else ""
+            ) + f"## Conversation summary ({now})\n{summary}"
             await memory.save(user_id, updated_memory)
 
         await history.clear(user_id)
-        logger.info("New session started for user %s — history cleared, summary saved", user_id)
+        logger.info(
+            "New session started for user %s — history cleared, summary saved", user_id
+        )
 
     async def run(
         self,
@@ -160,18 +170,22 @@ class Agent:
         if image_data:
             content: list[dict[str, Any]] = []
             for img in image_data:
-                content.append({
-                    "type": "image_url",
-                    "image_url": {
-                        "url": f"data:{img['media_type']};base64,{img['data']}"
-                    },
-                })
+                content.append(
+                    {
+                        "type": "image_url",
+                        "image_url": {
+                            "url": f"data:{img['media_type']};base64,{img['data']}"
+                        },
+                    }
+                )
             content.append({"type": "text", "text": text})
             new_user_message: dict[str, Any] = {"role": "user", "content": content}
         else:
             new_user_message = {"role": "user", "content": text}
 
-        messages: list[dict[str, Any]] = [system_message] + past_messages + [new_user_message]
+        messages: list[dict[str, Any]] = (
+            [system_message] + past_messages + [new_user_message]
+        )
         tools = await self._build_tools()
 
         turn_messages: list[dict[str, Any]] = []
@@ -196,7 +210,9 @@ class Agent:
             tool_calls_acc: dict[int, dict[str, Any]] = {}
             finish_reason: str | None = None
 
-            with sentry_sdk.start_span(op="llm.completion", name=f"LLM/{LLM_MODEL}") as llm_span:
+            with sentry_sdk.start_span(
+                op="llm.completion", name=f"LLM/{LLM_MODEL}"
+            ) as llm_span:
                 llm_span.set_data("model", LLM_MODEL)
                 llm_span.set_data("message_count", len(messages))
                 llm_span.set_data("has_tools", bool(tools))
@@ -219,32 +235,55 @@ class Agent:
                         for tc_delta in delta.tool_calls:
                             idx = tc_delta.index
                             if idx not in tool_calls_acc:
-                                tool_calls_acc[idx] = {"id": "", "name": "", "arguments": ""}
+                                tool_calls_acc[idx] = {
+                                    "id": "",
+                                    "name": "",
+                                    "arguments": "",
+                                }
                             if tc_delta.id:
                                 tool_calls_acc[idx]["id"] = tc_delta.id
                             if tc_delta.function:
                                 if tc_delta.function.name:
-                                    tool_calls_acc[idx]["name"] += tc_delta.function.name
+                                    tool_calls_acc[idx]["name"] += (
+                                        tc_delta.function.name
+                                    )
                                 if tc_delta.function.arguments:
-                                    tool_calls_acc[idx]["arguments"] += tc_delta.function.arguments
+                                    tool_calls_acc[idx]["arguments"] += (
+                                        tc_delta.function.arguments
+                                    )
 
                 llm_span.set_data("finish_reason", finish_reason)
                 llm_span.set_data("tool_calls_count", len(tool_calls_acc))
 
             content_text = "".join(content_parts) or None
-            reconstructed_tool_calls = [
-                type("ToolCall", (), {
-                    "id": v["id"],
-                    "function": type("Fn", (), {
-                        "name": v["name"],
-                        "arguments": v["arguments"],
-                    })(),
-                })()
-                for v in (tool_calls_acc[i] for i in sorted(tool_calls_acc))
-            ] if tool_calls_acc else None
+            reconstructed_tool_calls = (
+                [
+                    type(
+                        "ToolCall",
+                        (),
+                        {
+                            "id": v["id"],
+                            "function": type(
+                                "Fn",
+                                (),
+                                {
+                                    "name": v["name"],
+                                    "arguments": v["arguments"],
+                                },
+                            )(),
+                        },
+                    )()
+                    for v in (tool_calls_acc[i] for i in sorted(tool_calls_acc))
+                ]
+                if tool_calls_acc
+                else None
+            )
 
             # Serialize assistant message for history and next API call
-            assistant_message: dict[str, Any] = {"role": "assistant", "content": content_text}
+            assistant_message: dict[str, Any] = {
+                "role": "assistant",
+                "content": content_text,
+            }
             if reconstructed_tool_calls:
                 assistant_message["tool_calls"] = [
                     {
@@ -267,7 +306,9 @@ class Agent:
 
             if finish_reason == "tool_calls":
                 tool_names = [tc.function.name for tc in reconstructed_tool_calls]
-                with sentry_sdk.start_span(op="agent.tools", name=f"tools/{','.join(tool_names)}") as tools_span:
+                with sentry_sdk.start_span(
+                    op="agent.tools", name=f"tools/{','.join(tool_names)}"
+                ) as tools_span:
                     tools_span.set_data("tools", tool_names)
                     tool_result_messages = await self._execute_tools(
                         reconstructed_tool_calls, user_id, user_memory
@@ -281,7 +322,9 @@ class Agent:
                     if "_artifact_paths" in trm:
                         all_artifacts.extend(trm.pop("_artifact_paths"))
                 messages.extend(m for m in tool_result_messages if isinstance(m, dict))
-                turn_messages.extend(m for m in tool_result_messages if isinstance(m, dict))
+                turn_messages.extend(
+                    m for m in tool_result_messages if isinstance(m, dict)
+                )
             else:
                 final_text = content_text or ""
                 break
@@ -290,7 +333,9 @@ class Agent:
             await history.append_turn(user_id, new_user_message, turn_messages)
         except Exception:
             logger.exception("Failed to save history for user %s", user_id)
-        return AgentResult(text=final_text or "(no response)", artifact_paths=all_artifacts)
+        return AgentResult(
+            text=final_text or "(no response)", artifact_paths=all_artifacts
+        )
 
     async def _build_tools(self) -> list[dict[str, Any]]:
         tools: list[dict[str, Any]] = []
@@ -298,11 +343,13 @@ class Agent:
             try:
                 result = await session.list_tools()
                 for tool in result.tools:
-                    tools.append(_to_openai_tool(
-                        name=f"{name}__{tool.name}",
-                        description=tool.description or "",
-                        parameters=tool.inputSchema,
-                    ))
+                    tools.append(
+                        _to_openai_tool(
+                            name=f"{name}__{tool.name}",
+                            description=tool.description or "",
+                            parameters=tool.inputSchema,
+                        )
+                    )
             except Exception:
                 logger.exception("Failed to list tools for MCP server '%s'", name)
 
@@ -322,11 +369,15 @@ class Agent:
         async def run_one(tc: Any) -> dict[str, Any]:
             try:
                 args = json.loads(tc.function.arguments)
-                logger.info("Tool call: %s args=%s", tc.function.name, json.dumps(args)[:200])
+                logger.info(
+                    "Tool call: %s args=%s", tc.function.name, json.dumps(args)[:200]
+                )
                 tool_notification_hook = _tool_notification_hook_cv.get()
                 if tool_notification_hook is not None:
                     await tool_notification_hook(tc.function.name, args)
-                result = await self._dispatch_tool(tc.function.name, args, user_id, user_memory)
+                result = await self._dispatch_tool(
+                    tc.function.name, args, user_id, user_memory
+                )
                 if isinstance(result, dict) and "_memory_update" in result:
                     return {
                         "role": "tool",
@@ -343,7 +394,9 @@ class Agent:
                     }
                 content = str(result)
                 if content.startswith("Error:"):
-                    logger.error("Tool '%s' returned error: %s", tc.function.name, content)
+                    logger.error(
+                        "Tool '%s' returned error: %s", tc.function.name, content
+                    )
                     sentry_sdk.capture_message(
                         f"Tool error [{tc.function.name}]: {content}",
                         level="error",
@@ -363,10 +416,17 @@ class Agent:
                 }
 
         try:
-            return list(await asyncio.gather(*[run_one(tc) for tc in tool_calls], return_exceptions=True))
+            return list(
+                await asyncio.gather(
+                    *[run_one(tc) for tc in tool_calls], return_exceptions=True
+                )
+            )
         except Exception as exc:
             logger.exception("asyncio.gather in _execute_tools failed")
-            return [{"role": "tool", "tool_call_id": tc.id, "content": f"Error: {exc}"} for tc in tool_calls]
+            return [
+                {"role": "tool", "tool_call_id": tc.id, "content": f"Error: {exc}"}
+                for tc in tool_calls
+            ]
 
     async def _dispatch_tool(
         self,
@@ -449,6 +509,7 @@ class Agent:
 
 # ── helpers ──────────────────────────────────────────────────────────────────
 
+
 def _mcp_server_configs() -> list[tuple[str, StdioServerParameters]]:
     configs: list[tuple[str, StdioServerParameters]] = []
 
@@ -457,16 +518,23 @@ def _mcp_server_configs() -> list[tuple[str, StdioServerParameters]]:
     jellyfin_url = os.getenv("JELLYFIN_URL")
     jellyfin_key = os.getenv("JELLYFIN_API_KEY")
     if jellyfin_url and jellyfin_key:
-        configs.append((
-            "jellyfin",
-            StdioServerParameters(
-                command="jellyfin-mcp",
-                args=["--read-only"],
-                env={"JELLYFIN_URL": jellyfin_url, "JELLYFIN_API_KEY": jellyfin_key},
-            ),
-        ))
+        configs.append(
+            (
+                "jellyfin",
+                StdioServerParameters(
+                    command="jellyfin-mcp",
+                    args=["--read-only"],
+                    env={
+                        "JELLYFIN_URL": jellyfin_url,
+                        "JELLYFIN_API_KEY": jellyfin_key,
+                    },
+                ),
+            )
+        )
     else:
-        logger.warning("JELLYFIN_URL or JELLYFIN_API_KEY not set — Jellyfin MCP disabled")
+        logger.warning(
+            "JELLYFIN_URL or JELLYFIN_API_KEY not set — Jellyfin MCP disabled"
+        )
 
     return configs
 
@@ -479,7 +547,9 @@ def _build_system_prompt(
 ) -> str:
     now = datetime.now().strftime("%Y-%m-%d %H:%M")
     memory_section = (
-        f"\n\n## Your memory about {username}\n{user_memory}" if user_memory.strip() else ""
+        f"\n\n## Your memory about {username}\n{user_memory}"
+        if user_memory.strip()
+        else ""
     )
     if all_skills:
         skill_lines = "\n".join(
@@ -561,7 +631,9 @@ def _run_skill_tool() -> dict[str, Any]:
     }
 
 
-def _to_openai_tool(name: str, description: str, parameters: dict[str, Any]) -> dict[str, Any]:
+def _to_openai_tool(
+    name: str, description: str, parameters: dict[str, Any]
+) -> dict[str, Any]:
     """Wrap a tool definition in OpenAI's function-calling envelope."""
     return {
         "type": "function",
