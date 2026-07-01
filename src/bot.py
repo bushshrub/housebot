@@ -350,13 +350,15 @@ class HouseBot(discord.Client):
 
             progress_msg: discord.Message | None = None
             progress_lines: list[str] = []
-            _last_stream_edit: float = 0.0
-            _STREAM_EDIT_INTERVAL = 1.2  # seconds between Discord edits while streaming
+            _last_edit: float = 0.0
+            _EDIT_INTERVAL = 1.2  # seconds between Discord edits to the same message (Discord rate-limits ~5 edits/5s per message)
 
-            async def on_tool_called(tool_name: str, args: dict) -> None:
-                nonlocal progress_msg, progress_lines
-                hint = _tool_hint(tool_name, args)
-                content = f"⚙️ **`{tool_name}`**{hint}"
+            async def _update_progress(content: str, *, force: bool = False) -> None:
+                nonlocal progress_msg, _last_edit
+                now = asyncio.get_event_loop().time()
+                if not force and progress_msg is not None and now - _last_edit < _EDIT_INTERVAL:
+                    return
+                _last_edit = now
                 try:
                     if progress_msg is None:
                         progress_msg = await message.reply(content, mention_author=False)
@@ -364,40 +366,30 @@ class HouseBot(discord.Client):
                         await progress_msg.edit(content=content)
                 except discord.HTTPException:
                     pass
+
+            async def on_tool_called(tool_name: str, args: dict) -> None:
+                nonlocal progress_lines
+                hint = _tool_hint(tool_name, args)
+                content = f"⚙️ **`{tool_name}`**{hint}"
+                # Force the edit through: this marks a new phase and should never be dropped by throttling
+                await _update_progress(content, force=True)
                 # Reset log lines so sandbox output starts fresh below the tool header
                 progress_lines.clear()
 
             async def on_progress(line: str) -> None:
-                nonlocal progress_msg, progress_lines
+                nonlocal progress_lines
                 clean = _ANSI_RE.sub("", line)
                 if not clean.strip():
                     return
                 progress_lines.append(clean)
                 tail = "".join(progress_lines[-50:])[-1800:]
                 content = f"⚙️ **Working...**\n```\n{tail}\n```"
-                try:
-                    if progress_msg is None:
-                        progress_msg = await message.reply(content, mention_author=False)
-                    else:
-                        await progress_msg.edit(content=content)
-                except discord.HTTPException:
-                    pass
+                await _update_progress(content)
 
             async def on_text_stream(partial_text: str) -> None:
-                nonlocal progress_msg, _last_stream_edit
-                now = asyncio.get_event_loop().time()
-                if now - _last_stream_edit < _STREAM_EDIT_INTERVAL:
-                    return
-                _last_stream_edit = now
                 chunks = _split_text(partial_text)
                 content = chunks[0] + ("…" if len(chunks) > 1 else "")
-                try:
-                    if progress_msg is None:
-                        progress_msg = await message.reply(content, mention_author=False)
-                    else:
-                        await progress_msg.edit(content=content)
-                except discord.HTTPException:
-                    pass
+                await _update_progress(content)
 
             async def on_approval(tool_name: str, args: dict) -> bool:
                 if not OWNER_ID:
