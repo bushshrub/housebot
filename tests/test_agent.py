@@ -1,7 +1,5 @@
 """Tests for pure helpers in src/agent.py."""
 
-import pytest
-
 from src.agent import _build_system_prompt, _flatten_tool, _to_openai_tool
 
 
@@ -27,7 +25,9 @@ class TestBuildSystemPrompt:
         assert "Your memory" not in prompt
 
     def test_skills_section_lists_skills(self):
-        skills = {"greet": {"name": "greet", "description": "Say hello", "prompt": "..."}}
+        skills = {
+            "greet": {"name": "greet", "description": "Say hello", "prompt": "..."}
+        }
         prompt = _build_system_prompt("Alice", 123, "", all_skills=skills)
         assert "greet" in prompt
         assert "Say hello" in prompt

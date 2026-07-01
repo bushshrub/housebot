@@ -24,6 +24,7 @@ logger = logging.getLogger(__name__)
 # Built once at import time so we don't re-scan os.environ on every message.
 _SECRET_PATTERNS: list[re.Pattern[str]] = []
 
+
 def _build_secret_patterns() -> None:
     _secret_keywords = ("token", "key", "secret", "password", "dsn", "api_key", "oauth")
     for name, value in os.environ.items():
@@ -31,6 +32,7 @@ def _build_secret_patterns() -> None:
             continue
         if any(kw in name.lower() for kw in _secret_keywords):
             _SECRET_PATTERNS.append(re.compile(re.escape(value)))
+
 
 _build_secret_patterns()
 
@@ -48,18 +50,36 @@ _CODE_FENCE_RE = re.compile(r"```(\w*)\n(.*?)(?:```|$)", re.DOTALL)
 CODE_FILE_THRESHOLD = 800  # extract code blocks larger than this many characters
 
 _LANG_EXT_MAP = {
-    "python": ".py", "py": ".py",
-    "javascript": ".js", "js": ".js",
-    "typescript": ".ts", "ts": ".ts",
-    "bash": ".sh", "sh": ".sh", "shell": ".sh",
-    "rust": ".rs", "go": ".go", "java": ".java",
-    "c": ".c", "cpp": ".cpp", "c++": ".cpp",
-    "html": ".html", "css": ".css", "json": ".json",
-    "yaml": ".yaml", "yml": ".yml", "toml": ".toml",
-    "sql": ".sql", "ruby": ".rb", "rb": ".rb", "php": ".php",
+    "python": ".py",
+    "py": ".py",
+    "javascript": ".js",
+    "js": ".js",
+    "typescript": ".ts",
+    "ts": ".ts",
+    "bash": ".sh",
+    "sh": ".sh",
+    "shell": ".sh",
+    "rust": ".rs",
+    "go": ".go",
+    "java": ".java",
+    "c": ".c",
+    "cpp": ".cpp",
+    "c++": ".cpp",
+    "html": ".html",
+    "css": ".css",
+    "json": ".json",
+    "yaml": ".yaml",
+    "yml": ".yml",
+    "toml": ".toml",
+    "sql": ".sql",
+    "ruby": ".rb",
+    "rb": ".rb",
+    "php": ".php",
 }
 APPROVAL_TIMEOUT = 300  # seconds
-CONVERSATION_IDLE_TIMEOUT = int(os.getenv("CONVERSATION_IDLE_TIMEOUT", "300"))  # 5 min default
+CONVERSATION_IDLE_TIMEOUT = int(
+    os.getenv("CONVERSATION_IDLE_TIMEOUT", "300")
+)  # 5 min default
 
 
 class ApprovalView(ui.View):
@@ -68,9 +88,13 @@ class ApprovalView(ui.View):
         self.approved: bool | None = None
 
     @ui.button(label="Approve", style=discord.ButtonStyle.success, emoji="✅")
-    async def approve(self, interaction: discord.Interaction, button: ui.Button) -> None:
+    async def approve(
+        self, interaction: discord.Interaction, button: ui.Button
+    ) -> None:
         self.approved = True
-        await interaction.response.edit_message(content="✅ Approved — running now.", view=None)
+        await interaction.response.edit_message(
+            content="✅ Approved — running now.", view=None
+        )
         self.stop()
 
     @ui.button(label="Deny", style=discord.ButtonStyle.danger, emoji="❌")
@@ -89,13 +113,17 @@ class FileIssueView(ui.View):
         self.file_issue: bool | None = None
 
     @ui.button(label="File Issue", style=discord.ButtonStyle.primary, emoji="🐛")
-    async def file_issue_btn(self, interaction: discord.Interaction, button: ui.Button) -> None:
+    async def file_issue_btn(
+        self, interaction: discord.Interaction, button: ui.Button
+    ) -> None:
         self.file_issue = True
         await interaction.response.edit_message(content="Filing issue...", view=None)
         self.stop()
 
     @ui.button(label="Dismiss", style=discord.ButtonStyle.secondary, emoji="✖️")
-    async def dismiss(self, interaction: discord.Interaction, button: ui.Button) -> None:
+    async def dismiss(
+        self, interaction: discord.Interaction, button: ui.Button
+    ) -> None:
         self.file_issue = False
         await interaction.response.edit_message(content="Dismissed.", view=None)
         self.stop()
@@ -143,7 +171,10 @@ class HouseBot(discord.Client):
         """Remove an expired conversation entry and return True if one existed."""
         key = (channel_id, user_id)
         last_active = self._active_conversations.get(key)
-        if last_active is not None and time.monotonic() - last_active > CONVERSATION_IDLE_TIMEOUT:
+        if (
+            last_active is not None
+            and time.monotonic() - last_active > CONVERSATION_IDLE_TIMEOUT
+        ):
             del self._active_conversations[key]
             return True
         return False
@@ -155,7 +186,9 @@ class HouseBot(discord.Client):
         sentry_event_id = sentry_sdk.capture_exception(exc)
         logger.info("Captured error in Sentry (event: %s)", sentry_event_id)
         if OWNER_ID and sentry_event_id:
-            asyncio.get_running_loop().create_task(self._notify_owner_of_error(sentry_event_id))
+            asyncio.get_running_loop().create_task(
+                self._notify_owner_of_error(sentry_event_id)
+            )
 
     async def _notify_owner_of_error(self, sentry_event_id: str) -> None:
         try:
@@ -167,11 +200,15 @@ class HouseBot(discord.Client):
             )
             await view.wait()
             if view.file_issue:
-                issue_url = await self.issue_reporter.create_error_issue(sentry_event_id)
+                issue_url = await self.issue_reporter.create_error_issue(
+                    sentry_event_id
+                )
                 if issue_url:
                     await owner.send(f"Issue filed: {issue_url}")
                 else:
-                    await owner.send("Failed to file issue (GitHub reporter not configured?).")
+                    await owner.send(
+                        "Failed to file issue (GitHub reporter not configured?)."
+                    )
         except Exception:
             logger.exception("Failed to DM owner about error")
 
@@ -213,7 +250,9 @@ class HouseBot(discord.Client):
             skill_name = parts[2].lower()
             skill = await skills.get(skill_name)
             if skill is None:
-                await message.reply(f"Skill `{skill_name}` not found.", mention_author=False)
+                await message.reply(
+                    f"Skill `{skill_name}` not found.", mention_author=False
+                )
                 return
             prompt_preview = skill["prompt"][:500]
             if len(skill["prompt"]) > 500:
@@ -255,19 +294,27 @@ class HouseBot(discord.Client):
                 "created_by": str(message.author.id),
             }
             await skills.save_skill(skill)
-            await message.reply(f"✅ Skill **{skill_name}** saved.", mention_author=False)
+            await message.reply(
+                f"✅ Skill **{skill_name}** saved.", mention_author=False
+            )
             return
 
         if subcmd == "delete":
             if len(parts) < 3:
-                await message.reply("Usage: `!skill delete <name>`", mention_author=False)
+                await message.reply(
+                    "Usage: `!skill delete <name>`", mention_author=False
+                )
                 return
             skill_name = parts[2].lower()
             deleted = await skills.delete_skill(skill_name)
             if deleted:
-                await message.reply(f"✅ Skill **{skill_name}** deleted.", mention_author=False)
+                await message.reply(
+                    f"✅ Skill **{skill_name}** deleted.", mention_author=False
+                )
             else:
-                await message.reply(f"Skill `{skill_name}` not found.", mention_author=False)
+                await message.reply(
+                    f"Skill `{skill_name}` not found.", mention_author=False
+                )
             return
 
         await message.reply(
@@ -292,8 +339,12 @@ class HouseBot(discord.Client):
             and message.reference.resolved.author == self.user
         )
 
-        is_active = self._is_in_active_conversation(message.channel.id, message.author.id)
-        session_expired = not is_active and self._pop_timed_out_conversation(message.channel.id, message.author.id)
+        is_active = self._is_in_active_conversation(
+            message.channel.id, message.author.id
+        )
+        session_expired = not is_active and self._pop_timed_out_conversation(
+            message.channel.id, message.author.id
+        )
 
         if is_dm:
             # DMs always go through
@@ -308,7 +359,10 @@ class HouseBot(discord.Client):
             # Not a DM, not mentioned, not replying, no active conversation — ignore
             return
 
-        if message.id in self._processing_messages or message.id in self._responded_messages:
+        if (
+            message.id in self._processing_messages
+            or message.id in self._responded_messages
+        ):
             logger.warning("Duplicate on_message for %s — skipping", message.id)
             return
         self._processing_messages.add(message.id)
@@ -318,12 +372,16 @@ class HouseBot(discord.Client):
             self._processing_messages.discard(message.id)
             self._responded_messages.append(message.id)
 
-    async def _handle_message(self, message: discord.Message, *, session_expired: bool = False) -> None:
+    async def _handle_message(
+        self, message: discord.Message, *, session_expired: bool = False
+    ) -> None:
         text = message.content
         if self.user:
-            text = text.replace(f"<@{self.user.id}>", "").replace(
-                f"<@!{self.user.id}>", ""
-            ).strip()
+            text = (
+                text.replace(f"<@{self.user.id}>", "")
+                .replace(f"<@!{self.user.id}>", "")
+                .strip()
+            )
 
         if not text and not message.attachments:
             return
@@ -332,19 +390,26 @@ class HouseBot(discord.Client):
             try:
                 await self.agent.start_new_session(message.author.id)
             except Exception:
-                logger.exception("Failed to start new session for user %s", message.author.id)
+                logger.exception(
+                    "Failed to start new session for user %s", message.author.id
+                )
 
         with sentry_sdk.new_scope() as scope:
-            scope.set_user({"id": str(message.author.id), "username": message.author.display_name})
-            scope.set_context("discord", {
-                "message_id": str(message.id),
-                "channel": getattr(message.channel, "name", "DM"),
-                "channel_id": str(message.channel.id),
-                "content": text[:1000],
-                "author": message.author.display_name,
-                "author_id": str(message.author.id),
-                "has_attachments": bool(message.attachments),
-            })
+            scope.set_user(
+                {"id": str(message.author.id), "username": message.author.display_name}
+            )
+            scope.set_context(
+                "discord",
+                {
+                    "message_id": str(message.id),
+                    "channel": getattr(message.channel, "name", "DM"),
+                    "channel_id": str(message.channel.id),
+                    "content": text[:1000],
+                    "author": message.author.display_name,
+                    "author_id": str(message.author.id),
+                    "has_attachments": bool(message.attachments),
+                },
+            )
 
             image_data = await _extract_images(message)
 
@@ -359,7 +424,9 @@ class HouseBot(discord.Client):
                 content = f"⚙️ **`{tool_name}`**{hint}"
                 try:
                     if progress_msg is None:
-                        progress_msg = await message.reply(content, mention_author=False)
+                        progress_msg = await message.reply(
+                            content, mention_author=False
+                        )
                     else:
                         await progress_msg.edit(content=content)
                 except discord.HTTPException:
@@ -377,7 +444,9 @@ class HouseBot(discord.Client):
                 content = f"⚙️ **Working...**\n```\n{tail}\n```"
                 try:
                     if progress_msg is None:
-                        progress_msg = await message.reply(content, mention_author=False)
+                        progress_msg = await message.reply(
+                            content, mention_author=False
+                        )
                     else:
                         await progress_msg.edit(content=content)
                 except discord.HTTPException:
@@ -393,7 +462,9 @@ class HouseBot(discord.Client):
                 content = chunks[0] + ("…" if len(chunks) > 1 else "")
                 try:
                     if progress_msg is None:
-                        progress_msg = await message.reply(content, mention_author=False)
+                        progress_msg = await message.reply(
+                            content, mention_author=False
+                        )
                     else:
                         await progress_msg.edit(content=content)
                 except discord.HTTPException:
@@ -401,10 +472,16 @@ class HouseBot(discord.Client):
 
             async def on_approval(tool_name: str, args: dict) -> bool:
                 if not OWNER_ID:
-                    logger.warning("OWNER_DISCORD_ID not set — auto-approving %s", tool_name)
+                    logger.warning(
+                        "OWNER_DISCORD_ID not set — auto-approving %s", tool_name
+                    )
                     return True
                 if message.author.id != OWNER_ID:
-                    logger.info("User %s is not the owner — denying %s", message.author.id, tool_name)
+                    logger.info(
+                        "User %s is not the owner — denying %s",
+                        message.author.id,
+                        tool_name,
+                    )
                     return False
                 try:
                     owner = await self.fetch_user(OWNER_ID)
@@ -450,19 +527,30 @@ class HouseBot(discord.Client):
                         )
                     except Exception as exc:
                         logger.exception("Agent error for user %s", message.author.id)
-                        result = AgentResult(text="Sorry, something went wrong. Please try again.")
+                        result = AgentResult(
+                            text="Sorry, something went wrong. Please try again."
+                        )
                         self._report_error(exc)
 
                 self._mark_conversation_active(message.channel.id, message.author.id)
                 safe_text = _redact_secrets(result.text)
                 display_text, code_files = _extract_code_files(safe_text)
-                await _send_final_message(message.channel, display_text, progress_msg=progress_msg, reply_to=message)
+                await _send_final_message(
+                    message.channel,
+                    display_text,
+                    progress_msg=progress_msg,
+                    reply_to=message,
+                )
 
                 # Upload extracted code files (redacted)
                 for filename, content in code_files:
                     try:
-                        safe_content = _redact_secrets(content.decode(errors="replace")).encode()
-                        await message.channel.send(file=discord.File(BytesIO(safe_content), filename=filename))
+                        safe_content = _redact_secrets(
+                            content.decode(errors="replace")
+                        ).encode()
+                        await message.channel.send(
+                            file=discord.File(BytesIO(safe_content), filename=filename)
+                        )
                     except Exception:
                         logger.exception("Failed to upload code file %s", filename)
 
@@ -470,7 +558,9 @@ class HouseBot(discord.Client):
                 for path in result.artifact_paths:
                     try:
                         raw_name = os.path.basename(path)
-                        display_name = raw_name.split("_", 1)[1] if "_" in raw_name else raw_name
+                        display_name = (
+                            raw_name.split("_", 1)[1] if "_" in raw_name else raw_name
+                        )
                         with open(path, "rb") as f:
                             raw = f.read()
                         safe = _redact_secrets(raw.decode(errors="replace")).encode()
@@ -503,7 +593,11 @@ async def _extract_images(message: discord.Message) -> list[dict[str, str]]:
     image_extensions = {".png", ".jpg", ".jpeg", ".gif", ".webp"}
 
     for attachment in message.attachments:
-        ext = "." + attachment.filename.rsplit(".", 1)[-1].lower() if "." in attachment.filename else ""
+        ext = (
+            "." + attachment.filename.rsplit(".", 1)[-1].lower()
+            if "." in attachment.filename
+            else ""
+        )
         if ext not in image_extensions:
             continue
 
@@ -520,10 +614,12 @@ async def _extract_images(message: discord.Message) -> list[dict[str, str]]:
             async with aiohttp.ClientSession() as http:
                 async with http.get(attachment.url) as resp:
                     data = await resp.read()
-            images.append({
-                "media_type": media_type,
-                "data": base64.b64encode(data).decode(),
-            })
+            images.append(
+                {
+                    "media_type": media_type,
+                    "data": base64.b64encode(data).decode(),
+                }
+            )
         except Exception:
             logger.exception("Failed to download attachment %s", attachment.filename)
 

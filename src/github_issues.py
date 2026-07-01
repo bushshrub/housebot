@@ -22,7 +22,9 @@ class GitHubIssueReporter:
 
     @property
     def is_configured(self) -> bool:
-        return bool(self.app_id and self.private_key and self.installation_id and self.repo)
+        return bool(
+            self.app_id and self.private_key and self.installation_id and self.repo
+        )
 
     def _generate_jwt(self) -> str:
         now = int(time.time())

@@ -14,6 +14,7 @@ sentry_sdk.init(
 
 def main() -> None:
     from src.bot import run
+
     run()
 
 
