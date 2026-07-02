@@ -275,8 +275,20 @@ class HouseBot(discord.Client):
             mention_author=False,
         )
 
+    async def _handle_reset_command(self, message: discord.Message) -> None:
+        await self.agent.start_new_session(message.author.id)
+        self._active_conversations.pop((message.channel.id, message.author.id), None)
+        await message.reply(
+            "Session reset. Your conversation history has been summarized and cleared.",
+            mention_author=False,
+        )
+
     async def on_message(self, message: discord.Message) -> None:
         if message.author == self.user:
+            return
+
+        if message.content.strip() == "!reset":
+            await self._handle_reset_command(message)
             return
 
         if message.content.startswith("!skill"):
@@ -445,32 +457,32 @@ class HouseBot(discord.Client):
                         result = AgentResult(text="Sorry, something went wrong. Please try again.")
                         self._report_error(exc)
 
-                self._mark_conversation_active(message.channel.id, message.author.id)
-                safe_text = _redact_secrets(result.text)
-                display_text, code_files = _extract_code_files(safe_text)
-                await _send_final_message(message.channel, display_text, progress_msg=progress_msg, reply_to=message)
+                    self._mark_conversation_active(message.channel.id, message.author.id)
+                    safe_text = _redact_secrets(result.text)
+                    display_text, code_files = _extract_code_files(safe_text)
+                    await _send_final_message(message.channel, display_text, progress_msg=progress_msg, reply_to=message)
 
-                # Upload extracted code files (redacted)
-                for filename, content in code_files:
-                    try:
-                        safe_content = _redact_secrets(content.decode(errors="replace")).encode()
-                        await message.channel.send(file=discord.File(BytesIO(safe_content), filename=filename))
-                    except Exception:
-                        logger.exception("Failed to upload code file %s", filename)
+                    # Upload extracted code files (redacted)
+                    for filename, content in code_files:
+                        try:
+                            safe_content = _redact_secrets(content.decode(errors="replace")).encode()
+                            await message.channel.send(file=discord.File(BytesIO(safe_content), filename=filename))
+                        except Exception:
+                            logger.exception("Failed to upload code file %s", filename)
 
-                # Upload workspace files — strip the uid_ prefix for display, redact contents
-                for path in result.artifact_paths:
-                    try:
-                        raw_name = os.path.basename(path)
-                        display_name = raw_name.split("_", 1)[1] if "_" in raw_name else raw_name
-                        with open(path, "rb") as f:
-                            raw = f.read()
-                        safe = _redact_secrets(raw.decode(errors="replace")).encode()
-                        await message.channel.send(
-                            file=discord.File(BytesIO(safe), filename=display_name)
-                        )
-                    except Exception:
-                        logger.exception("Failed to upload artifact %s", path)
+                    # Upload workspace files — strip the uid_ prefix for display, redact contents
+                    for path in result.artifact_paths:
+                        try:
+                            raw_name = os.path.basename(path)
+                            display_name = raw_name.split("_", 1)[1] if "_" in raw_name else raw_name
+                            with open(path, "rb") as f:
+                                raw = f.read()
+                            safe = _redact_secrets(raw.decode(errors="replace")).encode()
+                            await message.channel.send(
+                                file=discord.File(BytesIO(safe), filename=display_name)
+                            )
+                        except Exception:
+                            logger.exception("Failed to upload artifact %s", path)
 
 
 def _tool_hint(tool_name: str, args: dict) -> str:

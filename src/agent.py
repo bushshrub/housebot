@@ -38,6 +38,7 @@ LLM_BASE_URL = os.getenv("LLM_BASE_URL", "http://server-slop:8080/v1")
 LLM_MODEL = os.getenv("LLM_MODEL", "gemma-4-12b-qat-q4kxl")
 LLM_API_KEY = os.getenv("LLM_API_KEY", "not-required")
 OWNER_ID = int(os.getenv("OWNER_DISCORD_ID", "0"))
+MAX_CONTEXT_CHARS = int(os.getenv("MAX_CONTEXT_CHARS", "40000"))
 
 
 @dataclass
@@ -149,6 +150,24 @@ class Agent:
     ) -> AgentResult:
         user_memory = await memory.load(user_id)
         past_messages = await history.load(user_id)
+
+        # Protect against context overflow: if accumulated history is too large,
+        # summarize and reset before processing the next message.
+        if past_messages:
+            context_chars = sum(
+                len(m["content"]) if isinstance(m.get("content"), str) else 0
+                for m in past_messages
+            )
+            if context_chars > MAX_CONTEXT_CHARS:
+                logger.info(
+                    "Context overflow for user %s (%d chars) — auto-summarizing session",
+                    user_id,
+                    context_chars,
+                )
+                await self.start_new_session(user_id)
+                past_messages = []
+                user_memory = await memory.load(user_id)
+
         all_skills = await skills.load_all()
 
         system_message: dict[str, Any] = {
@@ -514,6 +533,7 @@ Current user: {username} (ID: {user_id}){memory_section}
 - Keep responses concise unless asked for detail.
 - If a user requests a feature or improvement to this bot, immediately call create_feature_request with a clear title and description, then tell them the issue URL.
 - If a tool returns an error message (starts with "Error:"), quote it exactly — do not paraphrase or soften it.
+- When the user's message exceeds 500 characters, begin your reply with a **TL;DR:** line (one sentence) summarizing what they asked.
 """
 
 

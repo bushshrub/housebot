@@ -34,3 +34,29 @@ async def test_users_are_isolated():
     await memory_mod.save("user2", "memory B")
     assert await memory_mod.load("user1") == "memory A"
     assert await memory_mod.load("user2") == "memory B"
+
+
+async def test_load_creates_parent_directories_when_missing(tmp_path, monkeypatch):
+    """Regression test for issues #3-#6: FileNotFoundError when data dir didn't exist.
+
+    Both the `data` parent and `data/memories` child must be created automatically.
+    """
+    deep_dir = tmp_path / "nonexistent_parent" / "memories"
+    assert not deep_dir.exists()
+    assert not deep_dir.parent.exists()
+
+    monkeypatch.setattr(memory_mod, "MEMORY_DIR", deep_dir)
+
+    # Must not raise even though neither parent nor memories dir exists yet
+    result = await memory_mod.load("someuser")
+    assert result == ""
+    assert deep_dir.exists()
+
+
+async def test_save_creates_parent_directories_when_missing(tmp_path, monkeypatch):
+    """Regression: save must also succeed when the directory tree is absent."""
+    deep_dir = tmp_path / "also_nonexistent" / "memories"
+    monkeypatch.setattr(memory_mod, "MEMORY_DIR", deep_dir)
+
+    await memory_mod.save("someuser", "hello")
+    assert (deep_dir / "someuser.md").read_text() == "hello"
