@@ -151,13 +151,11 @@ class Agent:
         user_memory = await memory.load(user_id)
         past_messages = await history.load(user_id)
 
-        # Protect against context overflow: if accumulated history is too large,
-        # summarize and reset before processing the next message.
         if past_messages:
-            context_chars = sum(
-                len(m["content"]) if isinstance(m.get("content"), str) else 0
-                for m in past_messages
-            )
+            context_chars = 0
+            for m in past_messages:
+                c = m.get("content")
+                context_chars += len(c) if isinstance(c, str) else (len(json.dumps(c)) if c is not None else 0)
             if context_chars > MAX_CONTEXT_CHARS:
                 logger.info(
                     "Context overflow for user %s (%d chars) — auto-summarizing session",
