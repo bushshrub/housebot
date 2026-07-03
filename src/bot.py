@@ -279,7 +279,7 @@ class HouseBot(discord.Client):
         await self.agent.start_new_session(message.author.id)
         self._active_conversations.pop((message.channel.id, message.author.id), None)
         await message.reply(
-            "Session reset. Your conversation history has been summarized and cleared.",
+            "Session reset. Your conversation history has been cleared (and summarized if there was any).",
             mention_author=False,
         )
 
