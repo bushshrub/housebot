@@ -1,12 +1,12 @@
 """Tests for pure helpers in src/bot.py."""
 
 import os
+import time
 import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
 import discord
 
-from src.bot import _split_text, _tool_hint, _send_final_message, _send_long_message, _extract_code_files
-from src.bot import HouseBot
+from src.bot import _split_text, _tool_hint, _send_final_message, _send_long_message, _extract_code_files, HouseBot
 from src.agent import AgentResult
 
 
@@ -231,6 +231,73 @@ class TestRedactSecrets:
         result = bot_module._redact_secrets("hello world, no secrets here")
         assert result == "hello world, no secrets here"
         bot_module._SECRET_PATTERNS[:] = original_patterns
+
+
+class TestResetCommand:
+    """Issue #7: !reset command clears history and removes the active conversation."""
+
+    async def test_reset_calls_start_new_session(self):
+        bot = HouseBot.__new__(HouseBot)
+        bot._active_conversations = {(1, 42): time.monotonic()}
+        bot.agent = MagicMock()
+        bot.agent.start_new_session = AsyncMock()
+
+        message = MagicMock()
+        message.content = "!reset"
+        message.author.id = 42
+        message.channel.id = 1
+        message.reply = AsyncMock()
+
+        await bot._handle_reset_command(message)
+
+        bot.agent.start_new_session.assert_awaited_once_with(42)
+
+    async def test_reset_removes_active_conversation(self):
+        bot = HouseBot.__new__(HouseBot)
+        bot._active_conversations = {(1, 42): time.monotonic()}
+        bot.agent = MagicMock()
+        bot.agent.start_new_session = AsyncMock()
+
+        message = MagicMock()
+        message.author.id = 42
+        message.channel.id = 1
+        message.reply = AsyncMock()
+
+        await bot._handle_reset_command(message)
+
+        assert (1, 42) not in bot._active_conversations
+
+    async def test_reset_replies_with_confirmation(self):
+        bot = HouseBot.__new__(HouseBot)
+        bot._active_conversations = {}
+        bot.agent = MagicMock()
+        bot.agent.start_new_session = AsyncMock()
+
+        message = MagicMock()
+        message.author.id = 99
+        message.channel.id = 5
+        message.reply = AsyncMock()
+
+        await bot._handle_reset_command(message)
+
+        message.reply.assert_awaited_once()
+        call_args = message.reply.call_args
+        assert "reset" in call_args[0][0].lower() or "reset" in str(call_args).lower()
+
+    async def test_reset_noop_when_no_active_conversation(self):
+        """Reset should not raise if user has no active conversation."""
+        bot = HouseBot.__new__(HouseBot)
+        bot._active_conversations = {}
+        bot.agent = MagicMock()
+        bot.agent.start_new_session = AsyncMock()
+
+        message = MagicMock()
+        message.author.id = 7
+        message.channel.id = 3
+        message.reply = AsyncMock()
+
+        await bot._handle_reset_command(message)  # should not raise
+        assert (3, 7) not in bot._active_conversations
 
 
 class TestConversationState:

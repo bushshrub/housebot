@@ -1,8 +1,9 @@
 """Tests for pure helpers in src/agent.py."""
 
 import pytest
+from unittest.mock import AsyncMock, patch, MagicMock
 
-from src.agent import _build_system_prompt, _flatten_tool, _to_openai_tool
+from src.agent import _build_system_prompt, _flatten_tool, _to_openai_tool, MAX_CONTEXT_CHARS
 
 
 class TestBuildSystemPrompt:
@@ -75,3 +76,81 @@ class TestToOpenaiTool:
         assert result["function"]["name"] == "my_tool"
         assert result["function"]["description"] == "does stuff"
         assert result["function"]["parameters"] == {"type": "object"}
+
+
+class TestLongMessageTldr:
+    """Issue #2: system prompt should instruct TL;DR for messages over 500 chars."""
+
+    def test_system_prompt_contains_tldr_instruction(self):
+        prompt = _build_system_prompt("Alice", 123, "")
+        assert "TL;DR" in prompt
+
+    def test_tldr_instruction_mentions_500_chars(self):
+        prompt = _build_system_prompt("Alice", 123, "")
+        assert "500" in prompt
+
+
+class TestContextOverflow:
+    """Issue #9: context overflow triggers auto-summarization."""
+
+    async def test_overflow_triggers_start_new_session(self, tmp_path, monkeypatch):
+        import src.memory as memory_mod
+        import src.history as history_mod
+        import src.skills as skills_mod
+        from src.agent import Agent
+
+        monkeypatch.setattr(memory_mod, "MEMORY_DIR", tmp_path / "memories")
+        monkeypatch.setattr(history_mod, "HISTORY_DIR", tmp_path / "history")
+
+        # Build a fake history large enough to exceed MAX_CONTEXT_CHARS
+        big_content = "x" * (MAX_CONTEXT_CHARS + 1)
+        big_history = [
+            {"role": "user", "content": big_content},
+            {"role": "assistant", "content": "ok"},
+        ]
+        await history_mod.save("user1", big_history)
+
+        agent = Agent()
+        start_new_session_called = []
+
+        async def fake_start_new_session(uid):
+            start_new_session_called.append(uid)
+            await history_mod.clear(uid)
+
+        async def fake_build_tools():
+            return []
+
+        async def fake_client_create(**kwargs):
+            async def _aiter():
+                chunk = MagicMock()
+                chunk.choices = [MagicMock(
+                    finish_reason="stop",
+                    delta=MagicMock(content="hello", tool_calls=None),
+                )]
+                yield chunk
+
+            return _aiter()
+
+        monkeypatch.setattr(agent, "start_new_session", fake_start_new_session)
+        monkeypatch.setattr(agent, "_build_tools", fake_build_tools)
+        monkeypatch.setattr(agent._client.chat.completions, "create", fake_client_create)
+        monkeypatch.setattr(skills_mod, "load_all", AsyncMock(return_value={}))
+
+        await agent._run_inner("user1", "TestUser", "hi")
+
+        assert "user1" in start_new_session_called
+
+    async def test_no_overflow_does_not_reset(self, tmp_path, monkeypatch):
+        import src.history as history_mod
+
+        monkeypatch.setattr(history_mod, "HISTORY_DIR", tmp_path / "history")
+
+        small_history = [
+            {"role": "user", "content": "hi"},
+            {"role": "assistant", "content": "hello"},
+        ]
+        await history_mod.save("user2", small_history)
+
+        loaded = await history_mod.load("user2")
+        total_chars = sum(len(m["content"]) for m in loaded if isinstance(m.get("content"), str))
+        assert total_chars < MAX_CONTEXT_CHARS
