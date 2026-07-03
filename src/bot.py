@@ -398,10 +398,18 @@ class HouseBot(discord.Client):
                 content = f"⚙️ **Working...**\n```\n{tail}\n```"
                 await _update_progress(content)
 
+            _text_stream_started = False
+
             async def on_text_stream(partial_text: str) -> None:
+                nonlocal _text_stream_started
                 chunks = _split_text(partial_text)
                 content = chunks[0] + ("…" if len(chunks) > 1 else "")
-                await _update_progress(content)
+                if not _text_stream_started:
+                    _text_stream_started = True
+                    # First chunk arrived — switch from "Generating" to streaming content
+                    await _update_progress(content, force=True)
+                else:
+                    await _update_progress(content)
 
             async def on_approval(tool_name: str, args: dict) -> bool:
                 if not OWNER_ID:
@@ -441,6 +449,14 @@ class HouseBot(discord.Client):
                 txn.set_data("channel", getattr(message.channel, "name", "DM"))
 
                 async with message.channel.typing():
+                    # Post an immediate progress indicator so the user doesn't stare at typing
+                    try:
+                        progress_msg = await message.reply(
+                            "⚙️ **Generating...**", mention_author=False
+                        )
+                    except discord.HTTPException:
+                        logger.exception("Failed to send initial progress message")
+
                     try:
                         result: AgentResult = await self.agent.run(
                             user_id=message.author.id,

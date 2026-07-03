@@ -7,6 +7,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import discord
 
 from src.bot import _split_text, _tool_hint, _send_final_message, _send_long_message, _extract_code_files, HouseBot
+from src.agent import AgentResult
 
 
 class TestSplitText:
@@ -415,3 +416,105 @@ class TestMessageFilteringLogic:
         # Previously this would have been:
         # passed = is_dm or is_mentioned or is_reply_to_bot or is_name_mentioned or is_active
         # with is_name_mentioned=True, which would have been True (the bug).
+
+
+class TestProgressMessageFlow:
+    """Tests for the progress message lifecycle in _handle_message:
+    initial 'Generating...' → streaming content → final reply.
+    """
+
+    @pytest.fixture
+    def bot(self):
+        """Create a HouseBot instance with a fully mocked agent.
+
+        Uses a thin subclass so we can set `user` (a read-only property on
+        discord.Client) without hitting the property setter error.
+        """
+        class TestableBot(HouseBot):
+            @property
+            def user(self):
+                return object.__getattribute__(self, "_test_user")
+
+        bot = object.__new__(TestableBot)
+        object.__setattr__(bot, "_test_user", MagicMock(id=111))
+        bot.agent = MagicMock()
+        bot._processing_messages = set()
+        bot._responded_messages = []
+        bot._active_conversations = {}
+        bot._report_error = MagicMock()
+        return bot
+
+    @pytest.fixture
+    def dm_message(self):
+        """Create a mock DM message that passes all filters."""
+        msg = AsyncMock()
+        msg.author = MagicMock(id=222, display_name="Alice")
+        msg.content = "<@111> hello"
+        msg.channel = MagicMock(spec=discord.DMChannel)
+        msg.channel.typing = MagicMock(
+            __aenter__=AsyncMock(return_value=None),
+            __aexit__=AsyncMock(return_value=None),
+        )
+        msg.attachments = []
+        msg.id = 999
+        msg.reference = None
+        msg.mentions = []
+        msg.reply = AsyncMock(return_value=AsyncMock())
+        return msg
+
+    async def test_initial_generating_message_sent(self, bot, dm_message):
+        """An initial 'Generating...' progress message is sent before agent.run()."""
+        bot.agent.run = AsyncMock(return_value=AgentResult(text="ok"))
+
+        # Simulate text_stream_hook being called so the progress message gets edited
+        async def capture_text_stream(text):
+            pass
+
+        await bot._handle_message(dm_message)
+
+        # The initial reply should be "Generating..."
+        dm_message.reply.assert_called()
+        first_call = dm_message.reply.call_args_list[0]
+        assert "Generating" in first_call[0][0]
+
+    async def test_streaming_content_replaces_generating(self, bot, dm_message):
+        """On first text_stream chunk, the progress message is edited with streaming content."""
+        progress_msg = AsyncMock()
+        dm_message.reply = AsyncMock(return_value=progress_msg)
+
+        stream_texts = []
+
+        async def fake_run(**kwargs):
+            # Simulate the agent calling text_stream_hook
+            hook = kwargs.get("text_stream_hook")
+            if hook:
+                await hook("Hello world")
+                await hook("Hello world and more")
+            return AgentResult(text="done")
+
+        bot.agent.run = fake_run
+
+        await bot._handle_message(dm_message)
+
+        # First call: initial "Generating..."
+        assert dm_message.reply.call_count == 1
+        assert "Generating" in dm_message.reply.call_args[0][0]
+
+        # Subsequent edits should contain streaming content
+        assert progress_msg.edit.call_count >= 1
+        edit_calls = [c[1]["content"] for c in progress_msg.edit.call_args_list]
+        assert any("Hello world" in c for c in edit_calls)
+
+    async def test_generating_message_on_error(self, bot, dm_message):
+        """Even if agent.run() raises, the initial 'Generating...' message was sent."""
+        progress_msg = AsyncMock()
+        dm_message.reply = AsyncMock(return_value=progress_msg)
+
+        bot.agent.run = AsyncMock(side_effect=RuntimeError("boom"))
+
+        await bot._handle_message(dm_message)
+
+        # Initial message should still have been sent
+        dm_message.reply.assert_called()
+        first_call = dm_message.reply.call_args_list[0]
+        assert "Generating" in first_call[0][0]
