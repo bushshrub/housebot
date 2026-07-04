@@ -25,7 +25,6 @@ _text_stream_hook_cv = contextvars.ContextVar("text_stream_hook", default=None)
 
 from . import history, memory, skills
 from .tools.opencode import TOOL_DEFINITION as OPENCODE_TOOL, ProgressCallback, run_opencode
-from .tools.claude_code import TOOL_DEFINITION as CLAUDE_CODE_TOOL, run_claude_code
 from .tools.feature_request import TOOL_DEFINITION as FEATURE_REQUEST_TOOL, create_feature_request
 
 ApprovalCallback = Callable[[str, dict[str, Any]], Awaitable[bool]]
@@ -324,7 +323,6 @@ class Agent:
                 logger.exception("Failed to list tools for MCP server '%s'", name)
 
         tools.append(_to_openai_tool(**_flatten_tool(OPENCODE_TOOL)))
-        tools.append(_to_openai_tool(**_flatten_tool(CLAUDE_CODE_TOOL)))
         tools.append(_to_openai_tool(**_flatten_tool(_update_memory_tool())))
         tools.append(_to_openai_tool(**_flatten_tool(_run_skill_tool())))
         tools.append(_to_openai_tool(**_flatten_tool(FEATURE_REQUEST_TOOL)))
@@ -397,23 +395,6 @@ class Agent:
             if not task:
                 return "Error: 'task' argument is required for run_opencode. Please provide a description of the coding task to perform."
             return await run_opencode(
-                task=task,
-                model=args.get("model"),
-                repo_url=args.get("repo_url"),
-                files=args.get("files"),
-                on_progress=_progress_hook_cv.get(),
-            )
-
-        if name == "run_claude_code":
-            task = args.get("task")
-            if not task:
-                return "Error: 'task' argument is required for run_claude_code. Please provide a description of the coding task to perform."
-            approval_hook = _approval_hook_cv.get()
-            if approval_hook is not None:
-                approved = await approval_hook("run_claude_code", args)
-                if not approved:
-                    return "run_claude_code was not approved by the owner."
-            return await run_claude_code(
                 task=task,
                 model=args.get("model"),
                 repo_url=args.get("repo_url"),
@@ -516,7 +497,6 @@ Current user: {username} (ID: {user_id}){memory_section}
 - ddg__* — Search the web via DuckDuckGo for current information.
 - jellyfin__* — Query the household Jellyfin media server for movies, shows, music. READ ONLY — only call get_* / search_* / list_* methods; never call create_*, add_*, remove_*, update_*, revoke_*, restore_*, or any mutating action.
 - run_opencode — Run a coding task using OpenCode + local llama.cpp model. Good for quick scripts and general work.
-- run_claude_code — Run a coding task using Claude Code (Anthropic). Best for complex, multi-file, or reasoning-heavy work.
 - update_memory — Persist important facts about the current user for future conversations. Write the full memory each time.
 - create_feature_request — File a GitHub issue for a feature the user wants added to this bot. Use whenever a user asks for a new feature or improvement.{skills_section}
 
@@ -526,7 +506,6 @@ Current user: {username} (ID: {user_id}){memory_section}
 - Use DuckDuckGo for factual or current-events questions.
 - For ANY programming or coding task — including trivial one-liners, scripts, debugging, code review, or anything that involves writing or analyzing code — immediately use run_opencode. Never write or analyze code yourself in your response. Always delegate to the tool.
 - After a coding tool runs, give a brief summary of what was done. Do NOT reproduce the full code or script in your reply — it will be sent as a file attachment automatically if it's large.
-- run_claude_code is only available to the bot owner (user ID: {OWNER_ID}). Do not offer or attempt it for any other user.
 - Update memory when you learn something worth remembering.
 - Keep responses concise unless asked for detail.
 - If a user requests a feature or improvement to this bot, immediately call create_feature_request with a clear title and description, then tell them the issue URL.
