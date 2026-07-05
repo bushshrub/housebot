@@ -8,6 +8,10 @@ import discord
 
 from src.bot import _split_text, _tool_hint, _send_final_message, _send_long_message, _extract_code_files, HouseBot
 from src.agent import AgentResult
+import src.notes as notes_mod
+import src.history as history_mod
+import src.memory as memory_mod
+import src.skills as skills_mod
 
 
 class TestSplitText:
@@ -518,3 +522,182 @@ class TestProgressMessageFlow:
         dm_message.reply.assert_called()
         first_call = dm_message.reply.call_args_list[0]
         assert "Generating" in first_call[0][0]
+
+
+class TestToolHintNewTools:
+    def test_set_reminder_hint(self):
+        hint = _tool_hint("set_reminder", {"message": "feed the cat", "delay_minutes": 30})
+        assert "30" in hint
+        assert "feed the cat" in hint
+
+    def test_translate_hint(self):
+        hint = _tool_hint("translate", {"text": "hello", "target_language": "French"})
+        assert "French" in hint
+        assert "hello" in hint
+
+    def test_translate_hint_no_language(self):
+        hint = _tool_hint("translate", {"text": "hello"})
+        assert hint == ""
+
+    def test_summarize_url_uses_url_fallback(self):
+        hint = _tool_hint("summarize_url", {"url": "https://example.com"})
+        assert "example.com" in hint
+
+
+class TestNoteCommand:
+    def _make_bot(self):
+        bot = HouseBot.__new__(HouseBot)
+        bot._active_conversations = {}
+        return bot
+
+    def _make_message(self, content: str, user_id: int = 42) -> MagicMock:
+        msg = MagicMock()
+        msg.content = content
+        msg.author.id = user_id
+        msg.author.display_name = "Alice"
+        msg.reply = AsyncMock()
+        return msg
+
+    async def test_list_empty(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(notes_mod, "NOTES_DIR", tmp_path / "notes")
+        bot = self._make_bot()
+        msg = self._make_message("!note list")
+        await bot._handle_note_command(msg)
+        msg.reply.assert_awaited_once()
+        assert "no saved notes" in msg.reply.call_args[0][0].lower()
+
+    async def test_save_and_list(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(notes_mod, "NOTES_DIR", tmp_path / "notes")
+        bot = self._make_bot()
+        save_msg = self._make_message("!note save groceries\nmilk, eggs")
+        await bot._handle_note_command(save_msg)
+
+        list_msg = self._make_message("!note list")
+        await bot._handle_note_command(list_msg)
+        reply_text = list_msg.reply.call_args[0][0]
+        assert "groceries" in reply_text
+
+    async def test_get_existing_note(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(notes_mod, "NOTES_DIR", tmp_path / "notes")
+        bot = self._make_bot()
+        await notes_mod.save(42, "todo", "buy bread")
+
+        msg = self._make_message("!note get todo")
+        await bot._handle_note_command(msg)
+        reply_text = msg.reply.call_args[0][0]
+        assert "buy bread" in reply_text
+
+    async def test_get_missing_note(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(notes_mod, "NOTES_DIR", tmp_path / "notes")
+        bot = self._make_bot()
+        msg = self._make_message("!note get nope")
+        await bot._handle_note_command(msg)
+        reply_text = msg.reply.call_args[0][0]
+        assert "not found" in reply_text.lower()
+
+    async def test_delete_existing_note(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(notes_mod, "NOTES_DIR", tmp_path / "notes")
+        bot = self._make_bot()
+        await notes_mod.save(42, "old", "content")
+        msg = self._make_message("!note delete old")
+        await bot._handle_note_command(msg)
+        reply_text = msg.reply.call_args[0][0]
+        assert "deleted" in reply_text.lower()
+        assert await notes_mod.get(42, "old") is None
+
+    async def test_save_requires_content(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(notes_mod, "NOTES_DIR", tmp_path / "notes")
+        bot = self._make_bot()
+        msg = self._make_message("!note save mykey")
+        await bot._handle_note_command(msg)
+        reply_text = msg.reply.call_args[0][0]
+        assert "content" in reply_text.lower() or "example" in reply_text.lower()
+
+    async def test_invalid_name_rejected(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(notes_mod, "NOTES_DIR", tmp_path / "notes")
+        bot = self._make_bot()
+        msg = self._make_message("!note save My Note With Spaces\ncontent")
+        await bot._handle_note_command(msg)
+        reply_text = msg.reply.call_args[0][0]
+        assert "lowercase" in reply_text.lower() or "underscore" in reply_text.lower()
+
+    async def test_unknown_subcommand(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(notes_mod, "NOTES_DIR", tmp_path / "notes")
+        bot = self._make_bot()
+        msg = self._make_message("!note badcmd")
+        await bot._handle_note_command(msg)
+        reply_text = msg.reply.call_args[0][0]
+        assert "unknown" in reply_text.lower()
+
+
+class TestStatsCommand:
+    def _make_bot(self):
+        bot = HouseBot.__new__(HouseBot)
+        bot._active_conversations = {}
+        return bot
+
+    def _make_message(self, user_id: int = 42, display_name: str = "Alice") -> MagicMock:
+        msg = MagicMock()
+        msg.content = "!stats"
+        msg.author.id = user_id
+        msg.author.display_name = display_name
+        msg.reply = AsyncMock()
+        return msg
+
+    async def test_stats_shows_username(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(history_mod, "HISTORY_DIR", tmp_path / "history")
+        monkeypatch.setattr(memory_mod, "MEMORY_DIR", tmp_path / "memories")
+        monkeypatch.setattr(notes_mod, "NOTES_DIR", tmp_path / "notes")
+        monkeypatch.setattr(skills_mod, "SKILLS_PATH", tmp_path / "skills.json")
+
+        bot = self._make_bot()
+        msg = self._make_message(display_name="Bob")
+        await bot._handle_stats_command(msg)
+        reply_text = msg.reply.call_args[0][0]
+        assert "Bob" in reply_text
+
+    async def test_stats_shows_history_count(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(history_mod, "HISTORY_DIR", tmp_path / "history")
+        monkeypatch.setattr(memory_mod, "MEMORY_DIR", tmp_path / "memories")
+        monkeypatch.setattr(notes_mod, "NOTES_DIR", tmp_path / "notes")
+        monkeypatch.setattr(skills_mod, "SKILLS_PATH", tmp_path / "skills.json")
+
+        await history_mod.save(42, [
+            {"role": "user", "content": "hi"},
+            {"role": "assistant", "content": "hello"},
+        ])
+
+        bot = self._make_bot()
+        msg = self._make_message()
+        await bot._handle_stats_command(msg)
+        reply_text = msg.reply.call_args[0][0]
+        assert "2" in reply_text  # 2 messages
+
+    async def test_stats_shows_note_count(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(history_mod, "HISTORY_DIR", tmp_path / "history")
+        monkeypatch.setattr(memory_mod, "MEMORY_DIR", tmp_path / "memories")
+        monkeypatch.setattr(notes_mod, "NOTES_DIR", tmp_path / "notes")
+        monkeypatch.setattr(skills_mod, "SKILLS_PATH", tmp_path / "skills.json")
+
+        await notes_mod.save(42, "a", "content a")
+        await notes_mod.save(42, "b", "content b")
+
+        bot = self._make_bot()
+        msg = self._make_message()
+        await bot._handle_stats_command(msg)
+        reply_text = msg.reply.call_args[0][0]
+        assert "2" in reply_text  # 2 notes
+
+    async def test_stats_shows_skill_count(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(history_mod, "HISTORY_DIR", tmp_path / "history")
+        monkeypatch.setattr(memory_mod, "MEMORY_DIR", tmp_path / "memories")
+        monkeypatch.setattr(notes_mod, "NOTES_DIR", tmp_path / "notes")
+        monkeypatch.setattr(skills_mod, "SKILLS_PATH", tmp_path / "skills.json")
+
+        await skills_mod.save_skill({"name": "greet", "description": "say hi", "prompt": "..."})
+
+        bot = self._make_bot()
+        msg = self._make_message()
+        await bot._handle_stats_command(msg)
+        reply_text = msg.reply.call_args[0][0]
+        assert "1" in reply_text  # 1 skill

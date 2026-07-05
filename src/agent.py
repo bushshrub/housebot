@@ -26,6 +26,9 @@ _text_stream_hook_cv = contextvars.ContextVar("text_stream_hook", default=None)
 from . import history, memory, skills
 from .tools.opencode import TOOL_DEFINITION as OPENCODE_TOOL, ProgressCallback, run_opencode
 from .tools.feature_request import TOOL_DEFINITION as FEATURE_REQUEST_TOOL, create_feature_request
+from .tools.remind import TOOL_DEFINITION as REMIND_TOOL, create_reminder
+from .tools.summarize_url import TOOL_DEFINITION as SUMMARIZE_URL_TOOL, fetch_and_summarize
+from .tools.translate import TOOL_DEFINITION as TRANSLATE_TOOL, translate_text
 
 ApprovalCallback = Callable[[str, dict[str, Any]], Awaitable[bool]]
 ToolNotificationCallback = Callable[[str, dict[str, Any]], Awaitable[None]]
@@ -326,6 +329,9 @@ class Agent:
         tools.append(_to_openai_tool(**_flatten_tool(_update_memory_tool())))
         tools.append(_to_openai_tool(**_flatten_tool(_run_skill_tool())))
         tools.append(_to_openai_tool(**_flatten_tool(FEATURE_REQUEST_TOOL)))
+        tools.append(_to_openai_tool(**_flatten_tool(REMIND_TOOL)))
+        tools.append(_to_openai_tool(**_flatten_tool(SUMMARIZE_URL_TOOL)))
+        tools.append(_to_openai_tool(**_flatten_tool(TRANSLATE_TOOL)))
         return tools
 
     async def _execute_tools(
@@ -414,6 +420,28 @@ class Agent:
                 requested_by=str(user_id),
             )
 
+        if name == "set_reminder":
+            return await create_reminder(
+                user_id=str(user_id),
+                message=args["message"],
+                delay_minutes=float(args["delay_minutes"]),
+            )
+
+        if name == "summarize_url":
+            return await fetch_and_summarize(
+                url=args["url"],
+                llm_client=self._client,
+                model=LLM_MODEL,
+            )
+
+        if name == "translate":
+            return await translate_text(
+                text=args["text"],
+                target_language=args["target_language"],
+                llm_client=self._client,
+                model=LLM_MODEL,
+            )
+
         if name == "run_skill":
             skill_name = args["name"]
             skill_input = args.get("input", "")
@@ -498,7 +526,10 @@ Current user: {username} (ID: {user_id}){memory_section}
 - jellyfin__* — Query the household Jellyfin media server for movies, shows, music. READ ONLY — only call get_* / search_* / list_* methods; never call create_*, add_*, remove_*, update_*, revoke_*, restore_*, or any mutating action.
 - run_opencode — Run a coding task using OpenCode + local llama.cpp model. Good for quick scripts and general work.
 - update_memory — Persist important facts about the current user for future conversations. Write the full memory each time.
-- create_feature_request — File a GitHub issue for a feature the user wants added to this bot. Use whenever a user asks for a new feature or improvement.{skills_section}
+- create_feature_request — File a GitHub issue for a feature the user wants added to this bot. Use whenever a user asks for a new feature or improvement.
+- set_reminder — Set a timed reminder; the bot will DM the user when the delay elapses. Use whenever a user asks to be reminded about something.
+- summarize_url — Fetch a public web URL and return a concise summary. Use when the user shares a link or wants to read a page.
+- translate — Translate text to any language using the LLM. Use whenever a user asks to translate something.{skills_section}
 
 ## Guidelines
 - Be conversational and friendly.
