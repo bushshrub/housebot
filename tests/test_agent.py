@@ -90,6 +90,42 @@ class TestLongMessageTldr:
         assert "500" in prompt
 
 
+class TestClaudeCodeRemoved:
+    """Verify that the run_claude_code tool has been fully removed."""
+
+    def test_system_prompt_does_not_mention_claude_code(self):
+        prompt = _build_system_prompt("Alice", 123, "")
+        assert "run_claude_code" not in prompt
+        assert "Claude Code" not in prompt
+
+    async def test_build_tools_does_not_include_run_claude_code(self):
+        from unittest.mock import AsyncMock, patch
+        from src.agent import Agent
+
+        agent = Agent()
+        agent._mcp_sessions = []
+        tools = await agent._build_tools()
+        tool_names = [t["function"]["name"] for t in tools]
+        assert "run_claude_code" not in tool_names
+
+    async def test_dispatch_unknown_tool_returns_error(self):
+        from src.agent import Agent
+
+        agent = Agent()
+        agent._mcp_sessions = []
+        result = await agent._dispatch_tool("run_claude_code", {}, "user1", "")
+        assert "Unknown tool" in result
+
+    async def test_dispatch_run_opencode_missing_task_returns_error(self):
+        from src.agent import Agent
+
+        agent = Agent()
+        agent._mcp_sessions = []
+        result = await agent._dispatch_tool("run_opencode", {}, "user1", "")
+        assert result.startswith("Error:")
+        assert "task" in result
+
+
 class TestContextOverflow:
     """Issue #9: context overflow triggers auto-summarization."""
 
