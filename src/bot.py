@@ -16,7 +16,7 @@ from discord import ui
 
 from .agent import Agent, AgentResult
 from .github_issues import GitHubIssueReporter
-from . import skills
+from . import skills, notes, reminders, memory, history
 
 logger = logging.getLogger(__name__)
 
@@ -120,11 +120,33 @@ class HouseBot(discord.Client):
 
     async def setup_hook(self) -> None:
         await self.agent.start()
+        self._reminder_task = asyncio.create_task(self._reminder_loop())
         logger.info("Agent and MCP servers ready")
 
     async def close(self) -> None:
+        if hasattr(self, "_reminder_task"):
+            self._reminder_task.cancel()
+            try:
+                await self._reminder_task
+            except asyncio.CancelledError:
+                pass
         await self.agent.stop()
         await super().close()
+
+    async def _reminder_loop(self) -> None:
+        await self.wait_until_ready()
+        while not self.is_closed():
+            try:
+                due = await reminders.pop_due(time.time())
+                for r in due:
+                    try:
+                        user = await self.fetch_user(int(r["user_id"]))
+                        await user.send(f"⏰ **Reminder:** {r['message']}")
+                    except Exception:
+                        logger.exception("Failed to deliver reminder for user %s", r["user_id"])
+            except Exception:
+                logger.exception("Reminder loop error")
+            await asyncio.sleep(30)
 
     async def on_ready(self) -> None:
         logger.info("Logged in as %s (ID: %s)", self.user, self.user.id)
@@ -275,6 +297,114 @@ class HouseBot(discord.Client):
             mention_author=False,
         )
 
+    async def _handle_note_command(self, message: discord.Message) -> None:
+        content = message.content.strip()
+        lines = content.split("\n", 1)
+        first_line = lines[0].strip()
+        rest = lines[1].strip() if len(lines) > 1 else ""
+
+        parts = first_line.split(None, 2)
+        if len(parts) < 2:
+            await message.reply(
+                "Usage: `!note list` | `!note save <name>` | `!note get <name>` | `!note delete <name>`",
+                mention_author=False,
+            )
+            return
+
+        subcmd = parts[1].lower()
+
+        if subcmd == "list":
+            all_notes = await notes.load_all(message.author.id)
+            if not all_notes:
+                await message.reply(
+                    "You have no saved notes. Use `!note save <name>` (with the content on the next line).",
+                    mention_author=False,
+                )
+                return
+            lines_out = ["**Your notes:**"]
+            for name, body in all_notes.items():
+                preview = body[:60].replace("\n", " ")
+                if len(body) > 60:
+                    preview += "…"
+                lines_out.append(f"• **{name}** — {preview}")
+            await message.reply("\n".join(lines_out), mention_author=False)
+            return
+
+        if subcmd == "get":
+            if len(parts) < 3:
+                await message.reply("Usage: `!note get <name>`", mention_author=False)
+                return
+            note_name = parts[2].lower()
+            body = await notes.get(message.author.id, note_name)
+            if body is None:
+                await message.reply(f"Note `{note_name}` not found.", mention_author=False)
+                return
+            await message.reply(f"**{note_name}:**\n{body}", mention_author=False)
+            return
+
+        if subcmd == "save":
+            if len(parts) < 3:
+                await message.reply(
+                    "Usage: `!note save <name>` with the note content on the next line.",
+                    mention_author=False,
+                )
+                return
+            note_name = parts[2].lower().strip()
+            if not re.match(r"^[a-z0-9_]+$", note_name):
+                await message.reply(
+                    "Note name must be lowercase letters, numbers, and underscores only.",
+                    mention_author=False,
+                )
+                return
+            if not rest:
+                await message.reply(
+                    "Please include the note content on a new line after the command.\n"
+                    "Example:\n```\n!note save shopping\nmilk, eggs, bread\n```",
+                    mention_author=False,
+                )
+                return
+            await notes.save(message.author.id, note_name, rest)
+            await message.reply(f"✅ Note **{note_name}** saved.", mention_author=False)
+            return
+
+        if subcmd == "delete":
+            if len(parts) < 3:
+                await message.reply("Usage: `!note delete <name>`", mention_author=False)
+                return
+            note_name = parts[2].lower()
+            deleted = await notes.delete(message.author.id, note_name)
+            if deleted:
+                await message.reply(f"✅ Note **{note_name}** deleted.", mention_author=False)
+            else:
+                await message.reply(f"Note `{note_name}` not found.", mention_author=False)
+            return
+
+        await message.reply(
+            f"Unknown subcommand `{subcmd}`. Options: `list`, `save`, `get`, `delete`",
+            mention_author=False,
+        )
+
+    async def _handle_stats_command(self, message: discord.Message) -> None:
+        user_id = message.author.id
+        hist = await history.load(user_id)
+        mem = await memory.load(user_id)
+        user_notes = await notes.load_all(user_id)
+        all_skills = await skills.load_all()
+
+        turn_count = sum(1 for m in hist if m.get("role") == "user")
+        mem_kb = len(mem.encode()) / 1024
+        note_count = len(user_notes)
+        skill_count = len(all_skills)
+
+        lines = [
+            f"**Stats for {message.author.display_name}:**",
+            f"• Conversation history: {len(hist)} messages ({turn_count} turns)",
+            f"• Memory size: {mem_kb:.1f} KB",
+            f"• Saved notes: {note_count}",
+            f"• Skills available: {skill_count}",
+        ]
+        await message.reply("\n".join(lines), mention_author=False)
+
     async def _handle_reset_command(self, message: discord.Message) -> None:
         await self.agent.start_new_session(message.author.id)
         self._active_conversations.pop((message.channel.id, message.author.id), None)
@@ -293,6 +423,14 @@ class HouseBot(discord.Client):
 
         if message.content.startswith("!skill"):
             await self._handle_skill_command(message)
+            return
+
+        if message.content.startswith("!note"):
+            await self._handle_note_command(message)
+            return
+
+        if message.content.strip() == "!stats":
+            await self._handle_stats_command(message)
             return
 
         is_dm = isinstance(message.channel, discord.DMChannel)
@@ -507,6 +645,14 @@ def _tool_hint(tool_name: str, args: dict) -> str:
         name = args.get("name", "")
         inp = args.get("input", "")[:60].replace("\n", " ")
         return f" — {name}: {inp}" if name else ""
+    if tool_name == "set_reminder":
+        msg = args.get("message", "")[:60].replace("\n", " ")
+        delay = args.get("delay_minutes", "")
+        return f" — in {delay}m: {msg}" if msg else ""
+    if tool_name == "translate":
+        lang = args.get("target_language", "")
+        txt = args.get("text", "")[:40].replace("\n", " ")
+        return f" — → {lang}: {txt}" if lang else ""
     for key in ("query", "task", "repo_url", "memory_content", "url"):
         val = args.get(key)
         if val and isinstance(val, str):
