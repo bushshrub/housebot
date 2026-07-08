@@ -7,7 +7,7 @@ from typing import Any
 
 import aiofiles
 
-SKILLS_PATH = Path("data") / "skills.json"
+SKILLS_PATH = Path(os.getenv("DATA_DIR", "data")) / "skills.json"
 
 
 async def load_all() -> dict[str, Any]:

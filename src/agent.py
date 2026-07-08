@@ -49,6 +49,31 @@ class AgentResult:
     artifact_paths: list[str] = field(default_factory=list)
 
 
+@dataclass
+class _ToolCall:
+    id: str
+    name: str
+    arguments: str
+
+
+@dataclass
+class _ToolResult:
+    content: str
+    memory_update: str | None = None
+    artifact_paths: list[str] = field(default_factory=list)
+
+
+@dataclass
+class _ToolExecResult:
+    tool_call_id: str
+    content: str
+    memory_update: str | None = None
+    artifact_paths: list[str] = field(default_factory=list)
+
+    def to_message(self) -> dict[str, Any]:
+        return {"role": "tool", "tool_call_id": self.tool_call_id, "content": self.content}
+
+
 class Agent:
     """Manages MCP connections and runs the agentic loop via OpenAI-compatible API."""
 
@@ -251,56 +276,41 @@ class Agent:
                 llm_span.set_data("tool_calls_count", len(tool_calls_acc))
 
             content_text = "".join(content_parts) or None
-            reconstructed_tool_calls = [
-                type("ToolCall", (), {
-                    "id": v["id"],
-                    "function": type("Fn", (), {
-                        "name": v["name"],
-                        "arguments": v["arguments"],
-                    })(),
-                })()
+            tool_calls = [
+                _ToolCall(id=v["id"], name=v["name"], arguments=v["arguments"])
                 for v in (tool_calls_acc[i] for i in sorted(tool_calls_acc))
             ] if tool_calls_acc else None
 
-            # Serialize assistant message for history and next API call
             assistant_message: dict[str, Any] = {"role": "assistant", "content": content_text}
-            if reconstructed_tool_calls:
+            if tool_calls:
                 assistant_message["tool_calls"] = [
                     {
                         "id": tc.id,
                         "type": "function",
-                        "function": {
-                            "name": tc.function.name,
-                            "arguments": tc.function.arguments,
-                        },
+                        "function": {"name": tc.name, "arguments": tc.arguments},
                     }
-                    for tc in reconstructed_tool_calls
+                    for tc in tool_calls
                 ]
 
             messages.append(assistant_message)
             turn_messages.append(assistant_message)
 
-            if finish_reason == "stop" or not reconstructed_tool_calls:
+            if finish_reason == "stop" or not tool_calls:
                 final_text = content_text or ""
                 break
 
             if finish_reason == "tool_calls":
-                tool_names = [tc.function.name for tc in reconstructed_tool_calls]
+                tool_names = [tc.name for tc in tool_calls]
                 with sentry_sdk.start_span(op="agent.tools", name=f"tools/{','.join(tool_names)}") as tools_span:
                     tools_span.set_data("tools", tool_names)
-                    tool_result_messages = await self._execute_tools(
-                        reconstructed_tool_calls, user_id, user_memory
-                    )
-                # Check for memory updates and artifacts before appending
-                for trm in tool_result_messages:
-                    if isinstance(trm, BaseException):
-                        continue
-                    if "_memory_update" in trm:
-                        user_memory = trm.pop("_memory_update")
-                    if "_artifact_paths" in trm:
-                        all_artifacts.extend(trm.pop("_artifact_paths"))
-                messages.extend(m for m in tool_result_messages if isinstance(m, dict))
-                turn_messages.extend(m for m in tool_result_messages if isinstance(m, dict))
+                    tool_results = await self._execute_tools(tool_calls, user_id, user_memory)
+                for r in tool_results:
+                    if r.memory_update is not None:
+                        user_memory = r.memory_update
+                    all_artifacts.extend(r.artifact_paths)
+                msgs = [r.to_message() for r in tool_results]
+                messages.extend(msgs)
+                turn_messages.extend(msgs)
             else:
                 final_text = content_text or ""
                 break
@@ -336,58 +346,36 @@ class Agent:
 
     async def _execute_tools(
         self,
-        tool_calls: list[Any],
+        tool_calls: list[_ToolCall],
         user_id: int | str,
         user_memory: str,
-    ) -> list[dict[str, Any]]:
-        async def run_one(tc: Any) -> dict[str, Any]:
+    ) -> list[_ToolExecResult]:
+        async def run_one(tc: _ToolCall) -> _ToolExecResult:
             try:
-                args = json.loads(tc.function.arguments)
-                logger.info("Tool call: %s args=%s", tc.function.name, json.dumps(args)[:200])
+                args = json.loads(tc.arguments)
+                logger.info("Tool call: %s args=%s", tc.name, json.dumps(args)[:200])
                 tool_notification_hook = _tool_notification_hook_cv.get()
                 if tool_notification_hook is not None:
-                    await tool_notification_hook(tc.function.name, args)
-                result = await self._dispatch_tool(tc.function.name, args, user_id, user_memory)
-                if isinstance(result, dict) and "_memory_update" in result:
-                    return {
-                        "role": "tool",
-                        "tool_call_id": tc.id,
-                        "content": result["content"],
-                        "_memory_update": result["_memory_update"],
-                    }
-                if isinstance(result, dict) and "_artifact_paths" in result:
-                    return {
-                        "role": "tool",
-                        "tool_call_id": tc.id,
-                        "content": result["content"],
-                        "_artifact_paths": result["_artifact_paths"],
-                    }
-                content = str(result)
-                if content.startswith("Error:"):
-                    logger.error("Tool '%s' returned error: %s", tc.function.name, content)
+                    await tool_notification_hook(tc.name, args)
+                result = await self._dispatch_tool(tc.name, args, user_id, user_memory)
+                if result.content.startswith("Error:"):
+                    logger.error("Tool '%s' returned error: %s", tc.name, result.content)
                     sentry_sdk.capture_message(
-                        f"Tool error [{tc.function.name}]: {content}",
+                        f"Tool error [{tc.name}]: {result.content}",
                         level="error",
                     )
-                return {
-                    "role": "tool",
-                    "tool_call_id": tc.id,
-                    "content": content,
-                }
+                return _ToolExecResult(
+                    tool_call_id=tc.id,
+                    content=result.content,
+                    memory_update=result.memory_update,
+                    artifact_paths=result.artifact_paths,
+                )
             except Exception as exc:
-                logger.exception("Tool '%s' raised an exception", tc.function.name)
+                logger.exception("Tool '%s' raised an exception", tc.name)
                 sentry_sdk.capture_exception(exc)
-                return {
-                    "role": "tool",
-                    "tool_call_id": tc.id,
-                    "content": f"Error: {exc}",
-                }
+                return _ToolExecResult(tool_call_id=tc.id, content=f"Error: {exc}")
 
-        try:
-            return list(await asyncio.gather(*[run_one(tc) for tc in tool_calls], return_exceptions=True))
-        except Exception as exc:
-            logger.exception("asyncio.gather in _execute_tools failed")
-            return [{"role": "tool", "tool_call_id": tc.id, "content": f"Error: {exc}"} for tc in tool_calls]
+        return list(await asyncio.gather(*[run_one(tc) for tc in tool_calls]))
 
     async def _dispatch_tool(
         self,
@@ -395,59 +383,71 @@ class Agent:
         args: dict[str, Any],
         user_id: int | str,
         user_memory: str,
-    ) -> Any:
+    ) -> _ToolResult:
         if name == "run_opencode":
             task = args.get("task")
             if not task:
-                return "Error: 'task' argument is required for run_opencode. Please provide a description of the coding task to perform."
-            return await run_opencode(
+                return _ToolResult(
+                    content="Error: 'task' argument is required for run_opencode. Please provide a description of the coding task to perform."
+                )
+            raw = await run_opencode(
                 task=task,
                 model=args.get("model"),
                 repo_url=args.get("repo_url"),
                 files=args.get("files"),
                 on_progress=_progress_hook_cv.get(),
             )
+            if isinstance(raw, dict):
+                return _ToolResult(
+                    content=raw.get("content", ""),
+                    artifact_paths=raw.get("_artifact_paths", []),
+                )
+            return _ToolResult(content=str(raw))
 
         if name == "update_memory":
             new_content = args["memory_content"]
             await memory.save(user_id, new_content)
-            return {"content": "Memory updated.", "_memory_update": new_content}
+            return _ToolResult(content="Memory updated.", memory_update=new_content)
 
         if name == "create_feature_request":
-            return await create_feature_request(
+            content = await create_feature_request(
                 title=args["title"],
                 description=args["description"],
                 requested_by=str(user_id),
             )
+            return _ToolResult(content=content)
 
         if name == "set_reminder":
-            return await create_reminder(
+            content = await create_reminder(
                 user_id=str(user_id),
                 message=args["message"],
                 delay_minutes=float(args["delay_minutes"]),
             )
+            return _ToolResult(content=content)
 
         if name == "summarize_url":
-            return await fetch_and_summarize(
+            content = await fetch_and_summarize(
                 url=args["url"],
                 llm_client=self._client,
                 model=LLM_MODEL,
             )
+            return _ToolResult(content=content)
 
         if name == "translate":
-            return await translate_text(
+            content = await translate_text(
                 text=args["text"],
                 target_language=args["target_language"],
                 llm_client=self._client,
                 model=LLM_MODEL,
             )
+            return _ToolResult(content=content)
 
         if name == "run_skill":
             skill_name = args["name"]
             skill_input = args.get("input", "")
             skill = await skills.get(skill_name)
             if skill is None:
-                return f"Error: Skill '{skill_name}' not found."
+                return _ToolResult(content=f"Error: Skill '{skill_name}' not found.")
             response = await self._client.chat.completions.create(
                 model=LLM_MODEL,
                 messages=[
@@ -456,7 +456,7 @@ class Agent:
                 ],
                 max_tokens=4096,
             )
-            return response.choices[0].message.content or ""
+            return _ToolResult(content=response.choices[0].message.content or "")
 
         # MCP tools — name format: "<server_prefix>__<tool_name>"
         if "__" in name:
@@ -468,9 +468,9 @@ class Agent:
                         item.text if hasattr(item, "text") else str(item)
                         for item in result.content
                     ]
-                    return "\n".join(parts)
+                    return _ToolResult(content="\n".join(parts))
 
-        return f"Unknown tool: {name}"
+        return _ToolResult(content=f"Unknown tool: {name}")
 
 
 # ── helpers ──────────────────────────────────────────────────────────────────

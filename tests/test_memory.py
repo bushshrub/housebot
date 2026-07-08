@@ -36,21 +36,16 @@ async def test_users_are_isolated():
     assert await memory_mod.load("user2") == "memory B"
 
 
-async def test_load_creates_parent_directories_when_missing(tmp_path, monkeypatch):
-    """Regression test for issues #3-#6: FileNotFoundError when data dir didn't exist.
-
-    Both the `data` parent and `data/memories` child must be created automatically.
-    """
+async def test_load_does_not_raise_when_dir_missing(tmp_path, monkeypatch):
+    """load() must return "" gracefully when neither the data dir nor its parent exist."""
     deep_dir = tmp_path / "nonexistent_parent" / "memories"
     assert not deep_dir.exists()
     assert not deep_dir.parent.exists()
 
     monkeypatch.setattr(memory_mod, "MEMORY_DIR", deep_dir)
 
-    # Must not raise even though neither parent nor memories dir exists yet
     result = await memory_mod.load("someuser")
     assert result == ""
-    assert deep_dir.exists()
 
 
 async def test_save_creates_parent_directories_when_missing(tmp_path, monkeypatch):

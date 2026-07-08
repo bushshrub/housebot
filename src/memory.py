@@ -9,7 +9,6 @@ MEMORY_DIR = Path(os.getenv("DATA_DIR", "data")) / "memories"
 
 
 def _memory_path(user_id: int | str) -> Path:
-    os.makedirs(MEMORY_DIR, exist_ok=True)
     return MEMORY_DIR / f"{user_id}.md"
 
 
@@ -23,5 +22,6 @@ async def load(user_id: int | str) -> str:
 
 async def save(user_id: int | str, content: str) -> None:
     path = _memory_path(user_id)
+    os.makedirs(MEMORY_DIR, exist_ok=True)
     async with aiofiles.open(path, "w") as f:
         await f.write(content)

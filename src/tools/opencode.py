@@ -185,8 +185,6 @@ def _run_container_sync(
             )
         except docker.errors.ImageNotFound:
             return f"Error: sandbox image '{SANDBOX_IMAGE}' not found — run: docker compose build sandbox"
-        except docker.errors.APIError:
-            raise
 
         lines: list[str] = []
         artifact_paths: list[str] = []

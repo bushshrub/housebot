@@ -151,24 +151,16 @@ class HouseBot(discord.Client):
     async def on_ready(self) -> None:
         logger.info("Logged in as %s (ID: %s)", self.user, self.user.id)
 
-    def _is_in_active_conversation(self, channel_id: int, user_id: int) -> bool:
-        """Return True if the conversation is still within the idle window."""
+    def _check_conversation(self, channel_id: int, user_id: int) -> tuple[bool, bool]:
+        """Return (is_active, just_expired). Removes the entry if it expired."""
         key = (channel_id, user_id)
         last_active = self._active_conversations.get(key)
         if last_active is None:
-            return False
+            return False, False
         if time.monotonic() - last_active > CONVERSATION_IDLE_TIMEOUT:
-            return False
-        return True
-
-    def _pop_timed_out_conversation(self, channel_id: int, user_id: int) -> bool:
-        """Remove an expired conversation entry and return True if one existed."""
-        key = (channel_id, user_id)
-        last_active = self._active_conversations.get(key)
-        if last_active is not None and time.monotonic() - last_active > CONVERSATION_IDLE_TIMEOUT:
             del self._active_conversations[key]
-            return True
-        return False
+            return False, True
+        return True, False
 
     def _mark_conversation_active(self, channel_id: int, user_id: int) -> None:
         self._active_conversations[(channel_id, user_id)] = time.monotonic()
@@ -442,20 +434,9 @@ class HouseBot(discord.Client):
             and message.reference.resolved.author == self.user
         )
 
-        is_active = self._is_in_active_conversation(message.channel.id, message.author.id)
-        session_expired = not is_active and self._pop_timed_out_conversation(message.channel.id, message.author.id)
+        is_active, session_expired = self._check_conversation(message.channel.id, message.author.id)
 
-        if is_dm:
-            # DMs always go through
-            pass
-        elif is_mentioned or is_reply_to_bot:
-            # Explicit mention or reply in a server channel starts/continues a conversation
-            pass
-        elif is_active:
-            # Continuation of an existing conversation in a server channel
-            pass
-        else:
-            # Not a DM, not mentioned, not replying, no active conversation — ignore
+        if not (is_dm or is_mentioned or is_reply_to_bot or is_active):
             return
 
         if message.id in self._processing_messages or message.id in self._responded_messages:
@@ -505,7 +486,7 @@ class HouseBot(discord.Client):
 
             async def _update_progress(content: str, *, force: bool = False) -> None:
                 nonlocal progress_msg, _last_edit
-                now = asyncio.get_event_loop().time()
+                now = asyncio.get_running_loop().time()
                 if not force and progress_msg is not None and now - _last_edit < _EDIT_INTERVAL:
                     return
                 _last_edit = now
@@ -665,34 +646,36 @@ def _tool_hint(tool_name: str, args: dict) -> str:
 
 async def _extract_images(message: discord.Message) -> list[dict[str, str]]:
     """Download image attachments and return them as base64-encoded dicts."""
-    images: list[dict[str, str]] = []
     image_extensions = {".png", ".jpg", ".jpeg", ".gif", ".webp"}
+    media_type_map = {
+        ".png": "image/png",
+        ".jpg": "image/jpeg",
+        ".jpeg": "image/jpeg",
+        ".gif": "image/gif",
+        ".webp": "image/webp",
+    }
 
+    candidates = []
     for attachment in message.attachments:
         ext = "." + attachment.filename.rsplit(".", 1)[-1].lower() if "." in attachment.filename else ""
-        if ext not in image_extensions:
-            continue
+        if ext in image_extensions:
+            candidates.append((attachment, media_type_map.get(ext, "image/jpeg")))
 
-        media_type_map = {
-            ".png": "image/png",
-            ".jpg": "image/jpeg",
-            ".jpeg": "image/jpeg",
-            ".gif": "image/gif",
-            ".webp": "image/webp",
-        }
-        media_type = media_type_map.get(ext, "image/jpeg")
+    if not candidates:
+        return []
 
-        try:
-            async with aiohttp.ClientSession() as http:
+    images: list[dict[str, str]] = []
+    async with aiohttp.ClientSession() as http:
+        for attachment, media_type in candidates:
+            try:
                 async with http.get(attachment.url) as resp:
                     data = await resp.read()
-            images.append({
-                "media_type": media_type,
-                "data": base64.b64encode(data).decode(),
-            })
-        except Exception:
-            logger.exception("Failed to download attachment %s", attachment.filename)
-
+                images.append({
+                    "media_type": media_type,
+                    "data": base64.b64encode(data).decode(),
+                })
+            except Exception:
+                logger.exception("Failed to download attachment %s", attachment.filename)
     return images
 
 

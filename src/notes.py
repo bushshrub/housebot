@@ -10,7 +10,6 @@ NOTES_DIR = Path(os.getenv("DATA_DIR", "data")) / "notes"
 
 
 def _path(user_id: int | str) -> Path:
-    os.makedirs(NOTES_DIR, exist_ok=True)
     return NOTES_DIR / f"{user_id}.json"
 
 
@@ -26,6 +25,7 @@ async def load_all(user_id: int | str) -> dict[str, str]:
 async def save(user_id: int | str, name: str, content: str) -> None:
     notes = await load_all(user_id)
     notes[name] = content
+    os.makedirs(NOTES_DIR, exist_ok=True)
     async with aiofiles.open(_path(user_id), "w") as f:
         await f.write(json.dumps(notes, indent=2))
 
@@ -39,6 +39,7 @@ async def delete(user_id: int | str, name: str) -> bool:
     if name not in notes:
         return False
     del notes[name]
+    os.makedirs(NOTES_DIR, exist_ok=True)
     async with aiofiles.open(_path(user_id), "w") as f:
         await f.write(json.dumps(notes, indent=2))
     return True

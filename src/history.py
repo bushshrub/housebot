@@ -13,7 +13,6 @@ MAX_TURNS = int(os.getenv("MAX_HISTORY_TURNS", "30"))
 
 
 def _history_path(user_id: int | str) -> Path:
-    os.makedirs(HISTORY_DIR, exist_ok=True)
     return HISTORY_DIR / f"{user_id}.jsonl"
 
 
@@ -37,6 +36,7 @@ async def load(user_id: int | str) -> list[dict[str, Any]]:
 
 async def save(user_id: int | str, messages: list[dict[str, Any]]) -> None:
     path = _history_path(user_id)
+    os.makedirs(HISTORY_DIR, exist_ok=True)
     # Rewrite the whole file — simpler than appending and avoids drift
     async with aiofiles.open(path, "w") as f:
         for msg in messages:

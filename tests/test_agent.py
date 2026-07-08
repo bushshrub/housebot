@@ -114,7 +114,7 @@ class TestClaudeCodeRemoved:
         agent = Agent()
         agent._mcp_sessions = []
         result = await agent._dispatch_tool("run_claude_code", {}, "user1", "")
-        assert "Unknown tool" in result
+        assert "Unknown tool" in result.content
 
     async def test_dispatch_run_opencode_missing_task_returns_error(self):
         from src.agent import Agent
@@ -122,8 +122,8 @@ class TestClaudeCodeRemoved:
         agent = Agent()
         agent._mcp_sessions = []
         result = await agent._dispatch_tool("run_opencode", {}, "user1", "")
-        assert result.startswith("Error:")
-        assert "task" in result
+        assert result.content.startswith("Error:")
+        assert "task" in result.content
 
 
 class TestContextOverflow:
