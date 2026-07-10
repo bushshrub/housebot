@@ -1,5 +1,6 @@
 //! Small Discord bot that observes deployment webhooks and offers an owner-only rollback.
 
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use serde::Deserialize;
@@ -338,13 +339,46 @@ const HOUSEBOT_ENV_VARS: &[&str] = &[
 ];
 
 fn housebot_env() -> Vec<(String, String)> {
-    HOUSEBOT_ENV_VARS
+    let mut values: HashMap<String, String> = HOUSEBOT_ENV_VARS
         .iter()
         .filter_map(|name| {
             std::env::var(name)
                 .ok()
-                .filter(|value| !value.is_empty())
-                .map(|value| ((*name).to_string(), value))
+                .map(|value| ((*name).into(), value))
+        })
+        .collect();
+
+    // Read the mounted deployment configuration at deploy time. This lets an
+    // edited .env take effect without restarting the deployment bot itself.
+    for path in ["/app/.env", ".env"] {
+        if let Ok(contents) = std::fs::read_to_string(path) {
+            for (name, value) in parse_dotenv(&contents) {
+                if HOUSEBOT_ENV_VARS.contains(&name.as_str()) {
+                    values.insert(name, value);
+                }
+            }
+        }
+    }
+
+    HOUSEBOT_ENV_VARS
+        .iter()
+        .filter_map(|name| values.remove(*name).map(|value| ((*name).into(), value)))
+        .collect()
+}
+
+fn parse_dotenv(contents: &str) -> Vec<(String, String)> {
+    contents
+        .lines()
+        .filter_map(|line| {
+            let line = line.trim();
+            let line = line.strip_prefix("export ").unwrap_or(line);
+            let (name, value) = line.split_once('=')?;
+            let name = name.trim();
+            if name.is_empty() || name.starts_with('#') {
+                return None;
+            }
+            let value = value.trim().trim_matches(|c| c == '"' || c == '\'');
+            Some((name.to_string(), value.to_string()))
         })
         .collect()
 }
@@ -659,12 +693,45 @@ pub async fn run() -> anyhow::Result<()> {
         sandbox_timeout: std::env::var("SANDBOX_TIMEOUT").unwrap_or_else(|_| "300".into()),
     };
     let intents = GatewayIntents::non_privileged() | GatewayIntents::MESSAGE_CONTENT;
-    Client::builder(token, intents)
+    let mut client = Client::builder(token, intents)
         .event_handler(handler)
-        .await?
-        .start()
         .await?;
+
+    tokio::select! {
+        result = client.start() => result?,
+        _ = shutdown_signal() => {
+            tracing::info!("Deployment bot shutting down and disconnecting from Discord");
+            shutdown_main_bot().await;
+        }
+    }
     Ok(())
+}
+
+#[cfg(unix)]
+async fn shutdown_signal() {
+    use tokio::signal::unix::{signal, SignalKind};
+
+    let mut terminate = signal(SignalKind::terminate()).expect("install SIGTERM handler");
+    tokio::select! {
+        _ = tokio::signal::ctrl_c() => {},
+        _ = terminate.recv() => {},
+    }
+}
+
+#[cfg(not(unix))]
+async fn shutdown_signal() {
+    let _ = tokio::signal::ctrl_c().await;
+}
+
+async fn shutdown_main_bot() {
+    tracing::info!("Stopping main house-chatbot container");
+    if let Err(error) = run_docker(&["stop", "--time", "10", "house-chatbot"]).await {
+        tracing::warn!("Could not stop main house-chatbot container: {error}");
+    }
+    if let Err(error) = run_docker(&["rm", "--force", "house-chatbot"]).await {
+        tracing::warn!("Could not remove main house-chatbot container: {error}");
+    }
+    tracing::info!("Main house-chatbot container stopped");
 }
 
 fn env_u64(name: &str) -> anyhow::Result<u64> {

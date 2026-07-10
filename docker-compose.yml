@@ -7,5 +7,6 @@ services:
     env_file: .env
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
+      - ./.env:/app/.env:ro
     environment:
       - DOCKER_NETWORK=house-chatbot_default
