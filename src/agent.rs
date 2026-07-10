@@ -675,7 +675,8 @@ mod tests {
     #[test]
     fn system_prompt_memory_absent_when_blank() {
         assert!(
-            !build_system_prompt("Alice", "123", "   ", &empty_skills(), None).contains("Your memory")
+            !build_system_prompt("Alice", "123", "   ", &empty_skills(), None)
+                .contains("Your memory")
         );
     }
 
@@ -698,8 +699,10 @@ mod tests {
 
     #[test]
     fn system_prompt_placeholder_without_skills() {
-        assert!(build_system_prompt("Alice", "123", "", &empty_skills(), None)
-            .contains("No skills are defined yet"));
+        assert!(
+            build_system_prompt("Alice", "123", "", &empty_skills(), None)
+                .contains("No skills are defined yet")
+        );
     }
 
     #[test]
@@ -792,7 +795,9 @@ mod tests {
         let client = Arc::new(MockChatClient::new());
         client.push_text("saved reply");
         let (_t, agent) = test_agent(client);
-        agent.run("u2", "Bob", "remember this", &[], &NoHooks, None).await;
+        agent
+            .run("u2", "Bob", "remember this", &[], &NoHooks, None)
+            .await;
         let hist = agent.history.load("u2").await;
         assert_eq!(hist.len(), 2); // user + assistant
         assert_eq!(hist[0]["content"], "remember this");

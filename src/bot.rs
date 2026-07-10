@@ -10,9 +10,12 @@ use once_cell::sync::Lazy;
 use regex::{Captures, Regex};
 use serde_json::Value;
 use serenity::all::{
-    Context, CreateAllowedMentions, CreateAttachment, CreateMessage, EditMessage, EventHandler,
-    GatewayIntents, Message, Ready, UserId,
+    Command, CommandDataOptionValue, CommandOptionType, Context, CreateAllowedMentions,
+    CreateAttachment, CreateCommand, CreateCommandOption, CreateInteractionResponse,
+    CreateInteractionResponseMessage, EditMessage, EventHandler, GatewayIntents, Interaction,
+    Message, Ready, UserId,
 };
+use serenity::builder::CreateMessage;
 use serenity::Client;
 use tokio::sync::Mutex;
 
@@ -237,7 +240,8 @@ impl ConversationTracker {
     }
 
     pub fn mark_active(&mut self, channel_id: u64, user_id: u64, now: Instant, timeout: Duration) {
-        self.last_active.insert((channel_id, user_id), (now, timeout));
+        self.last_active
+            .insert((channel_id, user_id), (now, timeout));
     }
 
     pub fn remove(&mut self, channel_id: u64, user_id: u64) {
@@ -411,173 +415,6 @@ pub async fn note_command(notes: &Notes, first_line: &str, rest: &str, author_id
     }
 }
 
-/// Handle a `!config ...` command.
-pub async fn config_command(
-    server_cfg: &ServerConfigStore,
-    user_cfg: &UserConfigStore,
-    first_line: &str,
-    rest: &str,
-    author_id: u64,
-    guild_id: Option<u64>,
-) -> String {
-    let parts: Vec<&str> = first_line
-        .splitn(3, char::is_whitespace)
-        .filter(|s| !s.is_empty())
-        .collect();
-    if parts.len() < 2 {
-        return concat!(
-            "**Bot configuration:**\n",
-            "`!config channel list|add|remove|clear` — set which channels I respond in (server-wide)\n",
-            "`!config personality <text>` — set a personality/tone override for yourself\n",
-            "`!config personality clear` — remove your personality override\n",
-            "`!config followup on|off` — whether I reply to follow-up messages without a ping\n",
-            "`!config followup-timeout <seconds>` — how long I keep the conversation open without a ping",
-        )
-        .into();
-    }
-    match parts[1].to_lowercase().as_str() {
-        "channel" => {
-            let Some(gid) = guild_id else {
-                return "Channel configuration is only available in servers, not DMs.".into();
-            };
-            let sub = parts.get(2).map(|s| s.to_lowercase()).unwrap_or_default();
-            match sub.as_str() {
-                "list" => {
-                    let cfg = server_cfg.load(gid).await;
-                    if cfg.allowed_channel_ids.is_empty() {
-                        "I'm allowed to respond in **all channels** (no restriction set).".into()
-                    } else {
-                        let ids: Vec<String> = cfg
-                            .allowed_channel_ids
-                            .iter()
-                            .map(|id| format!("<#{id}>"))
-                            .collect();
-                        format!("Allowed channels: {}", ids.join(", "))
-                    }
-                }
-                "clear" => {
-                    let mut cfg = server_cfg.load(gid).await;
-                    cfg.allowed_channel_ids.clear();
-                    if server_cfg.save(gid, &cfg).await.is_err() {
-                        return "Error: failed to save config.".into();
-                    }
-                    "✅ Channel restriction cleared — I'll respond in all channels.".into()
-                }
-                s if s.starts_with("add") || s.starts_with("remove") => {
-                    // Channel ID may be the 3rd word or could be a mention like <#123456>
-                    let raw = parts.get(2).map(|s| s.trim()).unwrap_or("");
-                    // The subcommand is the first token; the channel is the next
-                    let tokens: Vec<&str> = raw.splitn(2, char::is_whitespace).collect();
-                    let action = tokens[0].to_lowercase();
-                    let channel_raw = tokens.get(1).unwrap_or(&"").trim();
-                    let channel_id = parse_channel_id(channel_raw);
-                    let Some(cid) = channel_id else {
-                        return "Please provide a valid channel mention or ID.".into();
-                    };
-                    let mut cfg = server_cfg.load(gid).await;
-                    if action == "add" {
-                        cfg.allowed_channel_ids.insert(cid);
-                        if server_cfg.save(gid, &cfg).await.is_err() {
-                            return "Error: failed to save config.".into();
-                        }
-                        format!("✅ <#{cid}> added to allowed channels.")
-                    } else {
-                        let removed = cfg.allowed_channel_ids.remove(&cid);
-                        if server_cfg.save(gid, &cfg).await.is_err() {
-                            return "Error: failed to save config.".into();
-                        }
-                        if removed {
-                            format!("✅ <#{cid}> removed from allowed channels.")
-                        } else {
-                            format!("<#{cid}> was not in the allowed list.")
-                        }
-                    }
-                }
-                _ => {
-                    "Usage: `!config channel list|add <#channel>|remove <#channel>|clear`".into()
-                }
-            }
-        }
-        "personality" => {
-            let mut cfg = user_cfg.load(author_id).await;
-            // Combine parts[2] (rest of first line) with multi-line body
-            let inline = parts.get(2).map(|s| s.trim()).unwrap_or("").to_string();
-            let full = if rest.is_empty() {
-                inline
-            } else if inline.is_empty() {
-                rest.to_string()
-            } else {
-                format!("{inline}\n{rest}")
-            };
-            if full.to_lowercase() == "clear" || full.is_empty() {
-                cfg.personality = None;
-                if user_cfg.save(author_id, &cfg).await.is_err() {
-                    return "Error: failed to save config.".into();
-                }
-                "✅ Personality cleared — I'll use my default behaviour.".into()
-            } else {
-                cfg.personality = Some(full.clone());
-                if user_cfg.save(author_id, &cfg).await.is_err() {
-                    return "Error: failed to save config.".into();
-                }
-                format!("✅ Personality set:\n> {}", full.replace('\n', "\n> "))
-            }
-        }
-        "followup" => {
-            let sub = parts.get(2).map(|s| s.to_lowercase()).unwrap_or_default();
-            let mut cfg = user_cfg.load(author_id).await;
-            match sub.as_str() {
-                "on" => {
-                    cfg.followup_enabled = true;
-                    if user_cfg.save(author_id, &cfg).await.is_err() {
-                        return "Error: failed to save config.".into();
-                    }
-                    format!(
-                        "✅ Follow-up replies enabled (timeout: {}s).",
-                        cfg.followup_timeout_secs
-                    )
-                }
-                "off" => {
-                    cfg.followup_enabled = false;
-                    if user_cfg.save(author_id, &cfg).await.is_err() {
-                        return "Error: failed to save config.".into();
-                    }
-                    "✅ Follow-up replies disabled — I'll only respond when pinged or in DMs.".into()
-                }
-                _ => "Usage: `!config followup on|off`".into(),
-            }
-        }
-        "followup-timeout" => {
-            let raw = parts.get(2).map(|s| s.trim()).unwrap_or("");
-            match raw.parse::<u64>() {
-                Ok(0) => "Timeout must be at least 1 second.".into(),
-                Ok(secs) => {
-                    let mut cfg = user_cfg.load(author_id).await;
-                    cfg.followup_timeout_secs = secs;
-                    if user_cfg.save(author_id, &cfg).await.is_err() {
-                        return "Error: failed to save config.".into();
-                    }
-                    format!("✅ Follow-up timeout set to {secs}s.")
-                }
-                Err(_) => "Usage: `!config followup-timeout <seconds>` (e.g. `300`)".into(),
-            }
-        }
-        other => format!(
-            "Unknown config option `{other}`. Run `!config` to see available options."
-        ),
-    }
-}
-
-fn parse_channel_id(s: &str) -> Option<u64> {
-    // Accept <#123456789> or raw numeric ID
-    let s = s.trim();
-    if let Some(inner) = s.strip_prefix("<#").and_then(|s| s.strip_suffix('>')) {
-        inner.parse().ok()
-    } else {
-        s.parse().ok()
-    }
-}
-
 /// Handle a `!stats` command, returning the reply text.
 pub async fn stats_command(
     history: &History,
@@ -675,6 +512,175 @@ impl HouseBot {
     }
 }
 
+/// Handle a `/config` interaction, returning the reply text (sent ephemerally).
+async fn handle_config_interaction(
+    server_cfg: &ServerConfigStore,
+    user_cfg: &UserConfigStore,
+    options: &[serenity::all::CommandDataOption],
+    author_id: u64,
+    guild_id: Option<u64>,
+) -> String {
+    let Some(top) = options.first() else {
+        return "No subcommand provided.".into();
+    };
+
+    match top.name.as_str() {
+        "channel" => {
+            let Some(gid) = guild_id else {
+                return "Channel configuration is only available in servers, not DMs.".into();
+            };
+            let sub_opts = match &top.value {
+                CommandDataOptionValue::SubCommandGroup(opts) => opts,
+                _ => return "Unexpected option structure.".into(),
+            };
+            let Some(sub) = sub_opts.first() else {
+                return "No channel subcommand provided.".into();
+            };
+            match sub.name.as_str() {
+                "list" => {
+                    let cfg = server_cfg.load(gid).await;
+                    if cfg.allowed_channel_ids.is_empty() {
+                        "I'm allowed to respond in **all channels** (no restriction set).".into()
+                    } else {
+                        let ids: Vec<String> = cfg
+                            .allowed_channel_ids
+                            .iter()
+                            .map(|id| format!("<#{id}>"))
+                            .collect();
+                        format!("Allowed channels: {}", ids.join(", "))
+                    }
+                }
+                "clear" => {
+                    let mut cfg = server_cfg.load(gid).await;
+                    cfg.allowed_channel_ids.clear();
+                    if server_cfg.save(gid, &cfg).await.is_err() {
+                        return "Error: failed to save config.".into();
+                    }
+                    "✅ Channel restriction cleared — I'll respond in all channels.".into()
+                }
+                action @ ("add" | "remove") => {
+                    let channel_opts = match &sub.value {
+                        CommandDataOptionValue::SubCommand(opts) => opts,
+                        _ => return "Unexpected option structure.".into(),
+                    };
+                    let channel_id =
+                        channel_opts
+                            .iter()
+                            .find(|o| o.name == "channel")
+                            .and_then(|o| match &o.value {
+                                CommandDataOptionValue::Channel(c) => Some(c.get()),
+                                _ => None,
+                            });
+                    let Some(cid) = channel_id else {
+                        return "Please provide a valid channel.".into();
+                    };
+                    let mut cfg = server_cfg.load(gid).await;
+                    if action == "add" {
+                        cfg.allowed_channel_ids.insert(cid);
+                        if server_cfg.save(gid, &cfg).await.is_err() {
+                            return "Error: failed to save config.".into();
+                        }
+                        format!("✅ <#{cid}> added to the allowlist.")
+                    } else {
+                        let removed = cfg.allowed_channel_ids.remove(&cid);
+                        if server_cfg.save(gid, &cfg).await.is_err() {
+                            return "Error: failed to save config.".into();
+                        }
+                        if removed {
+                            format!("✅ <#{cid}> removed from the allowlist.")
+                        } else {
+                            format!("<#{cid}> was not in the allowlist.")
+                        }
+                    }
+                }
+                other => format!("Unknown channel subcommand `{other}`."),
+            }
+        }
+
+        "personality" => {
+            let sub_opts = match &top.value {
+                CommandDataOptionValue::SubCommand(opts) => opts,
+                _ => return "Unexpected option structure.".into(),
+            };
+            let text = sub_opts
+                .iter()
+                .find(|o| o.name == "text")
+                .and_then(|o| match &o.value {
+                    CommandDataOptionValue::String(s) => Some(s.clone()),
+                    _ => None,
+                });
+            let mut cfg = user_cfg.load(author_id).await;
+            match text {
+                None => {
+                    cfg.personality = None;
+                    if user_cfg.save(author_id, &cfg).await.is_err() {
+                        return "Error: failed to save config.".into();
+                    }
+                    "✅ Personality cleared — I'll use my default behaviour.".into()
+                }
+                Some(ref s) if s.trim().is_empty() => {
+                    cfg.personality = None;
+                    if user_cfg.save(author_id, &cfg).await.is_err() {
+                        return "Error: failed to save config.".into();
+                    }
+                    "✅ Personality cleared — I'll use my default behaviour.".into()
+                }
+                Some(s) => {
+                    cfg.personality = Some(s.clone());
+                    if user_cfg.save(author_id, &cfg).await.is_err() {
+                        return "Error: failed to save config.".into();
+                    }
+                    format!("✅ Personality set:\n> {}", s.replace('\n', "\n> "))
+                }
+            }
+        }
+
+        "followup" => {
+            let sub_opts = match &top.value {
+                CommandDataOptionValue::SubCommand(opts) => opts,
+                _ => return "Unexpected option structure.".into(),
+            };
+            let enabled =
+                sub_opts
+                    .iter()
+                    .find(|o| o.name == "enabled")
+                    .and_then(|o| match &o.value {
+                        CommandDataOptionValue::Boolean(b) => Some(*b),
+                        _ => None,
+                    });
+            let timeout =
+                sub_opts
+                    .iter()
+                    .find(|o| o.name == "timeout")
+                    .and_then(|o| match &o.value {
+                        CommandDataOptionValue::Integer(n) => Some(*n),
+                        _ => None,
+                    });
+            let Some(enabled) = enabled else {
+                return "Please specify `enabled`.".into();
+            };
+            let mut cfg = user_cfg.load(author_id).await;
+            cfg.followup_enabled = enabled;
+            if let Some(secs) = timeout {
+                if secs < 1 {
+                    return "Timeout must be at least 1 second.".into();
+                }
+                cfg.followup_timeout_secs = secs as u64;
+            }
+            if user_cfg.save(author_id, &cfg).await.is_err() {
+                return "Error: failed to save config.".into();
+            }
+            let status = if enabled { "enabled" } else { "disabled" };
+            format!(
+                "✅ Follow-up replies {status} (timeout: {}s).",
+                cfg.followup_timeout_secs
+            )
+        }
+
+        other => format!("Unknown config option `{other}`."),
+    }
+}
+
 async fn reply_no_ping(ctx: &Context, msg: &Message, content: &str) -> serenity::Result<Message> {
     let builder = CreateMessage::new()
         .content(content)
@@ -687,6 +693,97 @@ async fn reply_no_ping(ctx: &Context, msg: &Message, content: &str) -> serenity:
 impl EventHandler for HouseBot {
     async fn ready(&self, ctx: Context, ready: Ready) {
         tracing::info!("Logged in as {} (ID: {})", ready.user.name, ready.user.id);
+
+        // Register the /config global slash command.
+        let config_cmd = CreateCommand::new("config")
+            .description("Configure bot settings")
+            // ── channel subcommand group ─────────────────────────────────────
+            .add_option(
+                CreateCommandOption::new(
+                    CommandOptionType::SubCommandGroup,
+                    "channel",
+                    "Manage which channels the bot responds in (server-wide)",
+                )
+                .add_sub_option(CreateCommandOption::new(
+                    CommandOptionType::SubCommand,
+                    "list",
+                    "Show the current channel allowlist",
+                ))
+                .add_sub_option(
+                    CreateCommandOption::new(
+                        CommandOptionType::SubCommand,
+                        "add",
+                        "Add a channel to the allowlist",
+                    )
+                    .add_sub_option(
+                        CreateCommandOption::new(
+                            CommandOptionType::Channel,
+                            "channel",
+                            "The channel to allow",
+                        )
+                        .required(true),
+                    ),
+                )
+                .add_sub_option(
+                    CreateCommandOption::new(
+                        CommandOptionType::SubCommand,
+                        "remove",
+                        "Remove a channel from the allowlist",
+                    )
+                    .add_sub_option(
+                        CreateCommandOption::new(
+                            CommandOptionType::Channel,
+                            "channel",
+                            "The channel to remove",
+                        )
+                        .required(true),
+                    ),
+                )
+                .add_sub_option(CreateCommandOption::new(
+                    CommandOptionType::SubCommand,
+                    "clear",
+                    "Remove all channel restrictions (bot responds everywhere)",
+                )),
+            )
+            // ── personality subcommand ───────────────────────────────────────
+            .add_option(
+                CreateCommandOption::new(
+                    CommandOptionType::SubCommand,
+                    "personality",
+                    "Set or clear your personal bot personality / tone override",
+                )
+                .add_sub_option(CreateCommandOption::new(
+                    CommandOptionType::String,
+                    "text",
+                    "Personality description (omit to clear your override)",
+                )),
+            )
+            // ── followup subcommand ──────────────────────────────────────────
+            .add_option(
+                CreateCommandOption::new(
+                    CommandOptionType::SubCommand,
+                    "followup",
+                    "Control whether the bot replies without a ping during active conversations",
+                )
+                .add_sub_option(
+                    CreateCommandOption::new(
+                        CommandOptionType::Boolean,
+                        "enabled",
+                        "Enable or disable follow-up replies",
+                    )
+                    .required(true),
+                )
+                .add_sub_option(CreateCommandOption::new(
+                    CommandOptionType::Integer,
+                    "timeout",
+                    "Seconds to keep the conversation open without a ping (default 300)",
+                )),
+            );
+
+        if let Err(e) = Command::create_global_command(&ctx.http, config_cmd).await {
+            tracing::error!("Failed to register /config slash command: {e}");
+        }
+
         if self.reminder_started.swap(true, Ordering::SeqCst) {
             return;
         }
@@ -707,6 +804,36 @@ impl EventHandler for HouseBot {
                 }
             }
         });
+    }
+
+    async fn interaction_create(&self, ctx: Context, interaction: Interaction) {
+        let Interaction::Command(cmd) = interaction else {
+            return;
+        };
+        if cmd.data.name != "config" {
+            return;
+        }
+
+        let user_id = cmd.user.id.get();
+        let guild_id = cmd.guild_id.map(|g| g.get());
+
+        let reply = handle_config_interaction(
+            &self.server_cfg,
+            &self.user_cfg,
+            &cmd.data.options,
+            user_id,
+            guild_id,
+        )
+        .await;
+
+        let response = CreateInteractionResponse::Message(
+            CreateInteractionResponseMessage::new()
+                .content(reply)
+                .ephemeral(true),
+        );
+        if let Err(e) = cmd.create_response(&ctx.http, response).await {
+            tracing::warn!("Failed to send /config response: {e}");
+        }
     }
 
     async fn message(&self, ctx: Context, msg: Message) {
@@ -748,22 +875,6 @@ impl EventHandler for HouseBot {
             self.respond(&ctx, &msg, &reply).await;
             return;
         }
-        if msg.content.starts_with("!config") {
-            let (first, rest) = split_command(&msg.content);
-            let guild_id = msg.guild_id.map(|g| g.get());
-            let reply = config_command(
-                &self.server_cfg,
-                &self.user_cfg,
-                &first,
-                &rest,
-                user_id,
-                guild_id,
-            )
-            .await;
-            self.respond(&ctx, &msg, &reply).await;
-            return;
-        }
-
         // ── routing ──
         let bot_id = ctx.cache.current_user().id;
         let is_dm = msg.guild_id.is_none();
@@ -788,8 +899,7 @@ impl EventHandler for HouseBot {
         // Load per-user followup settings.
         let user_config = self.user_cfg.load(user_id).await;
         let followup_enabled = user_config.followup_enabled;
-        let followup_timeout =
-            Duration::from_secs(user_config.followup_timeout_secs);
+        let followup_timeout = Duration::from_secs(user_config.followup_timeout_secs);
 
         let now = Instant::now();
         let (is_active, session_expired) = {

@@ -5,8 +5,8 @@
 //! into small, individually testable modules mirroring the original layout.
 
 pub mod agent;
-pub mod bot_config;
 pub mod bot;
+pub mod bot_config;
 pub mod config;
 pub mod github_issues;
 pub mod history;
