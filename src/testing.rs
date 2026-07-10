@@ -67,6 +67,10 @@ impl MockChatClient {
 
 #[async_trait]
 impl ChatClient for MockChatClient {
+    async fn context_window_tokens(&self) -> anyhow::Result<Option<u64>> {
+        Ok(Some(10_000))
+    }
+
     async fn chat_stream(
         &self,
         _model: &str,

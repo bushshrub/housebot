@@ -50,6 +50,9 @@ pub trait TextSink: Send + Sync {
 /// Abstraction over the chat-completions API.
 #[async_trait]
 pub trait ChatClient: Send + Sync {
+    /// Query the server's configured per-sequence context window, when supported.
+    async fn context_window_tokens(&self) -> anyhow::Result<Option<u64>>;
+
     /// Stream a completion, forwarding each cumulative text snapshot to `sink`.
     async fn chat_stream(
         &self,
@@ -89,6 +92,21 @@ impl OpenAiClient {
     fn endpoint(&self) -> String {
         format!("{}/chat/completions", self.base_url)
     }
+
+    fn props_endpoint(&self) -> String {
+        let root = self.base_url.strip_suffix("/v1").unwrap_or(&self.base_url);
+        format!("{root}/props")
+    }
+}
+
+#[derive(Deserialize)]
+struct PropsResponse {
+    default_generation_settings: DefaultGenerationSettings,
+}
+
+#[derive(Deserialize)]
+struct DefaultGenerationSettings {
+    n_ctx: u64,
 }
 
 // ── streaming wire format ────────────────────────────────────────────────────
@@ -233,6 +251,19 @@ fn parse_sse_line(line: &str) -> Option<StreamChunk> {
 
 #[async_trait]
 impl ChatClient for OpenAiClient {
+    async fn context_window_tokens(&self) -> anyhow::Result<Option<u64>> {
+        let response = self
+            .http
+            .get(self.props_endpoint())
+            .bearer_auth(&self.api_key)
+            .send()
+            .await?
+            .error_for_status()?
+            .json::<PropsResponse>()
+            .await?;
+        Ok(Some(response.default_generation_settings.n_ctx))
+    }
+
     async fn chat_stream(
         &self,
         model: &str,

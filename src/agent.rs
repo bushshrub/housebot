@@ -34,6 +34,17 @@ pub struct AgentResult {
     pub session_notice: Option<String>,
 }
 
+#[derive(Debug, Clone, Copy)]
+pub struct SessionInfo {
+    pub context_tokens: usize,
+    pub context_window_tokens: usize,
+    pub messages: usize,
+    pub requests: u64,
+    pub input_tokens: u64,
+    pub output_tokens: u64,
+    pub cached_tokens: u64,
+}
+
 /// Per-request callbacks used to surface progress into the chat surface.
 #[async_trait]
 pub trait AgentHooks: Send + Sync {
@@ -79,7 +90,7 @@ enum ToolOutcome {
 pub struct Agent {
     client: Arc<dyn ChatClient>,
     model: String,
-    max_context_chars: usize,
+    context_window_tokens: usize,
     history: History,
     memory: Memory,
     skills: Skills,
@@ -93,6 +104,7 @@ pub struct Agent {
 #[derive(Debug, Clone, Copy, Default)]
 struct SessionStats {
     requests: u64,
+    context_tokens: u64,
     input_tokens: u64,
     output_tokens: u64,
     cached_tokens: u64,
@@ -106,10 +118,17 @@ impl Agent {
             config::env_or("LLM_API_KEY", "not-required"),
         ));
         let mcp_servers = start_mcp_servers().await;
+        let context_window_tokens = client
+            .context_window_tokens()
+            .await
+            .ok()
+            .flatten()
+            .map(|tokens| tokens as usize)
+            .unwrap_or_else(|| config::env_parse("MAX_CONTEXT_TOKENS", 10_000));
         Self {
             client,
             model: config::env_or("LLM_MODEL", "gemma-4-12b-qat-q4kxl"),
-            max_context_chars: config::env_parse("MAX_CONTEXT_CHARS", 40000),
+            context_window_tokens,
             history: History::default(),
             memory: Memory::default(),
             skills: Skills::default(),
@@ -183,16 +202,21 @@ impl Agent {
 
     pub fn model_info(&self) -> String {
         format!(
-            "**Model**\nName: `{}`\nMax context: ~{} tokens ({} characters)",
-            self.model,
-            self.max_context_chars / 4,
-            self.max_context_chars
+            "**Model**\nName: `{}`\nMax context: ~{} tokens",
+            self.model, self.context_window_tokens
         )
     }
 
-    pub async fn session_info(&self, user_id: &str) -> String {
+    pub async fn session_info(&self, user_id: &str) -> SessionInfo {
         let history = self.history.load(user_id).await;
-        let chars = context_chars(&history);
+        let context_window_tokens = self
+            .client
+            .context_window_tokens()
+            .await
+            .ok()
+            .flatten()
+            .map(|tokens| tokens as usize)
+            .unwrap_or(self.context_window_tokens);
         let stats = self
             .session_stats
             .lock()
@@ -200,14 +224,27 @@ impl Agent {
             .get(user_id)
             .copied()
             .unwrap_or_default();
-        let percent = chars as f64 / self.max_context_chars.max(1) as f64 * 100.0;
-        format!("**Session**\nContext: {chars} / {} characters ({percent:.1}%, ~{} tokens)\nMessages: {}\nModel requests: {}\nInput tokens: {}\nOutput tokens: {}\nCached tokens: {}", self.max_context_chars, chars / 4, history.len(), stats.requests, stats.input_tokens, stats.output_tokens, stats.cached_tokens)
+        let context_tokens = if stats.context_tokens == 0 {
+            estimated_context_tokens(&history)
+        } else {
+            stats.context_tokens as usize
+        };
+        SessionInfo {
+            context_tokens,
+            context_window_tokens,
+            messages: history.len(),
+            requests: stats.requests,
+            input_tokens: stats.input_tokens,
+            output_tokens: stats.output_tokens,
+            cached_tokens: stats.cached_tokens,
+        }
     }
 
     async fn record_usage(&self, user_id: &str, usage: TokenUsage) {
         let mut all = self.session_stats.lock().await;
         let stats = all.entry(user_id.to_string()).or_default();
         stats.requests += 1;
+        stats.context_tokens = usage.prompt_tokens;
         stats.input_tokens += usage.prompt_tokens;
         stats.output_tokens += usage.completion_tokens;
         stats.cached_tokens += usage.prompt_tokens_details.cached_tokens;
@@ -230,9 +267,9 @@ impl Agent {
         let mut session_notice = None;
         let new_user_message = build_user_message(text, image_data);
 
-        let projected_chars =
-            context_chars(&past) + context_chars(std::slice::from_ref(&new_user_message));
-        let usage = projected_chars as f64 / self.max_context_chars.max(1) as f64;
+        let projected_tokens = estimated_context_tokens(&past)
+            + estimated_context_tokens(std::slice::from_ref(&new_user_message));
+        let usage = projected_tokens as f64 / self.context_window_tokens.max(1) as f64;
         if !past.is_empty() && usage >= 0.8 {
             tracing::info!("Context at 80% for {user_id} — auto-compacting session");
             self.compact_session(user_id).await;
@@ -533,7 +570,7 @@ async fn start_mcp_servers() -> Vec<McpServer> {
 
 // ── pure helpers ─────────────────────────────────────────────────────────────
 
-fn context_chars(messages: &[Value]) -> usize {
+fn estimated_context_tokens(messages: &[Value]) -> usize {
     messages
         .iter()
         .map(|m| match m.get("content") {
@@ -541,7 +578,8 @@ fn context_chars(messages: &[Value]) -> usize {
             Some(other) => other.to_string().len(),
             None => 0,
         })
-        .sum()
+        .sum::<usize>()
+        / 4
 }
 
 fn build_user_message(text: &str, image_data: &[ImageData]) -> Value {
@@ -691,7 +729,7 @@ impl Agent {
         Self {
             client,
             model: "test-model".into(),
-            max_context_chars: 40000,
+            context_window_tokens: 10_000,
             history,
             memory,
             skills,
@@ -708,8 +746,8 @@ impl Agent {
         }
     }
 
-    pub fn set_max_context_chars(&mut self, n: usize) {
-        self.max_context_chars = n;
+    pub fn set_max_context_tokens(&mut self, n: usize) {
+        self.context_window_tokens = n;
     }
 }
 
@@ -829,9 +867,9 @@ mod tests {
     }
 
     #[test]
-    fn context_chars_counts_string_content() {
+    fn estimated_context_tokens_counts_string_content() {
         let msgs = vec![json!({"role": "user", "content": "hello"})];
-        assert_eq!(context_chars(&msgs), 5);
+        assert_eq!(estimated_context_tokens(&msgs), 1);
     }
 
     fn test_agent(client: Arc<dyn ChatClient>) -> (TempDir, Agent) {
@@ -943,7 +981,7 @@ mod tests {
             Skills::new(tmp.path().join("skills.json")),
             Reminders::new(tmp.path().join("reminders.json")),
         );
-        agent.set_max_context_chars(100);
+        agent.set_max_context_tokens(50);
         let big = "x".repeat(200);
         agent
             .history

@@ -11,7 +11,7 @@ use regex::{Captures, Regex};
 use serde_json::Value;
 use serenity::all::{
     Command, CommandDataOptionValue, CommandOptionType, Context, CreateAllowedMentions,
-    CreateAttachment, CreateCommand, CreateCommandOption, CreateInteractionResponse,
+    CreateAttachment, CreateCommand, CreateCommandOption, CreateEmbed, CreateInteractionResponse,
     CreateInteractionResponseMessage, EditMessage, EventHandler, GatewayIntents, Interaction,
     Message, Ready, UserId,
 };
@@ -607,7 +607,36 @@ impl EventHandler for HouseBot {
                 .await
             }
             "model" => self.agent.model_info(),
-            "session" => self.agent.session_info(&user_id.to_string()).await,
+            "session" => {
+                let info = self.agent.session_info(&user_id.to_string()).await;
+                let percent =
+                    info.context_tokens as f64 / info.context_window_tokens.max(1) as f64 * 100.0;
+                let response = CreateInteractionResponse::Message(
+                    CreateInteractionResponseMessage::new()
+                        .embed(
+                            CreateEmbed::new()
+                                .title("Session")
+                                .field(
+                                    "Context",
+                                    format!(
+                                        "{} / {} tokens ({percent:.1}%)",
+                                        info.context_tokens, info.context_window_tokens
+                                    ),
+                                    true,
+                                )
+                                .field("Messages", info.messages.to_string(), true)
+                                .field("Model requests", info.requests.to_string(), true)
+                                .field("Input tokens", info.input_tokens.to_string(), true)
+                                .field("Output tokens", info.output_tokens.to_string(), true)
+                                .field("Cached tokens", info.cached_tokens.to_string(), true),
+                        )
+                        .ephemeral(true),
+                );
+                if let Err(e) = cmd.create_response(&ctx.http, response).await {
+                    tracing::warn!("Failed to send /session response: {e}");
+                }
+                return;
+            }
             "reset" => self.handle_reset(cmd.channel_id.get(), user_id).await,
             "compact" => {
                 self.agent.compact_session(&user_id.to_string()).await;
