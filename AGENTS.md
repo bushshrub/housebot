@@ -1,17 +1,20 @@
 # house-chatbot — Agent Guide
 
-A Discord-based house assistant bot. The LLM backend is a local llama.cpp server (OpenAI-compatible API). The bot maintains per-user conversation history and memory, integrates MCP servers for web search and Jellyfin, and can spin up ephemeral Docker sandboxes to run coding agents (OpenCode or Claude Code).
+A Discord-based house assistant bot, written in **Rust** with [serenity](https://github.com/serenity-rs/serenity). The LLM backend is a local llama.cpp server (OpenAI-compatible API). The bot maintains per-user conversation history and memory, integrates MCP servers for web search and Jellyfin over stdio, and spins up ephemeral Docker sandboxes to run coding agents (OpenCode).
 
 ---
 
-## Running the bot
+## Building and running
 
 ```bash
-# First-time setup
-cp .env.example .env          # fill in required values
-docker compose build sandbox  # build the sandbox image locally
+cargo build                                   # build
+cargo test                                    # run unit tests
+cargo clippy --all-targets -- -D warnings     # lint
+cargo fmt --check                             # formatting
 
-# Start
+# Docker
+cp .env.example .env
+docker compose build sandbox
 docker compose up -d
 ```
 
@@ -19,44 +22,41 @@ Logs: `docker compose logs -f house-chatbot`
 
 ## Docker publish pipeline
 
-Pushes both Docker images to GitHub Container Registry (GHCR) on push to `main`/`master` or on tags (`v*`).
+Pushes both Docker images to GHCR on push to `main`/`master` or on tags (`v*`):
 
-Images published:
-- `ghcr.io/bushshrub/housebot:latest` (main bot)
-- `ghcr.io/bushshrub/housebot/sandbox:latest` (coding sandbox)
-
-Each push also gets a `sha-<commit>` tag. Tags get an exact version tag (e.g. `v1.0.0`).
-
-To use a published image instead of building locally, set in `.env`:
-```
-SANDBOX_IMAGE=ghcr.io/bushshrub/housebot/sandbox:latest
-```
-
-Trigger manually: `Actions` tab → `Build and publish Docker images` → `Run workflow`.
+- `ghcr.io/bushshrub/housebot:latest` (main bot — Rust binary)
+- `ghcr.io/bushshrub/housebot/sandbox:latest` (coding sandbox — Node + opencode)
 
 ---
 
 ## Project layout
 
 ```
-main.py                   # entry point — loads .env, calls src.bot.run()
+Cargo.toml
 src/
-  bot.py                  # Discord client (HouseBot), message routing, approval flow
-  agent.py                # agentic loop, MCP sessions, tool dispatch, AgentResult
-  history.py              # per-user conversation JSONL (data/history/<user_id>.jsonl)
-  memory.py               # per-user persistent markdown (data/memories/<user_id>.md)
-  github_issues.py        # GitHub App JWT auth + Sentry-backed error issue filing
+  main.rs            # entry point — inits tracing, calls bot::run()
+  lib.rs             # module declarations
+  bot.rs             # serenity Client + EventHandler, routing, !commands, redaction, uploads
+  agent.rs           # agentic loop, MCP sessions, tool dispatch, AgentResult, session summary
+  llm.rs             # ChatClient trait + OpenAiClient (streaming SSE)
+  mcp.rs             # McpServer — stdio JSON-RPC client
+  history.rs         # per-user conversation JSONL (data/history/<user_id>.jsonl)
+  memory.rs          # per-user persistent markdown (data/memories/<user_id>.md)
+  notes.rs           # per-user named notes (data/notes/<user_id>.json)
+  skills.rs          # global custom skills (data/skills.json)
+  reminders.rs       # timed reminders (data/reminders.json)
+  github_issues.rs   # GitHub App JWT (RS256) auth + issue creation
+  testing.rs         # MockChatClient / RecordingSink test doubles
   tools/
-    opencode.py           # run_opencode — Docker sandbox, streams logs, returns artifacts
-    claude_code.py        # run_claude_code — same sandbox, owner-approval required
+    opencode.rs      # run_opencode — Docker sandbox via `docker run`, streams logs, artifacts
+    remind.rs        # set_reminder
+    summarize_url.rs # summarize_url
+    translate.rs     # translate
+    feature_request.rs # create_feature_request + per-user RateLimiter
 sandbox/
-  Dockerfile              # Node + claude-code + opencode + Rust toolchain
-  entrypoint.sh           # dispatches AGENT=opencode|claude inside the container
-data/
-  history/                # runtime — gitignored
-  memories/               # runtime — gitignored
-  artifacts/              # individual workspace files from sandbox — gitignored
-  workspaces/             # ephemeral sandbox working dirs (created & deleted per run)
+  Dockerfile         # Node + opencode + Rust toolchain
+  entrypoint.sh      # dispatches AGENT=opencode inside the container
+data/                # runtime — gitignored
 ```
 
 ---
@@ -66,23 +66,21 @@ data/
 | Variable | Required | Default | Purpose |
 |---|---|---|---|
 | `DISCORD_BOT_TOKEN` | yes | — | Discord bot auth |
-| `OWNER_DISCORD_ID` | yes | `0` | Owner user ID; gates `run_claude_code` approval |
+| `OWNER_DISCORD_ID` | no | `0` | Owner user ID |
 | `LLM_BASE_URL` | yes | `http://server-slop:8080/v1` | OpenAI-compatible LLM endpoint |
 | `LLM_MODEL` | yes | `gemma-4-12b-qat-q4kxl` | Model name |
+| `LLM_API_KEY` | no | `not-required` | API key (llama.cpp ignores it) |
+| `MAX_HISTORY_TURNS` | no | `30` | Conversation turn pairs kept |
+| `MAX_CONTEXT_CHARS` | no | `40000` | Char budget before auto-summarizing a session |
+| `CONVERSATION_IDLE_TIMEOUT` | no | `300` | Seconds a channel conversation stays "active" |
 | `JELLYFIN_URL` + `JELLYFIN_API_KEY` | no | — | Enables Jellyfin MCP server |
-| `CC_OAUTH_TOKEN` | no | — | Claude Code OAuth token |
 | `SANDBOX_IMAGE` | no | `house-chatbot-sandbox:latest` | Docker image for coding sandboxes |
 | `DOCKER_NETWORK` | no | `house-chatbot_default` | Network sandboxes join |
 | `SANDBOX_TIMEOUT` | no | `300` | Sandbox execution timeout (seconds) |
-| `HOST_DATA_DIR` | yes* | — | Absolute host path to `./data`; required so sibling sandbox containers can share the workspace volume |
-| `LLAMA_CPP_URL` / `LLAMA_CPP_MODEL` | no | — | Passed into sandbox for OpenCode |
-| `SENTRY_DSN` | yes | — | Sentry DSN for error tracking |
-| `GITHUB_APP_ID` | no | — | GitHub App ID for issue filing |
-| `GITHUB_APP_PRIVATE_KEY` | no | — | PEM key (escape newlines as `\n`) |
-| `GITHUB_INSTALLATION_ID` | no | — | GitHub App installation ID |
-| `GITHUB_REPO` | no | — | `owner/repo` to file issues against |
-
-All four `GITHUB_*` vars must be set together; the reporter silently no-ops if any is missing.
+| `HOST_DATA_DIR` | yes* | — | Absolute host path to `./data`; required so sibling sandbox containers share the workspace volume |
+| `LLAMA_CPP_URL` / `LLAMA_CPP_MODEL` | no | — | Passed into the sandbox for OpenCode |
+| `CC_OAUTH_TOKEN` | no | — | Claude Code OAuth token, forwarded to the sandbox |
+| `GITHUB_APP_ID` / `GITHUB_APP_PRIVATE_KEY` / `GITHUB_INSTALLATION_ID` / `GITHUB_REPO` | no | — | GitHub App creds for feature-request issue filing (all four required) |
 
 `HOST_DATA_DIR` must match the host-side absolute path of the `./data` volume mount (e.g. `/home/user/housebot/data`). Without it, sandbox workspace files won't be visible to the bot after the container exits.
 
@@ -94,78 +92,86 @@ All four `GITHUB_*` vars must be set together; the reporter silently no-ops if a
 
 ```
 Discord message
-  └─ HouseBot.on_message()
-       ├─ filter (DM / mention / name / active conversation)
+  └─ HouseBot::message()
+       ├─ !commands (!reset / !skill / !note / !stats)
+       ├─ filter (DM / mention / reply-to-bot / active conversation)
        ├─ extract images (base64)
-       ├─ show "⚙️ Working..." progress message
-       └─ Agent.run()
-            ├─ load user memory + history
+       ├─ post "⚙️ Generating..." progress message
+       └─ Agent::run()
+            ├─ load user memory + history (auto-summarize on overflow)
             ├─ build system prompt
             └─ agentic loop
-                 ├─ LLM call (OpenAI-compatible)
-                 ├─ if tool_calls → _execute_tools() → _dispatch_tool()
-                 │    ├─ run_opencode / run_claude_code → Docker sandbox
+                 ├─ ChatClient::chat_stream (streams partial text to the progress msg)
+                 ├─ if tool_calls → dispatch_tool()
+                 │    ├─ run_opencode → Docker sandbox
                  │    ├─ update_memory → memory.save()
-                 │    └─ ddg__* / jellyfin__* → MCP session.call_tool()
+                 │    ├─ set_reminder / summarize_url / translate / create_feature_request / run_skill
+                 │    └─ prefix__tool → McpServer::call_tool()
                  └─ repeat until finish_reason == "stop"
 ```
 
-### Tool result protocol
+### LLM client
 
-`_dispatch_tool` returns either a plain string or a dict with special sideband keys:
+`llm::ChatClient` is a trait with `chat_stream` (SSE streaming, forwards cumulative text to an
+optional `TextSink`) and `chat_once` (non-streaming). `OpenAiClient` is the real implementation;
+`testing::MockChatClient` scripts completions for unit tests, so the whole agent loop is testable
+without a live model.
 
-- `{"content": str, "_memory_update": str}` — triggers a memory write before the next LLM call
-- `{"content": str, "_artifact_paths": list[str]}` — individual workspace files uploaded to Discord as attachments
+### Tool dispatch
 
-The `_` keys are stripped from the message before it reaches the LLM.
+`Agent::dispatch_tool` returns a `ToolOutcome` (plain text, or text plus collected artifact paths).
+Built-in tool JSON definitions live in each `tools/*` module as `definition()`; the agent flattens
+them into the OpenAI function-calling envelope alongside the tools discovered from MCP servers.
 
 ### Sandbox execution
 
-`run_opencode` / `run_claude_code` both call `_call_sandbox()` in `opencode.py`. Execution is synchronous Docker SDK work offloaded to a thread via `run_in_executor` so it doesn't block the async event loop. Log lines stream back to the Discord progress message in real time via `run_coroutine_threadsafe`.
+`run_opencode` shells out to `docker run` (the bot container mounts `/var/run/docker.sock`).
+Merged stdout/stderr stream back to the Discord progress message line by line. After the container
+exits, individual workspace files (excluding `opencode.json` and dotfiles, and files over
+`MAX_ARTIFACT_SIZE_MB`) are copied into `data/artifacts/` and uploaded to Discord.
 
-Container limits: 2 CPUs (`cpu_quota=200000`), 1 GB RAM.
+**Workspace sharing:** the sandbox is a Docker *sibling*, so the workspace is bind-mounted from a
+host-visible path under `HOST_DATA_DIR`.
 
-**Workspace sharing:** The sandbox mounts a directory from `data/workspaces/<uid>/` (host path via `HOST_DATA_DIR`) as `/workspace`. Because the sandbox is a Docker sibling (not a child), volume paths must be resolvable by the Docker daemon on the host — a plain `tempfile.TemporaryDirectory()` inside the bot container would not be visible. After the sandbox exits, individual files (excluding `opencode.json` and dotfiles) are copied into `data/artifacts/` and uploaded to Discord. Files over 24 MB are skipped. The workspace dir is always cleaned up on exit.
+**Secret redaction:** all text sent to Discord passes through `SecretRedactor`, which scans the
+environment at startup for variables whose name contains `token`, `key`, `secret`, `password`,
+`dsn`, or `oauth` (value length ≥ 8) and replaces any matching value with `[REDACTED]`.
 
-**Secret redaction:** All text sent to Discord — LLM responses, inline code blocks, and file contents — is passed through `_redact_secrets()` before delivery. This scans `os.environ` at startup for any variable whose name contains `token`, `key`, `secret`, `password`, `dsn`, or `oauth`, and replaces any matching value in outbound text with `[REDACTED]`.
-
-**Large code responses:** If the LLM's final reply contains a fenced code block larger than 800 characters, `_extract_code_files()` pulls it out, infers a file extension from the language specifier (e.g. ` ```python` → `.py`), and uploads it as a Discord file attachment instead of pasting it inline. Unclosed code blocks (LLM hit token limit) are handled via `(?:```|$)` in the regex.
+**Large code responses:** `extract_code_files` pulls fenced code blocks larger than 800 chars out
+of the reply, infers an extension from the language tag, and uploads them as file attachments.
 
 ### MCP servers
 
-MCP servers are connected once at startup (`Agent.start()`) via stdio. Tool names are namespaced: `{server}__{tool}` (e.g. `ddg__search`, `jellyfin__get_movies`). A failed MCP startup is logged and skipped — the bot continues without that server.
-
-### Error reporting
-
-Errors are captured by **Sentry** via `sentry_sdk.capture_exception()`. The Sentry event ID is then used to create a GitHub issue via `GitHubIssueReporter.create_error_issue()` — the issue body contains only the Sentry event ID and no sensitive data. The owner is DMed the issue URL on creation.
-
-`GitHubIssueReporter` in `src/github_issues.py` uses GitHub App JWT auth (RS256) to obtain an installation token, then POSTs to the GitHub Issues API.
+`mcp::McpServer` speaks newline-delimited JSON-RPC 2.0 over stdio: it performs the `initialize`
+handshake, lists tools, and calls them. Tool names are namespaced `{server}__{tool}` (e.g.
+`ddg__search`, `jellyfin__get_movies`). A failed MCP startup is logged and skipped.
 
 ---
 
 ## Adding a new tool
 
-1. Define `TOOL_DEFINITION` (name, description, `input_schema`) in `src/tools/your_tool.py`
-2. Implement the async function
-3. Import and register in `agent.py`:
-   - Add to `_build_tools()`: `tools.append(_to_openai_tool(**_flatten_tool(YOUR_TOOL)))`
-   - Add a branch in `_dispatch_tool()`
-4. Document the tool in the system prompt in `_build_system_prompt()`
+1. Add `definition()` and the async implementation in `src/tools/your_tool.rs`; register the module in `src/tools/mod.rs`.
+2. Push `definition()` into `Agent::build_tools`.
+3. Add a match arm in `Agent::dispatch_tool`.
+4. Mention the tool in `build_system_prompt`.
 
 ## Adding a new MCP server
 
-Add an entry to `_mcp_server_configs()` in `agent.py`:
-```python
-configs.append(("prefix", StdioServerParameters(command="mcp-server-binary", env={...})))
+Add an entry in `agent::start_mcp_servers`:
+```rust
+if let Some(s) = McpServer::start("prefix", "mcp-binary", &args, &env).await {
+    servers.push(s);
+}
 ```
-Tools from that server will appear as `prefix__tool_name` automatically.
+Its tools appear as `prefix__tool_name` automatically.
 
 ---
 
 ## Data
 
-- **History** (`data/history/<user_id>.jsonl`): one JSON object per turn, trimmed to `MAX_HISTORY_TURNS` (default 30) pairs. Format is raw OpenAI message dicts.
-- **Memory** (`data/memories/<user_id>.md`): free-form markdown, rewritten in full on each `update_memory` call.
-- **Artifacts** (`data/artifacts/<uid>_<filename>`): individual files copied out of the sandbox workspace after each run. Not cleaned up automatically beyond the 24 MB per-file gate. `opencode.json` and dotfiles are excluded.
+- **History** (`data/history/<user_id>.jsonl`): one JSON message per line, trimmed to `MAX_HISTORY_TURNS` pairs.
+- **Memory** (`data/memories/<user_id>.md`): free-form markdown, rewritten in full on each `update_memory`.
+- **Notes** (`data/notes/<user_id>.json`), **skills** (`data/skills.json`), **reminders** (`data/reminders.json`).
+- **Artifacts** (`data/artifacts/<uid>_<filename>`): files copied out of the sandbox workspace.
 
-Both `data/` paths are volume-mounted in docker-compose so they survive container restarts.
+`data/` is volume-mounted in docker-compose so it survives restarts.
