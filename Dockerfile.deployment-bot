@@ -1,0 +1,24 @@
+# The deployment bot is published separately so it remains usable when the
+# main housebot image fails to build or has a bad runtime release.
+FROM docker:27-cli AS docker-cli
+
+FROM rust:1-bookworm AS rust-builder
+WORKDIR /app
+COPY Cargo.toml Cargo.lock ./
+RUN mkdir src \
+    && echo 'fn main() {}' > src/main.rs \
+    && echo '' > src/lib.rs \
+    && cargo build --release --locked --bin deployment-bot || true
+COPY src/ src/
+RUN touch src/main.rs src/lib.rs \
+    && cargo build --release --locked --bin deployment-bot
+
+FROM debian:bookworm-slim
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY --from=docker-cli /usr/local/bin/docker /usr/local/bin/docker
+COPY --from=rust-builder /app/target/release/deployment-bot /usr/local/bin/deployment-bot
+
+CMD ["deployment-bot"]

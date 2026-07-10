@@ -2,8 +2,7 @@ name: house-chatbot
 
 services:
   deployment-bot:
-    image: ghcr.io/bushshrub/housebot:latest
-    command: ["deployment-bot"]
+    image: ghcr.io/bushshrub/housebot/deployment-bot:latest
     restart: unless-stopped
     env_file: .env
     volumes:
