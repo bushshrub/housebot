@@ -1,20 +1,6 @@
 name: house-chatbot
 
 services:
-  house-chatbot:
-    image: ghcr.io/bushshrub/housebot:latest
-    restart: unless-stopped
-    env_file: .env
-    volumes:
-      - ./data:/app/data
-      - /var/run/docker.sock:/var/run/docker.sock
-    environment:
-      - DATA_DIR=/app/data
-      - SANDBOX_IMAGE=ghcr.io/bushshrub/housebot/sandbox:latest
-      - DOCKER_NETWORK=house-chatbot_default
-      - SANDBOX_TIMEOUT=${SANDBOX_TIMEOUT:-300}
-      - HOST_DATA_DIR=${HOST_DATA_DIR}
-
   deployment-bot:
     image: ghcr.io/bushshrub/housebot:latest
     command: ["deployment-bot"]
@@ -25,3 +11,4 @@ services:
       - ${HOMELAB_DEPLOY_PATH:-.}:/deployment
     environment:
       - DEPLOYMENT_PATH=/deployment
+      - DOCKER_NETWORK=house-chatbot_default

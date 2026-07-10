@@ -74,6 +74,9 @@ struct DeploymentBot {
     last_event: Arc<RwLock<Option<DeploymentEvent>>>,
     github_repo: String,
     github_token: Option<String>,
+    host_data_dir: String,
+    docker_network: String,
+    sandbox_timeout: String,
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
@@ -90,18 +93,41 @@ pub struct GitHubCommitDetails {
 
 impl DeploymentBot {
     async fn rollback(&self) -> anyhow::Result<String> {
-        let checkpoint = self.deploy_path.join(".prev_image_digest");
+        let checkpoint = self.deploy_path.join(".prev_image");
         let digest = tokio::fs::read_to_string(&checkpoint)
             .await?
             .trim()
             .to_string();
-        let commands = rollback_commands(&digest)?;
+        let commands = container_commands(
+            &digest,
+            "ghcr.io/bushshrub/housebot/sandbox:latest",
+            &self.host_data_dir,
+            &self.docker_network,
+            &self.sandbox_timeout,
+        )?;
 
-        for command in &commands {
+        for (index, command) in commands.iter().enumerate() {
             let args = command.iter().map(String::as_str).collect::<Vec<_>>();
-            run_docker(&args, &self.deploy_path).await?;
+            let output = run_docker(&args, &self.deploy_path).await?;
+            if index == commands.len() - 1 && output != "true" {
+                anyhow::bail!("house-chatbot is not running after rollback");
+            }
         }
         Ok(format!("Rolled house-chatbot back to `{digest}`."))
+    }
+
+    async fn checkpoint_current_image(&self) -> anyhow::Result<()> {
+        let image = run_docker(
+            &["inspect", "--format={{.Config.Image}}", "house-chatbot"],
+            &self.deploy_path,
+        )
+        .await;
+        if let Ok(image) = image {
+            if valid_housebot_image(&image) {
+                tokio::fs::write(self.deploy_path.join(".prev_image"), image).await?;
+            }
+        }
+        Ok(())
     }
 
     async fn commits(&self, sha: &str) -> anyhow::Result<(GitHubCommit, Vec<GitHubCommit>)> {
@@ -137,39 +163,76 @@ pub fn valid_sha(sha: &str) -> bool {
     (7..=40).contains(&sha.len()) && sha.bytes().all(|byte| byte.is_ascii_hexdigit())
 }
 
-pub fn deploy_commands(sha: &str) -> anyhow::Result<Vec<Vec<String>>> {
+pub fn deploy_commands(
+    sha: &str,
+    host_data_dir: &str,
+    docker_network: &str,
+    sandbox_timeout: &str,
+) -> anyhow::Result<Vec<Vec<String>>> {
     if !valid_sha(sha) {
         anyhow::bail!("SHA must contain 7 to 40 hexadecimal characters");
     }
     let main = format!("ghcr.io/bushshrub/housebot:sha-{sha}");
     let sandbox = format!("ghcr.io/bushshrub/housebot/sandbox:sha-{sha}");
+    container_commands(
+        &main,
+        &sandbox,
+        host_data_dir,
+        docker_network,
+        sandbox_timeout,
+    )
+}
+
+fn valid_housebot_image(image: &str) -> bool {
+    image.starts_with("ghcr.io/bushshrub/housebot:sha-")
+        || image.starts_with("ghcr.io/bushshrub/housebot@sha256:")
+}
+
+pub fn container_commands(
+    image: &str,
+    sandbox_image: &str,
+    host_data_dir: &str,
+    docker_network: &str,
+    sandbox_timeout: &str,
+) -> anyhow::Result<Vec<Vec<String>>> {
+    if !valid_housebot_image(image) {
+        anyhow::bail!("invalid housebot deployment image");
+    }
+    if host_data_dir.is_empty() || !host_data_dir.starts_with('/') {
+        anyhow::bail!("HOST_DATA_DIR must be an absolute host path");
+    }
     Ok(vec![
-        vec!["pull".into(), main.clone()],
-        vec!["pull".into(), sandbox.clone()],
+        vec!["pull".into(), image.into()],
+        vec!["pull".into(), sandbox_image.into()],
+        vec!["rm".into(), "--force".into(), "house-chatbot".into()],
         vec![
-            "tag".into(),
-            main,
-            "ghcr.io/bushshrub/housebot:latest".into(),
-        ],
-        vec![
-            "tag".into(),
-            sandbox,
-            "ghcr.io/bushshrub/housebot/sandbox:latest".into(),
-        ],
-        vec![
-            "compose".into(),
-            "up".into(),
-            "-d".into(),
-            "--no-deps".into(),
-            "--force-recreate".into(),
+            "run".into(),
+            "--detach".into(),
+            "--name".into(),
             "house-chatbot".into(),
+            "--restart".into(),
+            "unless-stopped".into(),
+            "--network".into(),
+            docker_network.into(),
+            "--env-file".into(),
+            "/deployment/.env".into(),
+            "--env".into(),
+            "DATA_DIR=/app/data".into(),
+            "--env".into(),
+            format!("SANDBOX_IMAGE={sandbox_image}"),
+            "--env".into(),
+            format!("DOCKER_NETWORK={docker_network}"),
+            "--env".into(),
+            format!("SANDBOX_TIMEOUT={sandbox_timeout}"),
+            "--volume".into(),
+            format!("{host_data_dir}:/app/data"),
+            "--volume".into(),
+            "/var/run/docker.sock:/var/run/docker.sock".into(),
+            image.into(),
         ],
         vec![
-            "compose".into(),
-            "ps".into(),
-            "--status".into(),
-            "running".into(),
-            "--quiet".into(),
+            "inspect".into(),
+            "--format={{.State.Running}}".into(),
             "house-chatbot".into(),
         ],
     ])
@@ -179,8 +242,8 @@ pub fn deploy_progress(index: usize) -> &'static str {
     match index {
         0 => "⬇️ Pulling housebot image…",
         1 => "⬇️ Pulling sandbox image…",
-        2 | 3 => "🏷️ Selecting requested images…",
-        4 => "🚀 Recreating housebot…",
+        2 => "🛑 Removing the previous housebot container…",
+        3 => "🚀 Starting the requested housebot image…",
         _ => "🩺 Checking container state…",
     }
 }
@@ -223,38 +286,15 @@ fn short_sha(sha: &str) -> &str {
     sha.get(..7).unwrap_or(sha)
 }
 
-pub fn rollback_commands(digest: &str) -> anyhow::Result<Vec<Vec<String>>> {
-    if digest.is_empty()
-        || digest == "none"
-        || !digest.starts_with("ghcr.io/bushshrub/housebot@sha256:")
-    {
-        anyhow::bail!("no valid previous deployment checkpoint is available");
-    }
-    Ok(vec![
-        vec!["pull".into(), digest.into()],
-        vec![
-            "tag".into(),
-            digest.into(),
-            "ghcr.io/bushshrub/housebot:latest".into(),
-        ],
-        vec![
-            "compose".into(),
-            "up".into(),
-            "-d".into(),
-            "--no-deps".into(),
-            "--force-recreate".into(),
-            "house-chatbot".into(),
-        ],
-    ])
-}
-
 async fn run_docker(args: &[&str], cwd: &Path) -> anyhow::Result<String> {
     let output = ProcessCommand::new("docker")
         .args(args)
         .current_dir(cwd)
         .output()
         .await?;
-    if !output.status.success() {
+    let missing_container = args.first() == Some(&"rm")
+        && String::from_utf8_lossy(&output.stderr).contains("No such container");
+    if !output.status.success() && !missing_container {
         anyhow::bail!(
             "docker command failed: {}",
             String::from_utf8_lossy(&output.stderr).trim()
@@ -333,8 +373,14 @@ impl EventHandler for DeploymentBot {
             {
                 return;
             }
-            let commands = deploy_commands(sha);
+            let commands = deploy_commands(
+                sha,
+                &self.host_data_dir,
+                &self.docker_network,
+                &self.sandbox_timeout,
+            );
             let result = async {
+                self.checkpoint_current_image().await?;
                 let commands = commands?;
                 for (index, command) in commands.iter().enumerate() {
                     component
@@ -345,7 +391,7 @@ impl EventHandler for DeploymentBot {
                         .await?;
                     let args = command.iter().map(String::as_str).collect::<Vec<_>>();
                     let output = run_docker(&args, &self.deploy_path).await?;
-                    if index == commands.len() - 1 && output.is_empty() {
+                    if index == commands.len() - 1 && output != "true" {
                         anyhow::bail!("house-chatbot is not running after deployment");
                     }
                 }
@@ -457,6 +503,11 @@ pub async fn run() -> anyhow::Result<()> {
         last_event: Arc::new(RwLock::new(None)),
         github_repo: std::env::var("GITHUB_REPO").unwrap_or_else(|_| "bushshrub/housebot".into()),
         github_token: std::env::var("GITHUB_TOKEN").ok(),
+        host_data_dir: std::env::var("HOST_DATA_DIR")
+            .map_err(|_| anyhow::anyhow!("HOST_DATA_DIR is not set"))?,
+        docker_network: std::env::var("DOCKER_NETWORK")
+            .unwrap_or_else(|_| "house-chatbot_default".into()),
+        sandbox_timeout: std::env::var("SANDBOX_TIMEOUT").unwrap_or_else(|_| "300".into()),
     };
     let intents = GatewayIntents::non_privileged() | GatewayIntents::MESSAGE_CONTENT;
     Client::builder(token, intents)
@@ -510,26 +561,41 @@ mod tests {
     #[test]
     fn rollback_plan_uses_only_the_checkpoint_digest() {
         let digest = "ghcr.io/bushshrub/housebot@sha256:abc123";
-        let commands = rollback_commands(digest).unwrap();
-        assert_eq!(commands.len(), 3);
+        let commands = container_commands(digest, "sandbox", "/data", "network", "300").unwrap();
+        assert_eq!(commands.len(), 5);
         assert_eq!(commands[0], vec!["pull", digest]);
-        assert_eq!(commands[2].last().unwrap(), "house-chatbot");
+        assert_eq!(commands[3].last().unwrap(), digest);
     }
 
     #[test]
     fn rollback_rejects_tags_and_unrelated_images() {
-        assert!(rollback_commands("ghcr.io/bushshrub/housebot:latest").is_err());
-        assert!(rollback_commands("ghcr.io/other/image@sha256:abc").is_err());
-        assert!(rollback_commands("none").is_err());
+        assert!(container_commands(
+            "ghcr.io/bushshrub/housebot:latest",
+            "sandbox",
+            "/data",
+            "network",
+            "300"
+        )
+        .is_err());
+        assert!(container_commands(
+            "ghcr.io/other/image@sha256:abc",
+            "sandbox",
+            "/data",
+            "network",
+            "300"
+        )
+        .is_err());
+        assert!(container_commands("none", "sandbox", "/data", "network", "300").is_err());
     }
 
     #[test]
     fn deploy_plan_is_sha_scoped_and_rejects_injection() {
-        let commands = deploy_commands("abcdef123456").unwrap();
-        assert_eq!(commands.len(), 6);
+        let commands = deploy_commands("abcdef123456", "/data", "network", "300").unwrap();
+        assert_eq!(commands.len(), 5);
         assert!(commands[0][1].ends_with(":sha-abcdef123456"));
-        assert!(deploy_commands("latest").is_err());
-        assert!(deploy_commands("abcdef;reboot").is_err());
+        assert!(commands[3].contains(&"--env-file".to_string()));
+        assert!(deploy_commands("latest", "/data", "network", "300").is_err());
+        assert!(deploy_commands("abcdef;reboot", "/data", "network", "300").is_err());
     }
 
     #[test]
