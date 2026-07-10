@@ -8,7 +8,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential \
     && rm -rf /var/lib/apt/lists/*
 
-RUN npm install -g @anthropic-ai/claude-code opencode-ai
+RUN npm install -g --no-fund --no-audit @anthropic-ai/claude-code opencode-ai \
+    && npm cache clean --force
 
 # Claude Code refuses --dangerously-skip-permissions when running as root.
 RUN useradd -m -s /bin/bash sandbox \
@@ -17,7 +18,10 @@ RUN useradd -m -s /bin/bash sandbox \
 
 # Install Rust toolchain for the sandbox user
 USER sandbox
-RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain stable
+# The default rustup profile includes documentation and other components that
+# are not needed to compile projects. The minimal profile cuts hundreds of MB.
+RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- \
+    -y --default-toolchain stable --profile minimal
 ENV PATH="/home/sandbox/.cargo/bin:${PATH}"
 USER root
 

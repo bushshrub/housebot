@@ -1,0 +1,19 @@
+# Local build output can be multiple gigabytes and is never needed by Docker.
+target/
+
+# Runtime state and credentials must not enter the build context.
+data/
+.env
+.env.*
+
+# Repository and editor metadata.
+.git/
+.github/
+.agents/
+.codex/
+*.swp
+*~
+
+# Documentation and local project guidance are not runtime inputs.
+AGENTS.md
+README.md
