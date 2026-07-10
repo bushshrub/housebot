@@ -228,7 +228,8 @@ pub struct HouseBot {
     user_cfg: UserConfigStore,
     conversations: Mutex<ConversationTracker>,
     processing: Mutex<HashSet<u64>>,
-    responded: Mutex<VecDeque<u64>>,
+    /// Ring-buffer of recently-handled message IDs (for dedup).
+    responded: Mutex<(VecDeque<u64>, HashSet<u64>)>,
     reminder_started: AtomicBool,
 }
 
@@ -247,7 +248,7 @@ impl HouseBot {
             user_cfg: UserConfigStore::default(),
             conversations: Mutex::new(ConversationTracker::new(idle)),
             processing: Mutex::new(HashSet::new()),
-            responded: Mutex::new(VecDeque::with_capacity(200)),
+            responded: Mutex::new((VecDeque::with_capacity(200), HashSet::with_capacity(200))),
             reminder_started: AtomicBool::new(false),
         }
     }
@@ -255,7 +256,7 @@ impl HouseBot {
     async fn already_seen(&self, id: u64) -> bool {
         let mut processing = self.processing.lock().await;
         let responded = self.responded.lock().await;
-        if processing.contains(&id) || responded.contains(&id) {
+        if processing.contains(&id) || responded.1.contains(&id) {
             return true;
         }
         processing.insert(id);
@@ -264,11 +265,15 @@ impl HouseBot {
 
     async fn mark_done(&self, id: u64) {
         self.processing.lock().await.remove(&id);
-        let mut responded = self.responded.lock().await;
-        if responded.len() >= 200 {
-            responded.pop_front();
+        let mut guard = self.responded.lock().await;
+        let (queue, set) = &mut *guard;
+        if queue.len() >= 200 {
+            if let Some(evicted) = queue.pop_front() {
+                set.remove(&evicted);
+            }
         }
-        responded.push_back(id);
+        queue.push_back(id);
+        set.insert(id);
     }
 
     async fn handle_reset(&self, channel_id: u64, user_id: u64) -> String {
@@ -896,6 +901,13 @@ async fn send_final_message(ctx: &Context, msg: &Message, text: &str, progress: 
 }
 
 async fn extract_images(msg: &Message) -> Vec<ImageData> {
+    static HTTP: once_cell::sync::Lazy<reqwest::Client> = once_cell::sync::Lazy::new(|| {
+        reqwest::Client::builder()
+            .timeout(Duration::from_secs(15))
+            .build()
+            .expect("failed to build image HTTP client")
+    });
+
     let mut images = Vec::new();
     for att in &msg.attachments {
         let ext = att.filename.rsplit_once('.').map(|(_, e)| e.to_lowercase());
@@ -906,14 +918,18 @@ async fn extract_images(msg: &Message) -> Vec<ImageData> {
             Some("webp") => "image/webp",
             _ => continue,
         };
-        if let Ok(resp) = reqwest::get(&att.url).await {
-            if let Ok(bytes) = resp.bytes().await {
-                use base64::Engine;
-                images.push(ImageData {
-                    media_type: media_type.to_string(),
-                    data: base64::engine::general_purpose::STANDARD.encode(&bytes),
-                });
-            }
+        match HTTP.get(&att.url).send().await {
+            Ok(resp) => match resp.bytes().await {
+                Ok(bytes) => {
+                    use base64::Engine;
+                    images.push(ImageData {
+                        media_type: media_type.to_string(),
+                        data: base64::engine::general_purpose::STANDARD.encode(&bytes),
+                    });
+                }
+                Err(e) => tracing::warn!("Failed to read image bytes from {}: {e}", att.url),
+            },
+            Err(e) => tracing::warn!("Failed to download image {}: {e}", att.url),
         }
     }
     images
@@ -997,24 +1013,14 @@ impl AgentHooks for DiscordHooks {
         }
         let mut lines = self.lines.lock().await;
         lines.push(clean.to_string());
-        let tail: String = lines
-            .iter()
-            .rev()
-            .take(50)
-            .cloned()
-            .collect::<Vec<_>>()
-            .into_iter()
-            .rev()
-            .collect::<Vec<_>>()
-            .join("\n");
-        let tail: String = tail
-            .chars()
-            .rev()
-            .take(1800)
-            .collect::<Vec<_>>()
-            .into_iter()
-            .rev()
-            .collect();
+        let start = lines.len().saturating_sub(50);
+        let joined = lines[start..].join("\n");
+        // Truncate to at most 1800 chars from the end so the Discord message fits.
+        let tail = if joined.len() > 1800 {
+            &joined[joined.len() - 1800..]
+        } else {
+            &joined
+        };
         let content = format!("⚙️ **Working...**\n```\n{tail}\n```");
         drop(lines);
         self.update(content, false).await;
@@ -1022,6 +1028,7 @@ impl AgentHooks for DiscordHooks {
 }
 
 /// Run the bot: build the agent, register the handler, and connect to Discord.
+/// Exits cleanly on SIGTERM or Ctrl-C.
 pub async fn run() -> anyhow::Result<()> {
     let token = std::env::var("DISCORD_BOT_TOKEN")
         .map_err(|_| anyhow::anyhow!("DISCORD_BOT_TOKEN is not set"))?;
@@ -1031,7 +1038,29 @@ pub async fn run() -> anyhow::Result<()> {
     let intents = GatewayIntents::non_privileged() | GatewayIntents::MESSAGE_CONTENT;
     let mut client = Client::builder(&token, intents).event_handler(bot).await?;
     tracing::info!("Agent and MCP servers ready");
+
+    let shard_manager = client.shard_manager.clone();
+    tokio::spawn(async move {
+        #[cfg(unix)]
+        {
+            use tokio::signal::unix::{signal, SignalKind};
+            let mut sigterm =
+                signal(SignalKind::terminate()).expect("failed to register SIGTERM handler");
+            tokio::select! {
+                _ = sigterm.recv() => tracing::info!("Received SIGTERM — shutting down"),
+                _ = tokio::signal::ctrl_c() => tracing::info!("Received Ctrl-C — shutting down"),
+            }
+        }
+        #[cfg(not(unix))]
+        {
+            tokio::signal::ctrl_c().await.ok();
+            tracing::info!("Received Ctrl-C — shutting down");
+        }
+        shard_manager.shutdown_all().await;
+    });
+
     client.start().await?;
+    tracing::info!("Bot shut down cleanly");
     Ok(())
 }
 

@@ -58,7 +58,7 @@ impl RateLimiter {
     }
 
     fn check_at(&self, user: &str, now: Instant) -> bool {
-        let mut hits = self.hits.lock().unwrap();
+        let mut hits = self.hits.lock().unwrap_or_else(|p| p.into_inner());
         let entry = hits.entry(user.to_string()).or_default();
         entry.retain(|t| now.duration_since(*t) < self.window);
         if entry.len() >= self.max {

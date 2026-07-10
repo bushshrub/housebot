@@ -114,6 +114,12 @@ fn walk(
     }
 }
 
+/// Returns `true` when `path` is a relative path with no `..` components.
+fn is_safe_relative_path(path: &str) -> bool {
+    let p = std::path::Path::new(path);
+    !p.is_absolute() && !p.components().any(|c| c == std::path::Component::ParentDir)
+}
+
 fn short_uid() -> String {
     Uuid::new_v4().simple().to_string()[..8].to_string()
 }
@@ -173,9 +179,13 @@ pub async fn run_opencode(
             .join(&uid)
     };
 
-    // Seed files.
+    // Seed files. Reject paths that could escape the workspace via traversal.
     if let Some(files) = files {
         for (rel, content) in files {
+            if !is_safe_relative_path(rel) {
+                tracing::warn!("Ignoring unsafe file path in sandbox seed: {rel:?}");
+                continue;
+            }
             let p = container_workspace.join(rel);
             if let Some(parent) = p.parent() {
                 let _ = std::fs::create_dir_all(parent);
@@ -448,5 +458,25 @@ mod tests {
             definition()["input_schema"]["required"],
             serde_json::json!(["task"])
         );
+    }
+
+    #[test]
+    fn safe_relative_paths_accepted() {
+        assert!(is_safe_relative_path("src/main.rs"));
+        assert!(is_safe_relative_path("file.txt"));
+        assert!(is_safe_relative_path("a/b/c.py"));
+    }
+
+    #[test]
+    fn traversal_paths_rejected() {
+        assert!(!is_safe_relative_path("../secret"));
+        assert!(!is_safe_relative_path("../../etc/passwd"));
+        assert!(!is_safe_relative_path("src/../../etc/passwd"));
+    }
+
+    #[test]
+    fn absolute_paths_rejected() {
+        assert!(!is_safe_relative_path("/etc/passwd"));
+        assert!(!is_safe_relative_path("/tmp/evil"));
     }
 }

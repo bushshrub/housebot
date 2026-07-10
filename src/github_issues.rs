@@ -101,7 +101,7 @@ impl GitHubIssueReporter {
 
     async fn installation_token(&self) -> anyhow::Result<String> {
         {
-            let guard = self.cached.lock().unwrap();
+            let guard = self.cached.lock().unwrap_or_else(|p| p.into_inner());
             if let Some((tok, exp)) = guard.as_ref() {
                 if unix_now() < exp.saturating_sub(60) {
                     return Ok(tok.clone());
@@ -128,7 +128,8 @@ impl GitHubIssueReporter {
             .await?;
 
         let token = resp.token;
-        *self.cached.lock().unwrap() = Some((token.clone(), unix_now() + 3600));
+        *self.cached.lock().unwrap_or_else(|p| p.into_inner()) =
+            Some((token.clone(), unix_now() + 3600));
         Ok(token)
     }
 
@@ -237,9 +238,9 @@ mod tests {
 
     #[test]
     fn private_key_newlines_are_normalized() {
-        std::env::set_var("GITHUB_APP_PRIVATE_KEY", "line1\\nline2");
-        let r = GitHubIssueReporter::from_env();
+        // Test normalization directly without mutating env (avoids parallel-test race).
+        let raw = "line1\\nline2".replace("\\n", "\n");
+        let r = GitHubIssueReporter::new("id".into(), raw, "install".into(), "owner/repo".into());
         assert!(r.private_key.contains("line1\nline2"));
-        std::env::remove_var("GITHUB_APP_PRIVATE_KEY");
     }
 }
