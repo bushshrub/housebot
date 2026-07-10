@@ -272,9 +272,10 @@ impl HouseBot {
     }
 
     async fn handle_reset(&self, channel_id: u64, user_id: u64) -> String {
-        self.agent.start_new_session(&user_id.to_string()).await;
+        self.agent.reset_session(&user_id.to_string()).await;
         self.conversations.lock().await.remove(channel_id, user_id);
-        "Session reset. Your conversation history has been cleared (and summarized if there was any).".into()
+        "Session reset. Your conversation history has been cleared and a fresh session has started."
+            .into()
     }
 
     async fn respond(&self, ctx: &Context, msg: &Message, content: &str) {
@@ -553,6 +554,18 @@ impl EventHandler for HouseBot {
         if let Err(e) = Command::create_global_command(&ctx.http, config_cmd).await {
             tracing::error!("Failed to register /config slash command: {e}");
         }
+        for command in [
+            CreateCommand::new("model").description("Show information about the current model"),
+            CreateCommand::new("session")
+                .description("Show context and token usage for this session"),
+            CreateCommand::new("reset").description("Clear the conversation and start fresh"),
+            CreateCommand::new("compact")
+                .description("Summarize the conversation and start a new session"),
+        ] {
+            if let Err(e) = Command::create_global_command(&ctx.http, command).await {
+                tracing::error!("Failed to register slash command: {e}");
+            }
+        }
 
         if self.reminder_started.swap(true, Ordering::SeqCst) {
             return;
@@ -580,21 +593,32 @@ impl EventHandler for HouseBot {
         let Interaction::Command(cmd) = interaction else {
             return;
         };
-        if cmd.data.name != "config" {
-            return;
-        }
-
         let user_id = cmd.user.id.get();
         let guild_id = cmd.guild_id.map(|g| g.get());
-
-        let reply = handle_config_interaction(
-            &self.server_cfg,
-            &self.user_cfg,
-            &cmd.data.options,
-            user_id,
-            guild_id,
-        )
-        .await;
+        let reply = match cmd.data.name.as_str() {
+            "config" => {
+                handle_config_interaction(
+                    &self.server_cfg,
+                    &self.user_cfg,
+                    &cmd.data.options,
+                    user_id,
+                    guild_id,
+                )
+                .await
+            }
+            "model" => self.agent.model_info(),
+            "session" => self.agent.session_info(&user_id.to_string()).await,
+            "reset" => self.handle_reset(cmd.channel_id.get(), user_id).await,
+            "compact" => {
+                self.agent.compact_session(&user_id.to_string()).await;
+                self.conversations
+                    .lock()
+                    .await
+                    .remove(cmd.channel_id.get(), user_id);
+                "Conversation compacted into memory. A new session has started.".into()
+            }
+            _ => return,
+        };
 
         let response = CreateInteractionResponse::Message(
             CreateInteractionResponseMessage::new()
@@ -618,6 +642,17 @@ impl EventHandler for HouseBot {
         if content == "!reset" {
             let reply = self.handle_reset(channel_id, user_id).await;
             self.respond(&ctx, &msg, &reply).await;
+            return;
+        }
+        if content == "!compact" {
+            self.agent.compact_session(&user_id.to_string()).await;
+            self.conversations.lock().await.remove(channel_id, user_id);
+            self.respond(
+                &ctx,
+                &msg,
+                "Conversation compacted into memory. A new session has started.",
+            )
+            .await;
             return;
         }
         if msg.content.starts_with("!skill") {
@@ -713,7 +748,7 @@ impl HouseBot {
 
         if session_expired {
             self.agent
-                .start_new_session(&msg.author.id.get().to_string())
+                .compact_session(&msg.author.id.get().to_string())
                 .await;
         }
 
@@ -755,6 +790,9 @@ impl HouseBot {
         }
 
         let safe = self.redactor.redact(&result.text);
+        if let Some(notice) = &result.session_notice {
+            let _ = reply_no_ping(ctx, msg, notice).await;
+        }
         let (display, code_files) = extract_code_files(&safe);
         let progress = hooks.into_progress().await;
         send_final_message(ctx, msg, &display, progress).await;

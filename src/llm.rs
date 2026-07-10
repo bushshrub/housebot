@@ -22,6 +22,23 @@ pub struct ChatCompletion {
     pub content: Option<String>,
     pub tool_calls: Vec<ToolCall>,
     pub finish_reason: Option<String>,
+    pub usage: TokenUsage,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize)]
+pub struct TokenUsage {
+    #[serde(default)]
+    pub prompt_tokens: u64,
+    #[serde(default)]
+    pub completion_tokens: u64,
+    #[serde(default)]
+    pub prompt_tokens_details: PromptTokenDetails,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize)]
+pub struct PromptTokenDetails {
+    #[serde(default)]
+    pub cached_tokens: u64,
 }
 
 /// Async sink for incremental assistant text (used to stream into Discord).
@@ -80,6 +97,8 @@ impl OpenAiClient {
 struct StreamChunk {
     #[serde(default)]
     choices: Vec<StreamChoice>,
+    #[serde(default)]
+    usage: Option<TokenUsage>,
 }
 
 #[derive(Deserialize, Default)]
@@ -137,11 +156,15 @@ struct Accumulator {
     content: String,
     tool_calls: Vec<(String, String, String)>, // (id, name, arguments) indexed by slot
     finish_reason: Option<String>,
+    usage: TokenUsage,
 }
 
 impl Accumulator {
     /// Apply one decoded chunk, returning the new content delta (if any) for streaming.
     fn apply(&mut self, chunk: StreamChunk) -> Option<String> {
+        if let Some(usage) = chunk.usage {
+            self.usage = usage;
+        }
         let choice = chunk.choices.into_iter().next()?;
         if choice.finish_reason.is_some() {
             self.finish_reason = choice.finish_reason;
@@ -194,6 +217,7 @@ impl Accumulator {
                 })
                 .collect(),
             finish_reason: self.finish_reason,
+            usage: self.usage,
         }
     }
 }
@@ -222,6 +246,7 @@ impl ChatClient for OpenAiClient {
             "messages": messages,
             "max_tokens": max_tokens,
             "stream": true,
+            "stream_options": {"include_usage": true},
         });
         if !tools.is_empty() {
             body["tools"] = Value::Array(tools.to_vec());

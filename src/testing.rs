@@ -43,6 +43,7 @@ impl MockChatClient {
                 content: Some(text.to_string()),
                 tool_calls: vec![],
                 finish_reason: Some("stop".into()),
+                usage: Default::default(),
             });
     }
 
@@ -59,6 +60,7 @@ impl MockChatClient {
                     arguments: arguments.to_string(),
                 }],
                 finish_reason: Some("tool_calls".into()),
+                usage: Default::default(),
             });
     }
 }
@@ -83,6 +85,7 @@ impl ChatClient for MockChatClient {
                 content: Some(String::new()),
                 tool_calls: vec![],
                 finish_reason: Some("stop".into()),
+                usage: Default::default(),
             });
         if let (Some(sink), Some(text)) = (sink, completion.content.as_deref()) {
             sink.push(text).await;

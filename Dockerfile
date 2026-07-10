@@ -42,6 +42,7 @@ ENV PATH="/root/.local/bin:$PATH"
 
 WORKDIR /app
 COPY --from=rust-builder /app/target/release/housebot /usr/local/bin/housebot
+COPY --from=rust-builder /app/target/release/deployment-bot /usr/local/bin/deployment-bot
 
 RUN mkdir -p data/history data/memories
 

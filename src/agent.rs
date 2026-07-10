@@ -1,7 +1,7 @@
 //! The agentic loop: builds prompts, streams completions from the LLM, dispatches tool
 //! calls (built-in tools + MCP servers), and persists per-user history and memory.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -12,7 +12,7 @@ use serde_json::{json, Value};
 use crate::config;
 use crate::github_issues::GitHubIssueReporter;
 use crate::history::History;
-use crate::llm::{ChatClient, OpenAiClient, TextSink};
+use crate::llm::{ChatClient, OpenAiClient, TextSink, TokenUsage};
 use crate::mcp::McpServer;
 use crate::memory::Memory;
 use crate::reminders::Reminders;
@@ -31,6 +31,7 @@ pub struct ImageData {
 pub struct AgentResult {
     pub text: String,
     pub artifact_paths: Vec<PathBuf>,
+    pub session_notice: Option<String>,
 }
 
 /// Per-request callbacks used to surface progress into the chat surface.
@@ -86,6 +87,15 @@ pub struct Agent {
     reporter: Arc<GitHubIssueReporter>,
     rate_limiter: tools::feature_request::RateLimiter,
     mcp_servers: Vec<McpServer>,
+    session_stats: tokio::sync::Mutex<HashMap<String, SessionStats>>,
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+struct SessionStats {
+    requests: u64,
+    input_tokens: u64,
+    output_tokens: u64,
+    cached_tokens: u64,
 }
 
 impl Agent {
@@ -107,6 +117,7 @@ impl Agent {
             reporter: Arc::new(GitHubIssueReporter::default()),
             rate_limiter: tools::feature_request::RateLimiter::default(),
             mcp_servers,
+            session_stats: tokio::sync::Mutex::new(HashMap::new()),
         }
     }
 
@@ -117,8 +128,15 @@ impl Agent {
 
     // ── session lifecycle ────────────────────────────────────────────────────
 
-    /// Summarize the previous conversation into memory and clear history.
-    pub async fn start_new_session(&self, user_id: &str) {
+    /// Clear conversation history and counters without preserving a summary.
+    pub async fn reset_session(&self, user_id: &str) {
+        self.session_stats.lock().await.remove(user_id);
+        let _ = self.history.clear(user_id).await;
+    }
+
+    /// Summarize the current conversation, then start a fresh session.
+    pub async fn compact_session(&self, user_id: &str) {
+        self.session_stats.lock().await.remove(user_id);
         let past = self.history.load(user_id).await;
         if past.is_empty() {
             return;
@@ -163,6 +181,38 @@ impl Agent {
         let _ = self.history.clear(user_id).await;
     }
 
+    pub fn model_info(&self) -> String {
+        format!(
+            "**Model**\nName: `{}`\nMax context: ~{} tokens ({} characters)",
+            self.model,
+            self.max_context_chars / 4,
+            self.max_context_chars
+        )
+    }
+
+    pub async fn session_info(&self, user_id: &str) -> String {
+        let history = self.history.load(user_id).await;
+        let chars = context_chars(&history);
+        let stats = self
+            .session_stats
+            .lock()
+            .await
+            .get(user_id)
+            .copied()
+            .unwrap_or_default();
+        let percent = chars as f64 / self.max_context_chars.max(1) as f64 * 100.0;
+        format!("**Session**\nContext: {chars} / {} characters ({percent:.1}%, ~{} tokens)\nMessages: {}\nModel requests: {}\nInput tokens: {}\nOutput tokens: {}\nCached tokens: {}", self.max_context_chars, chars / 4, history.len(), stats.requests, stats.input_tokens, stats.output_tokens, stats.cached_tokens)
+    }
+
+    async fn record_usage(&self, user_id: &str, usage: TokenUsage) {
+        let mut all = self.session_stats.lock().await;
+        let stats = all.entry(user_id.to_string()).or_default();
+        stats.requests += 1;
+        stats.input_tokens += usage.prompt_tokens;
+        stats.output_tokens += usage.completion_tokens;
+        stats.cached_tokens += usage.prompt_tokens_details.cached_tokens;
+    }
+
     // ── main loop ────────────────────────────────────────────────────────────
 
     /// Run one user turn to completion, returning the final assistant text and artifacts.
@@ -177,12 +227,26 @@ impl Agent {
     ) -> AgentResult {
         let mut user_memory = self.memory.load(user_id).await;
         let mut past = self.history.load(user_id).await;
+        let mut session_notice = None;
+        let new_user_message = build_user_message(text, image_data);
 
-        if !past.is_empty() && context_chars(&past) > self.max_context_chars {
-            tracing::info!("Context overflow for {user_id} — auto-summarizing session");
-            self.start_new_session(user_id).await;
+        let projected_chars =
+            context_chars(&past) + context_chars(std::slice::from_ref(&new_user_message));
+        let usage = projected_chars as f64 / self.max_context_chars.max(1) as f64;
+        if !past.is_empty() && usage >= 0.8 {
+            tracing::info!("Context at 80% for {user_id} — auto-compacting session");
+            self.compact_session(user_id).await;
             past.clear();
             user_memory = self.memory.load(user_id).await;
+            session_notice = Some(
+                "⚠️ The context window reached 80%, so I compacted the conversation and started a new session."
+                    .into(),
+            );
+        } else if usage >= 0.7 {
+            session_notice = Some(format!(
+                "⚠️ The context window is {:.0}% full. It will compact automatically at 80%.",
+                usage * 100.0
+            ));
         }
 
         let all_skills = self.skills.load_all().await;
@@ -190,8 +254,6 @@ impl Agent {
             "role": "system",
             "content": build_system_prompt(username, user_id, &user_memory, &all_skills, personality),
         });
-        let new_user_message = build_user_message(text, image_data);
-
         let mut messages: Vec<Value> = Vec::with_capacity(past.len() + 2);
         messages.push(system);
         messages.extend(past);
@@ -214,6 +276,7 @@ impl Agent {
                     break "Sorry, something went wrong contacting the model.".to_string();
                 }
             };
+            self.record_usage(user_id, completion.usage).await;
 
             let mut assistant = json!({ "role": "assistant", "content": completion.content });
             if !completion.tool_calls.is_empty() {
@@ -276,6 +339,7 @@ impl Agent {
                 final_text
             },
             artifact_paths: all_artifacts,
+            session_notice,
         }
     }
 
@@ -640,6 +704,7 @@ impl Agent {
             )),
             rate_limiter: tools::feature_request::RateLimiter::default(),
             mcp_servers: vec![],
+            session_stats: tokio::sync::Mutex::new(HashMap::new()),
         }
     }
 

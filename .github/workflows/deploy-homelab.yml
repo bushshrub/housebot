@@ -14,7 +14,7 @@ name: Deploy to HomeLab
 
 on:
   workflow_run:
-    workflows: ["Build and publish Docker images"]
+    workflows: ["Post-merge Docker publish"]
     types: [completed]
     branches: [main, master]
   workflow_dispatch:

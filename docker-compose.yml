@@ -14,3 +14,14 @@ services:
       - DOCKER_NETWORK=house-chatbot_default
       - SANDBOX_TIMEOUT=${SANDBOX_TIMEOUT:-300}
       - HOST_DATA_DIR=${HOST_DATA_DIR}
+
+  deployment-bot:
+    image: ghcr.io/bushshrub/housebot:latest
+    command: ["deployment-bot"]
+    restart: unless-stopped
+    env_file: .env
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ${HOMELAB_DEPLOY_PATH:-.}:/deployment
+    environment:
+      - DEPLOYMENT_PATH=/deployment
