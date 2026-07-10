@@ -65,5 +65,6 @@ jobs:
             ${{ env.REGISTRY }}/${{ github.repository }}${{ matrix.image-suffix }}:sha-${{ github.sha }}
             ${{ github.ref_type == 'tag' && format('{0}/{1}{2}:{3}', env.REGISTRY, github.repository, matrix.image-suffix, github.ref_name) || '' }}
           labels: ${{ steps.meta.outputs.labels }}
-          cache-from: type=gha,scope=publish-${{ matrix.name }}
-          cache-to: type=gha,mode=max,scope=publish-${{ matrix.name }}
+          # Keep the scopes stable across workflow changes so existing caches remain usable.
+          cache-from: type=gha,scope=${{ matrix.name }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.name }}
