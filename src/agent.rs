@@ -173,6 +173,7 @@ impl Agent {
         text: &str,
         image_data: &[ImageData],
         hooks: &dyn AgentHooks,
+        personality: Option<&str>,
     ) -> AgentResult {
         let mut user_memory = self.memory.load(user_id).await;
         let mut past = self.history.load(user_id).await;
@@ -187,7 +188,7 @@ impl Agent {
         let all_skills = self.skills.load_all().await;
         let system = json!({
             "role": "system",
-            "content": build_system_prompt(username, user_id, &user_memory, &all_skills),
+            "content": build_system_prompt(username, user_id, &user_memory, &all_skills, personality),
         });
         let new_user_message = build_user_message(text, image_data);
 
@@ -502,12 +503,19 @@ pub fn build_system_prompt(
     user_id: &str,
     user_memory: &str,
     all_skills: &BTreeMap<String, Skill>,
+    personality: Option<&str>,
 ) -> String {
     let now = Local::now().format("%Y-%m-%d %H:%M");
     let memory_section = if user_memory.trim().is_empty() {
         String::new()
     } else {
         format!("\n\n## Your memory about {username}\n{user_memory}")
+    };
+    let personality_section = match personality {
+        Some(p) if !p.trim().is_empty() => {
+            format!("\n\n## Personality / tone for this user\n{}", p.trim())
+        }
+        _ => String::new(),
     };
     let skills_section = if all_skills.is_empty() {
         "\n- run_skill — Execute a custom skill by name. No skills are defined yet; users can add \
@@ -526,7 +534,7 @@ pub fn build_system_prompt(
     format!(
         "You are a helpful house assistant bot in a Discord server. You help with media, web \
 search, and software development tasks.\n\nCurrent date/time: {now}\nCurrent user: {username} \
-(ID: {user_id}){memory_section}\n\n## Tools\n- ddg__* — Search the web via DuckDuckGo for current \
+(ID: {user_id}){memory_section}{personality_section}\n\n## Tools\n- ddg__* — Search the web via DuckDuckGo for current \
 information.\n- jellyfin__* — Query the household Jellyfin media server for movies, shows, music. \
 READ ONLY — only call get_* / search_* / list_* methods; never call mutating actions.\n- \
 run_opencode — Run a coding task using OpenCode + local llama.cpp model. Good for quick scripts \
@@ -652,14 +660,14 @@ mod tests {
 
     #[test]
     fn system_prompt_includes_username_and_id() {
-        let p = build_system_prompt("Alice", "123", "", &empty_skills());
+        let p = build_system_prompt("Alice", "123", "", &empty_skills(), None);
         assert!(p.contains("Alice"));
         assert!(p.contains("123"));
     }
 
     #[test]
     fn system_prompt_memory_section_present_when_nonempty() {
-        let p = build_system_prompt("Alice", "123", "Likes cats", &empty_skills());
+        let p = build_system_prompt("Alice", "123", "Likes cats", &empty_skills(), None);
         assert!(p.contains("Likes cats"));
         assert!(p.contains("Your memory"));
     }
@@ -667,7 +675,7 @@ mod tests {
     #[test]
     fn system_prompt_memory_absent_when_blank() {
         assert!(
-            !build_system_prompt("Alice", "123", "   ", &empty_skills()).contains("Your memory")
+            !build_system_prompt("Alice", "123", "   ", &empty_skills(), None).contains("Your memory")
         );
     }
 
@@ -683,27 +691,27 @@ mod tests {
                 created_by: None,
             },
         );
-        let p = build_system_prompt("Alice", "123", "", &skills);
+        let p = build_system_prompt("Alice", "123", "", &skills, None);
         assert!(p.contains("greet"));
         assert!(p.contains("Say hello"));
     }
 
     #[test]
     fn system_prompt_placeholder_without_skills() {
-        assert!(build_system_prompt("Alice", "123", "", &empty_skills())
+        assert!(build_system_prompt("Alice", "123", "", &empty_skills(), None)
             .contains("No skills are defined yet"));
     }
 
     #[test]
     fn system_prompt_has_tldr_and_500() {
-        let p = build_system_prompt("Alice", "123", "", &empty_skills());
+        let p = build_system_prompt("Alice", "123", "", &empty_skills(), None);
         assert!(p.contains("TL;DR"));
         assert!(p.contains("500"));
     }
 
     #[test]
     fn system_prompt_does_not_mention_claude_code() {
-        let p = build_system_prompt("Alice", "123", "", &empty_skills());
+        let p = build_system_prompt("Alice", "123", "", &empty_skills(), None);
         assert!(!p.contains("run_claude_code"));
         assert!(!p.contains("Claude Code"));
     }
@@ -775,7 +783,7 @@ mod tests {
         let client = Arc::new(MockChatClient::new());
         client.push_text("hello there");
         let (_t, agent) = test_agent(client);
-        let result = agent.run("u1", "Alice", "hi", &[], &NoHooks).await;
+        let result = agent.run("u1", "Alice", "hi", &[], &NoHooks, None).await;
         assert_eq!(result.text, "hello there");
     }
 
@@ -784,7 +792,7 @@ mod tests {
         let client = Arc::new(MockChatClient::new());
         client.push_text("saved reply");
         let (_t, agent) = test_agent(client);
-        agent.run("u2", "Bob", "remember this", &[], &NoHooks).await;
+        agent.run("u2", "Bob", "remember this", &[], &NoHooks, None).await;
         let hist = agent.history.load("u2").await;
         assert_eq!(hist.len(), 2); // user + assistant
         assert_eq!(hist[0]["content"], "remember this");
@@ -802,7 +810,7 @@ mod tests {
         client.push_text("It means Bonjour.");
         let (_t, agent) = test_agent(client);
         let result = agent
-            .run("u3", "Cy", "translate Hello to French", &[], &NoHooks)
+            .run("u3", "Cy", "translate Hello to French", &[], &NoHooks, None)
             .await;
         assert_eq!(result.text, "It means Bonjour.");
         // History should contain the assistant tool-call turn and the tool result.
@@ -819,7 +827,7 @@ mod tests {
         client.push_text("Noted.");
         let (_t, agent) = test_agent(client);
         agent
-            .run("u4", "Dee", "remember I like tea", &[], &NoHooks)
+            .run("u4", "Dee", "remember I like tea", &[], &NoHooks, None)
             .await;
         assert_eq!(agent.memory.load("u4").await, "Likes tea");
     }
@@ -879,7 +887,7 @@ mod tests {
             .await
             .unwrap();
 
-        agent.run("u5", "Ed", "hi again", &[], &NoHooks).await;
+        agent.run("u5", "Ed", "hi again", &[], &NoHooks, None).await;
 
         // The oversized message must have been summarized away; only the new turn remains.
         let hist = agent.history.load("u5").await;

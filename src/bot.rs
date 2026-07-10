@@ -17,6 +17,7 @@ use serenity::Client;
 use tokio::sync::Mutex;
 
 use crate::agent::{Agent, AgentHooks, AgentResult, ImageData};
+use crate::bot_config::{ServerConfigStore, UserConfigStore};
 use crate::config;
 use crate::history::History;
 use crate::memory::Memory;
@@ -204,21 +205,21 @@ impl SecretRedactor {
 
 /// Tracks which (channel, user) conversations are still within the idle window.
 pub struct ConversationTracker {
-    idle_timeout: Duration,
-    last_active: std::collections::HashMap<(u64, u64), Instant>,
+    default_idle_timeout: Duration,
+    last_active: std::collections::HashMap<(u64, u64), (Instant, Duration)>,
 }
 
 impl ConversationTracker {
     pub fn new(idle_timeout: Duration) -> Self {
         Self {
-            idle_timeout,
+            default_idle_timeout: idle_timeout,
             last_active: std::collections::HashMap::new(),
         }
     }
 
     pub fn is_active(&self, channel_id: u64, user_id: u64, now: Instant) -> bool {
         match self.last_active.get(&(channel_id, user_id)) {
-            Some(&t) => now.duration_since(t) <= self.idle_timeout,
+            Some(&(t, timeout)) => now.duration_since(t) <= timeout,
             None => false,
         }
     }
@@ -226,8 +227,8 @@ impl ConversationTracker {
     /// Remove an expired entry; return whether one existed.
     pub fn pop_timed_out(&mut self, channel_id: u64, user_id: u64, now: Instant) -> bool {
         let key = (channel_id, user_id);
-        if let Some(&t) = self.last_active.get(&key) {
-            if now.duration_since(t) > self.idle_timeout {
+        if let Some(&(t, timeout)) = self.last_active.get(&key) {
+            if now.duration_since(t) > timeout {
                 self.last_active.remove(&key);
                 return true;
             }
@@ -235,12 +236,16 @@ impl ConversationTracker {
         false
     }
 
-    pub fn mark_active(&mut self, channel_id: u64, user_id: u64, now: Instant) {
-        self.last_active.insert((channel_id, user_id), now);
+    pub fn mark_active(&mut self, channel_id: u64, user_id: u64, now: Instant, timeout: Duration) {
+        self.last_active.insert((channel_id, user_id), (now, timeout));
     }
 
     pub fn remove(&mut self, channel_id: u64, user_id: u64) {
         self.last_active.remove(&(channel_id, user_id));
+    }
+
+    pub fn default_timeout(&self) -> Duration {
+        self.default_idle_timeout
     }
 }
 
@@ -406,6 +411,173 @@ pub async fn note_command(notes: &Notes, first_line: &str, rest: &str, author_id
     }
 }
 
+/// Handle a `!config ...` command.
+pub async fn config_command(
+    server_cfg: &ServerConfigStore,
+    user_cfg: &UserConfigStore,
+    first_line: &str,
+    rest: &str,
+    author_id: u64,
+    guild_id: Option<u64>,
+) -> String {
+    let parts: Vec<&str> = first_line
+        .splitn(3, char::is_whitespace)
+        .filter(|s| !s.is_empty())
+        .collect();
+    if parts.len() < 2 {
+        return concat!(
+            "**Bot configuration:**\n",
+            "`!config channel list|add|remove|clear` — set which channels I respond in (server-wide)\n",
+            "`!config personality <text>` — set a personality/tone override for yourself\n",
+            "`!config personality clear` — remove your personality override\n",
+            "`!config followup on|off` — whether I reply to follow-up messages without a ping\n",
+            "`!config followup-timeout <seconds>` — how long I keep the conversation open without a ping",
+        )
+        .into();
+    }
+    match parts[1].to_lowercase().as_str() {
+        "channel" => {
+            let Some(gid) = guild_id else {
+                return "Channel configuration is only available in servers, not DMs.".into();
+            };
+            let sub = parts.get(2).map(|s| s.to_lowercase()).unwrap_or_default();
+            match sub.as_str() {
+                "list" => {
+                    let cfg = server_cfg.load(gid).await;
+                    if cfg.allowed_channel_ids.is_empty() {
+                        "I'm allowed to respond in **all channels** (no restriction set).".into()
+                    } else {
+                        let ids: Vec<String> = cfg
+                            .allowed_channel_ids
+                            .iter()
+                            .map(|id| format!("<#{id}>"))
+                            .collect();
+                        format!("Allowed channels: {}", ids.join(", "))
+                    }
+                }
+                "clear" => {
+                    let mut cfg = server_cfg.load(gid).await;
+                    cfg.allowed_channel_ids.clear();
+                    if server_cfg.save(gid, &cfg).await.is_err() {
+                        return "Error: failed to save config.".into();
+                    }
+                    "✅ Channel restriction cleared — I'll respond in all channels.".into()
+                }
+                s if s.starts_with("add") || s.starts_with("remove") => {
+                    // Channel ID may be the 3rd word or could be a mention like <#123456>
+                    let raw = parts.get(2).map(|s| s.trim()).unwrap_or("");
+                    // The subcommand is the first token; the channel is the next
+                    let tokens: Vec<&str> = raw.splitn(2, char::is_whitespace).collect();
+                    let action = tokens[0].to_lowercase();
+                    let channel_raw = tokens.get(1).unwrap_or(&"").trim();
+                    let channel_id = parse_channel_id(channel_raw);
+                    let Some(cid) = channel_id else {
+                        return "Please provide a valid channel mention or ID.".into();
+                    };
+                    let mut cfg = server_cfg.load(gid).await;
+                    if action == "add" {
+                        cfg.allowed_channel_ids.insert(cid);
+                        if server_cfg.save(gid, &cfg).await.is_err() {
+                            return "Error: failed to save config.".into();
+                        }
+                        format!("✅ <#{cid}> added to allowed channels.")
+                    } else {
+                        let removed = cfg.allowed_channel_ids.remove(&cid);
+                        if server_cfg.save(gid, &cfg).await.is_err() {
+                            return "Error: failed to save config.".into();
+                        }
+                        if removed {
+                            format!("✅ <#{cid}> removed from allowed channels.")
+                        } else {
+                            format!("<#{cid}> was not in the allowed list.")
+                        }
+                    }
+                }
+                _ => {
+                    "Usage: `!config channel list|add <#channel>|remove <#channel>|clear`".into()
+                }
+            }
+        }
+        "personality" => {
+            let mut cfg = user_cfg.load(author_id).await;
+            // Combine parts[2] (rest of first line) with multi-line body
+            let inline = parts.get(2).map(|s| s.trim()).unwrap_or("").to_string();
+            let full = if rest.is_empty() {
+                inline
+            } else if inline.is_empty() {
+                rest.to_string()
+            } else {
+                format!("{inline}\n{rest}")
+            };
+            if full.to_lowercase() == "clear" || full.is_empty() {
+                cfg.personality = None;
+                if user_cfg.save(author_id, &cfg).await.is_err() {
+                    return "Error: failed to save config.".into();
+                }
+                "✅ Personality cleared — I'll use my default behaviour.".into()
+            } else {
+                cfg.personality = Some(full.clone());
+                if user_cfg.save(author_id, &cfg).await.is_err() {
+                    return "Error: failed to save config.".into();
+                }
+                format!("✅ Personality set:\n> {}", full.replace('\n', "\n> "))
+            }
+        }
+        "followup" => {
+            let sub = parts.get(2).map(|s| s.to_lowercase()).unwrap_or_default();
+            let mut cfg = user_cfg.load(author_id).await;
+            match sub.as_str() {
+                "on" => {
+                    cfg.followup_enabled = true;
+                    if user_cfg.save(author_id, &cfg).await.is_err() {
+                        return "Error: failed to save config.".into();
+                    }
+                    format!(
+                        "✅ Follow-up replies enabled (timeout: {}s).",
+                        cfg.followup_timeout_secs
+                    )
+                }
+                "off" => {
+                    cfg.followup_enabled = false;
+                    if user_cfg.save(author_id, &cfg).await.is_err() {
+                        return "Error: failed to save config.".into();
+                    }
+                    "✅ Follow-up replies disabled — I'll only respond when pinged or in DMs.".into()
+                }
+                _ => "Usage: `!config followup on|off`".into(),
+            }
+        }
+        "followup-timeout" => {
+            let raw = parts.get(2).map(|s| s.trim()).unwrap_or("");
+            match raw.parse::<u64>() {
+                Ok(0) => "Timeout must be at least 1 second.".into(),
+                Ok(secs) => {
+                    let mut cfg = user_cfg.load(author_id).await;
+                    cfg.followup_timeout_secs = secs;
+                    if user_cfg.save(author_id, &cfg).await.is_err() {
+                        return "Error: failed to save config.".into();
+                    }
+                    format!("✅ Follow-up timeout set to {secs}s.")
+                }
+                Err(_) => "Usage: `!config followup-timeout <seconds>` (e.g. `300`)".into(),
+            }
+        }
+        other => format!(
+            "Unknown config option `{other}`. Run `!config` to see available options."
+        ),
+    }
+}
+
+fn parse_channel_id(s: &str) -> Option<u64> {
+    // Accept <#123456789> or raw numeric ID
+    let s = s.trim();
+    if let Some(inner) = s.strip_prefix("<#").and_then(|s| s.strip_suffix('>')) {
+        inner.parse().ok()
+    } else {
+        s.parse().ok()
+    }
+}
+
 /// Handle a `!stats` command, returning the reply text.
 pub async fn stats_command(
     history: &History,
@@ -445,6 +617,8 @@ pub struct HouseBot {
     skills: Skills,
     memory: Memory,
     history: History,
+    server_cfg: ServerConfigStore,
+    user_cfg: UserConfigStore,
     conversations: Mutex<ConversationTracker>,
     processing: Mutex<HashSet<u64>>,
     responded: Mutex<VecDeque<u64>>,
@@ -462,6 +636,8 @@ impl HouseBot {
             skills: Skills::default(),
             memory: Memory::default(),
             history: History::default(),
+            server_cfg: ServerConfigStore::default(),
+            user_cfg: UserConfigStore::default(),
             conversations: Mutex::new(ConversationTracker::new(idle)),
             processing: Mutex::new(HashSet::new()),
             responded: Mutex::new(VecDeque::with_capacity(200)),
@@ -572,10 +748,36 @@ impl EventHandler for HouseBot {
             self.respond(&ctx, &msg, &reply).await;
             return;
         }
+        if msg.content.starts_with("!config") {
+            let (first, rest) = split_command(&msg.content);
+            let guild_id = msg.guild_id.map(|g| g.get());
+            let reply = config_command(
+                &self.server_cfg,
+                &self.user_cfg,
+                &first,
+                &rest,
+                user_id,
+                guild_id,
+            )
+            .await;
+            self.respond(&ctx, &msg, &reply).await;
+            return;
+        }
 
         // ── routing ──
         let bot_id = ctx.cache.current_user().id;
         let is_dm = msg.guild_id.is_none();
+        let guild_id = msg.guild_id.map(|g| g.get());
+
+        // Check channel allowlist before doing anything else.
+        if !self
+            .server_cfg
+            .is_channel_allowed(guild_id, channel_id)
+            .await
+        {
+            return;
+        }
+
         let is_mentioned = msg.mentions.iter().any(|u| u.id == bot_id);
         let is_reply_to_bot = msg
             .referenced_message
@@ -583,10 +785,16 @@ impl EventHandler for HouseBot {
             .map(|m| m.author.id == bot_id)
             .unwrap_or(false);
 
+        // Load per-user followup settings.
+        let user_config = self.user_cfg.load(user_id).await;
+        let followup_enabled = user_config.followup_enabled;
+        let followup_timeout =
+            Duration::from_secs(user_config.followup_timeout_secs);
+
         let now = Instant::now();
         let (is_active, session_expired) = {
             let mut convos = self.conversations.lock().await;
-            let active = convos.is_active(channel_id, user_id, now);
+            let active = followup_enabled && convos.is_active(channel_id, user_id, now);
             let expired = !active && convos.pop_timed_out(channel_id, user_id, now);
             (active, expired)
         };
@@ -599,7 +807,7 @@ impl EventHandler for HouseBot {
             return;
         }
 
-        self.handle_message(&ctx, &msg, bot_id, session_expired)
+        self.handle_message(&ctx, &msg, bot_id, session_expired, followup_timeout)
             .await;
         self.mark_done(msg.id.get()).await;
     }
@@ -612,6 +820,7 @@ impl HouseBot {
         msg: &Message,
         bot_id: UserId,
         session_expired: bool,
+        followup_timeout: Duration,
     ) {
         let mut text = msg.content.clone();
         for token in [format!("<@{bot_id}>"), format!("<@!{bot_id}>")] {
@@ -630,6 +839,10 @@ impl HouseBot {
 
         let images = extract_images(msg).await;
 
+        // Load personality for this user.
+        let user_config = self.user_cfg.load(msg.author.id.get()).await;
+        let personality = user_config.personality.clone();
+
         // Post an immediate progress indicator.
         let progress = reply_no_ping(ctx, msg, "⚙️ **Generating...**").await.ok();
         let hooks = DiscordHooks::new(ctx.http.clone(), progress);
@@ -647,12 +860,18 @@ impl HouseBot {
                 &user_text,
                 &images,
                 &hooks,
+                personality.as_deref(),
             )
             .await;
 
         {
             let mut convos = self.conversations.lock().await;
-            convos.mark_active(msg.channel_id.get(), msg.author.id.get(), Instant::now());
+            convos.mark_active(
+                msg.channel_id.get(),
+                msg.author.id.get(),
+                Instant::now(),
+                followup_timeout,
+            );
         }
 
         let safe = self.redactor.redact(&result.text);
@@ -1087,7 +1306,7 @@ mod tests {
     fn tracker_active_within_window() {
         let mut t = ConversationTracker::new(Duration::from_secs(300));
         let now = Instant::now();
-        t.mark_active(1, 2, now);
+        t.mark_active(1, 2, now, Duration::from_secs(300));
         assert!(t.is_active(1, 2, now + Duration::from_secs(100)));
     }
 
@@ -1095,7 +1314,7 @@ mod tests {
     fn tracker_pop_timed_out() {
         let mut t = ConversationTracker::new(Duration::from_secs(300));
         let now = Instant::now();
-        t.mark_active(1, 2, now);
+        t.mark_active(1, 2, now, Duration::from_secs(300));
         assert!(!t.is_active(1, 2, now + Duration::from_secs(400)));
         assert!(t.pop_timed_out(1, 2, now + Duration::from_secs(400)));
         // Now removed.
