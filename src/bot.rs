@@ -21,6 +21,7 @@ use tokio::sync::Mutex;
 
 use crate::agent::{Agent, AgentHooks, AgentResult, ImageData};
 use crate::bot_config::{ServerConfigStore, UserConfigStore};
+pub use crate::bot_response::SecretRedactor;
 use crate::config;
 use crate::history::History;
 use crate::memory::Memory;
@@ -164,48 +165,6 @@ pub fn extract_code_files(text: &str) -> (String, Vec<(String, Vec<u8>)>) {
         format!("*(see attached: `{filename}`)*")
     });
     (modified.into_owned(), files)
-}
-
-/// Redacts known secret values (drawn from the environment) from outbound text.
-pub struct SecretRedactor {
-    secrets: Vec<String>,
-}
-
-impl SecretRedactor {
-    const KEYWORDS: &'static [&'static str] = &[
-        "token", "key", "secret", "password", "dsn", "api_key", "oauth",
-    ];
-
-    /// Build from the process environment.
-    pub fn from_env() -> Self {
-        Self::from_vars(std::env::vars())
-    }
-
-    /// Build from an explicit iterator of `(name, value)` pairs.
-    pub fn from_vars(vars: impl IntoIterator<Item = (String, String)>) -> Self {
-        let secrets = vars
-            .into_iter()
-            .filter(|(name, value)| {
-                value.len() >= 8
-                    && Self::KEYWORDS
-                        .iter()
-                        .any(|kw| name.to_lowercase().contains(kw))
-            })
-            .map(|(_, value)| value)
-            .collect();
-        Self { secrets }
-    }
-
-    /// Replace every known secret value with `[REDACTED]`.
-    pub fn redact(&self, text: &str) -> String {
-        let mut out = text.to_string();
-        for secret in &self.secrets {
-            if out.contains(secret.as_str()) {
-                out = out.replace(secret.as_str(), "[REDACTED]");
-            }
-        }
-        out
-    }
 }
 
 /// Tracks which (channel, user) conversations are still within the idle window.

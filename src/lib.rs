@@ -8,6 +8,7 @@ pub mod agent;
 pub mod bot;
 mod bot_commands;
 pub mod bot_config;
+mod bot_response;
 pub mod config;
 pub mod github_issues;
 pub mod history;
