@@ -3,7 +3,7 @@ FROM golang:1.25-bookworm AS jellyfin-builder
 RUN go install github.com/jaredtrent/jellyfin-mcp@latest
 
 # Stage 2: build the Rust bot binary
-FROM rust:1.83-bookworm AS rust-builder
+FROM rust:1.85-bookworm AS rust-builder
 WORKDIR /app
 # Prime the dependency cache with a stub crate.
 COPY Cargo.toml Cargo.lock ./
