@@ -5,10 +5,13 @@ on:
     types: [created]
   pull_request_review_comment:
     types: [created]
+  pull_request:
+    types: [opened, synchronize, reopened]
 
 jobs:
   opencode:
     if: |
+      github.event_name == 'pull_request' ||
       contains(github.event.comment.body, ' /oc') ||
       startsWith(github.event.comment.body, '/oc') ||
       contains(github.event.comment.body, ' /opencode') ||
@@ -17,7 +20,7 @@ jobs:
     permissions:
       id-token: write
       contents: read
-      pull-requests: read
+      pull-requests: write
       issues: read
     steps:
       - name: Checkout repository
@@ -28,6 +31,7 @@ jobs:
       - name: Run opencode
         uses: anomalyco/opencode/github@latest
         env:
-          OPENCODE_API_KEY: ${{ secrets.OPENCODE_API_KEY }}
+          NVIDIA_API_KEY: ${{ secrets.NVIDIA_API_KEY }}
         with:
-          model: opencode/deepseek-v4-flash-free
+          model: nvidia/google/gemma-4-31b-it
+          prompt: ${{ github.event_name == 'pull_request' && 'Review this pull request for potential bugs, regressions, security issues, incorrect assumptions, and missing tests. Inspect the relevant repository code and the pull request diff. Report only actionable findings as review comments. Do not modify files, commit changes, or open a pull request.' || '' }}
