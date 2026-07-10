@@ -5,10 +5,11 @@ FROM docker:27-cli AS docker-cli
 FROM rust:1-bookworm AS rust-builder
 WORKDIR /app
 COPY Cargo.toml Cargo.lock ./
-RUN mkdir src \
+RUN mkdir -p src/bin \
     && echo 'fn main() {}' > src/main.rs \
     && echo '' > src/lib.rs \
-    && cargo build --release --locked --bin deployment-bot || true
+    && echo 'fn main() {}' > src/bin/deployment_bot.rs \
+    && cargo build --release --locked
 COPY src/ src/
 RUN touch src/main.rs src/lib.rs \
     && cargo build --release --locked --bin deployment-bot
