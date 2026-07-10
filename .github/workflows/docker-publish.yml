@@ -146,3 +146,20 @@ jobs:
             "${manifest_tags[@]}" \
             "${IMAGE}:sha-${SHA}-amd64" \
             "${IMAGE}:sha-${SHA}-arm64"
+
+  notify-deployment-bot:
+    needs: manifest
+    runs-on: ubuntu-latest
+    steps:
+      - name: Notify deployment channel
+        env:
+          WEBHOOK: ${{ secrets.DISCORD_DEPLOYMENT_WEBHOOK }}
+          SHA: ${{ github.sha }}
+          REPOSITORY: ${{ github.repository }}
+          SERVER_URL: ${{ github.server_url }}
+        run: |
+          jq -n \
+            --arg sha "$SHA" \
+            --arg url "$SERVER_URL/$REPOSITORY/commit/$SHA" \
+            '{embeds:[{title:"Build succeeded",color:3066993,fields:[{name:"Commit",value:("`"+$sha+"`")},{name:"Source",value:("[View commit]("+$url+")")}]}]}' \
+            | curl --fail --silent --show-error -X POST "$WEBHOOK" -H "Content-Type: application/json" --data-binary @-

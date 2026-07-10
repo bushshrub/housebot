@@ -12,7 +12,7 @@ use serenity::all::{
 };
 use serenity::Client;
 use tokio::process::Command as ProcessCommand;
-use tokio::sync::RwLock;
+use tokio::sync::{Mutex, RwLock};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct DeploymentEvent {
@@ -22,7 +22,7 @@ pub struct DeploymentEvent {
 
 pub fn classify_deployment_text(text: &str) -> Option<bool> {
     let normalized = text.to_ascii_lowercase();
-    if normalized.contains("deployment succeeded") {
+    if normalized.contains("deployment succeeded") || normalized.contains("build succeeded") {
         Some(true)
     } else if normalized.contains("deployment failed") {
         Some(false)
@@ -72,6 +72,7 @@ struct DeploymentBot {
     channel_id: u64,
     deploy_path: PathBuf,
     last_event: Arc<RwLock<Option<DeploymentEvent>>>,
+    deployment_lock: Arc<Mutex<()>>,
     github_repo: String,
     github_token: Option<String>,
     host_data_dir: String,
@@ -323,13 +324,82 @@ impl EventHandler for DeploymentBot {
         }
     }
 
-    async fn message(&self, _ctx: Context, message: Message) {
+    async fn message(&self, ctx: Context, message: Message) {
         if message.channel_id.get() != self.channel_id {
             return;
         }
         if let Some(event) = deployment_event(&message) {
             tracing::info!(succeeded = event.succeeded, commit = ?event.commit, "Observed deployment webhook");
+            let Some(sha) = event.commit.clone().filter(|_| event.succeeded) else {
+                return;
+            };
+            if !valid_sha(&sha) {
+                tracing::error!("Deployment webhook contained an invalid SHA");
+                return;
+            }
+            let _deployment_guard = self.deployment_lock.lock().await;
+            if self
+                .last_event
+                .read()
+                .await
+                .as_ref()
+                .is_some_and(|previous| {
+                    previous.succeeded && previous.commit.as_deref() == Some(&sha)
+                })
+            {
+                tracing::info!(sha, "Ignoring duplicate build notification");
+                return;
+            }
+            if let Err(error) = self.checkpoint_current_image().await {
+                tracing::error!("Could not save deployment checkpoint: {error}");
+                return;
+            }
+            let commands = match deploy_commands(
+                &sha,
+                &self.host_data_dir,
+                &self.docker_network,
+                &self.sandbox_timeout,
+            ) {
+                Ok(commands) => commands,
+                Err(error) => {
+                    tracing::error!("Could not prepare deployment: {error}");
+                    return;
+                }
+            };
+            for (index, command) in commands.iter().enumerate() {
+                tracing::info!(
+                    stage = deploy_progress(index),
+                    "Automatic deployment progress"
+                );
+                let _ = message
+                    .channel_id
+                    .say(&ctx.http, deploy_progress(index))
+                    .await;
+                let args = command.iter().map(String::as_str).collect::<Vec<_>>();
+                match run_docker(&args, &self.deploy_path).await {
+                    Ok(output) if index == commands.len() - 1 && output != "true" => {
+                        tracing::error!("house-chatbot is not running after automatic deployment");
+                        return;
+                    }
+                    Ok(_) => {}
+                    Err(error) => {
+                        tracing::error!("Automatic deployment failed: {error}");
+                        return;
+                    }
+                }
+            }
+            tracing::info!(sha, "Automatic deployment completed");
             *self.last_event.write().await = Some(event);
+            let _ = message
+                .channel_id
+                .say(
+                    &ctx.http,
+                    format!(
+                        "✅ Automatic deployment of `{}` completed.",
+                        short_sha(&sha)
+                    ),
+                )
+                .await;
         }
     }
 
@@ -380,6 +450,7 @@ impl EventHandler for DeploymentBot {
                 &self.sandbox_timeout,
             );
             let result = async {
+                let _deployment_guard = self.deployment_lock.lock().await;
                 self.checkpoint_current_image().await?;
                 let commands = commands?;
                 for (index, command) in commands.iter().enumerate() {
@@ -474,6 +545,7 @@ impl EventHandler for DeploymentBot {
         let reply = if !allowed {
             "Only the configured owner can roll back from the deployment channel.".to_string()
         } else {
+            let _deployment_guard = self.deployment_lock.lock().await;
             match self.rollback().await {
                 Ok(message) => message,
                 Err(error) => format!("Rollback failed: {error}"),
@@ -501,6 +573,7 @@ pub async fn run() -> anyhow::Result<()> {
         channel_id,
         deploy_path: deploy_path.into(),
         last_event: Arc::new(RwLock::new(None)),
+        deployment_lock: Arc::new(Mutex::new(())),
         github_repo: std::env::var("GITHUB_REPO").unwrap_or_else(|_| "bushshrub/housebot".into()),
         github_token: std::env::var("GITHUB_TOKEN").ok(),
         host_data_dir: std::env::var("HOST_DATA_DIR")
@@ -555,7 +628,8 @@ mod tests {
             classify_deployment_text("HomeLab deployment FAILED"),
             Some(false)
         );
-        assert_eq!(classify_deployment_text("build succeeded"), None);
+        assert_eq!(classify_deployment_text("build succeeded"), Some(true));
+        assert_eq!(classify_deployment_text("tests succeeded"), None);
     }
 
     #[test]
