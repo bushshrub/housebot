@@ -7,7 +7,7 @@ use serenity::all::{
     ButtonStyle, Command, CommandDataOptionValue, CommandOptionType, Context, CreateActionRow,
     CreateButton, CreateCommand, CreateCommandOption, CreateEmbed, CreateInteractionResponse,
     CreateInteractionResponseMessage, EditInteractionResponse, EventHandler, GatewayIntents,
-    Interaction, Message, Ready,
+    GuildId, Interaction, Message, Ready,
 };
 use serenity::Client;
 use tokio::process::Command as ProcessCommand;
@@ -69,6 +69,7 @@ pub fn rollback_allowed(
 struct DeploymentBot {
     owner_id: u64,
     channel_id: u64,
+    guild_id: Option<u64>,
     last_event: Arc<RwLock<Option<DeploymentEvent>>>,
     previous_image: Arc<RwLock<Option<String>>>,
     deployment_lock: Arc<Mutex<()>>,
@@ -352,19 +353,25 @@ fn housebot_env() -> Vec<(String, String)> {
 impl EventHandler for DeploymentBot {
     async fn ready(&self, ctx: Context, ready: Ready) {
         tracing::info!("Deployment bot logged in as {}", ready.user.name);
-        let command = CreateCommand::new("rollback")
-            .description("Roll back housebot to the previous deployed image");
-        if let Err(error) = Command::create_global_command(&ctx.http, command).await {
-            tracing::error!("Failed to register /rollback: {error}");
-        }
-        let deploy = CreateCommand::new("deploy")
-            .description("Deploy a previously built commit")
-            .add_option(
-                CreateCommandOption::new(CommandOptionType::String, "sha", "Git commit SHA")
-                    .required(true),
-            );
-        if let Err(error) = Command::create_global_command(&ctx.http, deploy).await {
-            tracing::error!("Failed to register /deploy: {error}");
+        let commands = deployment_commands();
+        if let Some(guild_id) = self.guild_id {
+            if let Err(error) = GuildId::new(guild_id)
+                .set_commands(&ctx.http, commands)
+                .await
+            {
+                tracing::error!(
+                    guild_id,
+                    "Failed to sync deployment slash commands: {error}"
+                );
+            } else {
+                tracing::info!(guild_id, "Synced deployment slash commands to guild");
+            }
+        } else {
+            for command in commands {
+                if let Err(error) = Command::create_global_command(&ctx.http, command).await {
+                    tracing::error!("Failed to register deployment slash command: {error}");
+                }
+            }
         }
     }
 
@@ -602,9 +609,11 @@ pub async fn run() -> anyhow::Result<()> {
         .map_err(|_| anyhow::anyhow!("DEPLOYMENT_DISCORD_BOT_TOKEN is not set"))?;
     let owner_id = env_u64("OWNER_DISCORD_ID")?;
     let channel_id = env_u64("DEPLOYMENT_CHANNEL_ID")?;
+    let guild_id = optional_env_u64("DEPLOYMENT_GUILD_ID")?;
     let handler = DeploymentBot {
         owner_id,
         channel_id,
+        guild_id,
         last_event: Arc::new(RwLock::new(None)),
         previous_image: Arc::new(RwLock::new(None)),
         deployment_lock: Arc::new(Mutex::new(())),
@@ -630,6 +639,30 @@ fn env_u64(name: &str) -> anyhow::Result<u64> {
         .map_err(|_| anyhow::anyhow!("{name} must be a Discord numeric ID"))
 }
 
+fn optional_env_u64(name: &str) -> anyhow::Result<Option<u64>> {
+    match std::env::var(name) {
+        Ok(value) if !value.trim().is_empty() => value
+            .parse()
+            .map(Some)
+            .map_err(|_| anyhow::anyhow!("{name} must be a Discord numeric ID")),
+        Ok(_) | Err(std::env::VarError::NotPresent) => Ok(None),
+        Err(error) => Err(error.into()),
+    }
+}
+
+fn deployment_commands() -> Vec<CreateCommand> {
+    vec![
+        CreateCommand::new("rollback")
+            .description("Roll back housebot to the previous deployed image"),
+        CreateCommand::new("deploy")
+            .description("Deploy a previously built commit")
+            .add_option(
+                CreateCommandOption::new(CommandOptionType::String, "sha", "Git commit SHA")
+                    .required(true),
+            ),
+    ]
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -648,6 +681,22 @@ mod tests {
         let error = env_u64("DEPLOYMENT_BOT_TEST_ID").unwrap_err().to_string();
         std::env::remove_var("DEPLOYMENT_BOT_TEST_ID");
         assert!(error.contains("numeric ID"));
+    }
+
+    #[test]
+    fn optional_guild_id_accepts_unset_and_numeric_values() {
+        std::env::remove_var("DEPLOYMENT_BOT_TEST_GUILD_ID");
+        assert_eq!(
+            optional_env_u64("DEPLOYMENT_BOT_TEST_GUILD_ID").unwrap(),
+            None
+        );
+
+        std::env::set_var("DEPLOYMENT_BOT_TEST_GUILD_ID", "123456789");
+        assert_eq!(
+            optional_env_u64("DEPLOYMENT_BOT_TEST_GUILD_ID").unwrap(),
+            Some(123456789)
+        );
+        std::env::remove_var("DEPLOYMENT_BOT_TEST_GUILD_ID");
     }
 
     #[test]
