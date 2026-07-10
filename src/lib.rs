@@ -6,6 +6,7 @@
 
 pub mod agent;
 pub mod bot;
+pub mod bot_config;
 pub mod config;
 pub mod github_issues;
 pub mod history;
