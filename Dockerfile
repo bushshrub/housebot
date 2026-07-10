@@ -11,8 +11,9 @@ FROM python:3.13-slim-bookworm AS mcp-builder
 RUN pip install --no-cache-dir uv \
     && uv tool install duckduckgo-mcp-server
 
-# Stage 4: build the Rust bot binary.
-FROM rust:latest AS rust-builder
+# Stage 4: build the Rust bot binary against the same Debian release as the
+# runtime image, so the binary does not require a newer glibc.
+FROM rust:1-bookworm AS rust-builder
 WORKDIR /app
 # Prime the dependency cache with a stub crate.
 COPY Cargo.toml Cargo.lock ./
