@@ -1,14 +1,6 @@
-# Python-generated files
-__pycache__/
-*.py[oc]
-build/
-dist/
-wheels/
-*.egg-info
+# Rust build artifacts
+/target
 
-# Virtual environments
-.venv
-
-
+# Local environment and runtime data
 .env
 data/
