@@ -355,6 +355,7 @@ impl EventHandler for DeploymentBot {
         tracing::info!("Deployment bot logged in as {}", ready.user.name);
         let commands = deployment_commands();
         if let Some(guild_id) = self.guild_id {
+            remove_global_deployment_commands(&ctx).await;
             if let Err(error) = GuildId::new(guild_id)
                 .set_commands(&ctx.http, commands)
                 .await
@@ -425,12 +426,23 @@ impl EventHandler for DeploymentBot {
                 let args = command.iter().map(String::as_str).collect::<Vec<_>>();
                 match run_docker(&args).await {
                     Ok(output) if index == commands.len() - 1 && output != "true" => {
-                        tracing::error!("house-chatbot is not running after automatic deployment");
+                        tracing::error!(
+                            stage = deploy_progress(index),
+                            "Automatic deployment stage failed: house-chatbot is not running"
+                        );
                         return;
                     }
-                    Ok(_) => {}
+                    Ok(_) => {
+                        tracing::info!(
+                            stage = deploy_progress(index),
+                            "Automatic deployment stage completed"
+                        );
+                    }
                     Err(error) => {
-                        tracing::error!("Automatic deployment failed: {error}");
+                        tracing::error!(
+                            stage = deploy_progress(index),
+                            "Automatic deployment stage failed: {error}"
+                        );
                         return;
                     }
                 }
@@ -496,6 +508,10 @@ impl EventHandler for DeploymentBot {
                 self.checkpoint_current_image().await?;
                 let commands = commands?;
                 for (index, command) in commands.iter().enumerate() {
+                    tracing::info!(
+                        stage = deploy_progress(index),
+                        "Manual deployment stage started"
+                    );
                     component
                         .edit_response(
                             &ctx.http,
@@ -503,14 +519,33 @@ impl EventHandler for DeploymentBot {
                         )
                         .await?;
                     let args = command.iter().map(String::as_str).collect::<Vec<_>>();
-                    let output = run_docker(&args).await?;
+                    let output = match run_docker(&args).await {
+                        Ok(output) => output,
+                        Err(error) => {
+                            tracing::error!(
+                                stage = deploy_progress(index),
+                                "Manual deployment stage failed: {error}"
+                            );
+                            return Err(error);
+                        }
+                    };
                     if index == commands.len() - 1 && output != "true" {
-                        anyhow::bail!("house-chatbot is not running after deployment");
+                        anyhow::bail!(
+                            "deployment stage `{}` failed: house-chatbot is not running",
+                            deploy_progress(index)
+                        );
                     }
+                    tracing::info!(
+                        stage = deploy_progress(index),
+                        "Manual deployment stage completed"
+                    );
                 }
                 anyhow::Ok(())
             }
             .await;
+            if let Err(error) = &result {
+                tracing::error!("Manual deployment failed: {error}");
+            }
             let content = match result {
                 Ok(()) => format!("✅ Deployment of `{}` completed.", short_sha(sha)),
                 Err(error) => format!("❌ Deployment failed: {error}"),
@@ -661,6 +696,27 @@ fn deployment_commands() -> Vec<CreateCommand> {
                     .required(true),
             ),
     ]
+}
+
+async fn remove_global_deployment_commands(ctx: &Context) {
+    let commands = match Command::get_global_commands(&ctx.http).await {
+        Ok(commands) => commands,
+        Err(error) => {
+            tracing::error!("Failed to inspect global deployment slash commands: {error}");
+            return;
+        }
+    };
+
+    for command in commands
+        .into_iter()
+        .filter(|command| command.name == "deploy" || command.name == "rollback")
+    {
+        if let Err(error) = Command::delete_global_command(&ctx.http, command.id).await {
+            tracing::error!(name = %command.name, "Failed to remove global deployment slash command: {error}");
+        } else {
+            tracing::info!(name = %command.name, "Removed global deployment slash command");
+        }
+    }
 }
 
 #[cfg(test)]
