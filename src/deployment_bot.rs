@@ -1,6 +1,5 @@
 //! Small Discord bot that observes deployment webhooks and offers an owner-only rollback.
 
-use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use serde::Deserialize;
@@ -70,12 +69,11 @@ pub fn rollback_allowed(
 struct DeploymentBot {
     owner_id: u64,
     channel_id: u64,
-    deploy_path: PathBuf,
     last_event: Arc<RwLock<Option<DeploymentEvent>>>,
+    previous_image: Arc<RwLock<Option<String>>>,
     deployment_lock: Arc<Mutex<()>>,
     github_repo: String,
     github_token: Option<String>,
-    host_data_dir: String,
     docker_network: String,
     sandbox_timeout: String,
 }
@@ -94,22 +92,23 @@ pub struct GitHubCommitDetails {
 
 impl DeploymentBot {
     async fn rollback(&self) -> anyhow::Result<String> {
-        let checkpoint = self.deploy_path.join(".prev_image");
-        let digest = tokio::fs::read_to_string(&checkpoint)
-            .await?
-            .trim()
-            .to_string();
-        let commands = container_commands(
+        let digest = self
+            .previous_image
+            .read()
+            .await
+            .clone()
+            .ok_or_else(|| anyhow::anyhow!("no previous image is available in this session"))?;
+        let commands = container_commands_with_env(
             &digest,
             "ghcr.io/bushshrub/housebot/sandbox:latest",
-            &self.host_data_dir,
             &self.docker_network,
             &self.sandbox_timeout,
+            housebot_env(),
         )?;
 
         for (index, command) in commands.iter().enumerate() {
             let args = command.iter().map(String::as_str).collect::<Vec<_>>();
-            let output = run_docker(&args, &self.deploy_path).await?;
+            let output = run_docker(&args).await?;
             if index == commands.len() - 1 && output != "true" {
                 anyhow::bail!("house-chatbot is not running after rollback");
             }
@@ -118,14 +117,10 @@ impl DeploymentBot {
     }
 
     async fn checkpoint_current_image(&self) -> anyhow::Result<()> {
-        let image = run_docker(
-            &["inspect", "--format={{.Config.Image}}", "house-chatbot"],
-            &self.deploy_path,
-        )
-        .await;
+        let image = run_docker(&["inspect", "--format={{.Config.Image}}", "house-chatbot"]).await;
         if let Ok(image) = image {
             if valid_housebot_image(&image) {
-                tokio::fs::write(self.deploy_path.join(".prev_image"), image).await?;
+                *self.previous_image.write().await = Some(image);
             }
         }
         Ok(())
@@ -166,7 +161,6 @@ pub fn valid_sha(sha: &str) -> bool {
 
 pub fn deploy_commands(
     sha: &str,
-    host_data_dir: &str,
     docker_network: &str,
     sandbox_timeout: &str,
 ) -> anyhow::Result<Vec<Vec<String>>> {
@@ -175,12 +169,12 @@ pub fn deploy_commands(
     }
     let main = format!("ghcr.io/bushshrub/housebot:sha-{sha}");
     let sandbox = format!("ghcr.io/bushshrub/housebot/sandbox:sha-{sha}");
-    container_commands(
+    container_commands_with_env(
         &main,
         &sandbox,
-        host_data_dir,
         docker_network,
         sandbox_timeout,
+        housebot_env(),
     )
 }
 
@@ -192,45 +186,60 @@ fn valid_housebot_image(image: &str) -> bool {
 pub fn container_commands(
     image: &str,
     sandbox_image: &str,
-    host_data_dir: &str,
     docker_network: &str,
     sandbox_timeout: &str,
+) -> anyhow::Result<Vec<Vec<String>>> {
+    container_commands_with_env(
+        image,
+        sandbox_image,
+        docker_network,
+        sandbox_timeout,
+        Vec::new(),
+    )
+}
+
+fn container_commands_with_env(
+    image: &str,
+    sandbox_image: &str,
+    docker_network: &str,
+    sandbox_timeout: &str,
+    environment: Vec<(String, String)>,
 ) -> anyhow::Result<Vec<Vec<String>>> {
     if !valid_housebot_image(image) {
         anyhow::bail!("invalid housebot deployment image");
     }
-    if host_data_dir.is_empty() || !host_data_dir.starts_with('/') {
-        anyhow::bail!("HOST_DATA_DIR must be an absolute host path");
+    let mut run = vec![
+        "run".into(),
+        "--detach".into(),
+        "--name".into(),
+        "house-chatbot".into(),
+        "--restart".into(),
+        "unless-stopped".into(),
+        "--network".into(),
+        docker_network.into(),
+    ];
+    for (name, value) in environment {
+        run.push("--env".into());
+        run.push(format!("{name}={value}"));
     }
+    run.extend([
+        "--env".into(),
+        "DATA_DIR=/app/data".into(),
+        "--env".into(),
+        format!("SANDBOX_IMAGE={sandbox_image}"),
+        "--env".into(),
+        format!("DOCKER_NETWORK={docker_network}"),
+        "--env".into(),
+        format!("SANDBOX_TIMEOUT={sandbox_timeout}"),
+        "--volume".into(),
+        "/var/run/docker.sock:/var/run/docker.sock".into(),
+        image.into(),
+    ]);
     Ok(vec![
         vec!["pull".into(), image.into()],
         vec!["pull".into(), sandbox_image.into()],
         vec!["rm".into(), "--force".into(), "house-chatbot".into()],
-        vec![
-            "run".into(),
-            "--detach".into(),
-            "--name".into(),
-            "house-chatbot".into(),
-            "--restart".into(),
-            "unless-stopped".into(),
-            "--network".into(),
-            docker_network.into(),
-            "--env-file".into(),
-            "/deployment/.env".into(),
-            "--env".into(),
-            "DATA_DIR=/app/data".into(),
-            "--env".into(),
-            format!("SANDBOX_IMAGE={sandbox_image}"),
-            "--env".into(),
-            format!("DOCKER_NETWORK={docker_network}"),
-            "--env".into(),
-            format!("SANDBOX_TIMEOUT={sandbox_timeout}"),
-            "--volume".into(),
-            format!("{host_data_dir}:/app/data"),
-            "--volume".into(),
-            "/var/run/docker.sock:/var/run/docker.sock".into(),
-            image.into(),
-        ],
+        run,
         vec![
             "inspect".into(),
             "--format={{.State.Running}}".into(),
@@ -287,10 +296,10 @@ fn short_sha(sha: &str) -> &str {
     sha.get(..7).unwrap_or(sha)
 }
 
-async fn run_docker(args: &[&str], cwd: &Path) -> anyhow::Result<String> {
+async fn run_docker(args: &[&str]) -> anyhow::Result<String> {
     let output = ProcessCommand::new("docker")
         .args(args)
-        .current_dir(cwd)
+        .current_dir("/")
         .output()
         .await?;
     let missing_container = args.first() == Some(&"rm")
@@ -302,6 +311,41 @@ async fn run_docker(args: &[&str], cwd: &Path) -> anyhow::Result<String> {
         );
     }
     Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+}
+
+const HOUSEBOT_ENV_VARS: &[&str] = &[
+    "DISCORD_BOT_TOKEN",
+    "OWNER_DISCORD_ID",
+    "LLM_BASE_URL",
+    "LLM_MODEL",
+    "LLM_API_KEY",
+    "MAX_HISTORY_TURNS",
+    "MAX_CONTEXT_CHARS",
+    "CONVERSATION_IDLE_TIMEOUT",
+    "JELLYFIN_URL",
+    "JELLYFIN_API_KEY",
+    "SANDBOX_CPUS",
+    "SANDBOX_MEM_LIMIT",
+    "MAX_ARTIFACT_SIZE_MB",
+    "LLAMA_CPP_URL",
+    "LLAMA_CPP_MODEL",
+    "CC_OAUTH_TOKEN",
+    "GITHUB_APP_ID",
+    "GITHUB_APP_PRIVATE_KEY",
+    "GITHUB_INSTALLATION_ID",
+    "GITHUB_REPO",
+];
+
+fn housebot_env() -> Vec<(String, String)> {
+    HOUSEBOT_ENV_VARS
+        .iter()
+        .filter_map(|name| {
+            std::env::var(name)
+                .ok()
+                .filter(|value| !value.is_empty())
+                .map(|value| ((*name).to_string(), value))
+        })
+        .collect()
 }
 
 #[serenity::async_trait]
@@ -354,12 +398,8 @@ impl EventHandler for DeploymentBot {
                 tracing::error!("Could not save deployment checkpoint: {error}");
                 return;
             }
-            let commands = match deploy_commands(
-                &sha,
-                &self.host_data_dir,
-                &self.docker_network,
-                &self.sandbox_timeout,
-            ) {
+            let commands = match deploy_commands(&sha, &self.docker_network, &self.sandbox_timeout)
+            {
                 Ok(commands) => commands,
                 Err(error) => {
                     tracing::error!("Could not prepare deployment: {error}");
@@ -376,7 +416,7 @@ impl EventHandler for DeploymentBot {
                     .say(&ctx.http, deploy_progress(index))
                     .await;
                 let args = command.iter().map(String::as_str).collect::<Vec<_>>();
-                match run_docker(&args, &self.deploy_path).await {
+                match run_docker(&args).await {
                     Ok(output) if index == commands.len() - 1 && output != "true" => {
                         tracing::error!("house-chatbot is not running after automatic deployment");
                         return;
@@ -443,12 +483,7 @@ impl EventHandler for DeploymentBot {
             {
                 return;
             }
-            let commands = deploy_commands(
-                sha,
-                &self.host_data_dir,
-                &self.docker_network,
-                &self.sandbox_timeout,
-            );
+            let commands = deploy_commands(sha, &self.docker_network, &self.sandbox_timeout);
             let result = async {
                 let _deployment_guard = self.deployment_lock.lock().await;
                 self.checkpoint_current_image().await?;
@@ -461,7 +496,7 @@ impl EventHandler for DeploymentBot {
                         )
                         .await?;
                     let args = command.iter().map(String::as_str).collect::<Vec<_>>();
-                    let output = run_docker(&args, &self.deploy_path).await?;
+                    let output = run_docker(&args).await?;
                     if index == commands.len() - 1 && output != "true" {
                         anyhow::bail!("house-chatbot is not running after deployment");
                     }
@@ -567,17 +602,14 @@ pub async fn run() -> anyhow::Result<()> {
         .map_err(|_| anyhow::anyhow!("DEPLOYMENT_DISCORD_BOT_TOKEN is not set"))?;
     let owner_id = env_u64("OWNER_DISCORD_ID")?;
     let channel_id = env_u64("DEPLOYMENT_CHANNEL_ID")?;
-    let deploy_path = std::env::var("DEPLOYMENT_PATH").unwrap_or_else(|_| "/deployment".into());
     let handler = DeploymentBot {
         owner_id,
         channel_id,
-        deploy_path: deploy_path.into(),
         last_event: Arc::new(RwLock::new(None)),
+        previous_image: Arc::new(RwLock::new(None)),
         deployment_lock: Arc::new(Mutex::new(())),
         github_repo: std::env::var("GITHUB_REPO").unwrap_or_else(|_| "bushshrub/housebot".into()),
         github_token: std::env::var("GITHUB_TOKEN").ok(),
-        host_data_dir: std::env::var("HOST_DATA_DIR")
-            .map_err(|_| anyhow::anyhow!("HOST_DATA_DIR is not set"))?,
         docker_network: std::env::var("DOCKER_NETWORK")
             .unwrap_or_else(|_| "house-chatbot_default".into()),
         sandbox_timeout: std::env::var("SANDBOX_TIMEOUT").unwrap_or_else(|_| "300".into()),
@@ -635,7 +667,7 @@ mod tests {
     #[test]
     fn rollback_plan_uses_only_the_checkpoint_digest() {
         let digest = "ghcr.io/bushshrub/housebot@sha256:abc123";
-        let commands = container_commands(digest, "sandbox", "/data", "network", "300").unwrap();
+        let commands = container_commands(digest, "sandbox", "network", "300").unwrap();
         assert_eq!(commands.len(), 5);
         assert_eq!(commands[0], vec!["pull", digest]);
         assert_eq!(commands[3].last().unwrap(), digest);
@@ -646,7 +678,6 @@ mod tests {
         assert!(container_commands(
             "ghcr.io/bushshrub/housebot:latest",
             "sandbox",
-            "/data",
             "network",
             "300"
         )
@@ -654,22 +685,21 @@ mod tests {
         assert!(container_commands(
             "ghcr.io/other/image@sha256:abc",
             "sandbox",
-            "/data",
             "network",
             "300"
         )
         .is_err());
-        assert!(container_commands("none", "sandbox", "/data", "network", "300").is_err());
+        assert!(container_commands("none", "sandbox", "network", "300").is_err());
     }
 
     #[test]
     fn deploy_plan_is_sha_scoped_and_rejects_injection() {
-        let commands = deploy_commands("abcdef123456", "/data", "network", "300").unwrap();
+        let commands = deploy_commands("abcdef123456", "network", "300").unwrap();
         assert_eq!(commands.len(), 5);
         assert!(commands[0][1].ends_with(":sha-abcdef123456"));
-        assert!(commands[3].contains(&"--env-file".to_string()));
-        assert!(deploy_commands("latest", "/data", "network", "300").is_err());
-        assert!(deploy_commands("abcdef;reboot", "/data", "network", "300").is_err());
+        assert!(!commands[3].contains(&"/deployment".to_string()));
+        assert!(deploy_commands("latest", "network", "300").is_err());
+        assert!(deploy_commands("abcdef;reboot", "network", "300").is_err());
     }
 
     #[test]

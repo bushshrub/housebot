@@ -77,12 +77,12 @@ data/                # runtime — gitignored
 | `SANDBOX_IMAGE` | no | `house-chatbot-sandbox:latest` | Docker image for coding sandboxes |
 | `DOCKER_NETWORK` | no | `house-chatbot_default` | Network sandboxes join |
 | `SANDBOX_TIMEOUT` | no | `300` | Sandbox execution timeout (seconds) |
-| `HOST_DATA_DIR` | yes* | — | Absolute host path to `./data`; required so sibling sandbox containers share the workspace volume |
+| `HOST_DATA_DIR` | no | — | Optional host path to `./data`; omit it for fully ephemeral bot and sandbox state |
 | `LLAMA_CPP_URL` / `LLAMA_CPP_MODEL` | no | — | Passed into the sandbox for OpenCode |
 | `CC_OAUTH_TOKEN` | no | — | Claude Code OAuth token, forwarded to the sandbox |
 | `GITHUB_APP_ID` / `GITHUB_APP_PRIVATE_KEY` / `GITHUB_INSTALLATION_ID` / `GITHUB_REPO` | no | — | GitHub App creds for feature-request issue filing (all four required) |
 
-`HOST_DATA_DIR` must match the host-side absolute path of the `./data` volume mount (e.g. `/home/user/housebot/data`). Without it, sandbox workspace files won't be visible to the bot after the container exits.
+When set, `HOST_DATA_DIR` must match the host-side absolute path of the `./data` volume mount (e.g. `/home/user/housebot/data`). If omitted, bot state and sandbox artifacts are ephemeral.
 
 ---
 
