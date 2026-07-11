@@ -1,4 +1,4 @@
-//! Small Discord bot that observes deployment webhooks and offers an owner-only rollback.
+//! Small Discord bot that observes deployment webhooks and offers owner-only deployment controls.
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -75,6 +75,7 @@ struct DeploymentBot {
     previous_image: Arc<RwLock<Option<String>>>,
     deployment_lock: Arc<Mutex<()>>,
     github_repo: String,
+    github_branch: String,
     github_token: Option<String>,
     docker_network: String,
     sandbox_timeout: String,
@@ -90,6 +91,11 @@ pub struct GitHubCommit {
 #[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
 pub struct GitHubCommitDetails {
     pub message: String,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+struct GitHubComparison {
+    ahead_by: u32,
 }
 
 impl DeploymentBot {
@@ -154,6 +160,96 @@ impl DeploymentBot {
             .json()
             .await?;
         Ok((selected, recent))
+    }
+
+    async fn latest_branch_commit(&self) -> anyhow::Result<GitHubCommit> {
+        let client = reqwest::Client::new();
+        let url = format!(
+            "https://api.github.com/repos/{}/commits/{}",
+            self.github_repo, self.github_branch
+        );
+        let request = client
+            .get(url)
+            .header("User-Agent", "housebot-deployment-bot")
+            .header("Accept", "application/vnd.github+json");
+        let request = match &self.github_token {
+            Some(token) => request.bearer_auth(token),
+            None => request,
+        };
+        Ok(request.send().await?.error_for_status()?.json().await?)
+    }
+
+    async fn branch_ahead_by(&self, current_sha: &str) -> anyhow::Result<u32> {
+        let client = reqwest::Client::new();
+        let url = format!(
+            "https://api.github.com/repos/{}/compare/{}...{}",
+            self.github_repo, current_sha, self.github_branch
+        );
+        let request = client
+            .get(url)
+            .header("User-Agent", "housebot-deployment-bot")
+            .header("Accept", "application/vnd.github+json");
+        let request = match &self.github_token {
+            Some(token) => request.bearer_auth(token),
+            None => request,
+        };
+        Ok(request
+            .send()
+            .await?
+            .error_for_status()?
+            .json::<GitHubComparison>()
+            .await?
+            .ahead_by)
+    }
+
+    async fn current_running_sha(&self) -> anyhow::Result<String> {
+        let image = run_docker(&["inspect", "--format={{.Config.Image}}", "house-chatbot"]).await?;
+        let sha = image
+            .strip_prefix("ghcr.io/bushshrub/housebot:sha-")
+            .ok_or_else(|| {
+                anyhow::anyhow!("running house-chatbot image does not contain a commit SHA")
+            })?;
+        if !valid_sha(sha) {
+            anyhow::bail!("running house-chatbot image contains an invalid commit SHA");
+        }
+        Ok(sha.to_string())
+    }
+
+    async fn update_to_latest(&self) -> anyhow::Result<String> {
+        let current_sha = self.current_running_sha().await?;
+        let latest = self.latest_branch_commit().await?;
+        if latest.sha == current_sha || self.branch_ahead_by(&current_sha).await? == 0 {
+            return Ok(format!(
+                "✅ Already running the latest `{}` commit on `{}`.",
+                short_sha(&current_sha),
+                self.github_branch
+            ));
+        }
+
+        let _deployment_guard = self.deployment_lock.lock().await;
+        self.checkpoint_current_image().await?;
+        let commands = deploy_commands(&latest.sha, &self.docker_network, &self.sandbox_timeout)?;
+        for (index, command) in commands.iter().enumerate() {
+            tracing::info!(
+                stage = deploy_progress(index),
+                "Update deployment stage started"
+            );
+            let args = command.iter().map(String::as_str).collect::<Vec<_>>();
+            let output = run_docker(&args).await?;
+            if index == commands.len() - 1 && output != "true" {
+                anyhow::bail!("house-chatbot is not running after update deployment");
+            }
+            tracing::info!(
+                stage = deploy_progress(index),
+                "Update deployment stage completed"
+            );
+        }
+        Ok(format!(
+            "✅ Updated housebot from `{}` to latest `{}` on `{}`.",
+            short_sha(&current_sha),
+            short_sha(&latest.sha),
+            self.github_branch
+        ))
     }
 }
 
@@ -643,6 +739,38 @@ impl EventHandler for DeploymentBot {
                 .await;
             return;
         }
+        if command.data.name == "update" {
+            if !rollback_allowed(
+                self.owner_id,
+                command.user.id.get(),
+                command.channel_id.get(),
+                self.channel_id,
+            ) {
+                let response = CreateInteractionResponse::Message(
+                    CreateInteractionResponseMessage::new()
+                        .content("Only the configured owner can update from this channel.")
+                        .ephemeral(true),
+                );
+                let _ = command.create_response(&ctx.http, response).await;
+                return;
+            }
+            let response = CreateInteractionResponse::Message(
+                CreateInteractionResponseMessage::new()
+                    .content("🔎 Checking the running commit against the branch tip…")
+                    .ephemeral(true),
+            );
+            if command.create_response(&ctx.http, response).await.is_err() {
+                return;
+            }
+            let content = match self.update_to_latest().await {
+                Ok(message) => message,
+                Err(error) => format!("❌ Update failed: {error}"),
+            };
+            let _ = command
+                .edit_response(&ctx.http, EditInteractionResponse::new().content(content))
+                .await;
+            return;
+        }
         if command.data.name != "rollback" {
             return;
         }
@@ -686,6 +814,7 @@ pub async fn run() -> anyhow::Result<()> {
         previous_image: Arc::new(RwLock::new(None)),
         deployment_lock: Arc::new(Mutex::new(())),
         github_repo: std::env::var("GITHUB_REPO").unwrap_or_else(|_| "bushshrub/housebot".into()),
+        github_branch: std::env::var("GITHUB_BRANCH").unwrap_or_else(|_| "master".into()),
         github_token: std::env::var("GITHUB_TOKEN").ok(),
         docker_network: std::env::var("DOCKER_NETWORK")
             .unwrap_or_else(|_| "house-chatbot_default".into()),
@@ -755,6 +884,8 @@ fn deployment_commands() -> Vec<CreateCommand> {
     vec![
         CreateCommand::new("rollback")
             .description("Roll back housebot to the previous deployed image"),
+        CreateCommand::new("update")
+            .description("Redeploy the latest commit from the configured branch"),
         CreateCommand::new("deploy")
             .description("Deploy a previously built commit")
             .add_option(
@@ -773,10 +904,9 @@ async fn remove_global_deployment_commands(ctx: &Context) {
         }
     };
 
-    for command in commands
-        .into_iter()
-        .filter(|command| command.name == "deploy" || command.name == "rollback")
-    {
+    for command in commands.into_iter().filter(|command| {
+        command.name == "deploy" || command.name == "rollback" || command.name == "update"
+    }) {
         if let Err(error) = Command::delete_global_command(&ctx.http, command.id).await {
             tracing::error!(name = %command.name, "Failed to remove global deployment slash command: {error}");
         } else {
