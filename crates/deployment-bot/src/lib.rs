@@ -200,6 +200,23 @@ struct GitHubComparison {
 }
 
 impl DeploymentBot {
+    async fn cleanup_old_images(&self, sha: Option<&str>) {
+        let main = sha
+            .map(|sha| format!("ghcr.io/bushshrub/housebot:sha-{sha}"))
+            .unwrap_or_else(|| "ghcr.io/bushshrub/housebot:latest".into());
+        let sandbox = sha
+            .map(|sha| format!("ghcr.io/bushshrub/housebot/sandbox:sha-{sha}"))
+            .unwrap_or_else(|| "ghcr.io/bushshrub/housebot/sandbox:latest".into());
+        let previous = self.previous_image.read().await.clone();
+        let mut keep = vec![main.as_str(), sandbox.as_str()];
+        if let Some(previous) = previous.as_deref() {
+            keep.push(previous);
+        }
+        if let Err(error) = cleanup_old_housebot_images(&keep).await {
+            tracing::warn!(%error, "Could not clean up old housebot images");
+        }
+    }
+
     async fn rollback(&self) -> anyhow::Result<String> {
         let digest = self
             .previous_image
@@ -614,6 +631,25 @@ async fn run_docker(args: &[&str]) -> anyhow::Result<String> {
     Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
 }
 
+async fn cleanup_old_housebot_images(keep: &[&str]) -> anyhow::Result<()> {
+    let images = run_docker(&[
+        "images",
+        "--format={{.Repository}}:{{.Tag}}",
+        "ghcr.io/bushshrub/housebot*",
+    ])
+    .await?;
+    for image in images.lines().filter(|image| {
+        (*image == "ghcr.io/bushshrub/housebot:latest"
+            || image.starts_with("ghcr.io/bushshrub/housebot:sha-")
+            || *image == "ghcr.io/bushshrub/housebot/sandbox:latest"
+            || image.starts_with("ghcr.io/bushshrub/housebot/sandbox:sha-"))
+            && !keep.contains(image)
+    }) {
+        run_docker(&["image", "rm", image]).await?;
+    }
+    Ok(())
+}
+
 const HOUSEBOT_ENV_VARS: &[&str] = &[
     "DISCORD_BOT_TOKEN",
     "OWNER_DISCORD_ID",
@@ -798,6 +834,7 @@ impl EventHandler for DeploymentBot {
                     }
                 }
             }
+            self.cleanup_old_images(Some(&sha)).await;
             tracing::info!(sha, container = %summary.container_name, container_id = ?summary.container_id, "Automatic deployment completed");
             *self.last_event.write().await = Some(event);
             if let Some(changelog) = changelog {
@@ -899,6 +936,8 @@ impl EventHandler for DeploymentBot {
                         "Manual deployment stage completed"
                     );
                 }
+                self.cleanup_old_images((sha != "latest").then_some(sha))
+                    .await;
                 anyhow::Ok(summary)
             }
             .await;

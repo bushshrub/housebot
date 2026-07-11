@@ -2,17 +2,17 @@
 # main housebot image fails to build or has a bad runtime release.
 FROM docker:27-cli AS docker-cli
 
-FROM rust:1-bookworm AS rust-builder
+FROM rust:1-alpine AS rust-builder
+RUN apk add --no-cache musl-dev
 WORKDIR /app
 COPY Cargo.toml Cargo.lock ./
 COPY crates/deployment-bot/Cargo.toml crates/deployment-bot/Cargo.toml
 COPY crates/deployment-bot/src/ crates/deployment-bot/src/
 RUN cargo build --release --locked --package deployment-bot
+RUN strip /app/target/release/deployment-bot
 
-FROM debian:bookworm-slim
-RUN apt-get update \
-    && apt-get install -y --no-install-recommends ca-certificates \
-    && rm -rf /var/lib/apt/lists/*
+FROM alpine:3.22
+RUN apk add --no-cache ca-certificates
 
 COPY --from=docker-cli /usr/local/bin/docker /usr/local/bin/docker
 COPY --from=rust-builder /app/target/release/deployment-bot /usr/local/bin/deployment-bot

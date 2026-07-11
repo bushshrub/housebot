@@ -1,5 +1,5 @@
 # Stage 1: build the jellyfin-mcp binary.
-FROM golang:1.25-bookworm AS jellyfin-builder
+FROM golang:1.25-alpine AS jellyfin-builder
 RUN go install github.com/jaredtrent/jellyfin-mcp@latest
 
 # Stage 2: provide the Docker CLI without pulling the Docker daemon/runtime.
@@ -7,13 +7,13 @@ FROM docker:27-cli AS docker-cli
 
 # Stage 3: build the DuckDuckGo MCP tool against the same Python runtime used
 # by the final image. This keeps the tool from downloading its own Python.
-FROM python:3.13-slim-bookworm AS mcp-builder
+FROM python:3.13-alpine AS mcp-builder
 RUN pip install --no-cache-dir uv \
     && uv tool install duckduckgo-mcp-server
 
-# Stage 4: build the Rust bot binary against the same Debian release as the
-# runtime image, so the binary does not require a newer glibc.
-FROM rust:1-bookworm AS rust-builder
+# Stage 4: build a musl-linked Rust binary for the Alpine runtime.
+FROM rust:1-alpine AS rust-builder
+RUN apk add --no-cache musl-dev
 WORKDIR /app
 # Prime the dependency cache with a stub crate.
 COPY Cargo.toml Cargo.lock ./
@@ -28,9 +28,10 @@ RUN mkdir src \
 # Build the real sources.
 COPY src/ src/
 RUN touch src/main.rs src/lib.rs && cargo build --release --locked --package housebot
+RUN strip /app/target/release/housebot
 
 # Stage 5: runtime image
-FROM python:3.13-slim-bookworm
+FROM python:3.13-alpine
 
 # Only the Docker client is needed; the daemon is provided by the host socket.
 COPY --from=docker-cli /usr/local/bin/docker /usr/local/bin/docker

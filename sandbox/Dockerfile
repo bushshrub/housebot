@@ -1,17 +1,17 @@
-FROM node:22-bookworm-slim
+FROM node:22-alpine
 
-RUN apt-get update && apt-get install -y --no-install-recommends \
+RUN apk add --no-cache \
+    bash \
     python3 \
     git \
     curl \
     ca-certificates \
-    build-essential \
-    && rm -rf /var/lib/apt/lists/*
+    build-base
 
 RUN npm install -g --no-fund --no-audit opencode-ai \
     && npm cache clean --force
 
-RUN useradd -m -s /bin/bash sandbox \
+RUN adduser -D -s /bin/bash sandbox \
     && mkdir -p /workspace \
     && chown -R sandbox:sandbox /workspace
 
@@ -20,7 +20,11 @@ USER sandbox
 # The default rustup profile includes documentation and other components that
 # are not needed to compile projects. The minimal profile cuts hundreds of MB.
 RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- \
-    -y --default-toolchain stable --profile minimal
+    -y --default-toolchain stable --profile minimal \
+    && rm -rf /home/sandbox/.rustup/downloads \
+        /home/sandbox/.rustup/tmp \
+        /home/sandbox/.cargo/registry \
+        /home/sandbox/.cargo/git
 ENV PATH="/home/sandbox/.cargo/bin:${PATH}"
 USER root
 
