@@ -57,6 +57,21 @@ impl ServerConfigStore {
         let cfg = self.load(gid).await;
         cfg.allowed_channel_ids.is_empty() || cfg.allowed_channel_ids.contains(&channel_id)
     }
+
+    /// Follow-ups require an explicitly configured server channel.
+    pub async fn is_followup_channel_allowed(
+        &self,
+        guild_id: Option<u64>,
+        channel_id: u64,
+    ) -> bool {
+        let Some(gid) = guild_id else {
+            return false;
+        };
+        self.load(gid)
+            .await
+            .allowed_channel_ids
+            .contains(&channel_id)
+    }
 }
 
 // ── user config ───────────────────────────────────────────────────────────────
@@ -68,7 +83,7 @@ pub struct UserConfig {
     #[serde(default)]
     pub personality: Option<String>,
     /// Whether the bot should reply to follow-up messages without a ping/mention.
-    #[serde(default = "default_true")]
+    #[serde(default)]
     pub followup_enabled: bool,
     /// How many seconds the bot will reply without a ping after the last interaction.
     #[serde(default = "default_followup_timeout")]
@@ -76,10 +91,6 @@ pub struct UserConfig {
     /// Whether LLM responses are rendered as paginated embeds.
     #[serde(default)]
     pub labs_pagination_enabled: bool,
-}
-
-fn default_true() -> bool {
-    true
 }
 
 fn default_followup_timeout() -> u64 {
@@ -90,7 +101,7 @@ impl Default for UserConfig {
     fn default() -> Self {
         Self {
             personality: None,
-            followup_enabled: true,
+            followup_enabled: false,
             followup_timeout_secs: default_followup_timeout(),
             labs_pagination_enabled: false,
         }
@@ -139,11 +150,15 @@ mod tests {
     }
 
     #[test]
+    fn followup_is_off_by_default() {
+        assert!(!UserConfig::default().followup_enabled);
+    }
+
+    #[test]
     fn old_user_config_defaults_labs_pagination_to_off() {
-        let config: UserConfig = serde_json::from_str(
-            r#"{"personality":null,"followup_enabled":true,"followup_timeout_secs":300}"#,
-        )
-        .unwrap();
+        let config: UserConfig =
+            serde_json::from_str(r#"{"personality":null,"followup_timeout_secs":300}"#).unwrap();
         assert!(!config.labs_pagination_enabled);
+        assert!(!config.followup_enabled);
     }
 }

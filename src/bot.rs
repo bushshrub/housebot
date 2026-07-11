@@ -411,7 +411,7 @@ async fn handle_config_interaction(
                 "list" => {
                     let cfg = server_cfg.load(gid).await;
                     if cfg.allowed_channel_ids.is_empty() {
-                        "I'm allowed to respond in **all channels** (no restriction set).".into()
+                        "I'm allowed to respond in **all channels** (no restriction set). Follow-up replies are disabled until you add explicit reply channels.".into()
                     } else {
                         let ids: Vec<String> = cfg
                             .allowed_channel_ids
@@ -427,7 +427,7 @@ async fn handle_config_interaction(
                     if server_cfg.save(gid, &cfg).await.is_err() {
                         return "Error: failed to save config.".into();
                     }
-                    "✅ Channel restriction cleared — I'll respond in all channels.".into()
+                    "✅ Channel restriction cleared — I'll respond in all channels, but follow-up replies are disabled until you add explicit reply channels.".into()
                 }
                 action @ ("add" | "remove") => {
                     let channel_opts = match &sub.value {
@@ -961,11 +961,17 @@ impl EventHandler for HouseBot {
         let user_config = self.user_cfg.load(user_id).await;
         let followup_enabled = user_config.followup_enabled;
         let followup_timeout = Duration::from_secs(user_config.followup_timeout_secs);
+        let followup_channel_allowed = self
+            .server_cfg
+            .is_followup_channel_allowed(guild_id, channel_id)
+            .await;
 
         let now = Instant::now();
         let (is_active, session_expired) = {
             let mut convos = self.conversations.lock().await;
-            let active = followup_enabled && convos.is_active(channel_id, user_id, now);
+            let active = followup_enabled
+                && followup_channel_allowed
+                && convos.is_active(channel_id, user_id, now);
             let expired = !active && convos.pop_timed_out(channel_id, user_id, now);
             (active, expired)
         };
