@@ -1014,7 +1014,6 @@ impl HouseBot {
         if let Some(reaction) = pending_reaction {
             let _ = reaction.delete(&ctx.http).await;
         }
-        let _ = msg.react(&ctx.http, '✅').await;
         if let Some(generating) = generating {
             let _ = generating.delete(&ctx.http).await;
         }
