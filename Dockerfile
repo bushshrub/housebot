@@ -23,9 +23,9 @@ RUN strip /app/target/release/housebot
 # Build the Jellyfin MCP server as a static Go binary for the runtime image.
 # Keep this pinned so image rebuilds do not silently change the MCP tool set.
 FROM golang:1.25-alpine AS jellyfin-mcp-builder
-ARG JELLYFIN_MCP_VERSION=v2026.604.2
+ARG JELLYFIN_MCP_VERSION=v2026.604.2+incompatible
 RUN apk add --no-cache git
-RUN CGO_ENABLED=0 go install github.com/jaredtrent/jellyfin-mcp/v2026@${JELLYFIN_MCP_VERSION}
+RUN CGO_ENABLED=0 go install github.com/jaredtrent/jellyfin-mcp@${JELLYFIN_MCP_VERSION}
 
 # Minimal runtime image: Alpine plus the statically linked bot binary.
 FROM alpine:3.22
