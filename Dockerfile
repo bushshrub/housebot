@@ -17,6 +17,7 @@ RUN mkdir src \
     && cargo build --release --locked --package housebot || true
 # Build the real sources.
 COPY src/ src/
+COPY crates/ crates/
 RUN touch src/main.rs src/lib.rs && cargo build --release --locked --package housebot
 RUN strip /app/target/release/housebot
 
