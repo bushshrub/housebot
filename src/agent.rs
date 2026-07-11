@@ -17,6 +17,7 @@ use crate::memory::Memory;
 use crate::reminders::Reminders;
 use crate::skills::{Skill, Skills};
 use crate::tools;
+use crate::tools::duckduckgo::DuckDuckGo;
 
 /// An inbound image attachment, base64-encoded for the vision API.
 #[derive(Debug, Clone)]
@@ -84,6 +85,7 @@ pub struct Agent {
     reminders: Reminders,
     reporter: Arc<GitHubIssueReporter>,
     rate_limiter: tools::feature_request::RateLimiter,
+    duckduckgo: DuckDuckGo,
     mcp_servers: Vec<McpServer>,
     session_stats: tokio::sync::Mutex<HashMap<String, SessionStats>>,
 }
@@ -122,6 +124,7 @@ impl Agent {
             reminders: Reminders::default(),
             reporter: Arc::new(GitHubIssueReporter::default()),
             rate_limiter: tools::feature_request::RateLimiter::default(),
+            duckduckgo: DuckDuckGo::from_env(),
             mcp_servers,
             session_stats: tokio::sync::Mutex::new(HashMap::new()),
         }
@@ -389,6 +392,8 @@ impl Agent {
             }
         }
         for def in [
+            tools::duckduckgo::search_definition(),
+            tools::duckduckgo::fetch_content_definition(),
             update_memory_tool(),
             run_skill_tool(),
             tools::feature_request::definition(),
@@ -410,6 +415,28 @@ impl Agent {
         _hooks: &dyn AgentHooks,
     ) -> ToolOutcome {
         match name {
+            "ddg__search" => ToolOutcome::Text(
+                self.duckduckgo
+                    .search(
+                        args.get("query").and_then(Value::as_str).unwrap_or(""),
+                        args.get("max_results")
+                            .and_then(Value::as_u64)
+                            .unwrap_or(10) as usize,
+                        args.get("region").and_then(Value::as_str).unwrap_or(""),
+                    )
+                    .await,
+            ),
+            "ddg__fetch_content" => ToolOutcome::Text(
+                self.duckduckgo
+                    .fetch_content(
+                        args.get("url").and_then(Value::as_str).unwrap_or(""),
+                        args.get("start_index").and_then(Value::as_u64).unwrap_or(0) as usize,
+                        args.get("max_length")
+                            .and_then(Value::as_u64)
+                            .unwrap_or(8000) as usize,
+                    )
+                    .await,
+            ),
             "update_memory" => {
                 let new_content = args
                     .get("memory_content")
@@ -504,9 +531,6 @@ impl Agent {
 
 async fn start_mcp_servers() -> Vec<McpServer> {
     let mut servers = Vec::new();
-    if let Some(s) = McpServer::start("ddg", "duckduckgo-mcp-server", &[], &[]).await {
-        servers.push(s);
-    }
     match (
         std::env::var("JELLYFIN_URL"),
         std::env::var("JELLYFIN_API_KEY"),
@@ -701,6 +725,7 @@ impl Agent {
                 String::new(),
             )),
             rate_limiter: tools::feature_request::RateLimiter::default(),
+            duckduckgo: DuckDuckGo::from_env(),
             mcp_servers: vec![],
             session_stats: tokio::sync::Mutex::new(HashMap::new()),
         }
