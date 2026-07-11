@@ -79,7 +79,6 @@ struct DeploymentBot {
     github_branch: String,
     github_token: Option<String>,
     docker_network: String,
-    sandbox_timeout: String,
 }
 
 const HOUSE_CHATBOT_CONTAINER: &str = "house-chatbot";
@@ -87,7 +86,6 @@ const HOUSE_CHATBOT_CONTAINER: &str = "house-chatbot";
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum DeploymentStage {
     PullHousebotImage,
-    PullSandboxImage,
     RemovePreviousContainer,
     StartRequestedImage,
     CheckContainerState,
@@ -97,7 +95,6 @@ impl DeploymentStage {
     pub fn progress_message(self) -> &'static str {
         match self {
             Self::PullHousebotImage => "⬇️ Pulling housebot image…",
-            Self::PullSandboxImage => "⬇️ Pulling sandbox image…",
             Self::RemovePreviousContainer => "🛑 Removing the previous housebot container…",
             Self::StartRequestedImage => "🚀 Starting the requested housebot image…",
             Self::CheckContainerState => "🩺 Checking container state…",
@@ -117,7 +114,6 @@ impl fmt::Display for DeploymentStage {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(match self {
             Self::PullHousebotImage => "pull_housebot_image",
-            Self::PullSandboxImage => "pull_sandbox_image",
             Self::RemovePreviousContainer => "remove_previous_container",
             Self::StartRequestedImage => "start_requested_image",
             Self::CheckContainerState => "check_container_state",
@@ -204,11 +200,8 @@ impl DeploymentBot {
         let main = sha
             .map(|sha| format!("ghcr.io/bushshrub/housebot:sha-{sha}"))
             .unwrap_or_else(|| "ghcr.io/bushshrub/housebot:latest".into());
-        let sandbox = sha
-            .map(|sha| format!("ghcr.io/bushshrub/housebot/sandbox:sha-{sha}"))
-            .unwrap_or_else(|| "ghcr.io/bushshrub/housebot/sandbox:latest".into());
         let previous = self.previous_image.read().await.clone();
-        let mut keep = vec![main.as_str(), sandbox.as_str()];
+        let mut keep = vec![main.as_str()];
         if let Some(previous) = previous.as_deref() {
             keep.push(previous);
         }
@@ -224,14 +217,8 @@ impl DeploymentBot {
             .await
             .clone()
             .ok_or_else(|| anyhow::anyhow!("no previous image is available in this session"))?;
-        let commands = container_commands_with_env(
-            &digest,
-            "ghcr.io/bushshrub/housebot/sandbox:latest",
-            &self.docker_network,
-            &self.sandbox_timeout,
-            housebot_env(),
-            false,
-        )?;
+        let commands =
+            container_commands_with_env(&digest, &self.docker_network, housebot_env(), false)?;
 
         for command in &commands {
             let output = run_docker(&command.args()).await?;
@@ -369,11 +356,7 @@ impl DeploymentBot {
                 .to_string(),
         };
         self.checkpoint_current_image().await?;
-        let commands = deploy_commands(
-            Some(&latest.sha),
-            &self.docker_network,
-            &self.sandbox_timeout,
-        )?;
+        let commands = deploy_commands(Some(&latest.sha), &self.docker_network)?;
         for command in &commands {
             tracing::info!(
                 stage = %command.stage,
@@ -409,27 +392,13 @@ pub fn valid_sha(sha: &str) -> bool {
 pub fn deploy_commands(
     sha: Option<&str>,
     docker_network: &str,
-    sandbox_timeout: &str,
 ) -> anyhow::Result<Vec<DeploymentCommand>> {
-    let (main, sandbox) = match sha {
-        Some(sha) if valid_sha(sha) => (
-            format!("ghcr.io/bushshrub/housebot:sha-{sha}"),
-            format!("ghcr.io/bushshrub/housebot/sandbox:sha-{sha}"),
-        ),
+    let main = match sha {
+        Some(sha) if valid_sha(sha) => format!("ghcr.io/bushshrub/housebot:sha-{sha}"),
         Some(_) => anyhow::bail!("SHA must contain 7 to 40 hexadecimal characters"),
-        None => (
-            "ghcr.io/bushshrub/housebot:latest".into(),
-            "ghcr.io/bushshrub/housebot/sandbox:latest".into(),
-        ),
+        None => "ghcr.io/bushshrub/housebot:latest".into(),
     };
-    container_commands_with_env(
-        &main,
-        &sandbox,
-        docker_network,
-        sandbox_timeout,
-        housebot_env(),
-        true,
-    )
+    container_commands_with_env(&main, docker_network, housebot_env(), true)
 }
 
 fn valid_housebot_image(image: &str) -> bool {
@@ -439,25 +408,14 @@ fn valid_housebot_image(image: &str) -> bool {
 
 pub fn container_commands(
     image: &str,
-    sandbox_image: &str,
     docker_network: &str,
-    sandbox_timeout: &str,
 ) -> anyhow::Result<Vec<DeploymentCommand>> {
-    container_commands_with_env(
-        image,
-        sandbox_image,
-        docker_network,
-        sandbox_timeout,
-        Vec::new(),
-        false,
-    )
+    container_commands_with_env(image, docker_network, Vec::new(), false)
 }
 
 fn container_commands_with_env(
     image: &str,
-    sandbox_image: &str,
     docker_network: &str,
-    sandbox_timeout: &str,
     environment: Vec<(String, String)>,
     allow_latest: bool,
 ) -> anyhow::Result<Vec<DeploymentCommand>> {
@@ -480,27 +438,11 @@ fn container_commands_with_env(
         run.push("--env".into());
         run.push(format!("{name}={value}"));
     }
-    run.extend([
-        "--env".into(),
-        "DATA_DIR=/app/data".into(),
-        "--env".into(),
-        format!("SANDBOX_IMAGE={sandbox_image}"),
-        "--env".into(),
-        format!("DOCKER_NETWORK={docker_network}"),
-        "--env".into(),
-        format!("SANDBOX_TIMEOUT={sandbox_timeout}"),
-        "--volume".into(),
-        "/var/run/docker.sock:/var/run/docker.sock".into(),
-        image.into(),
-    ]);
+    run.extend(["--env".into(), "DATA_DIR=/app/data".into(), image.into()]);
     Ok(vec![
         DeploymentCommand::new(
             DeploymentStage::PullHousebotImage,
             vec!["pull".into(), image.into()],
-        ),
-        DeploymentCommand::new(
-            DeploymentStage::PullSandboxImage,
-            vec!["pull".into(), sandbox_image.into()],
         ),
         DeploymentCommand::new(
             DeploymentStage::RemovePreviousContainer,
@@ -640,9 +582,7 @@ async fn cleanup_old_housebot_images(keep: &[&str]) -> anyhow::Result<()> {
     .await?;
     for image in images.lines().filter(|image| {
         (*image == "ghcr.io/bushshrub/housebot:latest"
-            || image.starts_with("ghcr.io/bushshrub/housebot:sha-")
-            || *image == "ghcr.io/bushshrub/housebot/sandbox:latest"
-            || image.starts_with("ghcr.io/bushshrub/housebot/sandbox:sha-"))
+            || image.starts_with("ghcr.io/bushshrub/housebot:sha-"))
             && !keep.contains(image)
     }) {
         run_docker(&["image", "rm", image]).await?;
@@ -661,9 +601,6 @@ const HOUSEBOT_ENV_VARS: &[&str] = &[
     "CONVERSATION_IDLE_TIMEOUT",
     "JELLYFIN_URL",
     "JELLYFIN_API_KEY",
-    "SANDBOX_CPUS",
-    "SANDBOX_MEM_LIMIT",
-    "MAX_ARTIFACT_SIZE_MB",
     "LLAMA_CPP_URL",
     "LLAMA_CPP_MODEL",
     "GITHUB_APP_ID",
@@ -787,14 +724,13 @@ impl EventHandler for DeploymentBot {
                     None
                 }
             };
-            let commands =
-                match deploy_commands(Some(&sha), &self.docker_network, &self.sandbox_timeout) {
-                    Ok(commands) => commands,
-                    Err(error) => {
-                        tracing::error!("Could not prepare deployment: {error}");
-                        return;
-                    }
-                };
+            let commands = match deploy_commands(Some(&sha), &self.docker_network) {
+                Ok(commands) => commands,
+                Err(error) => {
+                    tracing::error!("Could not prepare deployment: {error}");
+                    return;
+                }
+            };
             let mut summary = DeploymentRunSummary {
                 container_name: HOUSE_CHATBOT_CONTAINER.into(),
                 container_id: None,
@@ -888,9 +824,9 @@ impl EventHandler for DeploymentBot {
                 return;
             }
             let commands = if sha == "latest" {
-                deploy_commands(None, &self.docker_network, &self.sandbox_timeout)
+                deploy_commands(None, &self.docker_network)
             } else {
-                deploy_commands(Some(sha), &self.docker_network, &self.sandbox_timeout)
+                deploy_commands(Some(sha), &self.docker_network)
             };
             let result = async {
                 let _deployment_guard = self.deployment_lock.lock().await;
@@ -1118,7 +1054,6 @@ pub async fn run() -> anyhow::Result<()> {
         github_token: std::env::var("GITHUB_TOKEN").ok(),
         docker_network: std::env::var("DOCKER_NETWORK")
             .unwrap_or_else(|_| "house-chatbot_default".into()),
-        sandbox_timeout: std::env::var("SANDBOX_TIMEOUT").unwrap_or_else(|_| "300".into()),
     };
     let intents = GatewayIntents::non_privileged() | GatewayIntents::MESSAGE_CONTENT;
     let mut client = Client::builder(token, intents)
@@ -1268,37 +1203,25 @@ mod tests {
     #[test]
     fn rollback_plan_uses_only_the_checkpoint_digest() {
         let digest = "ghcr.io/bushshrub/housebot@sha256:abc123";
-        let commands = container_commands(digest, "sandbox", "network", "300").unwrap();
-        assert_eq!(commands.len(), 5);
+        let commands = container_commands(digest, "network").unwrap();
+        assert_eq!(commands.len(), 4);
         assert_eq!(commands[0].stage, DeploymentStage::PullHousebotImage);
         assert_eq!(commands[0].args, vec!["pull", digest]);
-        assert_eq!(commands[3].stage, DeploymentStage::StartRequestedImage);
-        assert_eq!(commands[3].args.last().unwrap(), digest);
+        assert_eq!(commands[2].stage, DeploymentStage::StartRequestedImage);
+        assert_eq!(commands[2].args.last().unwrap(), digest);
     }
 
     #[test]
     fn rollback_rejects_tags_and_unrelated_images() {
-        assert!(container_commands(
-            "ghcr.io/bushshrub/housebot:latest",
-            "sandbox",
-            "network",
-            "300"
-        )
-        .is_err());
-        assert!(container_commands(
-            "ghcr.io/other/image@sha256:abc",
-            "sandbox",
-            "network",
-            "300"
-        )
-        .is_err());
-        assert!(container_commands("none", "sandbox", "network", "300").is_err());
+        assert!(container_commands("ghcr.io/bushshrub/housebot:latest", "network").is_err());
+        assert!(container_commands("ghcr.io/other/image@sha256:abc", "network").is_err());
+        assert!(container_commands("none", "network").is_err());
     }
 
     #[test]
     fn deploy_plan_is_sha_scoped_and_rejects_injection() {
-        let commands = deploy_commands(Some("abcdef123456"), "network", "300").unwrap();
-        assert_eq!(commands.len(), 5);
+        let commands = deploy_commands(Some("abcdef123456"), "network").unwrap();
+        assert_eq!(commands.len(), 4);
         assert_eq!(
             commands
                 .iter()
@@ -1306,7 +1229,6 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec![
                 DeploymentStage::PullHousebotImage,
-                DeploymentStage::PullSandboxImage,
                 DeploymentStage::RemovePreviousContainer,
                 DeploymentStage::StartRequestedImage,
                 DeploymentStage::CheckContainerState,
@@ -1315,11 +1237,11 @@ mod tests {
         assert!(commands[0].args[1].ends_with(":sha-abcdef123456"));
         assert!(!commands[3].args.contains(&"/deployment".to_string()));
         assert_eq!(
-            deploy_commands(None, "network", "300").unwrap()[0].args[1],
+            deploy_commands(None, "network").unwrap()[0].args[1],
             "ghcr.io/bushshrub/housebot:latest"
         );
-        assert!(deploy_commands(Some("latest"), "network", "300").is_err());
-        assert!(deploy_commands(Some("abcdef;reboot"), "network", "300").is_err());
+        assert!(deploy_commands(Some("latest"), "network").is_err());
+        assert!(deploy_commands(Some("abcdef;reboot"), "network").is_err());
     }
 
     #[test]
