@@ -331,18 +331,26 @@ impl DeploymentBot {
     }
 
     async fn update_to_latest(&self) -> anyhow::Result<String> {
-        let current_sha = self.current_running_sha().await?;
+        let current_sha = match self.current_running_sha().await {
+            Ok(sha) => Some(sha),
+            Err(error) if docker_object_missing(&error) => None,
+            Err(error) => return Err(error),
+        };
         let latest = self.latest_branch_commit().await?;
-        if latest.sha == current_sha {
+        if current_sha.as_deref() == Some(latest.sha.as_str()) {
             return Ok(format!(
                 "✅ Already running the latest `{}` commit on `{}`.",
-                short_sha(&current_sha),
+                short_sha(current_sha.as_deref().expect("current SHA was checked")),
                 self.github_branch
             ));
         }
 
         let _deployment_guard = self.deployment_lock.lock().await;
-        let changelog = self.changelog(&current_sha, &latest.sha).await?;
+        let changelog = match current_sha.as_deref() {
+            Some(current_sha) => self.changelog(current_sha, &latest.sha).await?,
+            None => "**Changelog**\nNo previous housebot container was found; deploying the latest commit."
+                .to_string(),
+        };
         self.checkpoint_current_image().await?;
         let commands = deploy_commands(
             Some(&latest.sha),
@@ -363,9 +371,13 @@ impl DeploymentBot {
                 "Update deployment stage completed"
             );
         }
+        let previous = current_sha
+            .as_deref()
+            .map(short_sha)
+            .unwrap_or("no running container");
         Ok(format!(
             "✅ Updated housebot from `{}` to latest `{}` on `{}`.\n\n{}",
-            short_sha(&current_sha),
+            previous,
             short_sha(&latest.sha),
             self.github_branch,
             changelog
@@ -579,6 +591,11 @@ fn short_sha(sha: &str) -> &str {
     sha.get(..7).unwrap_or(sha)
 }
 
+fn docker_object_missing(error: &anyhow::Error) -> bool {
+    let message = error.to_string();
+    message.contains("No such object") || message.contains("No such container")
+}
+
 async fn run_docker(args: &[&str]) -> anyhow::Result<String> {
     let output = ProcessCommand::new("docker")
         .args(args)
@@ -586,7 +603,8 @@ async fn run_docker(args: &[&str]) -> anyhow::Result<String> {
         .output()
         .await?;
     let missing_container = args.first() == Some(&"rm")
-        && String::from_utf8_lossy(&output.stderr).contains("No such container");
+        && (String::from_utf8_lossy(&output.stderr).contains("No such container")
+            || String::from_utf8_lossy(&output.stderr).contains("No such object"));
     if !output.status.success() && !missing_container {
         anyhow::bail!(
             "docker command failed: {}",
