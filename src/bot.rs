@@ -1,7 +1,7 @@
 //! Discord interface (serenity): message routing, `!`-commands, streaming progress
 //! updates, secret redaction, and code/artifact file uploads.
 
-use std::collections::{HashSet, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -11,10 +11,11 @@ use once_cell::sync::Lazy;
 use regex::{Captures, Regex};
 use serde_json::Value;
 use serenity::all::{
-    Command, CommandDataOptionValue, CommandOptionType, Context, CreateAllowedMentions,
-    CreateAttachment, CreateCommand, CreateCommandOption, CreateEmbed, CreateInteractionResponse,
-    CreateInteractionResponseMessage, EditInteractionResponse, EditMessage, EventHandler,
-    GatewayIntents, Interaction, Message, Ready, UserId,
+    ButtonStyle, Command, CommandDataOptionValue, CommandOptionType, Context, CreateActionRow,
+    CreateAllowedMentions, CreateAttachment, CreateButton, CreateCommand, CreateCommandOption,
+    CreateEmbed, CreateInteractionResponse, CreateInteractionResponseMessage,
+    EditInteractionResponse, EditMessage, EventHandler, GatewayIntents, Interaction, Message,
+    Ready, UserId,
 };
 use serenity::builder::CreateMessage;
 use serenity::Client;
@@ -33,6 +34,13 @@ pub use crate::bot_commands::{note_command, skill_command, stats_command};
 
 const MAX_MESSAGE_LENGTH: usize = 2000;
 const CODE_FILE_THRESHOLD: usize = 800;
+const EMBED_DESCRIPTION_LIMIT: usize = 4096;
+const PAGINATION_PREFIX: &str = "housebot_labs_page:";
+
+struct PaginatedResponse {
+    owner_id: u64,
+    pages: Vec<String>,
+}
 
 fn compact_progress(stage: usize, detail: Option<&str>) -> String {
     let filled = (stage / 10).min(10);
@@ -280,6 +288,7 @@ pub struct HouseBot {
     conversations: Mutex<ConversationTracker>,
     processing: Mutex<HashSet<u64>>,
     responded: Mutex<VecDeque<u64>>,
+    paginated: Mutex<HashMap<String, PaginatedResponse>>,
     reminder_started: AtomicBool,
 }
 
@@ -299,6 +308,7 @@ impl HouseBot {
             conversations: Mutex::new(ConversationTracker::new(idle)),
             processing: Mutex::new(HashSet::new()),
             responded: Mutex::new(VecDeque::with_capacity(200)),
+            paginated: Mutex::new(HashMap::new()),
             reminder_started: AtomicBool::new(false),
         }
     }
@@ -503,6 +513,54 @@ async fn handle_config_interaction(
     }
 }
 
+async fn handle_labs_interaction(
+    user_cfg: &UserConfigStore,
+    options: &[serenity::all::CommandDataOption],
+    author_id: u64,
+) -> String {
+    let mut cfg = user_cfg.load(author_id).await;
+    let Some(top) = options.first() else {
+        return "Choose a labs feature. Use `/labs list` to see available features.".into();
+    };
+    match top.name.as_str() {
+        "list" => format!(
+            "**Labs features**\n• Pagination: {}",
+            if cfg.labs_pagination_enabled {
+                "enabled"
+            } else {
+                "disabled"
+            }
+        ),
+        "pagination" => {
+            let CommandDataOptionValue::SubCommand(sub_opts) = &top.value else {
+                return "Unexpected option structure.".into();
+            };
+            let Some(enabled) =
+                sub_opts
+                    .iter()
+                    .find(|o| o.name == "enabled")
+                    .and_then(|o| match &o.value {
+                        CommandDataOptionValue::Boolean(value) => Some(*value),
+                        _ => None,
+                    })
+            else {
+                return "Please specify `enabled`.".into();
+            };
+            cfg.labs_pagination_enabled = enabled;
+            if let Err(error) = user_cfg.save(author_id, &cfg).await {
+                tracing::error!(target: "housebot::labs::pagination", user_id = author_id, %error, "Failed to save pagination setting");
+                return "Error: failed to save labs configuration.".into();
+            }
+            tracing::info!(target: "housebot::labs::pagination", user_id = author_id, enabled, "Updated pagination setting");
+            format!(
+                "✅ Paginated responses {}.",
+                if enabled { "enabled" } else { "disabled" }
+            )
+        }
+        other => format!("Unknown labs feature `{other}`. Use `/labs list`."),
+    }
+}
+
 async fn reply_no_ping(ctx: &Context, msg: &Message, content: &str) -> serenity::Result<Message> {
     let builder = CreateMessage::new()
         .content(content)
@@ -605,6 +663,31 @@ impl EventHandler for HouseBot {
         if let Err(e) = Command::create_global_command(&ctx.http, config_cmd).await {
             tracing::error!("Failed to register /config slash command: {e}");
         }
+        let labs_cmd = CreateCommand::new("labs")
+            .description("Enable experimental bot features")
+            .add_option(CreateCommandOption::new(
+                CommandOptionType::SubCommand,
+                "list",
+                "List experimental features and their status",
+            ))
+            .add_option(
+                CreateCommandOption::new(
+                    CommandOptionType::SubCommand,
+                    "pagination",
+                    "Toggle paginated LLM responses",
+                )
+                .add_sub_option(
+                    CreateCommandOption::new(
+                        CommandOptionType::Boolean,
+                        "enabled",
+                        "Enable or disable paginated responses",
+                    )
+                    .required(true),
+                ),
+            );
+        if let Err(e) = Command::create_global_command(&ctx.http, labs_cmd).await {
+            tracing::error!(target: "housebot::labs::registration", "Failed to register /labs slash command: {e}");
+        }
         for command in [
             CreateCommand::new("model").description("Show information about the current model"),
             CreateCommand::new("session")
@@ -641,6 +724,10 @@ impl EventHandler for HouseBot {
     }
 
     async fn interaction_create(&self, ctx: Context, interaction: Interaction) {
+        if let Interaction::Component(component) = &interaction {
+            self.handle_pagination_component(&ctx, component).await;
+            return;
+        }
         let Interaction::Command(cmd) = interaction else {
             return;
         };
@@ -678,6 +765,7 @@ impl EventHandler for HouseBot {
                 )
                 .await
             }
+            "labs" => handle_labs_interaction(&self.user_cfg, &cmd.data.options, user_id).await,
             "model" => self.agent.model_info(),
             "session" => {
                 let info = self.agent.session_info(&user_id.to_string()).await;
@@ -913,7 +1001,15 @@ impl HouseBot {
         }
         let with_tool_summary = append_tool_summary(&safe, &result.tools_called);
         let (display, code_files) = extract_code_files(&with_tool_summary);
-        send_final_message(ctx, msg, &display).await;
+        send_final_message(
+            ctx,
+            msg,
+            &display,
+            user_config.labs_pagination_enabled,
+            msg.author.id.get(),
+            &self.paginated,
+        )
+        .await;
 
         if let Some(reaction) = pending_reaction {
             let _ = reaction.delete(&ctx.http).await;
@@ -959,6 +1055,60 @@ impl HouseBot {
             }
         }
     }
+
+    async fn handle_pagination_component(
+        &self,
+        ctx: &Context,
+        component: &serenity::all::ComponentInteraction,
+    ) {
+        let Some(rest) = component.data.custom_id.strip_prefix(PAGINATION_PREFIX) else {
+            return;
+        };
+        let Some((token, page)) = rest.rsplit_once(':') else {
+            return;
+        };
+        let Ok(page) = page.parse::<usize>() else {
+            return;
+        };
+        let response = self
+            .paginated
+            .lock()
+            .await
+            .get(token)
+            .map(|response| (response.owner_id, response.pages.clone()));
+        let Some((owner_id, pages)) = response else {
+            let _ = component
+                .create_response(
+                    &ctx.http,
+                    CreateInteractionResponse::Message(
+                        CreateInteractionResponseMessage::new()
+                            .content("This paginated response has expired.")
+                            .ephemeral(true),
+                    ),
+                )
+                .await;
+            return;
+        };
+        if owner_id != component.user.id.get() || page >= pages.len() {
+            let _ = component
+                .create_response(
+                    &ctx.http,
+                    CreateInteractionResponse::Message(
+                        CreateInteractionResponseMessage::new()
+                            .content("Only the response author can use these buttons.")
+                            .ephemeral(true),
+                    ),
+                )
+                .await;
+            return;
+        }
+        let response = CreateInteractionResponse::UpdateMessage(
+            CreateInteractionResponseMessage::new()
+                .embed(pagination_embed(&pages, page))
+                .components(pagination_components(token, page, pages.len())),
+        );
+        let _ = component.create_response(&ctx.http, response).await;
+    }
 }
 
 fn split_command(content: &str) -> (String, String) {
@@ -968,7 +1118,32 @@ fn split_command(content: &str) -> (String, String) {
     }
 }
 
-async fn send_final_message(ctx: &Context, msg: &Message, text: &str) {
+async fn send_final_message(
+    ctx: &Context,
+    msg: &Message,
+    text: &str,
+    paginate: bool,
+    owner_id: u64,
+    store: &Mutex<HashMap<String, PaginatedResponse>>,
+) {
+    if paginate {
+        let pages = split_text(text, EMBED_DESCRIPTION_LIMIT);
+        let token = uuid::Uuid::new_v4().simple().to_string();
+        store.lock().await.insert(
+            token.clone(),
+            PaginatedResponse {
+                owner_id,
+                pages: pages.clone(),
+            },
+        );
+        let builder = CreateMessage::new()
+            .embed(pagination_embed(&pages, 0))
+            .components(pagination_components(&token, 0, pages.len()))
+            .reference_message(msg)
+            .allowed_mentions(CreateAllowedMentions::new());
+        let _ = msg.channel_id.send_message(&ctx.http, builder).await;
+        return;
+    }
     let chunks = split_text(text, MAX_MESSAGE_LENGTH);
     for (i, chunk) in chunks.iter().enumerate() {
         if i == 0 {
@@ -977,6 +1152,32 @@ async fn send_final_message(ctx: &Context, msg: &Message, text: &str) {
             let _ = msg.channel_id.say(&ctx.http, chunk).await;
         }
     }
+}
+
+fn pagination_embed(pages: &[String], page: usize) -> CreateEmbed {
+    CreateEmbed::new()
+        .description(&pages[page])
+        .footer(serenity::all::CreateEmbedFooter::new(format!(
+            "Page {} of {}",
+            page + 1,
+            pages.len()
+        )))
+}
+
+fn pagination_components(token: &str, page: usize, page_count: usize) -> Vec<CreateActionRow> {
+    vec![CreateActionRow::Buttons(vec![
+        CreateButton::new(format!(
+            "{PAGINATION_PREFIX}{token}:{}",
+            page.saturating_sub(1)
+        ))
+        .label("←")
+        .style(ButtonStyle::Secondary)
+        .disabled(page == 0),
+        CreateButton::new(format!("{PAGINATION_PREFIX}{token}:{}", page + 1))
+            .label("→")
+            .style(ButtonStyle::Secondary)
+            .disabled(page + 1 >= page_count),
+    ])]
 }
 
 fn append_tool_summary(text: &str, tools: &[String]) -> String {

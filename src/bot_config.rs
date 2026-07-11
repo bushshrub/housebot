@@ -73,6 +73,9 @@ pub struct UserConfig {
     /// How many seconds the bot will reply without a ping after the last interaction.
     #[serde(default = "default_followup_timeout")]
     pub followup_timeout_secs: u64,
+    /// Whether LLM responses are rendered as paginated embeds.
+    #[serde(default)]
+    pub labs_pagination_enabled: bool,
 }
 
 fn default_true() -> bool {
@@ -89,6 +92,7 @@ impl Default for UserConfig {
             personality: None,
             followup_enabled: true,
             followup_timeout_secs: default_followup_timeout(),
+            labs_pagination_enabled: false,
         }
     }
 }
@@ -122,5 +126,24 @@ impl UserConfigStore {
         let data = serde_json::to_vec_pretty(cfg)?;
         fs::write(self.path(user_id), data).await?;
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn labs_pagination_is_off_by_default() {
+        assert!(!UserConfig::default().labs_pagination_enabled);
+    }
+
+    #[test]
+    fn old_user_config_defaults_labs_pagination_to_off() {
+        let config: UserConfig = serde_json::from_str(
+            r#"{"personality":null,"followup_enabled":true,"followup_timeout_secs":300}"#,
+        )
+        .unwrap();
+        assert!(!config.labs_pagination_enabled);
     }
 }
