@@ -4,15 +4,10 @@ FROM docker:27-cli AS docker-cli
 
 FROM rust:1-bookworm AS rust-builder
 WORKDIR /app
-COPY crates/deployment-bot/Cargo.toml ./Cargo.toml
-COPY Cargo.lock ./Cargo.lock
-RUN mkdir src \
-    && echo 'fn main() {}' > src/main.rs \
-    && echo '' > src/lib.rs \
-    && cargo build --release --locked
-COPY crates/deployment-bot/src/ src/
-RUN touch src/main.rs src/lib.rs \
-    && cargo build --release --locked
+COPY Cargo.toml Cargo.lock ./
+COPY crates/deployment-bot/Cargo.toml crates/deployment-bot/Cargo.toml
+COPY crates/deployment-bot/src/ crates/deployment-bot/src/
+RUN cargo build --release --locked --package deployment-bot
 
 FROM debian:bookworm-slim
 RUN apt-get update \
