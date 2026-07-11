@@ -82,7 +82,8 @@ pub struct UserConfig {
     /// Optional personality/tone override injected into the system prompt.
     #[serde(default)]
     pub personality: Option<String>,
-    /// Whether the bot should reply to follow-up messages without a ping/mention.
+    /// Whether the bot should reply to follow-up messages without a ping/mention
+    /// in guild channels. DMs enable follow-ups by default.
     #[serde(default)]
     pub followup_enabled: bool,
     /// How many seconds the bot will reply without a ping after the last interaction.

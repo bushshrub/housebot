@@ -957,14 +957,16 @@ impl EventHandler for HouseBot {
             .as_deref()
             .is_some_and(message_has_supported_media);
 
-        // Load per-user followup settings.
+        // Follow-ups are on by default in DMs. In guild channels, users must
+        // opt in and the channel must be explicitly configured by the server.
         let user_config = self.user_cfg.load(user_id).await;
-        let followup_enabled = user_config.followup_enabled;
+        let followup_enabled = is_dm || user_config.followup_enabled;
         let followup_timeout = Duration::from_secs(user_config.followup_timeout_secs);
         let followup_channel_allowed = self
             .server_cfg
             .is_followup_channel_allowed(guild_id, channel_id)
             .await;
+        let followup_channel_allowed = is_dm || followup_channel_allowed;
 
         let now = Instant::now();
         let (is_active, session_expired) = {
