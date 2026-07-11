@@ -479,6 +479,13 @@ async fn reply_no_ping(ctx: &Context, msg: &Message, content: &str) -> serenity:
     msg.channel_id.send_message(&ctx.http, builder).await
 }
 
+fn commit_hash_response(sha: Option<&str>) -> String {
+    match sha.filter(|sha| !sha.is_empty()) {
+        Some(sha) => format!("Running commit: `{sha}`"),
+        None => "Running commit is unavailable for this build.".into(),
+    }
+}
+
 #[serenity::async_trait]
 impl EventHandler for HouseBot {
     async fn ready(&self, ctx: Context, ready: Ready) {
@@ -599,6 +606,7 @@ impl EventHandler for HouseBot {
             tracing::error!(target: "housebot::labs::registration", "Failed to register /labs slash command: {e}");
         }
         for command in [
+            CreateCommand::new("commit").description("Show the bot's running commit hash"),
             CreateCommand::new("model").description("Show information about the current model"),
             CreateCommand::new("session")
                 .description("Show context and token usage for this session"),
@@ -677,6 +685,7 @@ impl EventHandler for HouseBot {
                 .await
             }
             "labs" => handle_labs_interaction(&self.user_cfg, &cmd.data.options, user_id).await,
+            "commit" => commit_hash_response(option_env!("HOUSEBOT_GIT_SHA")),
             "model" => self.agent.model_info(),
             "session" => {
                 let info = self.agent.session_info(&user_id.to_string()).await;
@@ -1478,6 +1487,18 @@ mod tests {
     }
 
     // ── commands ──
+    #[test]
+    fn commit_hash_response_reports_build_sha() {
+        assert_eq!(
+            commit_hash_response(Some("abcdef1234567890")),
+            "Running commit: `abcdef1234567890`"
+        );
+        assert_eq!(
+            commit_hash_response(None),
+            "Running commit is unavailable for this build."
+        );
+    }
+
     fn stores() -> (TempDir, Skills, Notes, Memory, History) {
         let tmp = TempDir::new().unwrap();
         (

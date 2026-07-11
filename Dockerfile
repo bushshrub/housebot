@@ -1,5 +1,6 @@
 # Build a musl-linked Rust binary for the Alpine runtime.
 FROM rust:1-alpine AS rust-builder
+ARG GIT_COMMIT
 RUN apk add --no-cache musl-dev
 WORKDIR /app
 # Prime the dependency cache with a stub crate.
@@ -18,7 +19,8 @@ RUN mkdir src \
 # Build the real sources.
 COPY src/ src/
 COPY crates/ crates/
-RUN find src crates -name '*.rs' | xargs touch && cargo build --release --locked --package housebot
+RUN find src crates -name '*.rs' | xargs touch \
+    && HOUSEBOT_GIT_SHA="$GIT_COMMIT" cargo build --release --locked --package housebot
 RUN strip /app/target/release/housebot
 
 # Build the Jellyfin MCP server as a static Go binary for the runtime image.
