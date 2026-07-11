@@ -18,7 +18,7 @@ RUN mkdir src \
 # Build the real sources.
 COPY src/ src/
 COPY crates/ crates/
-RUN touch src/main.rs src/lib.rs && cargo build --release --locked --package housebot
+RUN find src crates -name '*.rs' | xargs touch && cargo build --release --locked --package housebot
 RUN strip /app/target/release/housebot
 
 # Build the Jellyfin MCP server as a static Go binary for the runtime image.
