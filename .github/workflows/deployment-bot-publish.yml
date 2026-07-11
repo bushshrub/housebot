@@ -25,9 +25,6 @@ jobs:
           - platform: linux/amd64
             architecture: amd64
             runner: ubuntu-24.04
-          - platform: linux/arm64
-            architecture: arm64
-            runner: ubuntu-24.04-arm
     runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@v4
@@ -71,5 +68,4 @@ jobs:
           docker buildx imagetools create \
             --tag "$IMAGE:latest" \
             --tag "$IMAGE:sha-$SHA" \
-            "$IMAGE:sha-$SHA-amd64" \
-            "$IMAGE:sha-$SHA-arm64"
+            "$IMAGE:sha-$SHA-amd64"

@@ -3,7 +3,7 @@ name = "housebot"
 version = "0.1.0"
 edition = "2021"
 rust-version = "1.80"
-description = "House chatbot with Discord interface, MCP tools, and OpenCode sandbox (Rust rewrite)"
+description = "House chatbot with Discord interface and MCP tools (Rust rewrite)"
 license = "AGPL-3.0-or-later"
 
 [workspace]

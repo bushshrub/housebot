@@ -47,18 +47,6 @@ jobs:
             platform: linux/amd64
             architecture: amd64
             runner: ubuntu-24.04
-          - name: main
-            context: .
-            image-suffix: ""
-            platform: linux/arm64
-            architecture: arm64
-            runner: ubuntu-24.04-arm
-          - name: sandbox
-            context: ./sandbox
-            image-suffix: /sandbox
-            platform: linux/arm64
-            architecture: arm64
-            runner: ubuntu-24.04-arm
 
     runs-on: ${{ matrix.runner }}
 
@@ -129,16 +117,16 @@ jobs:
         run: |
           docker buildx imagetools create \
             --tag "$IMAGE:sha-$SHA" \
-            "$IMAGE:sha-$SHA-amd64" "$IMAGE:sha-$SHA-arm64"
+            "$IMAGE:sha-$SHA-amd64"
           docker buildx imagetools create \
             --tag "$IMAGE:latest" \
-            "$IMAGE:latest-amd64" "$IMAGE:latest-arm64"
+            "$IMAGE:latest-amd64"
           docker buildx imagetools create \
             --tag "$IMAGE/sandbox:sha-$SHA" \
-            "$IMAGE/sandbox:sha-$SHA-amd64" "$IMAGE/sandbox:sha-$SHA-arm64"
+            "$IMAGE/sandbox:sha-$SHA-amd64"
           docker buildx imagetools create \
             --tag "$IMAGE/sandbox:latest" \
-            "$IMAGE/sandbox:latest-amd64" "$IMAGE/sandbox:latest-arm64"
+            "$IMAGE/sandbox:latest-amd64"
 
   manifest:
     needs: build
@@ -182,8 +170,7 @@ jobs:
 
           docker buildx imagetools create \
             "${manifest_tags[@]}" \
-            "${IMAGE}:sha-${SHA}-amd64" \
-            "${IMAGE}:sha-${SHA}-arm64"
+            "${IMAGE}:sha-${SHA}-amd64"
 
   # Notify the deployment channel for every push, even when the build or
   # publish jobs fail. The push payload contains the complete commit batch.

@@ -1094,29 +1094,6 @@ impl HouseBot {
                 )
                 .await;
         }
-
-        // Upload sandbox artifacts (strip the uid_ prefix, redact contents).
-        for path in &result.artifact_paths {
-            if let Ok(raw) = tokio::fs::read(path).await {
-                let name = path
-                    .file_name()
-                    .map(|n| n.to_string_lossy().to_string())
-                    .unwrap_or_else(|| "artifact".into());
-                let display_name = name
-                    .split_once('_')
-                    .map(|(_, r)| r.to_string())
-                    .unwrap_or(name);
-                let safe = self.redactor.redact(&String::from_utf8_lossy(&raw));
-                let _ = msg
-                    .channel_id
-                    .send_message(
-                        &ctx.http,
-                        CreateMessage::new()
-                            .add_file(CreateAttachment::bytes(safe.into_bytes(), display_name)),
-                    )
-                    .await;
-            }
-        }
     }
 
     async fn handle_pagination_component(
@@ -1439,14 +1416,13 @@ mod tests {
     #[test]
     fn hint_falls_back_to_task() {
         assert!(
-            tool_hint("run_opencode", &json!({"task": "write a script"}))
-                .contains("write a script")
+            tool_hint("some_tool", &json!({"task": "write a script"})).contains("write a script")
         );
     }
 
     #[test]
     fn hint_long_value_truncated() {
-        let h = tool_hint("run_opencode", &json!({"task": "x".repeat(200)}));
+        let h = tool_hint("some_tool", &json!({"task": "x".repeat(200)}));
         assert!(h.chars().count() <= 85);
     }
 
@@ -1457,7 +1433,7 @@ mod tests {
 
     #[test]
     fn hint_multiline_flattened() {
-        let h = tool_hint("run_opencode", &json!({"task": "line1\nline2"}));
+        let h = tool_hint("some_tool", &json!({"task": "line1\nline2"}));
         assert!(!h.contains('\n'));
     }
 

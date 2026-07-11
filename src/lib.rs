@@ -1,5 +1,5 @@
 //! house-chatbot — a Discord house-assistant bot backed by a local, OpenAI-compatible
-//! LLM, MCP tool servers, and ephemeral Docker coding sandboxes.
+//! LLM and MCP tool servers.
 //!
 //! This is the Rust rewrite of the original Python implementation. The crate is split
 //! into small, individually testable modules mirroring the original layout.

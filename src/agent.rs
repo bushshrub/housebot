@@ -2,7 +2,6 @@
 //! calls (built-in tools + MCP servers), and persists per-user history and memory.
 
 use std::collections::{BTreeMap, HashMap};
-use std::path::PathBuf;
 use std::sync::Arc;
 
 use async_trait::async_trait;
@@ -30,7 +29,6 @@ pub struct ImageData {
 #[derive(Debug, Clone, Default)]
 pub struct AgentResult {
     pub text: String,
-    pub artifact_paths: Vec<PathBuf>,
     pub session_notice: Option<String>,
     pub tools_called: Vec<String>,
 }
@@ -53,7 +51,7 @@ pub trait AgentHooks: Send + Sync {
     async fn on_text_stream(&self, _partial: &str) {}
     /// A tool is about to run.
     async fn on_tool_called(&self, _tool: &str, _args: &Value) {}
-    /// A line of sandbox output.
+    /// A progress update from a long-running operation.
     async fn on_progress(&self, _line: &str) {}
 }
 
@@ -70,21 +68,9 @@ impl TextSink for TextStreamAdapter<'_> {
     }
 }
 
-struct ProgressAdapter<'a>(&'a dyn AgentHooks);
-#[async_trait]
-impl TextSink for ProgressAdapter<'_> {
-    async fn push(&self, line: &str) {
-        self.0.on_progress(line).await;
-    }
-}
-
 /// Result of dispatching a single tool call.
 enum ToolOutcome {
     Text(String),
-    Artifacts {
-        content: String,
-        paths: Vec<PathBuf>,
-    },
 }
 
 /// The agent: LLM client, storage, tools, and connected MCP servers.
@@ -314,7 +300,6 @@ impl Agent {
 
         let tools = self.build_tools().await;
         let mut turn_messages: Vec<Value> = Vec::new();
-        let mut all_artifacts: Vec<PathBuf> = Vec::new();
         let mut tools_called = Vec::new();
 
         let final_text = loop {
@@ -362,13 +347,7 @@ impl Agent {
                 tools_called.push(tc.name.clone());
                 hooks.on_tool_called(&tc.name, &args).await;
                 let outcome = self.dispatch_tool(&tc.name, &args, user_id, hooks).await;
-                let content = match outcome {
-                    ToolOutcome::Text(c) => c,
-                    ToolOutcome::Artifacts { content, paths } => {
-                        all_artifacts.extend(paths);
-                        content
-                    }
-                };
+                let ToolOutcome::Text(content) = outcome;
                 let tool_msg = json!({
                     "role": "tool",
                     "tool_call_id": tc.id,
@@ -393,7 +372,6 @@ impl Agent {
             } else {
                 final_text
             },
-            artifact_paths: all_artifacts,
             session_notice,
             tools_called,
         }
@@ -411,7 +389,6 @@ impl Agent {
             }
         }
         for def in [
-            tools::opencode::definition(),
             update_memory_tool(),
             run_skill_tool(),
             tools::feature_request::definition(),
@@ -430,42 +407,9 @@ impl Agent {
         name: &str,
         args: &Value,
         user_id: &str,
-        hooks: &dyn AgentHooks,
+        _hooks: &dyn AgentHooks,
     ) -> ToolOutcome {
         match name {
-            "run_opencode" => {
-                let Some(task) = args.get("task").and_then(|t| t.as_str()) else {
-                    return ToolOutcome::Text(
-                        "Error: 'task' argument is required for run_opencode. Please provide a \
-                         description of the coding task to perform."
-                            .to_string(),
-                    );
-                };
-                let model = args.get("model").and_then(|m| m.as_str());
-                let repo_url = args.get("repo_url").and_then(|r| r.as_str());
-                let files = args.get("files").and_then(|f| f.as_object()).map(|obj| {
-                    obj.iter()
-                        .filter_map(|(k, v)| Some((k.clone(), v.as_str()?.to_string())))
-                        .collect::<std::collections::HashMap<_, _>>()
-                });
-                let progress = ProgressAdapter(hooks);
-                let out = tools::opencode::run_opencode(
-                    task,
-                    model,
-                    repo_url,
-                    files.as_ref(),
-                    Some(&progress),
-                )
-                .await;
-                if out.artifact_paths.is_empty() {
-                    ToolOutcome::Text(out.content)
-                } else {
-                    ToolOutcome::Artifacts {
-                        content: out.content,
-                        paths: out.artifact_paths,
-                    }
-                }
-            }
             "update_memory" => {
                 let new_content = args
                     .get("memory_content")
@@ -658,17 +602,14 @@ search, and software development tasks.\n\nCurrent date/time: {now}\nCurrent use
 (ID: {user_id}){memory_section}{personality_section}\n\n## Tools\n- ddg__* — Search the web via DuckDuckGo for current \
 information.\n- jellyfin__* — Query the household Jellyfin media server for movies, shows, music. \
 READ ONLY — only call get_* / search_* / list_* methods; never call mutating actions.\n- \
-run_opencode — Run a coding task using OpenCode + local llama.cpp model. Good for quick scripts \
-and general work.\n- update_memory — Persist important facts about the current user for future \
+Programming tasks are outside the bot's scope.\n- update_memory — Persist important facts about the current user for future \
 conversations. Write the full memory each time.\n- create_feature_request — File a GitHub issue \
 for a feature the user wants added to this bot.\n- set_reminder — Set a timed reminder; the bot \
 will DM the user when the delay elapses.\n- summarize_url — Fetch a public web URL and return a \
 concise summary.\n- translate — Translate text to any language using the LLM.{skills_section}\n\n\
 ## Guidelines\n- Be conversational and friendly.\n- Use Jellyfin tools for any media questions \
 before guessing.\n- Use DuckDuckGo for factual or current-events questions.\n- For ANY \
-programming or coding task, immediately use run_opencode. Never write or analyze code yourself \
-in your response. Always delegate to the tool.\n- After a coding tool runs, give a brief summary \
-of what was done. Do NOT reproduce the full code in your reply.\n- Update memory when you learn \
+Do not execute code or delegate coding tasks.\n- Update memory when you learn \
 something worth remembering.\n- Keep responses concise unless asked for detail.\n- If a user \
 requests a feature or improvement to this bot, immediately call create_feature_request with a \
 clear title and description, then tell them the issue URL.\n- If a tool returns an error message \
@@ -835,9 +776,9 @@ mod tests {
     }
 
     #[test]
-    fn system_prompt_mentions_opencode() {
+    fn system_prompt_excludes_code_execution() {
         let p = build_system_prompt("Alice", "123", "", &empty_skills(), None);
-        assert!(p.contains("run_opencode"));
+        assert!(!p.contains("code execution"));
     }
 
     #[test]
@@ -967,23 +908,6 @@ mod tests {
             .await;
         match out {
             ToolOutcome::Text(t) => assert!(t.contains("Unknown tool")),
-            _ => panic!("expected text"),
-        }
-    }
-
-    #[tokio::test]
-    async fn dispatch_run_opencode_missing_task_errors() {
-        let client = Arc::new(MockChatClient::new());
-        let (_t, agent) = test_agent(client);
-        let out = agent
-            .dispatch_tool("run_opencode", &json!({}), "u", &NoHooks)
-            .await;
-        match out {
-            ToolOutcome::Text(t) => {
-                assert!(t.starts_with("Error:"));
-                assert!(t.contains("task"));
-            }
-            _ => panic!("expected text"),
         }
     }
 
@@ -1058,7 +982,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn build_tools_includes_opencode() {
+    async fn build_tools_excludes_code_execution() {
         let client = Arc::new(MockChatClient::new());
         let (_t, agent) = test_agent(client);
         let tools = agent.build_tools().await;
@@ -1066,7 +990,7 @@ mod tests {
             .iter()
             .filter_map(|t| t["function"]["name"].as_str())
             .collect();
-        assert!(names.contains(&"run_opencode"));
+        assert!(!names.contains(&"code_tool"));
         assert!(names.contains(&"translate"));
         assert!(names.contains(&"update_memory"));
     }

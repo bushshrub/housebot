@@ -2,7 +2,6 @@
 //! an async implementation invoked by the agent's dispatch loop.
 
 pub mod feature_request;
-pub mod opencode;
 pub mod remind;
 pub mod summarize_url;
 pub mod translate;

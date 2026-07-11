@@ -1,20 +1,18 @@
 # house-chatbot
 
-A Discord-based house assistant bot powered by a local LLM (llama.cpp) with MCP server integration and ephemeral Docker sandboxes for running coding agents. Written in **Rust** using [serenity](https://github.com/serenity-rs/serenity) for the Discord connector.
+A Discord-based house assistant bot powered by a local LLM (llama.cpp) with MCP server integration. Written in **Rust** using [serenity](https://github.com/serenity-rs/serenity) for the Discord connector.
 
 ## Features
 
 - **LLM-powered chat** — per-user conversation history and persistent memory
 - **Web search** — DuckDuckGo MCP integration for live information retrieval
 - **Jellyfin media server** — browse and query your media library via MCP
-- **Coding sandboxes** — ephemeral Docker containers running OpenCode for automated software engineering tasks
 - **Built-in tools** — reminders, URL summarization, translation, and GitHub feature-request filing
 
 ## Quick start
 
 ```bash
 cp .env.example .env          # fill in required values
-docker compose build sandbox  # build the sandbox image locally
 docker compose up -d          # start the bot
 ```
 
@@ -44,7 +42,6 @@ See `.env.example` for all available options. Key variables:
 ```
 Discord message → HouseBot::message() → Agent::run()
   ├── LLM agentic loop with tool dispatch
-  │   ├── run_opencode → Docker sandbox (docker run)
   │   ├── update_memory → user memory (markdown)
   │   ├── set_reminder / summarize_url / translate / create_feature_request
   │   └── MCP tools → ddg__*, jellyfin__* (stdio JSON-RPC)
@@ -68,7 +65,7 @@ src/
   reminders.rs       # timed reminders
   github_issues.rs   # GitHub App JWT auth + issue creation
   testing.rs         # shared test doubles (MockChatClient)
-  tools/             # run_opencode, remind, summarize_url, translate, feature_request
+  tools/             # remind, summarize_url, translate, feature_request
 ```
 
 See [AGENTS.md](AGENTS.md) for detailed architecture and development guidance.
