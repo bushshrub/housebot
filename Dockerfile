@@ -28,7 +28,8 @@ FROM golang:1.25-alpine AS jellyfin-mcp-builder
 ARG JELLYFIN_MCP_VERSION=v2026.604.2
 RUN apk add --no-cache git
 RUN git clone --depth 1 --branch ${JELLYFIN_MCP_VERSION} https://github.com/jaredtrent/jellyfin-mcp /src
-RUN CGO_ENABLED=0 go build -o /go/bin/jellyfin-mcp /src
+WORKDIR /src
+RUN CGO_ENABLED=0 go build -o /go/bin/jellyfin-mcp .
 
 # Minimal runtime image: Alpine plus the statically linked bot binary.
 FROM alpine:3.22
