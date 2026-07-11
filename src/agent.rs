@@ -19,9 +19,9 @@ use crate::skills::{Skill, Skills};
 use crate::tools;
 use crate::tools::duckduckgo::DuckDuckGo;
 
-/// An inbound image attachment, base64-encoded for the vision API.
+/// An inbound media attachment, base64-encoded for the multimodal API.
 #[derive(Debug, Clone)]
-pub struct ImageData {
+pub struct MediaData {
     pub media_type: String,
     pub data: String,
 }
@@ -266,14 +266,14 @@ impl Agent {
         user_id: &str,
         username: &str,
         text: &str,
-        image_data: &[ImageData],
+        media_data: &[MediaData],
         hooks: &dyn AgentHooks,
         personality: Option<&str>,
     ) -> AgentResult {
         let mut user_memory = self.memory.load(user_id).await;
         let mut past = self.history.load(user_id).await;
         let mut session_notice = None;
-        let new_user_message = build_user_message(text, image_data);
+        let new_user_message = build_user_message(text, media_data);
 
         let previous_usage = self.last_context_tokens(user_id).await as f64
             / self.context_window_tokens.max(1) as f64;
@@ -567,17 +567,29 @@ async fn start_mcp_servers() -> Vec<McpServer> {
 
 // ── pure helpers ─────────────────────────────────────────────────────────────
 
-fn build_user_message(text: &str, image_data: &[ImageData]) -> Value {
-    if image_data.is_empty() {
+fn build_user_message(text: &str, media_data: &[MediaData]) -> Value {
+    if media_data.is_empty() {
         return json!({"role": "user", "content": text});
     }
-    let mut content: Vec<Value> = image_data
+    let mut content: Vec<Value> = media_data
         .iter()
-        .map(|img| {
-            json!({
-                "type": "image_url",
-                "image_url": {"url": format!("data:{};base64,{}", img.media_type, img.data)},
-            })
+        .map(|media| {
+            if media.media_type.starts_with("image/") {
+                json!({
+                    "type": "image_url",
+                    "image_url": {"url": format!("data:{};base64,{}", media.media_type, media.data)},
+                })
+            } else if media.media_type.starts_with("audio/") {
+                json!({
+                    "type": "input_audio",
+                    "input_audio": {"data": media.data},
+                })
+            } else {
+                json!({
+                    "type": "input_video",
+                    "input_video": {"data": media.data},
+                })
+            }
         })
         .collect();
     content.push(json!({"type": "text", "text": text}));
@@ -835,7 +847,7 @@ mod tests {
 
     #[test]
     fn build_user_message_with_image() {
-        let imgs = vec![ImageData {
+        let imgs = vec![MediaData {
             media_type: "image/png".into(),
             data: "abc".into(),
         }];
@@ -846,6 +858,25 @@ mod tests {
             .unwrap()
             .contains("data:image/png;base64,abc"));
         assert_eq!(m["content"][1]["text"], "look");
+    }
+
+    #[test]
+    fn build_user_message_with_audio_and_video() {
+        let media = vec![
+            MediaData {
+                media_type: "audio/mpeg".into(),
+                data: "audio-bytes".into(),
+            },
+            MediaData {
+                media_type: "video/mp4".into(),
+                data: "video-bytes".into(),
+            },
+        ];
+        let message = build_user_message("analyze", &media);
+        assert_eq!(message["content"][0]["type"], "input_audio");
+        assert_eq!(message["content"][0]["input_audio"]["data"], "audio-bytes");
+        assert_eq!(message["content"][1]["type"], "input_video");
+        assert_eq!(message["content"][1]["input_video"]["data"], "video-bytes");
     }
 
     fn test_agent(client: Arc<dyn ChatClient>) -> (TempDir, Agent) {

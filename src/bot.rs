@@ -21,7 +21,7 @@ use serenity::builder::CreateMessage;
 use serenity::Client;
 use tokio::sync::Mutex;
 
-use crate::agent::{Agent, AgentHooks, AgentResult, ImageData, NoHooks};
+use crate::agent::{Agent, AgentHooks, AgentResult, MediaData, NoHooks};
 use crate::bot_config::{ServerConfigStore, UserConfigStore};
 pub use crate::bot_response::SecretRedactor;
 use crate::config;
@@ -952,6 +952,10 @@ impl EventHandler for HouseBot {
             .as_ref()
             .map(|m| m.author.id == bot_id)
             .unwrap_or(false);
+        let is_reply_to_media = msg
+            .referenced_message
+            .as_deref()
+            .is_some_and(message_has_supported_media);
 
         // Load per-user followup settings.
         let user_config = self.user_cfg.load(user_id).await;
@@ -966,7 +970,7 @@ impl EventHandler for HouseBot {
             (active, expired)
         };
 
-        if !(is_dm || is_mentioned || is_reply_to_bot || is_active) {
+        if !(is_dm || is_mentioned || is_reply_to_bot || is_reply_to_media || is_active) {
             return;
         }
         if self.already_seen(msg.id.get()).await {
@@ -1004,7 +1008,7 @@ impl HouseBot {
             Some(referenced) => format!("{text}\n\n{referenced}"),
             None => text,
         };
-        if text.is_empty() && msg.attachments.is_empty() {
+        if text.is_empty() && !message_has_supported_media(msg) {
             return;
         }
 
@@ -1014,9 +1018,9 @@ impl HouseBot {
                 .await;
         }
 
-        let mut images = extract_images(msg).await;
+        let mut media = extract_media(msg).await;
         if let Some(referenced) = msg.referenced_message.as_deref() {
-            images.extend(extract_images(referenced).await);
+            media.extend(extract_media(referenced).await);
         }
 
         // Load personality for this user.
@@ -1042,7 +1046,7 @@ impl HouseBot {
                 &msg.author.id.get().to_string(),
                 &msg.author.name,
                 &user_text,
-                &images,
+                &media,
                 response_hooks
                     .as_ref()
                     .map_or(&NoHooks as &dyn AgentHooks, |hooks| {
@@ -1257,26 +1261,26 @@ fn append_tool_summary(text: &str, tools: &[String]) -> String {
     format!("{text}\n\n🛠️ **Tools used:** {summary}")
 }
 
-async fn extract_images(msg: &Message) -> Vec<ImageData> {
-    let mut images = Vec::new();
+async fn extract_media(msg: &Message) -> Vec<MediaData> {
+    let mut media = Vec::new();
     for att in &msg.attachments {
-        let Some(media_type) = image_media_type(&att.filename) else {
+        let Some(media_type) = media_type(&att.filename) else {
             continue;
         };
         if let Ok(resp) = reqwest::get(&att.url).await {
             if let Ok(bytes) = resp.bytes().await {
                 use base64::Engine;
-                images.push(ImageData {
+                media.push(MediaData {
                     media_type: media_type.to_string(),
                     data: base64::engine::general_purpose::STANDARD.encode(&bytes),
                 });
             }
         }
     }
-    images
+    media
 }
 
-fn image_media_type(filename: &str) -> Option<&'static str> {
+fn media_type(filename: &str) -> Option<&'static str> {
     match filename
         .rsplit_once('.')
         .map(|(_, extension)| extension.to_ascii_lowercase())
@@ -1286,18 +1290,43 @@ fn image_media_type(filename: &str) -> Option<&'static str> {
         Some("jpg") | Some("jpeg") => Some("image/jpeg"),
         Some("gif") => Some("image/gif"),
         Some("webp") => Some("image/webp"),
+        Some("mp3") => Some("audio/mpeg"),
+        Some("wav") => Some("audio/wav"),
+        Some("flac") => Some("audio/flac"),
+        Some("mp4") => Some("video/mp4"),
+        Some("mov") => Some("video/quicktime"),
+        Some("webm") => Some("video/webm"),
+        Some("mkv") => Some("video/x-matroska"),
+        Some("avi") => Some("video/x-msvideo"),
+        Some("m4v") => Some("video/x-m4v"),
         _ => None,
     }
+}
+
+#[cfg(test)]
+mod media_tests {
+    use super::media_type;
+
+    #[test]
+    fn recognizes_supported_media_extensions() {
+        assert_eq!(media_type("PHOTO.PNG"), Some("image/png"));
+        assert_eq!(media_type("recording.mp3"), Some("audio/mpeg"));
+        assert_eq!(media_type("clip.mp4"), Some("video/mp4"));
+        assert_eq!(media_type("document.pdf"), None);
+    }
+}
+
+fn message_has_supported_media(msg: &Message) -> bool {
+    msg.attachments
+        .iter()
+        .any(|attachment| media_type(&attachment.filename).is_some())
 }
 
 fn referenced_message_context(msg: &Message) -> Option<String> {
     let text = msg.content.trim();
     let urls: Vec<&str> = URL.find_iter(text).map(|m| m.as_str()).collect();
-    let has_images = msg
-        .attachments
-        .iter()
-        .any(|attachment| image_media_type(&attachment.filename).is_some());
-    if text.is_empty() && !has_images {
+    let has_media = message_has_supported_media(msg);
+    if text.is_empty() && !has_media {
         return None;
     }
 
@@ -1311,8 +1340,8 @@ fn referenced_message_context(msg: &Message) -> Option<String> {
         );
         context.push_str(&urls.join(", "));
     }
-    if has_images {
-        context.push_str("\n\n[The message above also contains image attachment(s).]");
+    if has_media {
+        context.push_str("\n\n[The message above also contains media attachment(s) for analysis.]");
     }
     context.push_str("\n[End message being replied to]");
     Some(context)
