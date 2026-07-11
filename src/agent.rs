@@ -32,6 +32,7 @@ pub struct AgentResult {
     pub text: String,
     pub artifact_paths: Vec<PathBuf>,
     pub session_notice: Option<String>,
+    pub tools_called: Vec<String>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -299,6 +300,7 @@ impl Agent {
         let tools = self.build_tools().await;
         let mut turn_messages: Vec<Value> = Vec::new();
         let mut all_artifacts: Vec<PathBuf> = Vec::new();
+        let mut tools_called = Vec::new();
 
         let final_text = loop {
             let text_sink = TextStreamAdapter(hooks);
@@ -342,6 +344,7 @@ impl Agent {
 
             for tc in &completion.tool_calls {
                 let args: Value = serde_json::from_str(&tc.arguments).unwrap_or(json!({}));
+                tools_called.push(tc.name.clone());
                 hooks.on_tool_called(&tc.name, &args).await;
                 let outcome = self.dispatch_tool(&tc.name, &args, user_id, hooks).await;
                 let content = match outcome {
@@ -377,6 +380,7 @@ impl Agent {
             },
             artifact_paths: all_artifacts,
             session_notice,
+            tools_called,
         }
     }
 

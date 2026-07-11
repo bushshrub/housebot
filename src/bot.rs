@@ -822,7 +822,8 @@ impl HouseBot {
         if let Some(notice) = &result.session_notice {
             let _ = reply_no_ping(ctx, msg, notice).await;
         }
-        let (display, code_files) = extract_code_files(&safe);
+        let with_tool_summary = append_tool_summary(&safe, &result.tools_called);
+        let (display, code_files) = extract_code_files(&with_tool_summary);
         let progress = hooks.into_progress().await;
         send_final_message(ctx, msg, &display, progress).await;
 
@@ -893,6 +894,19 @@ async fn send_final_message(ctx: &Context, msg: &Message, text: &str, progress: 
             let _ = msg.channel_id.say(&ctx.http, chunk).await;
         }
     }
+}
+
+fn append_tool_summary(text: &str, tools: &[String]) -> String {
+    let summary = if tools.is_empty() {
+        "none".to_string()
+    } else {
+        tools
+            .iter()
+            .map(|tool| format!("`{tool}`"))
+            .collect::<Vec<_>>()
+            .join(", ")
+    };
+    format!("{text}\n\n🛠️ **Tools used:** {summary}")
 }
 
 async fn extract_images(msg: &Message) -> Vec<ImageData> {
@@ -1132,6 +1146,17 @@ mod tests {
     fn hint_multiline_flattened() {
         let h = tool_hint("run_opencode", &json!({"task": "line1\nline2"}));
         assert!(!h.contains('\n'));
+    }
+
+    #[test]
+    fn tool_summary_lists_tools_in_call_order() {
+        let summary = append_tool_summary("answer", &["ddg__search".into(), "translate".into()]);
+        assert!(summary.ends_with("🛠️ **Tools used:** `ddg__search`, `translate`"));
+    }
+
+    #[test]
+    fn tool_summary_shows_none_when_no_tools_were_called() {
+        assert!(append_tool_summary("answer", &[]).ends_with("🛠️ **Tools used:** none"));
     }
 
     // ── extract_code_files ──
