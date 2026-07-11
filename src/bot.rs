@@ -94,6 +94,41 @@ impl AgentHooks for CompactProgressHooks {
         }
     }
 }
+
+struct ResponseProgressHooks {
+    ctx: Context,
+    channel_id: serenity::all::ChannelId,
+    message_id: serenity::all::MessageId,
+    generating: AtomicBool,
+}
+
+impl ResponseProgressHooks {
+    fn new(ctx: &Context, progress: &Message) -> Self {
+        Self {
+            ctx: ctx.clone(),
+            channel_id: progress.channel_id,
+            message_id: progress.id,
+            generating: AtomicBool::new(false),
+        }
+    }
+}
+
+#[async_trait]
+impl AgentHooks for ResponseProgressHooks {
+    async fn on_text_stream(&self, _partial: &str) {
+        if self.generating.swap(true, Ordering::AcqRel) {
+            return;
+        }
+        let _ = self
+            .channel_id
+            .edit_message(
+                &self.ctx.http,
+                self.message_id,
+                EditMessage::new().content("⚙️ **Generating...**"),
+            )
+            .await;
+    }
+}
 // ── pure helpers ─────────────────────────────────────────────────────────────
 
 /// Map a fenced-code language tag to a file extension.
@@ -978,9 +1013,13 @@ impl HouseBot {
         let user_config = self.user_cfg.load(msg.author.id.get()).await;
         let personality = user_config.personality.clone();
 
-        // Post an immediate, transient progress indicator and mark the triggering message.
-        let generating = reply_no_ping(ctx, msg, "⚙️ **Generating...**").await.ok();
+        // Keep the progress message in the thinking state until the model starts its final reply.
+        let progress = reply_no_ping(ctx, msg, "🧠 **Thinking...**").await.ok();
         let pending_reaction = msg.react(&ctx.http, '⏳').await.ok();
+
+        let response_hooks = progress
+            .as_ref()
+            .map(|progress| ResponseProgressHooks::new(ctx, progress));
 
         let user_text = if text.is_empty() {
             "(no text)".to_string()
@@ -994,7 +1033,11 @@ impl HouseBot {
                 &msg.author.name,
                 &user_text,
                 &images,
-                &NoHooks,
+                response_hooks
+                    .as_ref()
+                    .map_or(&NoHooks as &dyn AgentHooks, |hooks| {
+                        hooks as &dyn AgentHooks
+                    }),
                 personality.as_deref(),
             )
             .await;
@@ -1022,16 +1065,13 @@ impl HouseBot {
             user_config.labs_pagination_enabled,
             msg.author.id.get(),
             &self.paginated,
+            progress.as_ref(),
         )
         .await;
 
         if let Some(reaction) = pending_reaction {
             let _ = reaction.delete(&ctx.http).await;
         }
-        if let Some(generating) = generating {
-            let _ = generating.delete(&ctx.http).await;
-        }
-
         // Upload extracted code blocks.
         for (filename, content) in code_files {
             let safe = self.redactor.redact(&String::from_utf8_lossy(&content));
@@ -1138,33 +1178,57 @@ async fn send_final_message(
     paginate: bool,
     owner_id: u64,
     store: &Mutex<HashMap<String, PaginatedResponse>>,
+    progress: Option<&Message>,
 ) {
-    if paginate {
-        let pages = split_text(text, EMBED_DESCRIPTION_LIMIT);
-        let token = uuid::Uuid::new_v4().simple().to_string();
-        store.lock().await.insert(
-            token.clone(),
-            PaginatedResponse {
-                owner_id,
-                pages: pages.clone(),
-            },
-        );
-        let builder = CreateMessage::new()
-            .embed(pagination_embed(&pages, 0))
-            .components(pagination_components(&token, 0, pages.len()))
-            .reference_message(msg)
-            .allowed_mentions(CreateAllowedMentions::new());
-        let _ = msg.channel_id.send_message(&ctx.http, builder).await;
+    if !paginate {
+        let chunks = split_text(text, MAX_MESSAGE_LENGTH);
+        if let (Some(progress), Some(first)) = (progress, chunks.first()) {
+            if progress
+                .channel_id
+                .edit_message(
+                    &ctx.http,
+                    progress.id,
+                    EditMessage::new()
+                        .content(first)
+                        .allowed_mentions(CreateAllowedMentions::new()),
+                )
+                .await
+                .is_ok()
+            {
+                for chunk in chunks.iter().skip(1) {
+                    let _ = msg.channel_id.say(&ctx.http, chunk).await;
+                }
+                return;
+            }
+        }
+        for (i, chunk) in chunks.iter().enumerate() {
+            if i == 0 {
+                let _ = reply_no_ping(ctx, msg, chunk).await;
+            } else {
+                let _ = msg.channel_id.say(&ctx.http, chunk).await;
+            }
+        }
         return;
     }
-    let chunks = split_text(text, MAX_MESSAGE_LENGTH);
-    for (i, chunk) in chunks.iter().enumerate() {
-        if i == 0 {
-            let _ = reply_no_ping(ctx, msg, chunk).await;
-        } else {
-            let _ = msg.channel_id.say(&ctx.http, chunk).await;
-        }
+
+    if let Some(progress) = progress {
+        let _ = progress.delete(&ctx.http).await;
     }
+    let pages = split_text(text, EMBED_DESCRIPTION_LIMIT);
+    let token = uuid::Uuid::new_v4().simple().to_string();
+    store.lock().await.insert(
+        token.clone(),
+        PaginatedResponse {
+            owner_id,
+            pages: pages.clone(),
+        },
+    );
+    let builder = CreateMessage::new()
+        .embed(pagination_embed(&pages, 0))
+        .components(pagination_components(&token, 0, pages.len()))
+        .reference_message(msg)
+        .allowed_mentions(CreateAllowedMentions::new());
+    let _ = msg.channel_id.send_message(&ctx.http, builder).await;
 }
 
 fn pagination_embed(pages: &[String], page: usize) -> CreateEmbed {
