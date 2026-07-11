@@ -5,8 +5,6 @@ on:
     types: [created]
   pull_request_review_comment:
     types: [created]
-  pull_request:
-    types: [opened, synchronize, reopened]
 
 jobs:
   opencode:
@@ -18,10 +16,9 @@ jobs:
       startsWith(github.event.comment.body, '/opencode')
     runs-on: ubuntu-latest
     permissions:
-      id-token: write
-      contents: read
+      contents: write
       pull-requests: write
-      issues: read
+      issues: write
     steps:
       - name: Checkout repository
         uses: actions/checkout@v6
@@ -34,4 +31,5 @@ jobs:
           NVIDIA_API_KEY: ${{ secrets.NVIDIA_API_KEY }}
         with:
           model: nvidia/google/gemma-4-31b-it
+          use_github_token: true
           prompt: ${{ github.event_name == 'pull_request' && 'Review this pull request for potential bugs, regressions, security issues, incorrect assumptions, and missing tests. Inspect the relevant repository code and the pull request diff. Report only actionable findings as review comments. Do not modify files, commit changes, or open a pull request.' || '' }}

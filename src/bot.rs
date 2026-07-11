@@ -6,20 +6,21 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use async_trait::async_trait;
 use once_cell::sync::Lazy;
 use regex::{Captures, Regex};
 use serde_json::Value;
 use serenity::all::{
     Command, CommandDataOptionValue, CommandOptionType, Context, CreateAllowedMentions,
     CreateAttachment, CreateCommand, CreateCommandOption, CreateEmbed, CreateInteractionResponse,
-    CreateInteractionResponseMessage, EventHandler, GatewayIntents, Interaction, Message, Ready,
-    UserId,
+    CreateInteractionResponseMessage, EditInteractionResponse, EditMessage, EventHandler,
+    GatewayIntents, Interaction, Message, Ready, UserId,
 };
 use serenity::builder::CreateMessage;
 use serenity::Client;
 use tokio::sync::Mutex;
 
-use crate::agent::{Agent, AgentResult, ImageData, NoHooks};
+use crate::agent::{Agent, AgentHooks, AgentResult, ImageData, NoHooks};
 use crate::bot_config::{ServerConfigStore, UserConfigStore};
 pub use crate::bot_response::SecretRedactor;
 use crate::config;
@@ -32,6 +33,59 @@ pub use crate::bot_commands::{note_command, skill_command, stats_command};
 
 const MAX_MESSAGE_LENGTH: usize = 2000;
 const CODE_FILE_THRESHOLD: usize = 800;
+
+fn compact_progress(stage: usize, detail: Option<&str>) -> String {
+    let filled = (stage / 10).min(10);
+    let bar = format!("{}{}", "█".repeat(filled), "░".repeat(10 - filled));
+    match detail {
+        Some(detail) => format!("🧠 **Compacting conversation**\n`[{bar}] {stage}%` — {detail}"),
+        None => format!("🧠 **Compacting conversation**\n`[{bar}] {stage}%`"),
+    }
+}
+
+enum CompactProgressTarget {
+    Message {
+        ctx: Context,
+        channel_id: serenity::all::ChannelId,
+        message_id: serenity::all::MessageId,
+    },
+    Interaction {
+        ctx: Context,
+        command: Box<serenity::all::CommandInteraction>,
+    },
+}
+
+struct CompactProgressHooks(CompactProgressTarget);
+
+#[async_trait]
+impl AgentHooks for CompactProgressHooks {
+    async fn on_progress(&self, line: &str) {
+        let Some(rest) = line.strip_prefix("compact:") else {
+            return;
+        };
+        let (stage, detail) = rest.split_once(':').unwrap_or((rest, ""));
+        let Ok(stage) = stage.parse::<usize>() else {
+            return;
+        };
+        let content = compact_progress(stage, (!detail.is_empty()).then_some(detail));
+        match &self.0 {
+            CompactProgressTarget::Message {
+                ctx,
+                channel_id,
+                message_id,
+            } => {
+                let _ = channel_id
+                    .edit_message(&ctx.http, *message_id, EditMessage::new().content(content))
+                    .await;
+            }
+            CompactProgressTarget::Interaction { ctx, command } => {
+                let _ = command
+                    .edit_response(&ctx.http, EditInteractionResponse::new().content(content))
+                    .await;
+            }
+        }
+    }
+}
 // ── pure helpers ─────────────────────────────────────────────────────────────
 
 /// Map a fenced-code language tag to a file extension.
@@ -592,6 +646,27 @@ impl EventHandler for HouseBot {
         };
         let user_id = cmd.user.id.get();
         let guild_id = cmd.guild_id.map(|g| g.get());
+        if cmd.data.name == "compact" {
+            let response = CreateInteractionResponse::Defer(
+                CreateInteractionResponseMessage::new().ephemeral(true),
+            );
+            if let Err(e) = cmd.create_response(&ctx.http, response).await {
+                tracing::warn!("Failed to defer /compact response: {e}");
+                return;
+            }
+            let hooks = CompactProgressHooks(CompactProgressTarget::Interaction {
+                ctx: ctx.clone(),
+                command: Box::new(cmd.clone()),
+            });
+            self.agent
+                .compact_session_with_hooks(&user_id.to_string(), &hooks)
+                .await;
+            self.conversations
+                .lock()
+                .await
+                .remove(cmd.channel_id.get(), user_id);
+            return;
+        }
         let reply = match cmd.data.name.as_str() {
             "config" => {
                 handle_config_interaction(
@@ -635,14 +710,6 @@ impl EventHandler for HouseBot {
                 return;
             }
             "reset" => self.handle_reset(cmd.channel_id.get(), user_id).await,
-            "compact" => {
-                self.agent.compact_session(&user_id.to_string()).await;
-                self.conversations
-                    .lock()
-                    .await
-                    .remove(cmd.channel_id.get(), user_id);
-                "Conversation compacted into memory. A new session has started.".into()
-            }
             _ => return,
         };
 
@@ -671,14 +738,39 @@ impl EventHandler for HouseBot {
             return;
         }
         if content == "!compact" {
-            self.agent.compact_session(&user_id.to_string()).await;
+            let progress = reply_no_ping(&ctx, &msg, &compact_progress(0, None))
+                .await
+                .ok();
+            if let Some(progress) = &progress {
+                let hooks = CompactProgressHooks(CompactProgressTarget::Message {
+                    ctx: ctx.clone(),
+                    channel_id: msg.channel_id,
+                    message_id: progress.id,
+                });
+                self.agent
+                    .compact_session_with_hooks(&user_id.to_string(), &hooks)
+                    .await;
+            } else {
+                self.agent.compact_session(&user_id.to_string()).await;
+            }
             self.conversations.lock().await.remove(channel_id, user_id);
-            self.respond(
-                &ctx,
-                &msg,
-                "Conversation compacted into memory. A new session has started.",
-            )
-            .await;
+            if let Some(mut progress) = progress {
+                let _ = progress
+                    .edit(
+                        &ctx.http,
+                        EditMessage::new().content(
+                            "✅ Conversation compacted into memory. A new session has started.",
+                        ),
+                    )
+                    .await;
+            } else {
+                self.respond(
+                    &ctx,
+                    &msg,
+                    "✅ Conversation compacted into memory. A new session has started.",
+                )
+                .await;
+            }
             return;
         }
         if msg.content.starts_with("!skill") {

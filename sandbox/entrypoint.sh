@@ -41,10 +41,6 @@ case "$AGENT" in
     exec opencode run --dangerously-skip-permissions "$TASK" \
       --model="${MODEL:-server-slop/$LLAMA_MODEL}"
     ;;
-  claude)
-    exec claude --dangerously-skip-permissions -p "$TASK" \
-      --model="${MODEL:-claude-haiku-4-5-20251001}"
-    ;;
   *)
     echo "[sandbox] Unknown agent: $AGENT" >&2
     exit 1

@@ -79,7 +79,6 @@ data/                # runtime — gitignored
 | `SANDBOX_TIMEOUT` | no | `300` | Sandbox execution timeout (seconds) |
 | `HOST_DATA_DIR` | no | — | Optional host path to `./data`; omit it for fully ephemeral bot and sandbox state |
 | `LLAMA_CPP_URL` / `LLAMA_CPP_MODEL` | no | — | Passed into the sandbox for OpenCode |
-| `CC_OAUTH_TOKEN` | no | — | Claude Code OAuth token, forwarded to the sandbox |
 | `GITHUB_APP_ID` / `GITHUB_APP_PRIVATE_KEY` / `GITHUB_INSTALLATION_ID` / `GITHUB_REPO` | no | — | GitHub App creds for feature-request issue filing (all four required) |
 
 When set, `HOST_DATA_DIR` must match the host-side absolute path of the `./data` volume mount (e.g. `/home/user/housebot/data`). If omitted, bot state and sandbox artifacts are ephemeral.

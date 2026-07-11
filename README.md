@@ -37,7 +37,6 @@ See `.env.example` for all available options. Key variables:
 | `OWNER_DISCORD_ID` | Owner user ID |
 | `LLM_BASE_URL` / `LLM_MODEL` | OpenAI-compatible LLM endpoint (llama.cpp) |
 | `JELLYFIN_URL` + `JELLYFIN_API_KEY` | Enables Jellyfin MCP |
-| `CC_OAUTH_TOKEN` | Claude Code OAuth token (passed into the sandbox) |
 | `GITHUB_*` | GitHub App credentials for issue filing |
 
 ## Architecture

@@ -8,10 +8,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential \
     && rm -rf /var/lib/apt/lists/*
 
-RUN npm install -g --no-fund --no-audit @anthropic-ai/claude-code opencode-ai \
+RUN npm install -g --no-fund --no-audit opencode-ai \
     && npm cache clean --force
 
-# Claude Code refuses --dangerously-skip-permissions when running as root.
 RUN useradd -m -s /bin/bash sandbox \
     && mkdir -p /workspace \
     && chown -R sandbox:sandbox /workspace

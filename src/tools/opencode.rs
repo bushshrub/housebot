@@ -211,9 +211,6 @@ pub async fn run_opencode(
             }
         }
     }
-    if let Some(tok) = cc_oauth_token() {
-        cmd.arg("-e").arg(format!("CLAUDE_CODE_OAUTH_TOKEN={tok}"));
-    }
     cmd.arg("--cpus")
         .arg(&cfg.cpus)
         .arg("--memory")
@@ -267,17 +264,6 @@ pub async fn run_opencode(
         content,
         artifact_paths: artifacts,
     }
-}
-
-fn cc_oauth_token() -> Option<String> {
-    for var in ["CC_OAUTH_TOKEN", "CLAUDE_CODE_OAUTH_TOKEN"] {
-        if let Ok(v) = std::env::var(var) {
-            if !v.is_empty() {
-                return Some(v);
-            }
-        }
-    }
-    None
 }
 
 fn err(msg: String) -> OpencodeOutput {

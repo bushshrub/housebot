@@ -156,11 +156,19 @@ impl Agent {
 
     /// Summarize the current conversation, then start a fresh session.
     pub async fn compact_session(&self, user_id: &str) {
+        self.compact_session_with_hooks(user_id, &NoHooks).await;
+    }
+
+    /// Summarize the current conversation, reporting coarse-grained progress to the caller.
+    pub async fn compact_session_with_hooks(&self, user_id: &str, hooks: &dyn AgentHooks) {
+        hooks.on_progress("compact:10").await;
         self.session_stats.lock().await.remove(user_id);
         let past = self.history.load(user_id).await;
         if past.is_empty() {
+            hooks.on_progress("compact:100:Nothing to compact.").await;
             return;
         }
+        hooks.on_progress("compact:25").await;
         let user_memory = self.memory.load(user_id).await;
         let convo: String = past
             .iter()
@@ -178,6 +186,7 @@ impl Agent {
              of the key facts, preferences, and decisions discussed. This will be appended to the \
              user's memory for future reference. Be brief — 3-8 bullets max.\n\nCONVERSATION:\n{truncated}"
         );
+        hooks.on_progress("compact:45").await;
         let summary = self
             .client
             .chat_once(
@@ -198,7 +207,11 @@ impl Agent {
             updated.push_str(&format!("## Conversation summary ({now})\n{summary}"));
             let _ = self.memory.save(user_id, &updated).await;
         }
+        hooks.on_progress("compact:80").await;
         let _ = self.history.clear(user_id).await;
+        hooks
+            .on_progress("compact:100:Conversation compacted.")
+            .await;
     }
 
     pub fn model_info(&self) -> String {
@@ -273,7 +286,7 @@ impl Agent {
         let usage = projected_tokens as f64 / self.context_window_tokens.max(1) as f64;
         if !past.is_empty() && usage >= 0.8 {
             tracing::info!("Context at 80% for {user_id} — auto-compacting session");
-            self.compact_session(user_id).await;
+            self.compact_session_with_hooks(user_id, hooks).await;
             past.clear();
             user_memory = self.memory.load(user_id).await;
             session_notice = Some(
@@ -820,10 +833,9 @@ mod tests {
     }
 
     #[test]
-    fn system_prompt_does_not_mention_claude_code() {
+    fn system_prompt_mentions_opencode() {
         let p = build_system_prompt("Alice", "123", "", &empty_skills(), None);
-        assert!(!p.contains("run_claude_code"));
-        assert!(!p.contains("Claude Code"));
+        assert!(p.contains("run_opencode"));
     }
 
     #[test]
@@ -949,7 +961,7 @@ mod tests {
         let client = Arc::new(MockChatClient::new());
         let (_t, agent) = test_agent(client);
         let out = agent
-            .dispatch_tool("run_claude_code", &json!({}), "u", &NoHooks)
+            .dispatch_tool("run_unknown_code_agent", &json!({}), "u", &NoHooks)
             .await;
         match out {
             ToolOutcome::Text(t) => assert!(t.contains("Unknown tool")),
@@ -1010,7 +1022,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn build_tools_includes_builtins_not_claude_code() {
+    async fn build_tools_includes_opencode() {
         let client = Arc::new(MockChatClient::new());
         let (_t, agent) = test_agent(client);
         let tools = agent.build_tools().await;
@@ -1021,6 +1033,5 @@ mod tests {
         assert!(names.contains(&"run_opencode"));
         assert!(names.contains(&"translate"));
         assert!(names.contains(&"update_memory"));
-        assert!(!names.contains(&"run_claude_code"));
     }
 }
