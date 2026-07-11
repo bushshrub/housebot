@@ -8,13 +8,17 @@ WORKDIR /app
 COPY Cargo.toml Cargo.lock ./
 COPY crates/deployment-bot/Cargo.toml crates/deployment-bot/Cargo.toml
 COPY crates/deployment-bot/src/ crates/deployment-bot/src/
-RUN cargo build --release --locked --package deployment-bot
-RUN strip /app/target/release/deployment-bot
+RUN --mount=type=cache,id=deployment-bot-cargo-registry,target=/usr/local/cargo/registry \
+    --mount=type=cache,id=deployment-bot-cargo-git,target=/usr/local/cargo/git \
+    --mount=type=cache,id=deployment-bot-cargo-target,target=/app/target \
+    cargo build --release --locked --package deployment-bot \
+    && cp /app/target/release/deployment-bot /app/deployment-bot \
+    && strip /app/deployment-bot
 
 FROM alpine:3.22
 RUN apk add --no-cache ca-certificates
 
 COPY --from=docker-cli /usr/local/bin/docker /usr/local/bin/docker
-COPY --from=rust-builder /app/target/release/deployment-bot /usr/local/bin/deployment-bot
+COPY --from=rust-builder /app/deployment-bot /usr/local/bin/deployment-bot
 
 CMD ["deployment-bot"]

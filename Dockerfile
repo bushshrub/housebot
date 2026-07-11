@@ -3,25 +3,17 @@ FROM rust:1-alpine AS rust-builder
 ARG GIT_COMMIT
 RUN apk add --no-cache musl-dev
 WORKDIR /app
-# Prime the dependency cache with a stub crate.
 COPY Cargo.toml Cargo.lock ./
 COPY crates/deployment-bot/Cargo.toml crates/deployment-bot/Cargo.toml
 COPY crates/common-crawl/Cargo.toml crates/common-crawl/Cargo.toml
-RUN mkdir src \
-    && mkdir -p crates/deployment-bot/src \
-    && mkdir -p crates/common-crawl/src \
-    && echo 'fn main() {}' > src/main.rs \
-    && echo '' > src/lib.rs \
-    && echo 'fn main() {}' > crates/deployment-bot/src/main.rs \
-    && echo '' > crates/deployment-bot/src/lib.rs \
-    && echo '' > crates/common-crawl/src/lib.rs \
-    && cargo build --release --locked --package housebot || true
-# Build the real sources.
 COPY src/ src/
 COPY crates/ crates/
-RUN find src crates -name '*.rs' | xargs touch \
-    && HOUSEBOT_GIT_SHA="$GIT_COMMIT" cargo build --release --locked --package housebot
-RUN strip /app/target/release/housebot
+RUN --mount=type=cache,id=housebot-cargo-registry,target=/usr/local/cargo/registry \
+    --mount=type=cache,id=housebot-cargo-git,target=/usr/local/cargo/git \
+    --mount=type=cache,id=housebot-cargo-target,target=/app/target \
+    HOUSEBOT_GIT_SHA="$GIT_COMMIT" cargo build --release --locked --package housebot \
+    && cp /app/target/release/housebot /app/housebot \
+    && strip /app/housebot
 
 # Build the Jellyfin MCP server as a static Go binary for the runtime image.
 # Keep this pinned so image rebuilds do not silently change the MCP tool set.
@@ -37,7 +29,7 @@ RUN CGO_ENABLED=0 go build -o /go/bin/jellyfin-mcp .
 # Minimal runtime image: Alpine plus the statically linked bot binary.
 FROM alpine:3.22
 WORKDIR /app
-COPY --from=rust-builder /app/target/release/housebot /usr/local/bin/housebot
+COPY --from=rust-builder /app/housebot /usr/local/bin/housebot
 COPY --from=jellyfin-mcp-builder /go/bin/jellyfin-mcp /usr/local/bin/jellyfin-mcp
 RUN test -x /usr/local/bin/jellyfin-mcp
 RUN mkdir -p data/history data/memories
