@@ -271,6 +271,52 @@ jobs:
             "${IMAGE}:sha-${SHA}-amd64" \
             "${IMAGE}:sha-${SHA}-arm64"
 
+  # Notify the deployment channel for every push, even when the build or
+  # publish jobs fail. The push payload contains the complete commit batch.
+  notify-push:
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Notify pushed commits
+        env:
+          WEBHOOK: ${{ secrets.DISCORD_DEPLOYMENT_WEBHOOK }}
+          COMMITS: ${{ toJSON(github.event.commits) }}
+          BEFORE: ${{ github.event.before }}
+          AFTER: ${{ github.event.after }}
+          REF: ${{ github.ref_name }}
+          REPOSITORY: ${{ github.repository }}
+        run: |
+          total=$(jq 'length' <<< "$COMMITS")
+          chunks=$(jq -c '
+            [ .[] |
+              "[`" + (.id[0:7]) + "`](" + .url + ") " +
+              (.message | split("\n")[0])
+            ] |
+            reduce .[] as $line ([[]];
+              if ((.[-1] | join("\n") | length) + ($line | length) + 1 > 3800)
+              then . + [[$line]]
+              else .[:-1] + [(.[-1] + [$line])]
+              end
+            ) | .[]
+          ' <<< "$COMMITS")
+          chunk_total=$(wc -l <<< "$chunks" | tr -d ' ')
+          number=0
+          while IFS= read -r chunk; do
+            number=$((number + 1))
+            description=$(jq -r 'join("\n")' <<< "$chunk")
+            jq -n \
+              --arg ref "$REF" \
+              --arg before "$BEFORE" \
+              --arg after "$AFTER" \
+              --arg repository "$REPOSITORY" \
+              --arg description "$description" \
+              --arg total "$total" \
+              --arg batch "$number/$chunk_total" \
+              '{embeds:[{title:("Push to "+$repository+"/"+$ref),description:$description,color:3447003,fields:[{name:"Commits",value:($total+" commit(s), notification "+$batch)},{name:"Range",value:("`"+$before+"` → `"+$after+"`")}]}]}' \
+              | curl --fail --silent --show-error -X POST "$WEBHOOK" \
+                  -H "Content-Type: application/json" --data-binary @-
+          done <<< "$chunks"
+
   notify-deployment-bot:
     needs: manifest
     runs-on: ubuntu-latest
