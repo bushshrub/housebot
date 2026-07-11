@@ -12,14 +12,14 @@ use serde_json::Value;
 use serenity::all::{
     Command, CommandDataOptionValue, CommandOptionType, Context, CreateAllowedMentions,
     CreateAttachment, CreateCommand, CreateCommandOption, CreateEmbed, CreateInteractionResponse,
-    CreateInteractionResponseMessage, EditMessage, EventHandler, GatewayIntents, Interaction,
-    Message, Ready, UserId,
+    CreateInteractionResponseMessage, EventHandler, GatewayIntents, Interaction, Message, Ready,
+    UserId,
 };
 use serenity::builder::CreateMessage;
 use serenity::Client;
 use tokio::sync::Mutex;
 
-use crate::agent::{Agent, AgentHooks, AgentResult, ImageData};
+use crate::agent::{Agent, AgentResult, ImageData, NoHooks};
 use crate::bot_config::{ServerConfigStore, UserConfigStore};
 pub use crate::bot_response::SecretRedactor;
 use crate::config;
@@ -32,9 +32,6 @@ pub use crate::bot_commands::{note_command, skill_command, stats_command};
 
 const MAX_MESSAGE_LENGTH: usize = 2000;
 const CODE_FILE_THRESHOLD: usize = 800;
-/// Minimum seconds between edits to the same progress message (Discord rate-limits edits).
-const EDIT_INTERVAL: Duration = Duration::from_millis(1200);
-
 // ── pure helpers ─────────────────────────────────────────────────────────────
 
 /// Map a fenced-code language tag to a file extension.
@@ -787,9 +784,9 @@ impl HouseBot {
         let user_config = self.user_cfg.load(msg.author.id.get()).await;
         let personality = user_config.personality.clone();
 
-        // Post an immediate progress indicator.
-        let progress = reply_no_ping(ctx, msg, "⚙️ **Generating...**").await.ok();
-        let hooks = DiscordHooks::new(ctx.http.clone(), progress);
+        // Post an immediate, transient progress indicator and mark the triggering message.
+        let generating = reply_no_ping(ctx, msg, "⚙️ **Generating...**").await.ok();
+        let pending_reaction = msg.react(&ctx.http, '⏳').await.ok();
 
         let user_text = if text.is_empty() {
             "(no text)".to_string()
@@ -803,7 +800,7 @@ impl HouseBot {
                 &msg.author.name,
                 &user_text,
                 &images,
-                &hooks,
+                &NoHooks,
                 personality.as_deref(),
             )
             .await;
@@ -824,8 +821,15 @@ impl HouseBot {
         }
         let with_tool_summary = append_tool_summary(&safe, &result.tools_called);
         let (display, code_files) = extract_code_files(&with_tool_summary);
-        let progress = hooks.into_progress().await;
-        send_final_message(ctx, msg, &display, progress).await;
+        send_final_message(ctx, msg, &display).await;
+
+        if let Some(reaction) = pending_reaction {
+            let _ = reaction.delete(&ctx.http).await;
+        }
+        let _ = msg.react(&ctx.http, '✅').await;
+        if let Some(generating) = generating {
+            let _ = generating.delete(&ctx.http).await;
+        }
 
         // Upload extracted code blocks.
         for (filename, content) in code_files {
@@ -872,21 +876,8 @@ fn split_command(content: &str) -> (String, String) {
     }
 }
 
-async fn send_final_message(ctx: &Context, msg: &Message, text: &str, progress: Option<Message>) {
+async fn send_final_message(ctx: &Context, msg: &Message, text: &str) {
     let chunks = split_text(text, MAX_MESSAGE_LENGTH);
-    if let Some(mut progress) = progress {
-        if progress
-            .edit(&ctx.http, EditMessage::new().content(&chunks[0]))
-            .await
-            .is_ok()
-        {
-            for chunk in &chunks[1..] {
-                let _ = msg.channel_id.say(&ctx.http, chunk).await;
-            }
-            return;
-        }
-        let _ = progress.delete(&ctx.http).await;
-    }
     for (i, chunk) in chunks.iter().enumerate() {
         if i == 0 {
             let _ = reply_no_ping(ctx, msg, chunk).await;
@@ -938,101 +929,6 @@ fn unix_now() -> f64 {
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs_f64())
         .unwrap_or(0.0)
-}
-
-// ── Discord progress hooks ───────────────────────────────────────────────────
-
-struct DiscordHooks {
-    http: Arc<serenity::http::Http>,
-    progress: Mutex<Option<Message>>,
-    last_edit: Mutex<Option<Instant>>,
-    lines: Mutex<Vec<String>>,
-    stream_started: AtomicBool,
-}
-
-impl DiscordHooks {
-    fn new(http: Arc<serenity::http::Http>, progress: Option<Message>) -> Self {
-        Self {
-            http,
-            progress: Mutex::new(progress),
-            last_edit: Mutex::new(None),
-            lines: Mutex::new(Vec::new()),
-            stream_started: AtomicBool::new(false),
-        }
-    }
-
-    async fn into_progress(self) -> Option<Message> {
-        self.progress.into_inner()
-    }
-
-    async fn update(&self, content: String, force: bool) {
-        {
-            let last = self.last_edit.lock().await;
-            if !force {
-                if let Some(t) = *last {
-                    if t.elapsed() < EDIT_INTERVAL {
-                        return;
-                    }
-                }
-            }
-        }
-        *self.last_edit.lock().await = Some(Instant::now());
-        let mut guard = self.progress.lock().await;
-        if let Some(m) = guard.as_mut() {
-            let _ = m
-                .edit(&self.http, EditMessage::new().content(content))
-                .await;
-        }
-    }
-}
-
-#[async_trait::async_trait]
-impl AgentHooks for DiscordHooks {
-    async fn on_text_stream(&self, partial: &str) {
-        let chunks = split_text(partial, MAX_MESSAGE_LENGTH);
-        let mut content = chunks[0].clone();
-        if chunks.len() > 1 {
-            content.push('…');
-        }
-        let force = !self.stream_started.swap(true, Ordering::SeqCst);
-        self.update(content, force).await;
-    }
-
-    async fn on_tool_called(&self, tool: &str, args: &Value) {
-        let content = format!("⚙️ **`{tool}`**{}", tool_hint(tool, args));
-        self.lines.lock().await.clear();
-        self.update(content, true).await;
-    }
-
-    async fn on_progress(&self, line: &str) {
-        let clean = line.trim();
-        if clean.is_empty() {
-            return;
-        }
-        let mut lines = self.lines.lock().await;
-        lines.push(clean.to_string());
-        let tail: String = lines
-            .iter()
-            .rev()
-            .take(50)
-            .cloned()
-            .collect::<Vec<_>>()
-            .into_iter()
-            .rev()
-            .collect::<Vec<_>>()
-            .join("\n");
-        let tail: String = tail
-            .chars()
-            .rev()
-            .take(1800)
-            .collect::<Vec<_>>()
-            .into_iter()
-            .rev()
-            .collect();
-        let content = format!("⚙️ **Working...**\n```\n{tail}\n```");
-        drop(lines);
-        self.update(content, false).await;
-    }
 }
 
 /// Run the bot: build the agent, register the handler, and connect to Discord.
