@@ -25,7 +25,7 @@ RUN strip /app/target/release/housebot
 FROM golang:1.25-alpine AS jellyfin-mcp-builder
 ARG JELLYFIN_MCP_VERSION=v2026.604.2
 RUN apk add --no-cache git
-RUN CGO_ENABLED=0 go install github.com/jaredtrent/jellyfin-mcp@${JELLYFIN_MCP_VERSION}
+RUN CGO_ENABLED=0 go install github.com/jaredtrent/jellyfin-mcp/v2026@${JELLYFIN_MCP_VERSION}
 
 # Minimal runtime image: Alpine plus the statically linked bot binary.
 FROM alpine:3.22
