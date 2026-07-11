@@ -283,7 +283,7 @@ impl Agent {
             past.clear();
             user_memory = self.memory.load(user_id).await;
             session_notice = Some(
-                "⚠️ The context window reached 80%, so I compacted the conversation and started a new session."
+                "⚠️ The context window reached 80%, so I compacted the conversation and started a new session. Use /session to check your current context usage."
                     .into(),
             );
         }
@@ -321,10 +321,10 @@ impl Agent {
             let usage = context_tokens as f64 / self.context_window_tokens.max(1) as f64;
             if usage >= 0.7 {
                 session_notice = Some(if usage >= 0.8 {
-                    "⚠️ The context window reached 80% based on the model's reported usage. It will be compacted automatically before the next message.".into()
+                    "⚠️ The context window reached 80% based on the model's reported usage. It will be compacted automatically before the next message. Use /session to check your current context usage.".into()
                 } else {
                     format!(
-                        "⚠️ The context window is {:.0}% full based on the model's reported usage. It will compact automatically at 80%.",
+                        "⚠️ The context window is {:.0}% full based on the model's reported usage. It will compact automatically at 80%. Use /session to check your current context usage.",
                         usage * 100.0
                     )
                 });
