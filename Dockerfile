@@ -5,12 +5,15 @@ WORKDIR /app
 # Prime the dependency cache with a stub crate.
 COPY Cargo.toml Cargo.lock ./
 COPY crates/deployment-bot/Cargo.toml crates/deployment-bot/Cargo.toml
+COPY crates/common-crawl/Cargo.toml crates/common-crawl/Cargo.toml
 RUN mkdir src \
     && mkdir -p crates/deployment-bot/src \
+    && mkdir -p crates/common-crawl/src \
     && echo 'fn main() {}' > src/main.rs \
     && echo '' > src/lib.rs \
     && echo 'fn main() {}' > crates/deployment-bot/src/main.rs \
     && echo '' > crates/deployment-bot/src/lib.rs \
+    && echo '' > crates/common-crawl/src/lib.rs \
     && cargo build --release --locked --package housebot || true
 # Build the real sources.
 COPY src/ src/
