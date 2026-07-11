@@ -368,11 +368,14 @@ impl HouseBot {
         responded.push_back(id);
     }
 
-    async fn handle_reset(&self, channel_id: u64, user_id: u64) -> String {
+    async fn handle_new(&self, channel_id: u64, user_id: u64) -> String {
         self.agent.reset_session(&user_id.to_string()).await;
         self.conversations.lock().await.remove(channel_id, user_id);
-        "Session reset. Your conversation history has been cleared and a fresh session has started."
-            .into()
+        "New conversation started. Your previous conversation history has been cleared.".into()
+    }
+
+    async fn handle_reset(&self, channel_id: u64, user_id: u64) -> String {
+        self.handle_new(channel_id, user_id).await
     }
 
     async fn respond(&self, ctx: &Context, msg: &Message, content: &str) {
@@ -728,6 +731,7 @@ impl EventHandler for HouseBot {
             CreateCommand::new("model").description("Show information about the current model"),
             CreateCommand::new("session")
                 .description("Show context and token usage for this session"),
+            CreateCommand::new("new").description("Start a new conversation and clear the old one"),
             CreateCommand::new("reset").description("Clear the conversation and start fresh"),
             CreateCommand::new("compact")
                 .description("Summarize the conversation and start a new session"),
@@ -833,6 +837,7 @@ impl EventHandler for HouseBot {
                 }
                 return;
             }
+            "new" => self.handle_new(cmd.channel_id.get(), user_id).await,
             "reset" => self.handle_reset(cmd.channel_id.get(), user_id).await,
             _ => return,
         };
@@ -858,6 +863,11 @@ impl EventHandler for HouseBot {
         // ── commands ──
         if content == "!reset" {
             let reply = self.handle_reset(channel_id, user_id).await;
+            self.respond(&ctx, &msg, &reply).await;
+            return;
+        }
+        if content == "!new" {
+            let reply = self.handle_new(channel_id, user_id).await;
             self.respond(&ctx, &msg, &reply).await;
             return;
         }

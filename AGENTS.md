@@ -92,7 +92,7 @@ When set, `HOST_DATA_DIR` must match the host-side absolute path of the `./data`
 ```
 Discord message
   └─ HouseBot::message()
-       ├─ !commands (!reset / !skill / !note / !stats)
+       ├─ !commands (!new / !reset / !skill / !note / !stats)
        ├─ filter (DM / mention / reply-to-bot / active conversation)
        ├─ extract images (base64)
        ├─ post "⚙️ Generating..." progress message
