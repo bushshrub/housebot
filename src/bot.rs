@@ -207,6 +207,7 @@ pub fn tool_hint(tool_name: &str, args: &Value) -> String {
 }
 
 static CODE_FENCE: Lazy<Regex> = Lazy::new(|| Regex::new(r"(?s)```(\w*)\n(.*?)(?:```|$)").unwrap());
+static URL: Lazy<Regex> = Lazy::new(|| Regex::new(r"https?://[^\s<>]+|www\.[^\s<>]+").unwrap());
 
 /// Replace large fenced code blocks with file references; return modified text + files.
 pub fn extract_code_files(text: &str) -> (String, Vec<(String, Vec<u8>)>) {
@@ -948,6 +949,16 @@ impl HouseBot {
             text = text.replace(&token, "");
         }
         let text = text.trim().to_string();
+
+        let referenced_text = msg
+            .referenced_message
+            .as_deref()
+            .and_then(referenced_message_context);
+        let text = match referenced_text {
+            Some(referenced) if text.is_empty() => referenced,
+            Some(referenced) => format!("{text}\n\n{referenced}"),
+            None => text,
+        };
         if text.is_empty() && msg.attachments.is_empty() {
             return;
         }
@@ -958,7 +969,10 @@ impl HouseBot {
                 .await;
         }
 
-        let images = extract_images(msg).await;
+        let mut images = extract_images(msg).await;
+        if let Some(referenced) = msg.referenced_message.as_deref() {
+            images.extend(extract_images(referenced).await);
+        }
 
         // Load personality for this user.
         let user_config = self.user_cfg.load(msg.author.id.get()).await;
@@ -1195,13 +1209,8 @@ fn append_tool_summary(text: &str, tools: &[String]) -> String {
 async fn extract_images(msg: &Message) -> Vec<ImageData> {
     let mut images = Vec::new();
     for att in &msg.attachments {
-        let ext = att.filename.rsplit_once('.').map(|(_, e)| e.to_lowercase());
-        let media_type = match ext.as_deref() {
-            Some("png") => "image/png",
-            Some("jpg") | Some("jpeg") => "image/jpeg",
-            Some("gif") => "image/gif",
-            Some("webp") => "image/webp",
-            _ => continue,
+        let Some(media_type) = image_media_type(&att.filename) else {
+            continue;
         };
         if let Ok(resp) = reqwest::get(&att.url).await {
             if let Ok(bytes) = resp.bytes().await {
@@ -1214,6 +1223,48 @@ async fn extract_images(msg: &Message) -> Vec<ImageData> {
         }
     }
     images
+}
+
+fn image_media_type(filename: &str) -> Option<&'static str> {
+    match filename
+        .rsplit_once('.')
+        .map(|(_, extension)| extension.to_ascii_lowercase())
+        .as_deref()
+    {
+        Some("png") => Some("image/png"),
+        Some("jpg") | Some("jpeg") => Some("image/jpeg"),
+        Some("gif") => Some("image/gif"),
+        Some("webp") => Some("image/webp"),
+        _ => None,
+    }
+}
+
+fn referenced_message_context(msg: &Message) -> Option<String> {
+    let text = msg.content.trim();
+    let urls: Vec<&str> = URL.find_iter(text).map(|m| m.as_str()).collect();
+    let has_images = msg
+        .attachments
+        .iter()
+        .any(|attachment| image_media_type(&attachment.filename).is_some());
+    if text.is_empty() && !has_images {
+        return None;
+    }
+
+    let mut context = String::from("[Message being replied to]\n");
+    if !text.is_empty() {
+        context.push_str(text);
+    }
+    if !urls.is_empty() {
+        context.push_str(
+            "\n\nThe message above contains URL(s). Use the web fetch tool on these URL(s) before answering: ",
+        );
+        context.push_str(&urls.join(", "));
+    }
+    if has_images {
+        context.push_str("\n\n[The message above also contains image attachment(s).]");
+    }
+    context.push_str("\n[End message being replied to]");
+    Some(context)
 }
 
 fn unix_now() -> f64 {
