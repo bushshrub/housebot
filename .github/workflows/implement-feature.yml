@@ -12,7 +12,7 @@ on:
       model:
         description: Model name for opencode.json
         required: false
-        default: opencode/deepseek-v4-flash-free
+        default: opencode/deepseek-v4-flash
       model_config:
         description: Extra config fields (JSON object merged into opencode.json)
         required: false
@@ -102,7 +102,7 @@ jobs:
             const model =
               process.env.DISPATCH_MODEL ||
               process.env.REPO_MODEL ||
-              'opencode/deepseek-v4-flash-free';
+              'opencode/deepseek-v4-flash';
 
             let extra = {};
             const dispatchExtra = process.env.DISPATCH_EXTRA || '';
