@@ -302,7 +302,7 @@ impl Agent {
         let mut turn_messages: Vec<Value> = Vec::new();
         let mut tools_called = Vec::new();
 
-        let final_text = loop {
+        let final_text = 'agent_loop: loop {
             let text_sink = TextStreamAdapter(hooks);
             let completion = match self
                 .client
@@ -368,6 +368,13 @@ impl Agent {
                 });
                 messages.push(tool_msg.clone());
                 turn_messages.push(tool_msg);
+
+                // DuckDuckGo rate limits are not recoverable within this run. Stop the
+                // tool loop after the first limited response so the model cannot keep
+                // retrying the search and waiting for another rate-limit window.
+                if tc.name == "ddg__search" && duckduckgo_rate_limited(&content) {
+                    break 'agent_loop "DuckDuckGo is temporarily rate-limited. Please try again in a few minutes.".to_string();
+                }
             }
         };
 
@@ -710,6 +717,14 @@ pub fn flatten_tool(tool_def: &Value) -> (String, String, Value) {
     (name, description, parameters)
 }
 
+fn duckduckgo_rate_limited(content: &str) -> bool {
+    let content = content.to_ascii_lowercase();
+    content.contains("duckduckgo returned http 429")
+        || content.contains("too many requests")
+        || content.contains("rate limit")
+        || content.contains("temporarily blocked")
+}
+
 #[cfg(test)]
 impl Agent {
     /// Construct an agent wired to a test client and temp-backed stores.
@@ -837,6 +852,17 @@ mod tests {
         assert_eq!(t["type"], "function");
         assert_eq!(t["function"]["name"], "my_tool");
         assert_eq!(t["function"]["parameters"], json!({"type": "object"}));
+    }
+
+    #[test]
+    fn duckduckgo_rate_limit_errors_are_detected() {
+        assert!(duckduckgo_rate_limited(
+            "Error: DuckDuckGo returned HTTP 429 Too Many Requests"
+        ));
+        assert!(duckduckgo_rate_limited("DuckDuckGo rate limit reached"));
+        assert!(!duckduckgo_rate_limited(
+            "Error: search request failed: timeout"
+        ));
     }
 
     #[test]
