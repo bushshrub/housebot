@@ -33,6 +33,8 @@ Pushes both Docker images to GHCR on push to `main`/`master` or on tags (`v*`):
 
 ```
 Cargo.toml
+crates/
+  deployment-bot/     # independent deployment controller crate and binary
 src/
   main.rs            # entry point — inits tracing, calls bot::run()
   lib.rs             # module declarations

@@ -17,13 +17,17 @@ FROM rust:1-bookworm AS rust-builder
 WORKDIR /app
 # Prime the dependency cache with a stub crate.
 COPY Cargo.toml Cargo.lock ./
+COPY crates/deployment-bot/Cargo.toml crates/deployment-bot/Cargo.toml
 RUN mkdir src \
+    && mkdir -p crates/deployment-bot/src \
     && echo 'fn main() {}' > src/main.rs \
     && echo '' > src/lib.rs \
-    && cargo build --release --locked || true
+    && echo 'fn main() {}' > crates/deployment-bot/src/main.rs \
+    && echo '' > crates/deployment-bot/src/lib.rs \
+    && cargo build --release --locked --package housebot || true
 # Build the real sources.
 COPY src/ src/
-RUN touch src/main.rs src/lib.rs && cargo build --release --locked
+RUN touch src/main.rs src/lib.rs && cargo build --release --locked --package housebot
 
 # Stage 5: runtime image
 FROM python:3.13-slim-bookworm
@@ -42,8 +46,6 @@ ENV PATH="/root/.local/bin:$PATH"
 
 WORKDIR /app
 COPY --from=rust-builder /app/target/release/housebot /usr/local/bin/housebot
-COPY --from=rust-builder /app/target/release/deployment-bot /usr/local/bin/deployment-bot
-
 RUN mkdir -p data/history data/memories
 
 CMD ["housebot"]

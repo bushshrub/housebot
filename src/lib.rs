@@ -10,7 +10,6 @@ mod bot_commands;
 pub mod bot_config;
 mod bot_response;
 pub mod config;
-pub mod deployment_bot;
 pub mod github_issues;
 pub mod history;
 pub mod llm;

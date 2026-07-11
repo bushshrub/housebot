@@ -6,13 +6,13 @@ rust-version = "1.80"
 description = "House chatbot with Discord interface, MCP tools, and OpenCode sandbox (Rust rewrite)"
 license = "AGPL-3.0-or-later"
 
+[workspace]
+members = ["crates/deployment-bot"]
+resolver = "2"
+
 [[bin]]
 name = "housebot"
 path = "src/main.rs"
-
-[[bin]]
-name = "deployment-bot"
-path = "src/bin/deployment_bot.rs"
 
 [lib]
 name = "housebot"

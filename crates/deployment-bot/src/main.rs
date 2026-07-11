@@ -7,5 +7,5 @@ async fn main() -> anyhow::Result<()> {
             EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")),
         )
         .init();
-    housebot::deployment_bot::run().await
+    deployment_bot::run().await
 }
