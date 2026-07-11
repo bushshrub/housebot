@@ -8,8 +8,7 @@ use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
 use once_cell::sync::Lazy;
-use regex::{Captures, Regex};
-use serde_json::Value;
+use regex::Regex;
 use serenity::all::{
     ButtonStyle, Command, CommandDataOptionValue, CommandOptionType, Context, CreateActionRow,
     CreateAllowedMentions, CreateAttachment, CreateButton, CreateCommand, CreateCommandOption,
@@ -31,9 +30,10 @@ use crate::notes::Notes;
 use crate::skills::Skills;
 
 pub use crate::bot_commands::{note_command, skill_command, stats_command};
+use crate::bot_formatting::append_tool_summary;
+pub use crate::bot_formatting::{extract_code_files, lang_ext, split_text, tool_hint};
 
 const MAX_MESSAGE_LENGTH: usize = 2000;
-const CODE_FILE_THRESHOLD: usize = 800;
 const EMBED_DESCRIPTION_LIMIT: usize = 4096;
 const PAGINATION_PREFIX: &str = "housebot_labs_page:";
 
@@ -131,136 +131,7 @@ impl AgentHooks for ResponseProgressHooks {
 }
 // ── pure helpers ─────────────────────────────────────────────────────────────
 
-/// Map a fenced-code language tag to a file extension.
-pub fn lang_ext(lang: &str) -> &'static str {
-    match lang {
-        "python" | "py" => ".py",
-        "javascript" | "js" => ".js",
-        "typescript" | "ts" => ".ts",
-        "bash" | "sh" | "shell" => ".sh",
-        "rust" => ".rs",
-        "go" => ".go",
-        "java" => ".java",
-        "c" => ".c",
-        "cpp" | "c++" => ".cpp",
-        "html" => ".html",
-        "css" => ".css",
-        "json" => ".json",
-        "yaml" | "yml" => ".yaml",
-        "toml" => ".toml",
-        "sql" => ".sql",
-        "ruby" | "rb" => ".rb",
-        "php" => ".php",
-        _ => ".txt",
-    }
-}
-
-fn truncate_chars(s: &str, n: usize) -> String {
-    s.chars().take(n).collect()
-}
-
-/// Split `text` into chunks no longer than `limit` characters, preferring newline breaks.
-pub fn split_text(text: &str, limit: usize) -> Vec<String> {
-    let chars: Vec<char> = text.chars().collect();
-    if chars.len() <= limit {
-        return vec![text.to_string()];
-    }
-    let mut chunks = Vec::new();
-    let mut start = 0;
-    while start < chars.len() {
-        if chars.len() - start <= limit {
-            chunks.push(chars[start..].iter().collect());
-            break;
-        }
-        let window_end = start + limit;
-        let mut split = window_end;
-        for i in (start..window_end).rev() {
-            if chars[i] == '\n' {
-                split = i;
-                break;
-            }
-        }
-        if split <= start {
-            split = window_end;
-        }
-        chunks.push(chars[start..split].iter().collect());
-        let mut next = split;
-        while next < chars.len() && chars[next] == '\n' {
-            next += 1;
-        }
-        start = next;
-    }
-    chunks
-}
-
-/// Return a short human-readable suffix describing a tool call's arguments.
-pub fn tool_hint(tool_name: &str, args: &Value) -> String {
-    let get = |k: &str| args.get(k).and_then(|v| v.as_str()).unwrap_or("");
-    match tool_name {
-        "run_skill" => {
-            let name = get("name");
-            if name.is_empty() {
-                return String::new();
-            }
-            let inp = truncate_chars(get("input"), 60).replace('\n', " ");
-            format!(" — {name}: {inp}")
-        }
-        "set_reminder" => {
-            let msg = get("message");
-            if msg.is_empty() {
-                return String::new();
-            }
-            let msg = truncate_chars(msg, 60).replace('\n', " ");
-            let delay = args
-                .get("delay_minutes")
-                .map(|d| d.to_string())
-                .unwrap_or_default();
-            format!(" — in {delay}m: {msg}")
-        }
-        "translate" => {
-            let lang = get("target_language");
-            if lang.is_empty() {
-                return String::new();
-            }
-            let txt = truncate_chars(get("text"), 40).replace('\n', " ");
-            format!(" — → {lang}: {txt}")
-        }
-        _ => {
-            for key in ["query", "task", "repo_url", "memory_content", "url"] {
-                let val = get(key);
-                if !val.is_empty() {
-                    let mut preview = truncate_chars(val, 80).replace('\n', " ");
-                    if val.chars().count() > 80 {
-                        preview.push('…');
-                    }
-                    return format!(" — {preview}");
-                }
-            }
-            String::new()
-        }
-    }
-}
-
-static CODE_FENCE: Lazy<Regex> = Lazy::new(|| Regex::new(r"(?s)```(\w*)\n(.*?)(?:```|$)").unwrap());
 static URL: Lazy<Regex> = Lazy::new(|| Regex::new(r"https?://[^\s<>]+|www\.[^\s<>]+").unwrap());
-
-/// Replace large fenced code blocks with file references; return modified text + files.
-pub fn extract_code_files(text: &str) -> (String, Vec<(String, Vec<u8>)>) {
-    let mut files: Vec<(String, Vec<u8>)> = Vec::new();
-    let mut counter = 0u32;
-    let modified = CODE_FENCE.replace_all(text, |caps: &Captures| {
-        let lang = caps.get(1).map(|m| m.as_str()).unwrap_or("").to_lowercase();
-        let code = caps.get(2).map(|m| m.as_str()).unwrap_or("");
-        if code.chars().count() < CODE_FILE_THRESHOLD {
-            return caps.get(0).unwrap().as_str().to_string();
-        }
-        counter += 1;
-        let filename = format!("script_{counter}{}", lang_ext(&lang));
-        files.push((filename.clone(), code.as_bytes().to_vec()));
-        format!("*(see attached: `{filename}`)*")
-    });
-    (modified.into_owned(), files)
-}
 
 /// Tracks which (channel, user) conversations are still within the idle window.
 pub struct ConversationTracker {
@@ -1254,19 +1125,6 @@ fn pagination_components(token: &str, page: usize, page_count: usize) -> Vec<Cre
             .style(ButtonStyle::Secondary)
             .disabled(page + 1 >= page_count),
     ])]
-}
-
-fn append_tool_summary(text: &str, tools: &[String]) -> String {
-    let summary = if tools.is_empty() {
-        "none".to_string()
-    } else {
-        tools
-            .iter()
-            .map(|tool| format!("`{tool}`"))
-            .collect::<Vec<_>>()
-            .join(", ")
-    };
-    format!("{text}\n\n🛠️ **Tools used:** {summary}")
 }
 
 async fn extract_media(msg: &Message) -> Vec<MediaData> {
