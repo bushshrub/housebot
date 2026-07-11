@@ -213,6 +213,7 @@ impl DeploymentBot {
             &self.docker_network,
             &self.sandbox_timeout,
             housebot_env(),
+            false,
         )?;
 
         for command in &commands {
@@ -343,19 +344,22 @@ impl DeploymentBot {
         let _deployment_guard = self.deployment_lock.lock().await;
         let changelog = self.changelog(&current_sha, &latest.sha).await?;
         self.checkpoint_current_image().await?;
-        let commands = deploy_commands(&latest.sha, &self.docker_network, &self.sandbox_timeout)?;
-        for (index, command) in commands.iter().enumerate() {
+        let commands = deploy_commands(
+            Some(&latest.sha),
+            &self.docker_network,
+            &self.sandbox_timeout,
+        )?;
+        for command in &commands {
             tracing::info!(
-                stage = deploy_progress(index),
+                stage = %command.stage,
                 "Update deployment stage started"
             );
-            let args = command.iter().map(String::as_str).collect::<Vec<_>>();
-            let output = run_docker(&args).await?;
-            if index == commands.len() - 1 && output != "true" {
+            let output = run_docker(&command.args()).await?;
+            if command.stage.is_health_check() && output != "true" {
                 anyhow::bail!("house-chatbot is not running after update deployment");
             }
             tracing::info!(
-                stage = deploy_progress(index),
+                stage = %command.stage,
                 "Update deployment stage completed"
             );
         }
@@ -374,21 +378,28 @@ pub fn valid_sha(sha: &str) -> bool {
 }
 
 pub fn deploy_commands(
-    sha: &str,
+    sha: Option<&str>,
     docker_network: &str,
     sandbox_timeout: &str,
 ) -> anyhow::Result<Vec<DeploymentCommand>> {
-    if !valid_sha(sha) {
-        anyhow::bail!("SHA must contain 7 to 40 hexadecimal characters");
-    }
-    let main = format!("ghcr.io/bushshrub/housebot:sha-{sha}");
-    let sandbox = format!("ghcr.io/bushshrub/housebot/sandbox:sha-{sha}");
+    let (main, sandbox) = match sha {
+        Some(sha) if valid_sha(sha) => (
+            format!("ghcr.io/bushshrub/housebot:sha-{sha}"),
+            format!("ghcr.io/bushshrub/housebot/sandbox:sha-{sha}"),
+        ),
+        Some(_) => anyhow::bail!("SHA must contain 7 to 40 hexadecimal characters"),
+        None => (
+            "ghcr.io/bushshrub/housebot:latest".into(),
+            "ghcr.io/bushshrub/housebot/sandbox:latest".into(),
+        ),
+    };
     container_commands_with_env(
         &main,
         &sandbox,
         docker_network,
         sandbox_timeout,
         housebot_env(),
+        true,
     )
 }
 
@@ -409,6 +420,7 @@ pub fn container_commands(
         docker_network,
         sandbox_timeout,
         Vec::new(),
+        false,
     )
 }
 
@@ -418,8 +430,11 @@ fn container_commands_with_env(
     docker_network: &str,
     sandbox_timeout: &str,
     environment: Vec<(String, String)>,
+    allow_latest: bool,
 ) -> anyhow::Result<Vec<DeploymentCommand>> {
-    if !valid_housebot_image(image) {
+    if !(valid_housebot_image(image)
+        || (allow_latest && image == "ghcr.io/bushshrub/housebot:latest"))
+    {
         anyhow::bail!("invalid housebot deployment image");
     }
     let mut run = vec![
@@ -718,14 +733,14 @@ impl EventHandler for DeploymentBot {
                     None
                 }
             };
-            let commands = match deploy_commands(&sha, &self.docker_network, &self.sandbox_timeout)
-            {
-                Ok(commands) => commands,
-                Err(error) => {
-                    tracing::error!("Could not prepare deployment: {error}");
-                    return;
-                }
-            };
+            let commands =
+                match deploy_commands(Some(&sha), &self.docker_network, &self.sandbox_timeout) {
+                    Ok(commands) => commands,
+                    Err(error) => {
+                        tracing::error!("Could not prepare deployment: {error}");
+                        return;
+                    }
+                };
             let mut summary = DeploymentRunSummary {
                 container_name: HOUSE_CHATBOT_CONTAINER.into(),
                 container_id: None,
@@ -817,7 +832,11 @@ impl EventHandler for DeploymentBot {
             {
                 return;
             }
-            let commands = deploy_commands(sha, &self.docker_network, &self.sandbox_timeout);
+            let commands = if sha == "latest" {
+                deploy_commands(None, &self.docker_network, &self.sandbox_timeout)
+            } else {
+                deploy_commands(Some(sha), &self.docker_network, &self.sandbox_timeout)
+            };
             let result = async {
                 let _deployment_guard = self.deployment_lock.lock().await;
                 self.checkpoint_current_image().await?;
@@ -896,8 +915,8 @@ impl EventHandler for DeploymentBot {
                 return;
             }
             let sha = match command.data.options.first().map(|option| &option.value) {
-                Some(CommandDataOptionValue::String(sha)) if valid_sha(sha) => sha,
-                _ => {
+                Some(CommandDataOptionValue::String(sha)) if valid_sha(sha) => Some(sha.as_str()),
+                Some(_) => {
                     let response = CreateInteractionResponse::Message(
                         CreateInteractionResponseMessage::new()
                             .content("SHA must contain 7 to 40 hexadecimal characters.")
@@ -906,8 +925,15 @@ impl EventHandler for DeploymentBot {
                     let _ = command.create_response(&ctx.http, response).await;
                     return;
                 }
+                None => None,
             };
-            let response = match self.commits(sha).await {
+            let response = match match sha {
+                Some(sha) => self.commits(sha).await,
+                None => self
+                    .latest_branch_commit()
+                    .await
+                    .map(|latest| (latest, Vec::new())),
+            } {
                 Ok((selected, recent)) => {
                     let description = match self.current_running_sha().await {
                         Ok(current_sha) => {
@@ -935,9 +961,12 @@ impl EventHandler for DeploymentBot {
                                 .description(description),
                         )
                         .components(vec![CreateActionRow::Buttons(vec![
-                            CreateButton::new(format!("deploy_confirm:{}", selected.sha))
-                                .label("Confirm")
-                                .style(ButtonStyle::Success),
+                            CreateButton::new(format!(
+                                "deploy_confirm:{}",
+                                sha.unwrap_or("latest")
+                            ))
+                            .label("Confirm")
+                            .style(ButtonStyle::Success),
                             CreateButton::new("deploy_deny")
                                 .label("Deny")
                                 .style(ButtonStyle::Danger),
@@ -1104,7 +1133,7 @@ fn deployment_commands() -> Vec<CreateCommand> {
             .description("Deploy a previously built commit")
             .add_option(
                 CreateCommandOption::new(CommandOptionType::String, "sha", "Git commit SHA")
-                    .required(true),
+                    .required(false),
             ),
     ]
 }
@@ -1211,7 +1240,7 @@ mod tests {
 
     #[test]
     fn deploy_plan_is_sha_scoped_and_rejects_injection() {
-        let commands = deploy_commands("abcdef123456", "network", "300").unwrap();
+        let commands = deploy_commands(Some("abcdef123456"), "network", "300").unwrap();
         assert_eq!(commands.len(), 5);
         assert_eq!(
             commands
@@ -1228,8 +1257,12 @@ mod tests {
         );
         assert!(commands[0].args[1].ends_with(":sha-abcdef123456"));
         assert!(!commands[3].args.contains(&"/deployment".to_string()));
-        assert!(deploy_commands("latest", "network", "300").is_err());
-        assert!(deploy_commands("abcdef;reboot", "network", "300").is_err());
+        assert_eq!(
+            deploy_commands(None, "network", "300").unwrap()[0].args[1],
+            "ghcr.io/bushshrub/housebot:latest"
+        );
+        assert!(deploy_commands(Some("latest"), "network", "300").is_err());
+        assert!(deploy_commands(Some("abcdef;reboot"), "network", "300").is_err());
     }
 
     #[test]
