@@ -148,6 +148,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "common-crawl"
+version = "0.1.0"
+dependencies = [
+ "reqwest",
+ "serde",
+ "serde_json",
+ "thiserror 1.0.69",
+ "tokio",
+]
+
+[[package]]
 name = "core-foundation-sys"
 version = "0.8.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -423,6 +434,7 @@ dependencies = [
  "base64",
  "bytes",
  "chrono",
+ "common-crawl",
  "futures-util",
  "jsonwebtoken",
  "once_cell",

@@ -7,7 +7,7 @@ description = "House chatbot with Discord interface and MCP tools (Rust rewrite)
 license = "AGPL-3.0-or-later"
 
 [workspace]
-members = ["crates/deployment-bot"]
+members = ["crates/common-crawl", "crates/deployment-bot"]
 resolver = "2"
 
 [[bin]]
@@ -36,6 +36,7 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 bytes = "1"
 once_cell = "1"
+common-crawl = { path = "crates/common-crawl" }
 
 [dev-dependencies]
 tempfile = "3"

@@ -17,6 +17,7 @@ use crate::memory::Memory;
 use crate::reminders::Reminders;
 use crate::skills::{Skill, Skills};
 use crate::tools;
+use crate::tools::common_crawl::CommonCrawl;
 use crate::tools::duckduckgo::DuckDuckGo;
 
 /// An inbound media attachment, base64-encoded for the multimodal API.
@@ -86,6 +87,7 @@ pub struct Agent {
     reporter: Arc<GitHubIssueReporter>,
     rate_limiter: tools::feature_request::RateLimiter,
     duckduckgo: DuckDuckGo,
+    common_crawl: CommonCrawl,
     mcp_servers: Vec<McpServer>,
     session_stats: tokio::sync::Mutex<HashMap<String, SessionStats>>,
 }
@@ -125,6 +127,7 @@ impl Agent {
             reporter: Arc::new(GitHubIssueReporter::default()),
             rate_limiter: tools::feature_request::RateLimiter::default(),
             duckduckgo: DuckDuckGo::from_env(),
+            common_crawl: CommonCrawl::default(),
             mcp_servers,
             session_stats: tokio::sync::Mutex::new(HashMap::new()),
         }
@@ -411,6 +414,7 @@ impl Agent {
         for def in [
             tools::duckduckgo::search_definition(),
             tools::duckduckgo::fetch_content_definition(),
+            tools::common_crawl::definition(),
             update_memory_tool(),
             run_skill_tool(),
             tools::feature_request::definition(),
@@ -451,6 +455,20 @@ impl Agent {
                         args.get("max_length")
                             .and_then(Value::as_u64)
                             .unwrap_or(8000) as usize,
+                    )
+                    .await,
+            ),
+            "common_crawl__search" => ToolOutcome::Text(
+                self.common_crawl
+                    .search(
+                        args.get("pattern").and_then(Value::as_str).unwrap_or(""),
+                        args.get("crawl").and_then(Value::as_str).unwrap_or(""),
+                        args.get("match_type")
+                            .and_then(Value::as_str)
+                            .unwrap_or("exact"),
+                        args.get("max_results")
+                            .and_then(Value::as_u64)
+                            .unwrap_or(10) as usize,
                     )
                     .await,
             ),
@@ -641,7 +659,7 @@ pub fn build_system_prompt(
         "You are a helpful house assistant bot in a Discord server. You help with media, web \
 search, and software development tasks.\n\nCurrent date/time: {now}\nCurrent user: {username} \
 (ID: {user_id}){memory_section}{personality_section}\n\n## Tools\n- ddg__* — Search the web via DuckDuckGo for current \
-information.\n- jellyfin__* — Query the household Jellyfin media server for movies, shows, music. \
+information.\n- common_crawl__search — Search historical URL captures in the Common Crawl index.\n- jellyfin__* — Query the household Jellyfin media server for movies, shows, music. \
 READ ONLY — only call get_* / search_* / list_* methods; never call mutating actions.\n- \
 Programming tasks are outside the bot's scope.\n- update_memory — Persist important facts about the current user for future \
 conversations. Write the full memory each time.\n- create_feature_request — File a GitHub issue \
@@ -649,7 +667,10 @@ for a feature the user wants added to this bot.\n- set_reminder — Set a timed 
 will DM the user when the delay elapses.\n- summarize_url — Fetch a public web URL and return a \
 concise summary.\n- translate — Translate text to any language using the LLM.{skills_section}\n\n\
 ## Guidelines\n- Be conversational and friendly.\n- Use Jellyfin tools for any media questions \
-before guessing.\n- Use DuckDuckGo for factual or current-events questions.\n- For ANY \
+before guessing.\n- Use DuckDuckGo for factual or current-events questions. If DuckDuckGo returns a rate-limit \
+error, stop using it for this request and do not retry it repeatedly; use \
+common_crawl__search for historical URL evidence when appropriate, or explain that the search \
+service is temporarily unavailable.\n- For ANY \
 Do not execute code or delegate coding tasks.\n- Update memory when you learn \
 something worth remembering.\n- Keep responses concise unless asked for detail.\n- If a user \
 requests a feature or improvement to this bot, immediately call create_feature_request with a \
@@ -751,6 +772,7 @@ impl Agent {
             )),
             rate_limiter: tools::feature_request::RateLimiter::default(),
             duckduckgo: DuckDuckGo::from_env(),
+            common_crawl: CommonCrawl::default(),
             mcp_servers: vec![],
             session_stats: tokio::sync::Mutex::new(HashMap::new()),
         }
@@ -1076,5 +1098,6 @@ mod tests {
         assert!(!names.contains(&"code_tool"));
         assert!(names.contains(&"translate"));
         assert!(names.contains(&"update_memory"));
+        assert!(names.contains(&"common_crawl__search"));
     }
 }
