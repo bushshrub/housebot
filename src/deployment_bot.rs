@@ -95,7 +95,8 @@ pub struct GitHubCommitDetails {
 
 #[derive(Clone, Debug, Deserialize)]
 struct GitHubComparison {
-    ahead_by: u32,
+    #[serde(default)]
+    commits: Vec<GitHubCommit>,
 }
 
 impl DeploymentBot {
@@ -179,11 +180,15 @@ impl DeploymentBot {
         Ok(request.send().await?.error_for_status()?.json().await?)
     }
 
-    async fn branch_ahead_by(&self, current_sha: &str) -> anyhow::Result<u32> {
+    async fn compare_commits(
+        &self,
+        current_sha: &str,
+        target_sha: &str,
+    ) -> anyhow::Result<Vec<GitHubCommit>> {
         let client = reqwest::Client::new();
         let url = format!(
             "https://api.github.com/repos/{}/compare/{}...{}",
-            self.github_repo, current_sha, self.github_branch
+            self.github_repo, current_sha, target_sha
         );
         let request = client
             .get(url)
@@ -199,7 +204,12 @@ impl DeploymentBot {
             .error_for_status()?
             .json::<GitHubComparison>()
             .await?
-            .ahead_by)
+            .commits)
+    }
+
+    async fn changelog(&self, current_sha: &str, target_sha: &str) -> anyhow::Result<String> {
+        let commits = self.compare_commits(current_sha, target_sha).await?;
+        Ok(deployment_changelog(current_sha, target_sha, &commits))
     }
 
     async fn current_running_sha(&self) -> anyhow::Result<String> {
@@ -218,7 +228,7 @@ impl DeploymentBot {
     async fn update_to_latest(&self) -> anyhow::Result<String> {
         let current_sha = self.current_running_sha().await?;
         let latest = self.latest_branch_commit().await?;
-        if latest.sha == current_sha || self.branch_ahead_by(&current_sha).await? == 0 {
+        if latest.sha == current_sha {
             return Ok(format!(
                 "✅ Already running the latest `{}` commit on `{}`.",
                 short_sha(&current_sha),
@@ -227,6 +237,7 @@ impl DeploymentBot {
         }
 
         let _deployment_guard = self.deployment_lock.lock().await;
+        let changelog = self.changelog(&current_sha, &latest.sha).await?;
         self.checkpoint_current_image().await?;
         let commands = deploy_commands(&latest.sha, &self.docker_network, &self.sandbox_timeout)?;
         for (index, command) in commands.iter().enumerate() {
@@ -245,10 +256,11 @@ impl DeploymentBot {
             );
         }
         Ok(format!(
-            "✅ Updated housebot from `{}` to latest `{}` on `{}`.",
+            "✅ Updated housebot from `{}` to latest `{}` on `{}`.\n\n{}",
             short_sha(&current_sha),
             short_sha(&latest.sha),
-            self.github_branch
+            self.github_branch,
+            changelog
         ))
     }
 }
@@ -386,6 +398,50 @@ pub fn commit_summary(selected: &GitHubCommit, recent: &[GitHubCommit]) -> Strin
             commit.html_url,
             message
         ));
+    }
+    text
+}
+
+pub fn deployment_changelog(
+    current_sha: &str,
+    target_sha: &str,
+    commits: &[GitHubCommit],
+) -> String {
+    if commits.is_empty() {
+        return format!(
+            "**Changelog**\n`{}` → `{}`\nNo commits found between these deployments.",
+            short_sha(current_sha),
+            short_sha(target_sha)
+        );
+    }
+
+    let mut text = format!(
+        "**Changelog since `{}`** ({} commit{})",
+        short_sha(current_sha),
+        commits.len(),
+        if commits.len() == 1 { "" } else { "s" }
+    );
+    for (shown, commit) in commits.iter().enumerate() {
+        let message = commit
+            .commit
+            .message
+            .lines()
+            .next()
+            .unwrap_or("No commit message");
+        let line = format!(
+            "\n• [`{}`]({}) — {}",
+            short_sha(&commit.sha),
+            commit.html_url,
+            message
+        );
+        if text.len() + line.len() > 1_800 {
+            text.push_str(&format!(
+                "\n• …and {} more commit(s)",
+                commits.len() - shown
+            ));
+            break;
+        }
+        text.push_str(&line);
     }
     text
 }
@@ -535,6 +591,19 @@ impl EventHandler for DeploymentBot {
                 tracing::error!("Could not save deployment checkpoint: {error}");
                 return;
             }
+            let changelog = match self.current_running_sha().await {
+                Ok(current_sha) => match self.changelog(&current_sha, &sha).await {
+                    Ok(changelog) => Some(changelog),
+                    Err(error) => {
+                        tracing::warn!(%error, "Could not build deployment changelog");
+                        None
+                    }
+                },
+                Err(error) => {
+                    tracing::warn!(%error, "Could not determine previous deployed commit");
+                    None
+                }
+            };
             let commands = match deploy_commands(&sha, &self.docker_network, &self.sandbox_timeout)
             {
                 Ok(commands) => commands,
@@ -578,6 +647,9 @@ impl EventHandler for DeploymentBot {
             }
             tracing::info!(sha, "Automatic deployment completed");
             *self.last_event.write().await = Some(event);
+            if let Some(changelog) = changelog {
+                let _ = message.channel_id.say(&ctx.http, changelog).await;
+            }
             let _ = message
                 .channel_id
                 .say(
@@ -715,21 +787,42 @@ impl EventHandler for DeploymentBot {
                 }
             };
             let response = match self.commits(sha).await {
-                Ok((selected, recent)) => CreateInteractionResponseMessage::new()
-                    .embed(
-                        CreateEmbed::new()
-                            .title("Confirm deployment")
-                            .description(commit_summary(&selected, &recent)),
-                    )
-                    .components(vec![CreateActionRow::Buttons(vec![
-                        CreateButton::new(format!("deploy_confirm:{}", selected.sha))
-                            .label("Confirm")
-                            .style(ButtonStyle::Success),
-                        CreateButton::new("deploy_deny")
-                            .label("Deny")
-                            .style(ButtonStyle::Danger),
-                    ])])
-                    .ephemeral(true),
+                Ok((selected, recent)) => {
+                    let description = match self.current_running_sha().await {
+                        Ok(current_sha) => {
+                            match self.changelog(&current_sha, &selected.sha).await {
+                                Ok(changelog) => format!(
+                                    "{}\n\n{}",
+                                    commit_summary(&selected, &recent),
+                                    changelog
+                                ),
+                                Err(error) => format!(
+                                    "{}\n\nChangelog unavailable: {error}",
+                                    commit_summary(&selected, &recent)
+                                ),
+                            }
+                        }
+                        Err(error) => format!(
+                            "{}\n\nChangelog unavailable: {error}",
+                            commit_summary(&selected, &recent)
+                        ),
+                    };
+                    CreateInteractionResponseMessage::new()
+                        .embed(
+                            CreateEmbed::new()
+                                .title("Confirm deployment")
+                                .description(description),
+                        )
+                        .components(vec![CreateActionRow::Buttons(vec![
+                            CreateButton::new(format!("deploy_confirm:{}", selected.sha))
+                                .label("Confirm")
+                                .style(ButtonStyle::Success),
+                            CreateButton::new("deploy_deny")
+                                .label("Deny")
+                                .style(ButtonStyle::Danger),
+                        ])])
+                        .ephemeral(true)
+                }
                 Err(error) => CreateInteractionResponseMessage::new()
                     .content(format!("Could not find that commit: {error}"))
                     .ephemeral(true),
@@ -1020,5 +1113,25 @@ mod tests {
         assert!(summary.contains("[`abcdef1`](https://github.com/example/repo/commit/abcdef1234)"));
         assert!(summary.contains("selected commit"));
         assert!(summary.contains("older"));
+    }
+
+    #[test]
+    fn deployment_changelog_lists_commits_since_previous_deployment() {
+        let commit = |sha: &str, message: &str| GitHubCommit {
+            sha: sha.into(),
+            html_url: format!("https://github.com/example/repo/commit/{sha}"),
+            commit: GitHubCommitDetails {
+                message: message.into(),
+            },
+        };
+        let changelog = deployment_changelog(
+            "1111111",
+            "3333333",
+            &[commit("2222222", "Add deployment visibility\nDetails")],
+        );
+        assert!(changelog.contains("since `1111111`"));
+        assert!(changelog.contains("1 commit"));
+        assert!(changelog.contains("Add deployment visibility"));
+        assert!(changelog.contains("https://github.com/example/repo/commit/2222222"));
     }
 }

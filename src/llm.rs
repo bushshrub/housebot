@@ -69,7 +69,7 @@ pub trait ChatClient: Send + Sync {
         model: &str,
         messages: &[Value],
         max_tokens: u32,
-    ) -> anyhow::Result<String>;
+    ) -> anyhow::Result<ChatCompletion>;
 }
 
 /// Real HTTP client against an OpenAI-compatible server.
@@ -155,6 +155,8 @@ struct FnDelta {
 #[derive(Deserialize)]
 struct OnceResponse {
     choices: Vec<OnceChoice>,
+    #[serde(default)]
+    usage: TokenUsage,
 }
 
 #[derive(Deserialize)]
@@ -323,7 +325,7 @@ impl ChatClient for OpenAiClient {
         model: &str,
         messages: &[Value],
         max_tokens: u32,
-    ) -> anyhow::Result<String> {
+    ) -> anyhow::Result<ChatCompletion> {
         let body = serde_json::json!({
             "model": model,
             "messages": messages,
@@ -339,12 +341,18 @@ impl ChatClient for OpenAiClient {
             .error_for_status()?
             .json::<OnceResponse>()
             .await?;
-        Ok(resp
+        let content = resp
             .choices
             .into_iter()
             .next()
             .and_then(|c| c.message.content)
-            .unwrap_or_default())
+            .unwrap_or_default();
+        Ok(ChatCompletion {
+            content: Some(content),
+            finish_reason: Some("stop".into()),
+            usage: resp.usage,
+            ..Default::default()
+        })
     }
 }
 

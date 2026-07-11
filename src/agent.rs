@@ -187,7 +187,7 @@ impl Agent {
              user's memory for future reference. Be brief — 3-8 bullets max.\n\nCONVERSATION:\n{truncated}"
         );
         hooks.on_progress("compact:45").await;
-        let summary = self
+        let completion = self
             .client
             .chat_once(
                 &self.model,
@@ -196,6 +196,8 @@ impl Agent {
             )
             .await
             .unwrap_or_default();
+        self.record_usage(user_id, completion.usage).await;
+        let summary = completion.content.unwrap_or_default();
 
         if !summary.trim().is_empty() {
             let now = Local::now().format("%Y-%m-%d %H:%M");
@@ -258,7 +260,7 @@ impl Agent {
         let mut all = self.session_stats.lock().await;
         let stats = all.entry(user_id.to_string()).or_default();
         stats.requests += 1;
-        stats.context_tokens = usage.prompt_tokens;
+        stats.context_tokens = usage.prompt_tokens + usage.completion_tokens;
         stats.input_tokens += usage.prompt_tokens;
         stats.output_tokens += usage.completion_tokens;
         stats.cached_tokens += usage.prompt_tokens_details.cached_tokens;
@@ -528,12 +530,12 @@ impl Agent {
                             json!({"role": "system", "content": skill.prompt}),
                             json!({"role": "user", "content": input}),
                         ];
-                        ToolOutcome::Text(
-                            self.client
-                                .chat_once(&self.model, &msgs, 4096)
-                                .await
-                                .unwrap_or_default(),
-                        )
+                        let completion = self
+                            .client
+                            .chat_once(&self.model, &msgs, 4096)
+                            .await
+                            .unwrap_or_default();
+                        ToolOutcome::Text(completion.content.unwrap_or_default())
                     }
                 }
             }
@@ -1019,6 +1021,40 @@ mod tests {
             .iter()
             .any(|m| m["content"].as_str() == Some(big.as_str())));
         assert_eq!(hist.last().unwrap()["content"], "ok");
+    }
+
+    #[tokio::test]
+    async fn compaction_records_summary_token_usage() {
+        let usage = TokenUsage {
+            prompt_tokens: 100,
+            completion_tokens: 50,
+            ..Default::default()
+        };
+        let client = Arc::new(
+            MockChatClient::new()
+                .with_once_reply("- Likes tea")
+                .with_once_usage(usage),
+        );
+        let (_t, agent) = test_agent(client);
+        agent
+            .history
+            .save(
+                "u6",
+                &[
+                    json!({"role": "user", "content": "I like tea"}),
+                    json!({"role": "assistant", "content": "Noted"}),
+                ],
+            )
+            .await
+            .unwrap();
+
+        agent.compact_session("u6").await;
+
+        let info = agent.session_info("u6").await;
+        assert_eq!(info.context_tokens, 150);
+        assert_eq!(info.requests, 1);
+        assert_eq!(info.input_tokens, 100);
+        assert_eq!(info.output_tokens, 50);
     }
 
     #[tokio::test]

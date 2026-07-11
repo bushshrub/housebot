@@ -9,13 +9,14 @@ use std::sync::Mutex;
 use async_trait::async_trait;
 use serde_json::Value;
 
-use crate::llm::{ChatClient, ChatCompletion, TextSink, ToolCall};
+use crate::llm::{ChatClient, ChatCompletion, TextSink, TokenUsage, ToolCall};
 
 /// A scriptable, recording [`ChatClient`] for tests.
 #[derive(Default)]
 pub struct MockChatClient {
     stream_script: Mutex<VecDeque<ChatCompletion>>,
     once_reply: Mutex<String>,
+    once_usage: Mutex<TokenUsage>,
     /// Messages passed to each `chat_stream` call, in order.
     pub stream_calls: Mutex<Vec<Vec<Value>>>,
     /// Messages passed to each `chat_once` call, in order.
@@ -31,6 +32,11 @@ impl MockChatClient {
     /// Set the canned reply returned by [`ChatClient::chat_once`].
     pub fn with_once_reply(self, reply: &str) -> Self {
         *self.once_reply.lock().unwrap() = reply.to_string();
+        self
+    }
+
+    pub fn with_once_usage(self, usage: TokenUsage) -> Self {
+        *self.once_usage.lock().unwrap() = usage;
         self
     }
 
@@ -102,9 +108,14 @@ impl ChatClient for MockChatClient {
         _model: &str,
         messages: &[Value],
         _max_tokens: u32,
-    ) -> anyhow::Result<String> {
+    ) -> anyhow::Result<ChatCompletion> {
         self.once_calls.lock().unwrap().push(messages.to_vec());
-        Ok(self.once_reply.lock().unwrap().clone())
+        Ok(ChatCompletion {
+            content: Some(self.once_reply.lock().unwrap().clone()),
+            finish_reason: Some("stop".into()),
+            usage: *self.once_usage.lock().unwrap(),
+            ..Default::default()
+        })
     }
 }
 

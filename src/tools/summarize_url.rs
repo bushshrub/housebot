@@ -51,7 +51,9 @@ pub async fn summarize_content(
     );
     let messages = vec![json!({"role": "user", "content": prompt})];
     match client.chat_once(model, &messages, 512).await {
-        Ok(out) if !out.is_empty() => out,
+        Ok(out) if out.content.as_deref().is_some_and(|text| !text.is_empty()) => {
+            out.content.unwrap_or_default()
+        }
         _ => "(no summary generated)".to_string(),
     }
 }

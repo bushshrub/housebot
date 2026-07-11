@@ -38,7 +38,9 @@ pub async fn translate_text(
 ) -> String {
     let messages = vec![json!({"role": "user", "content": build_prompt(text, target_language)})];
     match client.chat_once(model, &messages, 2048).await {
-        Ok(out) if !out.is_empty() => out,
+        Ok(out) if out.content.as_deref().is_some_and(|text| !text.is_empty()) => {
+            out.content.unwrap_or_default()
+        }
         _ => "(no translation generated)".to_string(),
     }
 }
