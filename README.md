@@ -36,6 +36,7 @@ See `.env.example` for all available options. Key variables:
 | `LLM_BASE_URL` / `LLM_MODEL` | OpenAI-compatible LLM endpoint (llama.cpp) |
 | `JELLYFIN_URL` + `JELLYFIN_API_KEY` | Enables Jellyfin MCP |
 | `GITHUB_*` | GitHub App credentials for issue filing |
+| `SENTRY_DSN` / `SENTRY_ENVIRONMENT` | Optional Sentry error reporting for the chatbot |
 
 ## Architecture
 
