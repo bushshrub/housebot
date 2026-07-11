@@ -241,11 +241,13 @@ jobs:
         env:
           WEBHOOK: ${{ secrets.DISCORD_DEPLOYMENT_WEBHOOK }}
           SHA: ${{ github.sha }}
+          COMMIT_MESSAGE: ${{ github.event.head_commit.message || 'Manual workflow dispatch' }}
           REPOSITORY: ${{ github.repository }}
           SERVER_URL: ${{ github.server_url }}
         run: |
           jq -n \
             --arg sha "$SHA" \
+            --arg message "$COMMIT_MESSAGE" \
             --arg url "$SERVER_URL/$REPOSITORY/commit/$SHA" \
-            '{embeds:[{title:"Build succeeded",color:3066993,fields:[{name:"Commit",value:("`"+$sha+"`")},{name:"Source",value:("[View commit]("+$url+")")}]}]}' \
+            '{embeds:[{title:"Build succeeded",color:3066993,fields:[{name:"Commit",value:("`"+$sha+"`")},{name:"Message",value:$message},{name:"Source",value:("[View commit]("+$url+")")}]}]}' \
             | curl --fail --silent --show-error -X POST "$WEBHOOK" -H "Content-Type: application/json" --data-binary @-
