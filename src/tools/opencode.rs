@@ -159,24 +159,23 @@ pub async fn run_opencode(
     let cfg = SandboxConfig::from_env();
 
     let uid = short_uid();
-    let container_workspace = PathBuf::from(&cfg.container_data_dir)
-        .join("workspaces")
-        .join(&uid);
-    if let Err(e) = std::fs::create_dir_all(&container_workspace) {
-        return err(format!("cannot create workspace: {e}"));
-    }
     let host_workspace = if cfg.host_data_dir.is_empty() {
-        container_workspace.clone()
+        PathBuf::from(&cfg.container_data_dir)
+            .join("workspaces")
+            .join(&uid)
     } else {
         PathBuf::from(&cfg.host_data_dir)
             .join("workspaces")
             .join(&uid)
     };
+    if let Err(e) = std::fs::create_dir_all(&host_workspace) {
+        return err(format!("cannot create workspace: {e}"));
+    }
 
     // Seed files.
     if let Some(files) = files {
         for (rel, content) in files {
-            let p = container_workspace.join(rel);
+            let p = host_workspace.join(rel);
             if let Some(parent) = p.parent() {
                 let _ = std::fs::create_dir_all(parent);
             }
@@ -226,7 +225,7 @@ pub async fn run_opencode(
     let output = match result {
         Ok((code, lines)) => {
             if code != 0 {
-                let _ = std::fs::remove_dir_all(&container_workspace);
+                let _ = std::fs::remove_dir_all(&host_workspace);
                 return err(format!(
                     "sandbox exited with code {code}.\n{}",
                     lines.trim()
@@ -240,17 +239,14 @@ pub async fn run_opencode(
                 .arg(&container_name)
                 .output()
                 .await;
-            let _ = std::fs::remove_dir_all(&container_workspace);
+            let _ = std::fs::remove_dir_all(&host_workspace);
             return err(format!("sandbox failed: {e}"));
         }
     };
 
-    let artifacts = collect_workspace_files(
-        &container_workspace,
-        &cfg.artifacts_dir,
-        cfg.max_artifact_mb,
-    );
-    let _ = std::fs::remove_dir_all(&container_workspace);
+    let artifacts =
+        collect_workspace_files(&host_workspace, &cfg.artifacts_dir, cfg.max_artifact_mb);
+    let _ = std::fs::remove_dir_all(&host_workspace);
 
     let content = {
         let t = output.trim();
