@@ -1,6 +1,7 @@
 //! Small Discord bot that observes deployment webhooks and offers owner-only deployment controls.
 
 use std::collections::HashMap;
+use std::fmt;
 use std::sync::Arc;
 
 use serde::Deserialize;
@@ -81,6 +82,105 @@ struct DeploymentBot {
     sandbox_timeout: String,
 }
 
+const HOUSE_CHATBOT_CONTAINER: &str = "house-chatbot";
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DeploymentStage {
+    PullHousebotImage,
+    PullSandboxImage,
+    RemovePreviousContainer,
+    StartRequestedImage,
+    CheckContainerState,
+}
+
+impl DeploymentStage {
+    pub fn progress_message(self) -> &'static str {
+        match self {
+            Self::PullHousebotImage => "⬇️ Pulling housebot image…",
+            Self::PullSandboxImage => "⬇️ Pulling sandbox image…",
+            Self::RemovePreviousContainer => "🛑 Removing the previous housebot container…",
+            Self::StartRequestedImage => "🚀 Starting the requested housebot image…",
+            Self::CheckContainerState => "🩺 Checking container state…",
+        }
+    }
+
+    fn is_start(self) -> bool {
+        self == Self::StartRequestedImage
+    }
+
+    fn is_health_check(self) -> bool {
+        self == Self::CheckContainerState
+    }
+}
+
+impl fmt::Display for DeploymentStage {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self {
+            Self::PullHousebotImage => "pull_housebot_image",
+            Self::PullSandboxImage => "pull_sandbox_image",
+            Self::RemovePreviousContainer => "remove_previous_container",
+            Self::StartRequestedImage => "start_requested_image",
+            Self::CheckContainerState => "check_container_state",
+        })
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DeploymentCommand {
+    pub stage: DeploymentStage,
+    pub args: Vec<String>,
+}
+
+impl DeploymentCommand {
+    fn new(stage: DeploymentStage, args: Vec<String>) -> Self {
+        Self { stage, args }
+    }
+
+    fn args(&self) -> Vec<&str> {
+        self.args.iter().map(String::as_str).collect()
+    }
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+struct DeploymentRunSummary {
+    container_name: String,
+    container_id: Option<String>,
+}
+
+impl DeploymentRunSummary {
+    fn completed_message(&self, sha: &str) -> String {
+        match &self.container_id {
+            Some(container_id) => format!(
+                "✅ Automatic deployment of `{}` completed. Container `{}` is running as `{}`.",
+                short_sha(sha),
+                self.container_name,
+                container_id
+            ),
+            None => format!(
+                "✅ Automatic deployment of `{}` completed. Container `{}` is running.",
+                short_sha(sha),
+                self.container_name
+            ),
+        }
+    }
+
+    fn manual_completed_message(&self, sha: &str) -> String {
+        match &self.container_id {
+            Some(container_id) => format!(
+                "✅ Deployment of `{}` completed. Container `{}` is running as `{}`.",
+                short_sha(sha),
+                self.container_name,
+                container_id
+            ),
+            None => format!(
+                "✅ Deployment of `{}` completed. Container `{}` is running.",
+                short_sha(sha),
+                self.container_name
+            ),
+        }
+    }
+}
+
 #[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
 pub struct GitHubCommit {
     pub sha: String,
@@ -115,10 +215,9 @@ impl DeploymentBot {
             housebot_env(),
         )?;
 
-        for (index, command) in commands.iter().enumerate() {
-            let args = command.iter().map(String::as_str).collect::<Vec<_>>();
-            let output = run_docker(&args).await?;
-            if index == commands.len() - 1 && output != "true" {
+        for command in &commands {
+            let output = run_docker(&command.args()).await?;
+            if command.stage.is_health_check() && output != "true" {
                 anyhow::bail!("house-chatbot is not running after rollback");
             }
         }
@@ -126,7 +225,12 @@ impl DeploymentBot {
     }
 
     async fn checkpoint_current_image(&self) -> anyhow::Result<()> {
-        let image = run_docker(&["inspect", "--format={{.Config.Image}}", "house-chatbot"]).await;
+        let image = run_docker(&[
+            "inspect",
+            "--format={{.Config.Image}}",
+            HOUSE_CHATBOT_CONTAINER,
+        ])
+        .await;
         if let Ok(image) = image {
             if valid_housebot_image(&image) {
                 *self.previous_image.write().await = Some(image);
@@ -273,7 +377,7 @@ pub fn deploy_commands(
     sha: &str,
     docker_network: &str,
     sandbox_timeout: &str,
-) -> anyhow::Result<Vec<Vec<String>>> {
+) -> anyhow::Result<Vec<DeploymentCommand>> {
     if !valid_sha(sha) {
         anyhow::bail!("SHA must contain 7 to 40 hexadecimal characters");
     }
@@ -298,7 +402,7 @@ pub fn container_commands(
     sandbox_image: &str,
     docker_network: &str,
     sandbox_timeout: &str,
-) -> anyhow::Result<Vec<Vec<String>>> {
+) -> anyhow::Result<Vec<DeploymentCommand>> {
     container_commands_with_env(
         image,
         sandbox_image,
@@ -314,7 +418,7 @@ fn container_commands_with_env(
     docker_network: &str,
     sandbox_timeout: &str,
     environment: Vec<(String, String)>,
-) -> anyhow::Result<Vec<Vec<String>>> {
+) -> anyhow::Result<Vec<DeploymentCommand>> {
     if !valid_housebot_image(image) {
         anyhow::bail!("invalid housebot deployment image");
     }
@@ -322,7 +426,7 @@ fn container_commands_with_env(
         "run".into(),
         "--detach".into(),
         "--name".into(),
-        "house-chatbot".into(),
+        HOUSE_CHATBOT_CONTAINER.into(),
         "--restart".into(),
         "unless-stopped".into(),
         "--network".into(),
@@ -346,26 +450,36 @@ fn container_commands_with_env(
         image.into(),
     ]);
     Ok(vec![
-        vec!["pull".into(), image.into()],
-        vec!["pull".into(), sandbox_image.into()],
-        vec!["rm".into(), "--force".into(), "house-chatbot".into()],
-        run,
-        vec![
-            "inspect".into(),
-            "--format={{.State.Running}}".into(),
-            "house-chatbot".into(),
-        ],
+        DeploymentCommand::new(
+            DeploymentStage::PullHousebotImage,
+            vec!["pull".into(), image.into()],
+        ),
+        DeploymentCommand::new(
+            DeploymentStage::PullSandboxImage,
+            vec!["pull".into(), sandbox_image.into()],
+        ),
+        DeploymentCommand::new(
+            DeploymentStage::RemovePreviousContainer,
+            vec![
+                "rm".into(),
+                "--force".into(),
+                HOUSE_CHATBOT_CONTAINER.into(),
+            ],
+        ),
+        DeploymentCommand::new(DeploymentStage::StartRequestedImage, run),
+        DeploymentCommand::new(
+            DeploymentStage::CheckContainerState,
+            vec![
+                "inspect".into(),
+                "--format={{.State.Running}}".into(),
+                HOUSE_CHATBOT_CONTAINER.into(),
+            ],
+        ),
     ])
 }
 
-pub fn deploy_progress(index: usize) -> &'static str {
-    match index {
-        0 => "⬇️ Pulling housebot image…",
-        1 => "⬇️ Pulling sandbox image…",
-        2 => "🛑 Removing the previous housebot container…",
-        3 => "🚀 Starting the requested housebot image…",
-        _ => "🩺 Checking container state…",
-    }
+pub fn deploy_progress(stage: DeploymentStage) -> &'static str {
+    stage.progress_message()
 }
 
 pub fn commit_summary(selected: &GitHubCommit, recent: &[GitHubCommit]) -> String {
@@ -612,53 +726,53 @@ impl EventHandler for DeploymentBot {
                     return;
                 }
             };
-            for (index, command) in commands.iter().enumerate() {
+            let mut summary = DeploymentRunSummary {
+                container_name: HOUSE_CHATBOT_CONTAINER.into(),
+                container_id: None,
+            };
+            for command in &commands {
                 tracing::info!(
-                    stage = deploy_progress(index),
+                    stage = %command.stage,
                     "Automatic deployment progress"
                 );
                 let _ = message
                     .channel_id
-                    .say(&ctx.http, deploy_progress(index))
+                    .say(&ctx.http, command.stage.progress_message())
                     .await;
-                let args = command.iter().map(String::as_str).collect::<Vec<_>>();
-                match run_docker(&args).await {
-                    Ok(output) if index == commands.len() - 1 && output != "true" => {
+                match run_docker(&command.args()).await {
+                    Ok(output) if command.stage.is_health_check() && output != "true" => {
                         tracing::error!(
-                            stage = deploy_progress(index),
+                            stage = %command.stage,
                             "Automatic deployment stage failed: house-chatbot is not running"
                         );
                         return;
                     }
-                    Ok(_) => {
+                    Ok(output) => {
+                        if command.stage.is_start() {
+                            summary.container_id = Some(output);
+                        }
                         tracing::info!(
-                            stage = deploy_progress(index),
+                            stage = %command.stage,
                             "Automatic deployment stage completed"
                         );
                     }
                     Err(error) => {
                         tracing::error!(
-                            stage = deploy_progress(index),
+                            stage = %command.stage,
                             "Automatic deployment stage failed: {error}"
                         );
                         return;
                     }
                 }
             }
-            tracing::info!(sha, "Automatic deployment completed");
+            tracing::info!(sha, container = %summary.container_name, container_id = ?summary.container_id, "Automatic deployment completed");
             *self.last_event.write().await = Some(event);
             if let Some(changelog) = changelog {
                 let _ = message.channel_id.say(&ctx.http, changelog).await;
             }
             let _ = message
                 .channel_id
-                .say(
-                    &ctx.http,
-                    format!(
-                        "✅ Automatic deployment of `{}` completed.",
-                        short_sha(&sha)
-                    ),
-                )
+                .say(&ctx.http, summary.completed_message(&sha))
                 .await;
         }
     }
@@ -708,47 +822,54 @@ impl EventHandler for DeploymentBot {
                 let _deployment_guard = self.deployment_lock.lock().await;
                 self.checkpoint_current_image().await?;
                 let commands = commands?;
-                for (index, command) in commands.iter().enumerate() {
+                let mut summary = DeploymentRunSummary {
+                    container_name: HOUSE_CHATBOT_CONTAINER.into(),
+                    container_id: None,
+                };
+                for command in &commands {
                     tracing::info!(
-                        stage = deploy_progress(index),
+                        stage = %command.stage,
                         "Manual deployment stage started"
                     );
                     component
                         .edit_response(
                             &ctx.http,
-                            EditInteractionResponse::new().content(deploy_progress(index)),
+                            EditInteractionResponse::new()
+                                .content(command.stage.progress_message()),
                         )
                         .await?;
-                    let args = command.iter().map(String::as_str).collect::<Vec<_>>();
-                    let output = match run_docker(&args).await {
+                    let output = match run_docker(&command.args()).await {
                         Ok(output) => output,
                         Err(error) => {
                             tracing::error!(
-                                stage = deploy_progress(index),
+                                stage = %command.stage,
                                 "Manual deployment stage failed: {error}"
                             );
                             return Err(error);
                         }
                     };
-                    if index == commands.len() - 1 && output != "true" {
+                    if command.stage.is_health_check() && output != "true" {
                         anyhow::bail!(
                             "deployment stage `{}` failed: house-chatbot is not running",
-                            deploy_progress(index)
+                            command.stage
                         );
                     }
+                    if command.stage.is_start() {
+                        summary.container_id = Some(output);
+                    }
                     tracing::info!(
-                        stage = deploy_progress(index),
+                        stage = %command.stage,
                         "Manual deployment stage completed"
                     );
                 }
-                anyhow::Ok(())
+                anyhow::Ok(summary)
             }
             .await;
             if let Err(error) = &result {
                 tracing::error!("Manual deployment failed: {error}");
             }
             let content = match result {
-                Ok(()) => format!("✅ Deployment of `{}` completed.", short_sha(sha)),
+                Ok(summary) => summary.manual_completed_message(sha),
                 Err(error) => format!("❌ Deployment failed: {error}"),
             };
             let _ = component
@@ -946,10 +1067,10 @@ async fn shutdown_signal() {
 
 async fn shutdown_main_bot() {
     tracing::info!("Stopping main house-chatbot container");
-    if let Err(error) = run_docker(&["stop", "--time", "10", "house-chatbot"]).await {
+    if let Err(error) = run_docker(&["stop", "--time", "10", HOUSE_CHATBOT_CONTAINER]).await {
         tracing::warn!("Could not stop main house-chatbot container: {error}");
     }
-    if let Err(error) = run_docker(&["rm", "--force", "house-chatbot"]).await {
+    if let Err(error) = run_docker(&["rm", "--force", HOUSE_CHATBOT_CONTAINER]).await {
         tracing::warn!("Could not remove main house-chatbot container: {error}");
     }
     tracing::info!("Main house-chatbot container stopped");
@@ -1063,8 +1184,10 @@ mod tests {
         let digest = "ghcr.io/bushshrub/housebot@sha256:abc123";
         let commands = container_commands(digest, "sandbox", "network", "300").unwrap();
         assert_eq!(commands.len(), 5);
-        assert_eq!(commands[0], vec!["pull", digest]);
-        assert_eq!(commands[3].last().unwrap(), digest);
+        assert_eq!(commands[0].stage, DeploymentStage::PullHousebotImage);
+        assert_eq!(commands[0].args, vec!["pull", digest]);
+        assert_eq!(commands[3].stage, DeploymentStage::StartRequestedImage);
+        assert_eq!(commands[3].args.last().unwrap(), digest);
     }
 
     #[test]
@@ -1090,10 +1213,36 @@ mod tests {
     fn deploy_plan_is_sha_scoped_and_rejects_injection() {
         let commands = deploy_commands("abcdef123456", "network", "300").unwrap();
         assert_eq!(commands.len(), 5);
-        assert!(commands[0][1].ends_with(":sha-abcdef123456"));
-        assert!(!commands[3].contains(&"/deployment".to_string()));
+        assert_eq!(
+            commands
+                .iter()
+                .map(|command| command.stage)
+                .collect::<Vec<_>>(),
+            vec![
+                DeploymentStage::PullHousebotImage,
+                DeploymentStage::PullSandboxImage,
+                DeploymentStage::RemovePreviousContainer,
+                DeploymentStage::StartRequestedImage,
+                DeploymentStage::CheckContainerState,
+            ]
+        );
+        assert!(commands[0].args[1].ends_with(":sha-abcdef123456"));
+        assert!(!commands[3].args.contains(&"/deployment".to_string()));
         assert!(deploy_commands("latest", "network", "300").is_err());
         assert!(deploy_commands("abcdef;reboot", "network", "300").is_err());
+    }
+
+    #[test]
+    fn completed_deployment_message_includes_container_name_and_id() {
+        let summary = DeploymentRunSummary {
+            container_name: HOUSE_CHATBOT_CONTAINER.into(),
+            container_id: Some("abc123def456".into()),
+        };
+
+        let message = summary.completed_message("abcdef123456");
+
+        assert!(message.contains("Container `house-chatbot`"));
+        assert!(message.contains("`abc123def456`"));
     }
 
     #[test]
