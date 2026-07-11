@@ -229,13 +229,8 @@ impl Agent {
             .get(user_id)
             .copied()
             .unwrap_or_default();
-        let context_tokens = if stats.context_tokens == 0 {
-            estimated_context_tokens(&history)
-        } else {
-            stats.context_tokens as usize
-        };
         SessionInfo {
-            context_tokens,
+            context_tokens: stats.context_tokens as usize,
             context_window_tokens,
             messages: history.len(),
             requests: stats.requests,
@@ -243,6 +238,14 @@ impl Agent {
             output_tokens: stats.output_tokens,
             cached_tokens: stats.cached_tokens,
         }
+    }
+
+    async fn last_context_tokens(&self, user_id: &str) -> u64 {
+        self.session_stats
+            .lock()
+            .await
+            .get(user_id)
+            .map_or(0, |stats| stats.context_tokens)
     }
 
     async fn record_usage(&self, user_id: &str, usage: TokenUsage) {
@@ -272,10 +275,9 @@ impl Agent {
         let mut session_notice = None;
         let new_user_message = build_user_message(text, image_data);
 
-        let projected_tokens = estimated_context_tokens(&past)
-            + estimated_context_tokens(std::slice::from_ref(&new_user_message));
-        let usage = projected_tokens as f64 / self.context_window_tokens.max(1) as f64;
-        if !past.is_empty() && usage >= 0.8 {
+        let previous_usage = self.last_context_tokens(user_id).await as f64
+            / self.context_window_tokens.max(1) as f64;
+        if !past.is_empty() && previous_usage >= 0.8 {
             tracing::info!("Context at 80% for {user_id} — auto-compacting session");
             self.compact_session_with_hooks(user_id, hooks).await;
             past.clear();
@@ -284,11 +286,6 @@ impl Agent {
                 "⚠️ The context window reached 80%, so I compacted the conversation and started a new session."
                     .into(),
             );
-        } else if usage >= 0.7 {
-            session_notice = Some(format!(
-                "⚠️ The context window is {:.0}% full. It will compact automatically at 80%.",
-                usage * 100.0
-            ));
         }
 
         let all_skills = self.skills.load_all().await;
@@ -318,7 +315,20 @@ impl Agent {
                     break "Sorry, something went wrong contacting the model.".to_string();
                 }
             };
+            let context_tokens =
+                completion.usage.prompt_tokens + completion.usage.completion_tokens;
             self.record_usage(user_id, completion.usage).await;
+            let usage = context_tokens as f64 / self.context_window_tokens.max(1) as f64;
+            if usage >= 0.7 {
+                session_notice = Some(if usage >= 0.8 {
+                    "⚠️ The context window reached 80% based on the model's reported usage. It will be compacted automatically before the next message.".into()
+                } else {
+                    format!(
+                        "⚠️ The context window is {:.0}% full based on the model's reported usage. It will compact automatically at 80%.",
+                        usage * 100.0
+                    )
+                });
+            }
 
             let mut assistant = json!({ "role": "assistant", "content": completion.content });
             if !completion.tool_calls.is_empty() {
@@ -556,18 +566,6 @@ async fn start_mcp_servers() -> Vec<McpServer> {
 }
 
 // ── pure helpers ─────────────────────────────────────────────────────────────
-
-fn estimated_context_tokens(messages: &[Value]) -> usize {
-    messages
-        .iter()
-        .map(|m| match m.get("content") {
-            Some(Value::String(s)) => s.len(),
-            Some(other) => other.to_string().len(),
-            None => 0,
-        })
-        .sum::<usize>()
-        / 4
-}
 
 fn build_user_message(text: &str, image_data: &[ImageData]) -> Value {
     if image_data.is_empty() {
@@ -850,12 +848,6 @@ mod tests {
         assert_eq!(m["content"][1]["text"], "look");
     }
 
-    #[test]
-    fn estimated_context_tokens_counts_string_content() {
-        let msgs = vec![json!({"role": "user", "content": "hello"})];
-        assert_eq!(estimated_context_tokens(&msgs), 1);
-    }
-
     fn test_agent(client: Arc<dyn ChatClient>) -> (TempDir, Agent) {
         let tmp = TempDir::new().unwrap();
         let agent = Agent::for_test(
@@ -939,7 +931,15 @@ mod tests {
     #[tokio::test]
     async fn context_overflow_triggers_new_session() {
         let client = Arc::new(MockChatClient::new());
-        client.push_text("ok");
+        client.push_text_with_usage(
+            "ok",
+            TokenUsage {
+                prompt_tokens: 40,
+                completion_tokens: 10,
+                ..Default::default()
+            },
+        );
+        client.push_text("ok again");
         let tmp = TempDir::new().unwrap();
         let mut agent = Agent::for_test(
             client,
@@ -963,13 +963,14 @@ mod tests {
             .unwrap();
 
         agent.run("u5", "Ed", "hi again", &[], &NoHooks, None).await;
+        agent.run("u5", "Ed", "one more", &[], &NoHooks, None).await;
 
         // The oversized message must have been summarized away; only the new turn remains.
         let hist = agent.history.load("u5").await;
         assert!(!hist
             .iter()
             .any(|m| m["content"].as_str() == Some(big.as_str())));
-        assert_eq!(hist.last().unwrap()["content"], "ok");
+        assert_eq!(hist.last().unwrap()["content"], "ok again");
     }
 
     #[tokio::test]

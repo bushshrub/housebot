@@ -42,15 +42,25 @@ impl MockChatClient {
 
     /// Queue a streamed completion that emits `text` and finishes with `stop`.
     pub fn push_text(&self, text: &str) {
-        self.stream_script
-            .lock()
-            .unwrap()
-            .push_back(ChatCompletion {
-                content: Some(text.to_string()),
-                tool_calls: vec![],
-                finish_reason: Some("stop".into()),
-                usage: Default::default(),
-            });
+        self.push_completion(ChatCompletion {
+            content: Some(text.to_string()),
+            tool_calls: vec![],
+            finish_reason: Some("stop".into()),
+            usage: Default::default(),
+        });
+    }
+
+    pub fn push_text_with_usage(&self, text: &str, usage: TokenUsage) {
+        self.push_completion(ChatCompletion {
+            content: Some(text.to_string()),
+            tool_calls: vec![],
+            finish_reason: Some("stop".into()),
+            usage,
+        });
+    }
+
+    fn push_completion(&self, completion: ChatCompletion) {
+        self.stream_script.lock().unwrap().push_back(completion);
     }
 
     /// Queue a streamed completion requesting a single tool call.
