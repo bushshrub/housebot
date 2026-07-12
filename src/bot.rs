@@ -26,10 +26,11 @@ pub use crate::bot_response::SecretRedactor;
 use crate::config;
 use crate::history::History;
 use crate::memory::Memory;
+use crate::message_log::MessageLog;
 use crate::notes::Notes;
 use crate::skills::Skills;
 
-pub use crate::bot_commands::{note_command, skill_command, stats_command};
+pub use crate::bot_commands::{erase_data_command, note_command, skill_command, stats_command};
 use crate::bot_formatting::append_tool_summary;
 pub use crate::bot_formatting::{extract_code_files, lang_ext, split_text, tool_hint};
 
@@ -190,6 +191,7 @@ pub struct HouseBot {
     skills: Skills,
     memory: Memory,
     history: History,
+    message_log: MessageLog,
     server_cfg: ServerConfigStore,
     user_cfg: UserConfigStore,
     conversations: Mutex<ConversationTracker>,
@@ -210,6 +212,7 @@ impl HouseBot {
             skills: Skills::default(),
             memory: Memory::default(),
             history: History::default(),
+            message_log: MessageLog::default(),
             server_cfg: ServerConfigStore::default(),
             user_cfg: UserConfigStore::default(),
             conversations: Mutex::new(ConversationTracker::new(idle)),
@@ -812,6 +815,20 @@ impl EventHandler for HouseBot {
             self.respond(&ctx, &msg, &reply).await;
             return;
         }
+        if content == "!erase_my_data" {
+            let reply = erase_data_command(
+                &self.message_log,
+                &self.history,
+                &self.memory,
+                &self.notes,
+                user_id,
+            )
+            .await;
+            self.agent.reset_session(&user_id.to_string()).await;
+            self.conversations.lock().await.remove(channel_id, user_id);
+            self.respond(&ctx, &msg, &reply).await;
+            return;
+        }
         // ── routing ──
         let bot_id = ctx.cache.current_user().id;
         let is_dm = msg.guild_id.is_none();
@@ -928,6 +945,9 @@ impl HouseBot {
         } else {
             text
         };
+        self.message_log
+            .append(msg.author.id.get().to_string(), &user_text)
+            .await;
         let result: AgentResult = self
             .agent
             .run(

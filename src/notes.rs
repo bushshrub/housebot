@@ -68,6 +68,15 @@ impl Notes {
         self.load_all(user_id).await.get(name).cloned()
     }
 
+    /// Delete all notes for a user (no-op when no file exists).
+    pub async fn clear(&self, user_id: impl std::fmt::Display) -> std::io::Result<()> {
+        match tokio::fs::remove_file(self.path(user_id)).await {
+            Ok(()) => Ok(()),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(e) => Err(e),
+        }
+    }
+
     /// Delete a note, returning whether it existed.
     pub async fn delete(
         &self,

@@ -32,6 +32,15 @@ impl Memory {
         tokio::fs::read_to_string(&path).await.unwrap_or_default()
     }
 
+    /// Delete a user's memory file (no-op when it does not exist).
+    pub async fn clear(&self, user_id: impl std::fmt::Display) -> std::io::Result<()> {
+        match tokio::fs::remove_file(self.path(user_id)).await {
+            Ok(()) => Ok(()),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(e) => Err(e),
+        }
+    }
+
     /// Overwrite a user's memory with `content`.
     pub async fn save(
         &self,

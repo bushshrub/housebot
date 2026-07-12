@@ -16,6 +16,7 @@ pub mod history;
 pub mod llm;
 pub mod mcp;
 pub mod memory;
+pub mod message_log;
 pub mod notes;
 pub mod reminders;
 pub mod skills;

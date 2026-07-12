@@ -2,6 +2,7 @@
 
 use crate::history::History;
 use crate::memory::Memory;
+use crate::message_log::MessageLog;
 use crate::notes::Notes;
 use crate::skills::{Skill, Skills};
 
@@ -165,6 +166,25 @@ pub async fn note_command(notes: &Notes, first_line: &str, rest: &str, author_id
         }
         other => format!("Unknown subcommand `{other}`. Options: `list`, `save`, `get`, `delete`"),
     }
+}
+
+/// Erase all stored data for the requesting user: message log, history, memory, and notes.
+pub async fn erase_data_command(
+    message_log: &MessageLog,
+    history: &History,
+    memory: &Memory,
+    notes: &Notes,
+    user_id: u64,
+) -> String {
+    let log_result = message_log.clear(user_id.to_string()).await;
+    let history_result = history.clear(user_id.to_string()).await;
+    let memory_result = memory.clear(user_id.to_string()).await;
+    let notes_result = notes.clear(user_id.to_string()).await;
+
+    if log_result.is_err() || history_result.is_err() || memory_result.is_err() || notes_result.is_err() {
+        return "⚠️ Some data could not be erased. Please try again or contact an admin.".into();
+    }
+    "✅ All your stored data has been erased (message log, conversation history, memory, and notes). Your active session will also be cleared on next conversation start.".into()
 }
 
 pub async fn stats_command(
