@@ -75,6 +75,8 @@ data/                # runtime — gitignored
 | `MAX_HISTORY_TURNS` | no | `30` | Conversation turn pairs kept |
 | `MAX_CONTEXT_CHARS` | no | `40000` | Char budget before auto-summarizing a session |
 | `CONVERSATION_IDLE_TIMEOUT` | no | `300` | Seconds a channel conversation stays "active" |
+| `CHAT_RATE_LIMIT_MAX` | no | `20` | Max chat messages per user per window |
+| `CHAT_RATE_LIMIT_WINDOW_SECS` | no | `60` | Sliding window size for chat rate limiting (seconds) |
 | `JELLYFIN_URL` + `JELLYFIN_API_KEY` | no | — | Enables Jellyfin MCP server |
 | `SANDBOX_IMAGE` | no | `house-chatbot-sandbox:latest` | Docker image for coding sandboxes |
 | `DOCKER_NETWORK` | no | `house-chatbot_default` | Network sandboxes join |

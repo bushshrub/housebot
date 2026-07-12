@@ -28,6 +28,7 @@ use crate::history::History;
 use crate::memory::Memory;
 use crate::message_log::MessageLog;
 use crate::notes::Notes;
+use crate::rate_limit::RateLimiter;
 use crate::skills::Skills;
 
 pub use crate::bot_commands::{erase_data_command, note_command, skill_command, stats_command};
@@ -199,12 +200,16 @@ pub struct HouseBot {
     responded: Mutex<VecDeque<u64>>,
     paginated: Mutex<HashMap<String, PaginatedResponse>>,
     reminder_started: AtomicBool,
+    chat_rate_limiter: RateLimiter,
 }
 
 impl HouseBot {
     /// Build the bot from environment configuration.
     pub fn new(agent: Arc<Agent>) -> Self {
         let idle = Duration::from_secs(config::env_parse("CONVERSATION_IDLE_TIMEOUT", 300));
+        let chat_rate_max: usize = config::env_parse("CHAT_RATE_LIMIT_MAX", 20);
+        let chat_rate_window =
+            Duration::from_secs(config::env_parse("CHAT_RATE_LIMIT_WINDOW_SECS", 60u64));
         Self {
             agent,
             redactor: Arc::new(SecretRedactor::from_env()),
@@ -220,6 +225,7 @@ impl HouseBot {
             responded: Mutex::new(VecDeque::with_capacity(200)),
             paginated: Mutex::new(HashMap::new()),
             reminder_started: AtomicBool::new(false),
+            chat_rate_limiter: RateLimiter::new(chat_rate_max, chat_rate_window),
         }
     }
 
@@ -919,6 +925,19 @@ impl HouseBot {
             None => text,
         };
         if text.is_empty() && !message_has_supported_media(msg) {
+            return;
+        }
+
+        if self
+            .chat_rate_limiter
+            .check(&msg.author.id.get().to_string())
+        {
+            tracing::warn!(
+                target: "housebot::rate_limit",
+                user_id = msg.author.id.get(),
+                "Chat rate limit exceeded"
+            );
+            self.respond(ctx, msg, "⏱️ You're sending messages too quickly. Please slow down and try again in a moment.").await;
             return;
         }
 

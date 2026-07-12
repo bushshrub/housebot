@@ -1,13 +1,12 @@
 //! Tool for creating GitHub feature-request issues, with per-user rate limiting.
 
-use std::collections::HashMap;
-use std::sync::Mutex;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use chrono::Utc;
 use serde_json::{json, Value};
 
 use crate::github_issues::GitHubIssueReporter;
+use crate::rate_limit::RateLimiter;
 
 const RATE_LIMIT_MAX_REQUESTS: usize = 3;
 const RATE_LIMIT_WINDOW: Duration = Duration::from_secs(600); // 10 minutes
@@ -30,43 +29,8 @@ pub fn definition() -> Value {
     })
 }
 
-/// Sliding-window per-user rate limiter.
-pub struct RateLimiter {
-    max: usize,
-    window: Duration,
-    hits: Mutex<HashMap<String, Vec<Instant>>>,
-}
-
-impl Default for RateLimiter {
-    fn default() -> Self {
-        Self::new(RATE_LIMIT_MAX_REQUESTS, RATE_LIMIT_WINDOW)
-    }
-}
-
-impl RateLimiter {
-    pub fn new(max: usize, window: Duration) -> Self {
-        Self {
-            max,
-            window,
-            hits: Mutex::new(HashMap::new()),
-        }
-    }
-
-    /// Record an attempt; return `true` when the user is now over the limit (attempt rejected).
-    pub fn check(&self, user: &str) -> bool {
-        self.check_at(user, Instant::now())
-    }
-
-    fn check_at(&self, user: &str, now: Instant) -> bool {
-        let mut hits = self.hits.lock().unwrap();
-        let entry = hits.entry(user.to_string()).or_default();
-        entry.retain(|t| now.duration_since(*t) < self.window);
-        if entry.len() >= self.max {
-            return true;
-        }
-        entry.push(now);
-        false
-    }
+pub fn default_rate_limiter() -> RateLimiter {
+    RateLimiter::new(RATE_LIMIT_MAX_REQUESTS, RATE_LIMIT_WINDOW)
 }
 
 /// Build the issue body for a feature request.
@@ -109,31 +73,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn rate_limiter_allows_up_to_max() {
-        let rl = RateLimiter::new(3, Duration::from_secs(600));
-        assert!(!rl.check("u"));
-        assert!(!rl.check("u"));
-        assert!(!rl.check("u"));
-        assert!(rl.check("u")); // 4th is limited
-    }
-
-    #[test]
-    fn rate_limiter_is_per_user() {
-        let rl = RateLimiter::new(1, Duration::from_secs(600));
-        assert!(!rl.check("a"));
-        assert!(!rl.check("b"));
-        assert!(rl.check("a"));
-    }
-
-    #[test]
-    fn rate_limiter_forgets_old_hits() {
-        let rl = RateLimiter::new(1, Duration::from_millis(0));
-        assert!(!rl.check("u"));
-        // Window is zero, so the previous hit is immediately stale.
-        assert!(!rl.check("u"));
-    }
-
-    #[test]
     fn build_body_includes_requester_and_description() {
         let body = build_body("Add dark mode", "user42");
         assert!(body.contains("user42"));
@@ -145,7 +84,7 @@ mod tests {
     async fn unconfigured_reporter_returns_error() {
         let reporter =
             GitHubIssueReporter::new(String::new(), String::new(), String::new(), String::new());
-        let rl = RateLimiter::default();
+        let rl = default_rate_limiter();
         let out = create_feature_request(&reporter, &rl, "t", "d", "u").await;
         assert!(out.starts_with("Error:"));
         assert!(out.contains("not configured"));
