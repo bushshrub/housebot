@@ -747,7 +747,6 @@ dependencies = [
  "common-crawl",
  "futures-util",
  "jsonwebtoken",
- "once_cell",
  "regex",
  "reqwest",
  "sentry",

@@ -7,6 +7,7 @@ use serde::{Deserialize, Serialize};
 use tokio::fs;
 
 use crate::config::data_dir;
+use crate::llm::ThinkingMode;
 
 // ── server config ─────────────────────────────────────────────────────────────
 
@@ -92,6 +93,9 @@ pub struct UserConfig {
     /// Whether LLM responses are rendered as paginated embeds.
     #[serde(default)]
     pub labs_pagination_enabled: bool,
+    /// Reasoning budget used for this user's requests (set with `/effort`).
+    #[serde(default)]
+    pub thinking_mode: ThinkingMode,
 }
 
 fn default_followup_timeout() -> u64 {
@@ -105,6 +109,7 @@ impl Default for UserConfig {
             followup_enabled: false,
             followup_timeout_secs: default_followup_timeout(),
             labs_pagination_enabled: false,
+            thinking_mode: ThinkingMode::default(),
         }
     }
 }
@@ -161,5 +166,23 @@ mod tests {
             serde_json::from_str(r#"{"personality":null,"followup_timeout_secs":300}"#).unwrap();
         assert!(!config.labs_pagination_enabled);
         assert!(!config.followup_enabled);
+    }
+
+    #[test]
+    fn old_user_config_defaults_thinking_mode_to_medium() {
+        let config: UserConfig =
+            serde_json::from_str(r#"{"personality":null,"followup_timeout_secs":300}"#).unwrap();
+        assert_eq!(config.thinking_mode, ThinkingMode::Medium);
+    }
+
+    #[test]
+    fn thinking_mode_persists_through_serde() {
+        let config = UserConfig {
+            thinking_mode: ThinkingMode::XHigh,
+            ..UserConfig::default()
+        };
+        let json = serde_json::to_string(&config).unwrap();
+        let restored: UserConfig = serde_json::from_str(&json).unwrap();
+        assert_eq!(restored.thinking_mode, ThinkingMode::XHigh);
     }
 }

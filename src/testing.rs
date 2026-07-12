@@ -9,7 +9,7 @@ use std::sync::Mutex;
 use async_trait::async_trait;
 use serde_json::Value;
 
-use crate::llm::{ChatClient, ChatCompletion, TextSink, TokenUsage, ToolCall};
+use crate::llm::{ChatClient, ChatCompletion, TextSink, ThinkingMode, TokenUsage, ToolCall};
 
 /// A scriptable, recording [`ChatClient`] for tests.
 #[derive(Default)]
@@ -92,7 +92,7 @@ impl ChatClient for MockChatClient {
         _model: &str,
         messages: &[Value],
         _tools: &[Value],
-        _max_tokens: u32,
+        _thinking: ThinkingMode,
         sink: Option<&dyn TextSink>,
     ) -> anyhow::Result<ChatCompletion> {
         self.stream_calls.lock().unwrap().push(messages.to_vec());
