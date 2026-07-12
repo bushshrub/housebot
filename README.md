@@ -58,7 +58,7 @@ The crate is split into small, individually unit-tested modules:
 src/
   main.rs            # entry point
   lib.rs             # module declarations
-  bot.rs             # serenity client, routing, commands, redaction, code/artifact uploads
+  bot.rs             # serenity client, routing, commands, redaction, code file uploads
   agent.rs           # agentic loop, prompt building, tool dispatch, session summarization
   llm.rs             # OpenAI-compatible streaming chat client (ChatClient trait)
   mcp.rs             # stdio MCP JSON-RPC client
@@ -69,7 +69,7 @@ src/
   reminders.rs       # timed reminders
   github_issues.rs   # GitHub App JWT auth + issue creation
   testing.rs         # shared test doubles (MockChatClient)
-  tools/             # remind, summarize_url, translate, feature_request
+  tools/             # searxng, web_fetch, common_crawl, remind, summarize_url, translate, feature_request
 ```
 
 See [AGENTS.md](AGENTS.md) for detailed architecture and development guidance.
