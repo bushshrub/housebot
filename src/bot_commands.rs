@@ -181,7 +181,11 @@ pub async fn erase_data_command(
     let memory_result = memory.clear(user_id.to_string()).await;
     let notes_result = notes.clear(user_id.to_string()).await;
 
-    if log_result.is_err() || history_result.is_err() || memory_result.is_err() || notes_result.is_err() {
+    if log_result.is_err()
+        || history_result.is_err()
+        || memory_result.is_err()
+        || notes_result.is_err()
+    {
         return "⚠️ Some data could not be erased. Please try again or contact an admin.".into();
     }
     "✅ All your stored data has been erased (message log, conversation history, memory, and notes). Your active session will also be cleared on next conversation start.".into()
