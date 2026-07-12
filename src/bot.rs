@@ -617,8 +617,9 @@ impl EventHandler for HouseBot {
             CreateCommand::new("reset").description("Clear the conversation and start fresh"),
             CreateCommand::new("compact")
                 .description("Summarize the conversation and start a new session"),
-            CreateCommand::new("erase_my_data")
-                .description("Permanently delete all your stored data (messages, history, memory, notes)"),
+            CreateCommand::new("erase_my_data").description(
+                "Permanently delete all your stored data (messages, history, memory, notes)",
+            ),
         ] {
             if let Err(e) = Command::create_global_command(&ctx.http, command).await {
                 tracing::error!("Failed to register slash command: {e}");
