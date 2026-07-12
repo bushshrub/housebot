@@ -617,6 +617,8 @@ impl EventHandler for HouseBot {
             CreateCommand::new("reset").description("Clear the conversation and start fresh"),
             CreateCommand::new("compact")
                 .description("Summarize the conversation and start a new session"),
+            CreateCommand::new("erase_my_data")
+                .description("Permanently delete all your stored data (messages, history, memory, notes)"),
         ] {
             if let Err(e) = Command::create_global_command(&ctx.http, command).await {
                 tracing::error!("Failed to register slash command: {e}");
@@ -722,6 +724,22 @@ impl EventHandler for HouseBot {
             }
             "new" => self.handle_new(cmd.channel_id.get(), user_id).await,
             "reset" => self.handle_reset(cmd.channel_id.get(), user_id).await,
+            "erase_my_data" => {
+                let reply = erase_data_command(
+                    &self.message_log,
+                    &self.history,
+                    &self.memory,
+                    &self.notes,
+                    user_id,
+                )
+                .await;
+                self.agent.reset_session(&user_id.to_string()).await;
+                self.conversations
+                    .lock()
+                    .await
+                    .remove(cmd.channel_id.get(), user_id);
+                reply
+            }
             _ => return,
         };
 
@@ -812,20 +830,6 @@ impl EventHandler for HouseBot {
                 &msg.author.name,
             )
             .await;
-            self.respond(&ctx, &msg, &reply).await;
-            return;
-        }
-        if content == "!erase_my_data" {
-            let reply = erase_data_command(
-                &self.message_log,
-                &self.history,
-                &self.memory,
-                &self.notes,
-                user_id,
-            )
-            .await;
-            self.agent.reset_session(&user_id.to_string()).await;
-            self.conversations.lock().await.remove(channel_id, user_id);
             self.respond(&ctx, &msg, &reply).await;
             return;
         }
