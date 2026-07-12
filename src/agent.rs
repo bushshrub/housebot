@@ -16,6 +16,7 @@ use crate::mcp::McpServer;
 use crate::memory::Memory;
 use crate::reminders::Reminders;
 use crate::skills::{Skill, Skills};
+use crate::rate_limit::RateLimiter;
 use crate::tools;
 use crate::tools::common_crawl::CommonCrawl;
 use crate::tools::duckduckgo::DuckDuckGo;
@@ -85,7 +86,7 @@ pub struct Agent {
     skills: Skills,
     reminders: Reminders,
     reporter: Arc<GitHubIssueReporter>,
-    rate_limiter: tools::feature_request::RateLimiter,
+    rate_limiter: RateLimiter,
     duckduckgo: DuckDuckGo,
     common_crawl: CommonCrawl,
     mcp_servers: Vec<McpServer>,
@@ -125,7 +126,7 @@ impl Agent {
             skills: Skills::default(),
             reminders: Reminders::default(),
             reporter: Arc::new(GitHubIssueReporter::default()),
-            rate_limiter: tools::feature_request::RateLimiter::default(),
+            rate_limiter: tools::feature_request::default_rate_limiter(),
             duckduckgo: DuckDuckGo::from_env(),
             common_crawl: CommonCrawl::default(),
             mcp_servers,
@@ -770,7 +771,7 @@ impl Agent {
                 String::new(),
                 String::new(),
             )),
-            rate_limiter: tools::feature_request::RateLimiter::default(),
+            rate_limiter: tools::feature_request::default_rate_limiter(),
             duckduckgo: DuckDuckGo::from_env(),
             common_crawl: CommonCrawl::default(),
             mcp_servers: vec![],

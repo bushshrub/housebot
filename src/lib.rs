@@ -18,6 +18,7 @@ pub mod mcp;
 pub mod memory;
 pub mod message_log;
 pub mod notes;
+pub mod rate_limit;
 pub mod reminders;
 pub mod skills;
 pub mod testing;
