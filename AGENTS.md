@@ -14,7 +14,6 @@ cargo fmt --check                             # formatting
 
 # Docker
 cp .env.example .env
-docker compose build sandbox
 docker compose up -d
 ```
 
@@ -57,9 +56,7 @@ src/
     summarize_url.rs # summarize_url
     translate.rs     # translate
     feature_request.rs # create_feature_request + per-user RateLimiter
-sandbox/
-  Dockerfile         # Node + opencode + Rust toolchain
-  entrypoint.sh      # dispatches AGENT=opencode inside the container
+sandbox/             # standalone coding-sandbox image (built/published by CI; not used by the bot at runtime)
 data/                # runtime — gitignored
 ```
 
@@ -75,7 +72,7 @@ data/                # runtime — gitignored
 | `LLM_MODEL` | yes | `gemma-4-12b-qat-q4kxl` | Model name |
 | `LLM_API_KEY` | no | `not-required` | API key (llama.cpp ignores it) |
 | `MAX_HISTORY_TURNS` | no | `30` | Conversation turn pairs kept |
-| `MAX_CONTEXT_CHARS` | no | `40000` | Char budget before auto-summarizing a session |
+| `MAX_CONTEXT_TOKENS` | no | `10000` | Fallback context window (tokens) when the LLM server's `/props` probe fails |
 | `CONVERSATION_IDLE_TIMEOUT` | no | `300` | Seconds a channel conversation stays "active" |
 | `CHAT_RATE_LIMIT_MAX` | no | `20` | Max chat messages per user per window |
 | `CHAT_RATE_LIMIT_WINDOW_SECS` | no | `60` | Sliding window size for chat rate limiting (seconds) |
@@ -83,14 +80,9 @@ data/                # runtime — gitignored
 | `SEARXNG_LANGUAGE` | no | — | Default search language (e.g. `en`) |
 | `SEARXNG_SAFE_SEARCH` | no | moderate | `OFF` / moderate / `STRICT` |
 | `JELLYFIN_URL` + `JELLYFIN_API_KEY` | no | — | Enables Jellyfin MCP server |
-| `SANDBOX_IMAGE` | no | `house-chatbot-sandbox:latest` | Docker image for coding sandboxes |
-| `DOCKER_NETWORK` | no | `house-chatbot_default` | Network sandboxes join |
-| `SANDBOX_TIMEOUT` | no | `300` | Sandbox execution timeout (seconds) |
-| `HOST_DATA_DIR` | no | — | Optional host path to `./data`; omit it for fully ephemeral bot and sandbox state |
-| `LLAMA_CPP_URL` / `LLAMA_CPP_MODEL` | no | — | Passed into the sandbox for OpenCode |
 | `GITHUB_APP_ID` / `GITHUB_APP_PRIVATE_KEY` / `GITHUB_INSTALLATION_ID` / `GITHUB_REPO` | no | — | GitHub App creds for feature-request issue filing (all four required) |
 
-When set, `HOST_DATA_DIR` must match the host-side absolute path of the `./data` volume mount (e.g. `/home/user/housebot/data`). If omitted, bot state and sandbox artifacts are ephemeral.
+(`DOCKER_NETWORK` is read only by the independent `deployment-bot` crate, not the chatbot.)
 
 ---
 
@@ -103,7 +95,7 @@ Discord message
   └─ HouseBot::message()
        ├─ !commands (!new / !reset / !skill / !note / !stats)
        ├─ filter (DM / mention / reply-to-bot / active conversation)
-       ├─ extract images (base64)
+       ├─ extract media attachments (base64)
        ├─ post "⚙️ Generating..." progress message
        └─ Agent::run()
             ├─ load user memory + history (auto-summarize on overflow)
@@ -133,19 +125,11 @@ ceiling.
 
 ### Tool dispatch
 
-`Agent::dispatch_tool` returns a `ToolOutcome` (plain text, or text plus collected artifact paths).
+`Agent::dispatch_tool` returns a `ToolOutcome` (plain text).
 Built-in tool JSON definitions live in each `tools/*` module as `definition()`; the agent flattens
 them into the OpenAI function-calling envelope alongside the tools discovered from MCP servers.
 
-### Sandbox execution
-
-`run_opencode` shells out to `docker run` (the bot container mounts `/var/run/docker.sock`).
-Merged stdout/stderr stream back to the Discord progress message line by line. After the container
-exits, individual workspace files (excluding `opencode.json` and dotfiles, and files over
-`MAX_ARTIFACT_SIZE_MB`) are copied into `data/artifacts/` and uploaded to Discord.
-
-**Workspace sharing:** the sandbox is a Docker *sibling*, so the workspace is bind-mounted from a
-host-visible path under `HOST_DATA_DIR`.
+### Outbound responses
 
 **Secret redaction:** all text sent to Discord passes through `SecretRedactor`, which scans the
 environment at startup for variables whose name contains `token`, `key`, `secret`, `password`,
@@ -186,6 +170,5 @@ Its tools appear as `prefix__tool_name` automatically.
 - **History** (`data/history/<user_id>.jsonl`): one JSON message per line, trimmed to `MAX_HISTORY_TURNS` pairs.
 - **Memory** (`data/memories/<user_id>.md`): free-form markdown, rewritten in full on each `update_memory`.
 - **Notes** (`data/notes/<user_id>.json`), **skills** (`data/skills.json`), **reminders** (`data/reminders.json`).
-- **Artifacts** (`data/artifacts/<uid>_<filename>`): files copied out of the sandbox workspace.
 
 `data/` is volume-mounted in docker-compose so it survives restarts.

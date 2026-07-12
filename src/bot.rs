@@ -1,5 +1,5 @@
 //! Discord interface (serenity): message routing, `!`-commands, streaming progress
-//! updates, secret redaction, and code/artifact file uploads.
+//! updates, secret redaction, and code file uploads.
 
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::atomic::{AtomicBool, Ordering};

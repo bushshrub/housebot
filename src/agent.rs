@@ -295,7 +295,7 @@ impl Agent {
 
     // ── main loop ────────────────────────────────────────────────────────────
 
-    /// Run one user turn to completion, returning the final assistant text and artifacts.
+    /// Run one user turn to completion, returning the final assistant text.
     pub async fn run(&self, request: AgentRequest<'_>, hooks: &dyn AgentHooks) -> AgentResult {
         let AgentRequest {
             user_id,
