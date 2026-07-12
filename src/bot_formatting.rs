@@ -1,11 +1,12 @@
 //! Pure formatting helpers for Discord responses and tool progress.
 
-use once_cell::sync::Lazy;
+use std::sync::LazyLock;
+
 use regex::{Captures, Regex};
 use serde_json::Value;
 
 const CODE_FILE_THRESHOLD: usize = 800;
-static CODE_FENCE: Lazy<Regex> = Lazy::new(|| {
+static CODE_FENCE: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"(?s)```(\w*)\n(.*?)(?:```|$)").expect("code fence regex must be valid")
 });
 

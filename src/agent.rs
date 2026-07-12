@@ -11,7 +11,7 @@ use serde_json::{json, Value};
 use crate::config;
 use crate::github_issues::GitHubIssueReporter;
 use crate::history::History;
-use crate::llm::{ChatClient, OpenAiClient, TextSink, TokenUsage};
+use crate::llm::{ChatClient, OpenAiClient, TextSink, ThinkingMode, TokenUsage};
 use crate::mcp::McpServer;
 use crate::memory::Memory;
 use crate::rate_limit::RateLimiter;
@@ -19,13 +19,41 @@ use crate::reminders::Reminders;
 use crate::skills::{Skill, Skills};
 use crate::tools;
 use crate::tools::common_crawl::CommonCrawl;
-use crate::tools::duckduckgo::DuckDuckGo;
+use crate::tools::searxng::SearxNg;
+use crate::tools::web_fetch::WebFetch;
 
 /// An inbound media attachment, base64-encoded for the multimodal API.
 #[derive(Debug, Clone)]
 pub struct MediaData {
     pub media_type: String,
     pub data: String,
+}
+
+/// One user turn to run through the agent.
+#[derive(Debug, Clone, Copy)]
+pub struct AgentRequest<'a> {
+    pub user_id: &'a str,
+    pub username: &'a str,
+    pub text: &'a str,
+    pub media: &'a [MediaData],
+    /// Optional personality/tone override injected into the system prompt.
+    pub personality: Option<&'a str>,
+    /// Reasoning budget for this user's requests.
+    pub thinking: ThinkingMode,
+}
+
+impl<'a> AgentRequest<'a> {
+    /// A plain text request with default settings (used by tests and headless callers).
+    pub fn text(user_id: &'a str, username: &'a str, text: &'a str) -> Self {
+        Self {
+            user_id,
+            username,
+            text,
+            media: &[],
+            personality: None,
+            thinking: ThinkingMode::default(),
+        }
+    }
 }
 
 /// The outcome of one `Agent::run`.
@@ -87,7 +115,8 @@ pub struct Agent {
     reminders: Reminders,
     reporter: Arc<GitHubIssueReporter>,
     rate_limiter: RateLimiter,
-    duckduckgo: DuckDuckGo,
+    searxng: SearxNg,
+    web_fetch: WebFetch,
     common_crawl: CommonCrawl,
     mcp_servers: Vec<McpServer>,
     session_stats: tokio::sync::Mutex<HashMap<String, SessionStats>>,
@@ -127,7 +156,8 @@ impl Agent {
             reminders: Reminders::default(),
             reporter: Arc::new(GitHubIssueReporter::default()),
             rate_limiter: tools::feature_request::default_rate_limiter(),
-            duckduckgo: DuckDuckGo::from_env(),
+            searxng: SearxNg::from_env(),
+            web_fetch: WebFetch::default(),
             common_crawl: CommonCrawl::default(),
             mcp_servers,
             session_stats: tokio::sync::Mutex::new(HashMap::new()),
@@ -154,6 +184,7 @@ impl Agent {
 
     /// Summarize the current conversation, reporting coarse-grained progress to the caller.
     pub async fn compact_session_with_hooks(&self, user_id: &str, hooks: &dyn AgentHooks) {
+        tracing::info!(target: "housebot::agent", user_id, "Compacting session");
         hooks.on_progress("compact:10").await;
         self.session_stats.lock().await.remove(user_id);
         let past = self.history.load(user_id).await;
@@ -265,19 +296,29 @@ impl Agent {
     // ── main loop ────────────────────────────────────────────────────────────
 
     /// Run one user turn to completion, returning the final assistant text and artifacts.
-    pub async fn run(
-        &self,
-        user_id: &str,
-        username: &str,
-        text: &str,
-        media_data: &[MediaData],
-        hooks: &dyn AgentHooks,
-        personality: Option<&str>,
-    ) -> AgentResult {
+    pub async fn run(&self, request: AgentRequest<'_>, hooks: &dyn AgentHooks) -> AgentResult {
+        let AgentRequest {
+            user_id,
+            username,
+            text,
+            media,
+            personality,
+            thinking,
+        } = request;
+        let run_started = std::time::Instant::now();
+        tracing::info!(
+            target: "housebot::agent",
+            user_id,
+            username,
+            thinking = %thinking,
+            text_chars = text.chars().count(),
+            media = media.len(),
+            "Agent run started"
+        );
         let mut user_memory = self.memory.load(user_id).await;
         let mut past = self.history.load(user_id).await;
         let mut session_notice = None;
-        let new_user_message = build_user_message(text, media_data);
+        let new_user_message = build_user_message(text, media);
 
         let previous_usage = self.last_context_tokens(user_id).await as f64
             / self.context_window_tokens.max(1) as f64;
@@ -310,7 +351,7 @@ impl Agent {
             let text_sink = TextStreamAdapter(hooks);
             let completion = match self
                 .client
-                .chat_stream(&self.model, &messages, &tools, 4096, Some(&text_sink))
+                .chat_stream(&self.model, &messages, &tools, thinking, Some(&text_sink))
                 .await
             {
                 Ok(c) => c,
@@ -373,11 +414,11 @@ impl Agent {
                 messages.push(tool_msg.clone());
                 turn_messages.push(tool_msg);
 
-                // DuckDuckGo rate limits are not recoverable within this run. Stop the
+                // Search rate limits are not recoverable within this run. Stop the
                 // tool loop after the first limited response so the model cannot keep
                 // retrying the search and waiting for another rate-limit window.
-                if tc.name == "ddg__search" && duckduckgo_rate_limited(&content) {
-                    break 'agent_loop "DuckDuckGo is temporarily rate-limited. Please try again in a few minutes.".to_string();
+                if tc.name == "web_search" && search_rate_limited(&content) {
+                    break 'agent_loop "Web search is temporarily rate-limited. Please try again in a few minutes.".to_string();
                 }
             }
         };
@@ -390,6 +431,14 @@ impl Agent {
             tracing::error!("Failed to save history for {user_id}: {e}");
         }
 
+        tracing::info!(
+            target: "housebot::agent",
+            user_id,
+            tools_called = tools_called.len(),
+            response_chars = final_text.chars().count(),
+            elapsed_ms = run_started.elapsed().as_millis() as u64,
+            "Agent run finished"
+        );
         AgentResult {
             text: if final_text.is_empty() {
                 "(no response)".to_string()
@@ -413,8 +462,8 @@ impl Agent {
             }
         }
         for def in [
-            tools::duckduckgo::search_definition(),
-            tools::duckduckgo::fetch_content_definition(),
+            tools::searxng::definition(),
+            tools::web_fetch::definition(),
             tools::common_crawl::definition(),
             update_memory_tool(),
             run_skill_tool(),
@@ -436,100 +485,103 @@ impl Agent {
         user_id: &str,
         _hooks: &dyn AgentHooks,
     ) -> ToolOutcome {
+        let started = std::time::Instant::now();
+        let outcome = self.dispatch_tool_inner(name, args, user_id).await;
+        let ToolOutcome::Text(content) = &outcome;
+        tracing::info!(
+            target: "housebot::agent",
+            user_id,
+            tool = name,
+            result_chars = content.chars().count(),
+            is_error = content.starts_with("Error:"),
+            elapsed_ms = started.elapsed().as_millis() as u64,
+            "Tool call finished"
+        );
+        outcome
+    }
+
+    async fn dispatch_tool_inner(&self, name: &str, args: &Value, user_id: &str) -> ToolOutcome {
         match name {
-            "ddg__search" => ToolOutcome::Text(
-                self.duckduckgo
+            "web_search" => ToolOutcome::Text(
+                self.searxng
                     .search(
-                        args.get("query").and_then(Value::as_str).unwrap_or(""),
-                        args.get("max_results")
-                            .and_then(Value::as_u64)
-                            .unwrap_or(10) as usize,
-                        args.get("region").and_then(Value::as_str).unwrap_or(""),
+                        str_arg(args, "query"),
+                        u64_arg(args, "max_results", 10) as usize,
+                        str_arg(args, "language"),
                     )
                     .await,
             ),
-            "ddg__fetch_content" => ToolOutcome::Text(
-                self.duckduckgo
+            "fetch_webpage" => ToolOutcome::Text(
+                self.web_fetch
                     .fetch_content(
-                        args.get("url").and_then(Value::as_str).unwrap_or(""),
-                        args.get("start_index").and_then(Value::as_u64).unwrap_or(0) as usize,
-                        args.get("max_length")
-                            .and_then(Value::as_u64)
-                            .unwrap_or(8000) as usize,
+                        str_arg(args, "url"),
+                        u64_arg(args, "start_index", 0) as usize,
+                        u64_arg(args, "max_length", 8000) as usize,
                     )
                     .await,
             ),
             "common_crawl__search" => ToolOutcome::Text(
                 self.common_crawl
                     .search(
-                        args.get("pattern").and_then(Value::as_str).unwrap_or(""),
-                        args.get("crawl").and_then(Value::as_str).unwrap_or(""),
+                        str_arg(args, "pattern"),
+                        str_arg(args, "crawl"),
                         args.get("match_type")
                             .and_then(Value::as_str)
                             .unwrap_or("exact"),
-                        args.get("max_results")
-                            .and_then(Value::as_u64)
-                            .unwrap_or(10) as usize,
+                        u64_arg(args, "max_results", 10) as usize,
                     )
                     .await,
             ),
             "update_memory" => {
-                let new_content = args
-                    .get("memory_content")
-                    .and_then(|m| m.as_str())
-                    .unwrap_or("")
-                    .to_string();
-                let _ = self.memory.save(user_id, &new_content).await;
+                let new_content = str_arg(args, "memory_content");
+                let _ = self.memory.save(user_id, new_content).await;
                 ToolOutcome::Text("Memory updated.".to_string())
             }
-            "create_feature_request" => {
-                let title = args.get("title").and_then(|t| t.as_str()).unwrap_or("");
-                let description = args
-                    .get("description")
-                    .and_then(|d| d.as_str())
-                    .unwrap_or("");
+            "create_feature_request" => ToolOutcome::Text(
+                tools::feature_request::create_feature_request(
+                    &self.reporter,
+                    &self.rate_limiter,
+                    str_arg(args, "title"),
+                    str_arg(args, "description"),
+                    user_id,
+                )
+                .await,
+            ),
+            "set_reminder" => {
+                let delay = args
+                    .get("delay_minutes")
+                    .and_then(Value::as_f64)
+                    .unwrap_or(0.0);
                 ToolOutcome::Text(
-                    tools::feature_request::create_feature_request(
-                        &self.reporter,
-                        &self.rate_limiter,
-                        title,
-                        description,
+                    tools::remind::create_reminder(
+                        &self.reminders,
                         user_id,
+                        str_arg(args, "message"),
+                        delay,
                     )
                     .await,
                 )
             }
-            "set_reminder" => {
-                let message = args.get("message").and_then(|m| m.as_str()).unwrap_or("");
-                let delay = args
-                    .get("delay_minutes")
-                    .and_then(|d| d.as_f64())
-                    .unwrap_or(0.0);
-                ToolOutcome::Text(
-                    tools::remind::create_reminder(&self.reminders, user_id, message, delay).await,
+            "summarize_url" => ToolOutcome::Text(
+                tools::summarize_url::fetch_and_summarize(
+                    &*self.client,
+                    &self.model,
+                    str_arg(args, "url"),
                 )
-            }
-            "summarize_url" => {
-                let url = args.get("url").and_then(|u| u.as_str()).unwrap_or("");
-                ToolOutcome::Text(
-                    tools::summarize_url::fetch_and_summarize(&*self.client, &self.model, url)
-                        .await,
+                .await,
+            ),
+            "translate" => ToolOutcome::Text(
+                tools::translate::translate_text(
+                    &*self.client,
+                    &self.model,
+                    str_arg(args, "text"),
+                    str_arg(args, "target_language"),
                 )
-            }
-            "translate" => {
-                let text = args.get("text").and_then(|t| t.as_str()).unwrap_or("");
-                let target = args
-                    .get("target_language")
-                    .and_then(|t| t.as_str())
-                    .unwrap_or("");
-                ToolOutcome::Text(
-                    tools::translate::translate_text(&*self.client, &self.model, text, target)
-                        .await,
-                )
-            }
+                .await,
+            ),
             "run_skill" => {
-                let skill_name = args.get("name").and_then(|n| n.as_str()).unwrap_or("");
-                let input = args.get("input").and_then(|i| i.as_str()).unwrap_or("");
+                let skill_name = str_arg(args, "name");
+                let input = str_arg(args, "input");
                 match self.skills.get(skill_name).await {
                     None => ToolOutcome::Text(format!("Error: Skill '{skill_name}' not found.")),
                     Some(skill) => {
@@ -659,8 +711,8 @@ pub fn build_system_prompt(
     format!(
         "You are a helpful house assistant bot in a Discord server. You help with media, web \
 search, and software development tasks.\n\nCurrent date/time: {now}\nCurrent user: {username} \
-(ID: {user_id}){memory_section}{personality_section}\n\n## Tools\n- ddg__* — Search the web via DuckDuckGo for current \
-information.\n- common_crawl__search — Search historical URL captures in the Common Crawl index.\n- jellyfin__* — Query the household Jellyfin media server for movies, shows, music. \
+(ID: {user_id}){memory_section}{personality_section}\n\n## Tools\n- web_search — Search the web (SearXNG) for current \
+information.\n- fetch_webpage — Fetch and read the text of a public webpage.\n- common_crawl__search — Search historical URL captures in the Common Crawl index.\n- jellyfin__* — Query the household Jellyfin media server for movies, shows, music. \
 READ ONLY — only call get_* / search_* / list_* methods; never call mutating actions.\n- \
 Programming tasks are outside the bot's scope.\n- update_memory — Persist important facts about the current user for future \
 conversations. Write the full memory each time.\n- create_feature_request — File a GitHub issue \
@@ -668,11 +720,10 @@ for a feature the user wants added to this bot.\n- set_reminder — Set a timed 
 will DM the user when the delay elapses.\n- summarize_url — Fetch a public web URL and return a \
 concise summary.\n- translate — Translate text to any language using the LLM.{skills_section}\n\n\
 ## Guidelines\n- Be conversational and friendly.\n- Use Jellyfin tools for any media questions \
-before guessing.\n- Use DuckDuckGo for factual or current-events questions. If DuckDuckGo returns a rate-limit \
+before guessing.\n- Use web_search for factual or current-events questions. If web_search returns a rate-limit \
 error, stop using it for this request and do not retry it repeatedly; use \
 common_crawl__search for historical URL evidence when appropriate, or explain that the search \
-service is temporarily unavailable.\n- For ANY \
-Do not execute code or delegate coding tasks.\n- Update memory when you learn \
+service is temporarily unavailable.\n- Do not execute code or delegate coding tasks.\n- Update memory when you learn \
 something worth remembering.\n- Keep responses concise unless asked for detail.\n- If a user \
 requests a feature or improvement to this bot, immediately call create_feature_request with a \
 clear title and description, then tell them the issue URL.\n- If a tool returns an error message \
@@ -739,9 +790,19 @@ pub fn flatten_tool(tool_def: &Value) -> (String, String, Value) {
     (name, description, parameters)
 }
 
-fn duckduckgo_rate_limited(content: &str) -> bool {
+/// Extract a string argument from tool-call args, defaulting to empty.
+fn str_arg<'a>(args: &'a Value, key: &str) -> &'a str {
+    args.get(key).and_then(Value::as_str).unwrap_or("")
+}
+
+/// Extract an unsigned integer argument from tool-call args.
+fn u64_arg(args: &Value, key: &str, default: u64) -> u64 {
+    args.get(key).and_then(Value::as_u64).unwrap_or(default)
+}
+
+fn search_rate_limited(content: &str) -> bool {
     let content = content.to_ascii_lowercase();
-    content.contains("duckduckgo returned http 429")
+    content.contains("returned http 429")
         || content.contains("too many requests")
         || content.contains("rate limit")
         || content.contains("temporarily blocked")
@@ -772,7 +833,8 @@ impl Agent {
                 String::new(),
             )),
             rate_limiter: tools::feature_request::default_rate_limiter(),
-            duckduckgo: DuckDuckGo::from_env(),
+            searxng: SearxNg::from_env(),
+            web_fetch: WebFetch::default(),
             common_crawl: CommonCrawl::default(),
             mcp_servers: vec![],
             session_stats: tokio::sync::Mutex::new(HashMap::new()),
@@ -878,12 +940,12 @@ mod tests {
     }
 
     #[test]
-    fn duckduckgo_rate_limit_errors_are_detected() {
-        assert!(duckduckgo_rate_limited(
-            "Error: DuckDuckGo returned HTTP 429 Too Many Requests"
+    fn search_rate_limit_errors_are_detected() {
+        assert!(search_rate_limited(
+            "Error: SearXNG returned HTTP 429 Too Many Requests"
         ));
-        assert!(duckduckgo_rate_limited("DuckDuckGo rate limit reached"));
-        assert!(!duckduckgo_rate_limited(
+        assert!(search_rate_limited("SearXNG rate limit reached"));
+        assert!(!search_rate_limited(
             "Error: search request failed: timeout"
         ));
     }
@@ -945,7 +1007,9 @@ mod tests {
         let client = Arc::new(MockChatClient::new());
         client.push_text("hello there");
         let (_t, agent) = test_agent(client);
-        let result = agent.run("u1", "Alice", "hi", &[], &NoHooks, None).await;
+        let result = agent
+            .run(AgentRequest::text("u1", "Alice", "hi"), &NoHooks)
+            .await;
         assert_eq!(result.text, "hello there");
     }
 
@@ -955,7 +1019,7 @@ mod tests {
         client.push_text("saved reply");
         let (_t, agent) = test_agent(client);
         agent
-            .run("u2", "Bob", "remember this", &[], &NoHooks, None)
+            .run(AgentRequest::text("u2", "Bob", "remember this"), &NoHooks)
             .await;
         let hist = agent.history.load("u2").await;
         assert_eq!(hist.len(), 2); // user + assistant
@@ -974,7 +1038,10 @@ mod tests {
         client.push_text("It means Bonjour.");
         let (_t, agent) = test_agent(client);
         let result = agent
-            .run("u3", "Cy", "translate Hello to French", &[], &NoHooks, None)
+            .run(
+                AgentRequest::text("u3", "Cy", "translate Hello to French"),
+                &NoHooks,
+            )
             .await;
         assert_eq!(result.text, "It means Bonjour.");
         // History should contain the assistant tool-call turn and the tool result.
@@ -991,7 +1058,10 @@ mod tests {
         client.push_text("Noted.");
         let (_t, agent) = test_agent(client);
         agent
-            .run("u4", "Dee", "remember I like tea", &[], &NoHooks, None)
+            .run(
+                AgentRequest::text("u4", "Dee", "remember I like tea"),
+                &NoHooks,
+            )
             .await;
         assert_eq!(agent.memory.load("u4").await, "Likes tea");
     }
@@ -1042,8 +1112,12 @@ mod tests {
             .await
             .unwrap();
 
-        agent.run("u5", "Ed", "hi again", &[], &NoHooks, None).await;
-        agent.run("u5", "Ed", "one more", &[], &NoHooks, None).await;
+        agent
+            .run(AgentRequest::text("u5", "Ed", "hi again"), &NoHooks)
+            .await;
+        agent
+            .run(AgentRequest::text("u5", "Ed", "one more"), &NoHooks)
+            .await;
 
         // The oversized message must have been summarized away; only the new turn remains.
         let hist = agent.history.load("u5").await;

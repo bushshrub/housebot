@@ -1,6 +1,6 @@
 # house-chatbot — Agent Guide
 
-A Discord-based house assistant bot, written in **Rust** with [serenity](https://github.com/serenity-rs/serenity). The LLM backend is a local llama.cpp server (OpenAI-compatible API). The bot maintains per-user conversation history and memory, integrates MCP servers for web search and Jellyfin over stdio, and spins up ephemeral Docker sandboxes to run coding agents (OpenCode).
+A Discord-based house assistant bot, written in **Rust** with [serenity](https://github.com/serenity-rs/serenity). The LLM backend is a local llama.cpp server (OpenAI-compatible API). The bot maintains per-user conversation history and memory, searches the web through a SearXNG instance, and integrates MCP servers (Jellyfin) over stdio.
 
 ---
 
@@ -50,7 +50,9 @@ src/
   github_issues.rs   # GitHub App JWT (RS256) auth + issue creation
   testing.rs         # MockChatClient / RecordingSink test doubles
   tools/
-    opencode.rs      # run_opencode — Docker sandbox via `docker run`, streams logs, artifacts
+    searxng.rs       # web_search — SearXNG JSON API client
+    web_fetch.rs     # fetch_webpage — SSRF-guarded page fetcher
+    common_crawl.rs  # common_crawl__search
     remind.rs        # set_reminder
     summarize_url.rs # summarize_url
     translate.rs     # translate
@@ -77,6 +79,9 @@ data/                # runtime — gitignored
 | `CONVERSATION_IDLE_TIMEOUT` | no | `300` | Seconds a channel conversation stays "active" |
 | `CHAT_RATE_LIMIT_MAX` | no | `20` | Max chat messages per user per window |
 | `CHAT_RATE_LIMIT_WINDOW_SECS` | no | `60` | Sliding window size for chat rate limiting (seconds) |
+| `SEARXNG_URL` | no | `http://searxng:8080` | SearXNG instance for the `web_search` tool (JSON format must be enabled) |
+| `SEARXNG_LANGUAGE` | no | — | Default search language (e.g. `en`) |
+| `SEARXNG_SAFE_SEARCH` | no | moderate | `OFF` / moderate / `STRICT` |
 | `JELLYFIN_URL` + `JELLYFIN_API_KEY` | no | — | Enables Jellyfin MCP server |
 | `SANDBOX_IMAGE` | no | `house-chatbot-sandbox:latest` | Docker image for coding sandboxes |
 | `DOCKER_NETWORK` | no | `house-chatbot_default` | Network sandboxes join |
@@ -104,9 +109,10 @@ Discord message
             ├─ load user memory + history (auto-summarize on overflow)
             ├─ build system prompt
             └─ agentic loop
-                 ├─ ChatClient::chat_stream (streams partial text to the progress msg)
+                 ├─ ChatClient::chat_stream (streams partial text to the progress msg,
+                 │   reasoning budget from the user's /effort setting)
                  ├─ if tool_calls → dispatch_tool()
-                 │    ├─ run_opencode → Docker sandbox
+                 │    ├─ web_search → SearXNG / fetch_webpage → guarded HTTP fetch
                  │    ├─ update_memory → memory.save()
                  │    ├─ set_reminder / summarize_url / translate / create_feature_request / run_skill
                  │    └─ prefix__tool → McpServer::call_tool()
@@ -119,6 +125,11 @@ Discord message
 optional `TextSink`) and `chat_once` (non-streaming). `OpenAiClient` is the real implementation;
 `testing::MockChatClient` scripts completions for unit tests, so the whole agent loop is testable
 without a live model.
+
+`llm::ThinkingMode` (low / medium / high / xhigh / max → 2k / 4k / 8k / 16k / unlimited thinking
+tokens) is stored per user in `UserConfig`, changed with the `/effort` slash command, and sent to
+the backend as an OpenRouter-style `reasoning` request field alongside a matching `max_tokens`
+ceiling.
 
 ### Tool dispatch
 
@@ -147,7 +158,7 @@ of the reply, infers an extension from the language tag, and uploads them as fil
 
 `mcp::McpServer` speaks newline-delimited JSON-RPC 2.0 over stdio: it performs the `initialize`
 handshake, lists tools, and calls them. Tool names are namespaced `{server}__{tool}` (e.g.
-`ddg__search`, `jellyfin__get_movies`). A failed MCP startup is logged and skipped.
+`jellyfin__get_movies`). A failed MCP startup is logged and skipped.
 
 ---
 

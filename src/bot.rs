@@ -3,11 +3,10 @@
 
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, LazyLock};
 use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
-use once_cell::sync::Lazy;
 use regex::Regex;
 use serenity::all::{
     ButtonStyle, Command, CommandDataOptionValue, CommandOptionType, Context, CreateActionRow,
@@ -20,11 +19,12 @@ use serenity::builder::CreateMessage;
 use serenity::Client;
 use tokio::sync::Mutex;
 
-use crate::agent::{Agent, AgentHooks, AgentResult, MediaData, NoHooks};
+use crate::agent::{Agent, AgentHooks, AgentRequest, AgentResult, MediaData, NoHooks};
 use crate::bot_config::{ServerConfigStore, UserConfigStore};
 pub use crate::bot_response::SecretRedactor;
 use crate::config;
 use crate::history::History;
+use crate::llm::ThinkingMode;
 use crate::memory::Memory;
 use crate::message_log::MessageLog;
 use crate::notes::Notes;
@@ -133,7 +133,8 @@ impl AgentHooks for ResponseProgressHooks {
 }
 // ── pure helpers ─────────────────────────────────────────────────────────────
 
-static URL: Lazy<Regex> = Lazy::new(|| Regex::new(r"https?://[^\s<>]+|www\.[^\s<>]+").unwrap());
+static URL: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"https?://[^\s<>]+|www\.[^\s<>]+").unwrap());
 
 /// Tracks which (channel, user) conversations are still within the idle window.
 pub struct ConversationTracker {
@@ -248,14 +249,12 @@ impl HouseBot {
         responded.push_back(id);
     }
 
+    /// Handle `/new`, `/reset`, `!new`, and `!reset` — they are all aliases.
     async fn handle_new(&self, channel_id: u64, user_id: u64) -> String {
+        tracing::info!(target: "housebot::commands", user_id, "Session reset requested");
         self.agent.reset_session(&user_id.to_string()).await;
         self.conversations.lock().await.remove(channel_id, user_id);
         "New conversation started. Your previous conversation history has been cleared.".into()
-    }
-
-    async fn handle_reset(&self, channel_id: u64, user_id: u64) -> String {
-        self.handle_new(channel_id, user_id).await
     }
 
     async fn respond(&self, ctx: &Context, msg: &Message, content: &str) {
@@ -430,6 +429,54 @@ async fn handle_config_interaction(
 
         other => format!("Unknown config option `{other}`."),
     }
+}
+
+/// Handle an `/effort` interaction: show or change the user's thinking mode.
+async fn handle_effort_interaction(
+    user_cfg: &UserConfigStore,
+    options: &[serenity::all::CommandDataOption],
+    author_id: u64,
+) -> String {
+    let level = options
+        .iter()
+        .find(|o| o.name == "level")
+        .and_then(|o| match &o.value {
+            CommandDataOptionValue::String(s) => Some(s.clone()),
+            _ => None,
+        });
+    let mut cfg = user_cfg.load(author_id).await;
+    let Some(level) = level else {
+        let lines: Vec<String> = ThinkingMode::ALL
+            .into_iter()
+            .map(|mode| {
+                let marker = if mode == cfg.thinking_mode {
+                    " ←"
+                } else {
+                    ""
+                };
+                format!("• **{mode}** — {}{marker}", mode.budget_label())
+            })
+            .collect();
+        return format!(
+            "**Thinking effort:** currently **{}** ({}).\n{}\nUse `/effort level:<mode>` to change it.",
+            cfg.thinking_mode,
+            cfg.thinking_mode.budget_label(),
+            lines.join("\n")
+        );
+    };
+    let Ok(mode) = level.parse::<ThinkingMode>() else {
+        return format!("Unknown effort level `{level}`. Options: low, medium, high, xhigh, max.");
+    };
+    cfg.thinking_mode = mode;
+    if let Err(error) = user_cfg.save(author_id, &cfg).await {
+        tracing::error!(target: "housebot::commands", user_id = author_id, %error, "Failed to save effort setting");
+        return "Error: failed to save config.".into();
+    }
+    tracing::info!(target: "housebot::commands", user_id = author_id, mode = %mode, "Thinking effort updated");
+    format!(
+        "✅ Thinking effort set to **{mode}** ({}).",
+        mode.budget_label()
+    )
 }
 
 async fn handle_labs_interaction(
@@ -614,6 +661,21 @@ impl EventHandler for HouseBot {
         if let Err(e) = Command::create_global_command(&ctx.http, labs_cmd).await {
             tracing::error!(target: "housebot::labs::registration", "Failed to register /labs slash command: {e}");
         }
+        let mut effort_level_option = CreateCommandOption::new(
+            CommandOptionType::String,
+            "level",
+            "Thinking effort level (omit to show the current setting)",
+        );
+        for mode in ThinkingMode::ALL {
+            effort_level_option = effort_level_option
+                .add_string_choice(format!("{mode} ({})", mode.budget_label()), mode.as_str());
+        }
+        let effort_cmd = CreateCommand::new("effort")
+            .description("Set how much thinking the model does before replying")
+            .add_option(effort_level_option);
+        if let Err(e) = Command::create_global_command(&ctx.http, effort_cmd).await {
+            tracing::error!("Failed to register /effort slash command: {e}");
+        }
         for command in [
             CreateCommand::new("commit").description("Show the bot's running commit hash"),
             CreateCommand::new("model").description("Show information about the current model"),
@@ -664,6 +726,12 @@ impl EventHandler for HouseBot {
         };
         let user_id = cmd.user.id.get();
         let guild_id = cmd.guild_id.map(|g| g.get());
+        tracing::info!(
+            target: "housebot::commands",
+            user_id,
+            command = %cmd.data.name,
+            "Slash command received"
+        );
         if cmd.data.name == "compact" {
             let response = CreateInteractionResponse::Defer(
                 CreateInteractionResponseMessage::new().ephemeral(true),
@@ -697,6 +765,7 @@ impl EventHandler for HouseBot {
                 .await
             }
             "labs" => handle_labs_interaction(&self.user_cfg, &cmd.data.options, user_id).await,
+            "effort" => handle_effort_interaction(&self.user_cfg, &cmd.data.options, user_id).await,
             "commit" => commit_hash_response(option_env!("HOUSEBOT_GIT_SHA")),
             "model" => self.agent.model_info(),
             "session" => {
@@ -729,8 +798,7 @@ impl EventHandler for HouseBot {
                 }
                 return;
             }
-            "new" => self.handle_new(cmd.channel_id.get(), user_id).await,
-            "reset" => self.handle_reset(cmd.channel_id.get(), user_id).await,
+            "new" | "reset" => self.handle_new(cmd.channel_id.get(), user_id).await,
             "erase_my_data" => {
                 let reply = erase_data_command(
                     &self.message_log,
@@ -769,12 +837,7 @@ impl EventHandler for HouseBot {
         let user_id = msg.author.id.get();
 
         // ── commands ──
-        if content == "!reset" {
-            let reply = self.handle_reset(channel_id, user_id).await;
-            self.respond(&ctx, &msg, &reply).await;
-            return;
-        }
-        if content == "!new" {
+        if content == "!reset" || content == "!new" {
             let reply = self.handle_new(channel_id, user_id).await;
             self.respond(&ctx, &msg, &reply).await;
             return;
@@ -816,12 +879,14 @@ impl EventHandler for HouseBot {
             return;
         }
         if msg.content.starts_with("!skill") {
+            tracing::info!(target: "housebot::commands", user_id, "!skill command received");
             let (first, rest) = split_command(&msg.content);
             let reply = skill_command(&self.skills, &first, &rest, user_id).await;
             self.respond(&ctx, &msg, &reply).await;
             return;
         }
         if msg.content.starts_with("!note") {
+            tracing::info!(target: "housebot::commands", user_id, "!note command received");
             let (first, rest) = split_command(&msg.content);
             let reply = note_command(&self.notes, &first, &rest, user_id).await;
             self.respond(&ctx, &msg, &reply).await;
@@ -952,9 +1017,10 @@ impl HouseBot {
             media.extend(extract_media(referenced).await);
         }
 
-        // Load personality for this user.
+        // Load per-user settings (personality, thinking effort, pagination).
         let user_config = self.user_cfg.load(msg.author.id.get()).await;
         let personality = user_config.personality.clone();
+        let thinking = user_config.thinking_mode;
 
         // Keep the progress message in the thinking state until the model starts its final reply.
         let progress = reply_no_ping(ctx, msg, "🧠 **Thinking...**").await.ok();
@@ -972,19 +1038,23 @@ impl HouseBot {
         self.message_log
             .append(msg.author.id.get().to_string(), &user_text)
             .await;
+        let user_id_string = msg.author.id.get().to_string();
         let result: AgentResult = self
             .agent
             .run(
-                &msg.author.id.get().to_string(),
-                &msg.author.name,
-                &user_text,
-                &media,
+                AgentRequest {
+                    user_id: &user_id_string,
+                    username: &msg.author.name,
+                    text: &user_text,
+                    media: &media,
+                    personality: personality.as_deref(),
+                    thinking,
+                },
                 response_hooks
                     .as_ref()
                     .map_or(&NoHooks as &dyn AgentHooks, |hooks| {
                         hooks as &dyn AgentHooks
                     }),
-                personality.as_deref(),
             )
             .await;
 
@@ -1358,7 +1428,7 @@ mod tests {
 
     #[test]
     fn hint_falls_back_to_query() {
-        assert!(tool_hint("ddg__search", &json!({"query": "latest news"})).contains("latest news"));
+        assert!(tool_hint("web_search", &json!({"query": "latest news"})).contains("latest news"));
     }
 
     #[test]
@@ -1387,8 +1457,8 @@ mod tests {
 
     #[test]
     fn tool_summary_lists_tools_in_call_order() {
-        let summary = append_tool_summary("answer", &["ddg__search".into(), "translate".into()]);
-        assert!(summary.ends_with("🛠️ **Tools used:** `ddg__search`, `translate`"));
+        let summary = append_tool_summary("answer", &["web_search".into(), "translate".into()]);
+        assert!(summary.ends_with("🛠️ **Tools used:** `web_search`, `translate`"));
     }
 
     #[test]

@@ -5,8 +5,102 @@
 
 use async_trait::async_trait;
 use futures_util::StreamExt;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
+
+/// How much reasoning ("thinking") budget the model gets before answering.
+///
+/// Selected per user with the `/effort` slash command and forwarded to the
+/// OpenAI-compatible backend as a `reasoning` request field.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ThinkingMode {
+    Low,
+    #[default]
+    Medium,
+    High,
+    XHigh,
+    Max,
+}
+
+impl ThinkingMode {
+    pub const ALL: [ThinkingMode; 5] = [
+        ThinkingMode::Low,
+        ThinkingMode::Medium,
+        ThinkingMode::High,
+        ThinkingMode::XHigh,
+        ThinkingMode::Max,
+    ];
+
+    /// Reserved for the visible answer, on top of any thinking budget.
+    const RESPONSE_TOKENS: u32 = 4096;
+
+    /// Thinking-token budget; `None` means unlimited.
+    pub fn budget_tokens(self) -> Option<u32> {
+        match self {
+            ThinkingMode::Low => Some(2_048),
+            ThinkingMode::Medium => Some(4_096),
+            ThinkingMode::High => Some(8_192),
+            ThinkingMode::XHigh => Some(16_384),
+            ThinkingMode::Max => None,
+        }
+    }
+
+    /// Human-readable budget for command replies.
+    pub fn budget_label(self) -> &'static str {
+        match self {
+            ThinkingMode::Low => "2k thinking tokens",
+            ThinkingMode::Medium => "4k thinking tokens",
+            ThinkingMode::High => "8k thinking tokens",
+            ThinkingMode::XHigh => "16k thinking tokens",
+            ThinkingMode::Max => "unlimited thinking tokens",
+        }
+    }
+
+    /// `max_tokens` for a completion request: thinking budget plus room for the answer.
+    pub fn max_completion_tokens(self) -> u32 {
+        match self.budget_tokens() {
+            Some(budget) => budget + Self::RESPONSE_TOKENS,
+            None => 32_768,
+        }
+    }
+
+    /// The `reasoning` request field sent to the backend (OpenRouter-style;
+    /// servers that don't support it ignore unknown fields).
+    pub fn reasoning_field(self) -> Value {
+        match self.budget_tokens() {
+            Some(budget) => serde_json::json!({"enabled": true, "max_tokens": budget}),
+            None => serde_json::json!({"enabled": true}),
+        }
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            ThinkingMode::Low => "low",
+            ThinkingMode::Medium => "medium",
+            ThinkingMode::High => "high",
+            ThinkingMode::XHigh => "xhigh",
+            ThinkingMode::Max => "max",
+        }
+    }
+}
+
+impl std::str::FromStr for ThinkingMode {
+    type Err = ();
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        ThinkingMode::ALL
+            .into_iter()
+            .find(|mode| mode.as_str() == s.to_ascii_lowercase())
+            .ok_or(())
+    }
+}
+
+impl std::fmt::Display for ThinkingMode {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
 
 /// A single tool call requested by the model.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -54,12 +148,13 @@ pub trait ChatClient: Send + Sync {
     async fn context_window_tokens(&self) -> anyhow::Result<Option<u64>>;
 
     /// Stream a completion, forwarding each cumulative text snapshot to `sink`.
+    /// `thinking` sets the reasoning budget and the overall token ceiling.
     async fn chat_stream(
         &self,
         model: &str,
         messages: &[Value],
         tools: &[Value],
-        max_tokens: u32,
+        thinking: ThinkingMode,
         sink: Option<&dyn TextSink>,
     ) -> anyhow::Result<ChatCompletion>;
 
@@ -271,13 +366,14 @@ impl ChatClient for OpenAiClient {
         model: &str,
         messages: &[Value],
         tools: &[Value],
-        max_tokens: u32,
+        thinking: ThinkingMode,
         sink: Option<&dyn TextSink>,
     ) -> anyhow::Result<ChatCompletion> {
         let mut body = serde_json::json!({
             "model": model,
             "messages": messages,
-            "max_tokens": max_tokens,
+            "max_tokens": thinking.max_completion_tokens(),
+            "reasoning": thinking.reasoning_field(),
             "stream": true,
             "stream_options": {"include_usage": true},
         });
@@ -285,6 +381,15 @@ impl ChatClient for OpenAiClient {
             body["tools"] = Value::Array(tools.to_vec());
             body["tool_choice"] = Value::String("auto".into());
         }
+        tracing::debug!(
+            target: "housebot::llm",
+            model,
+            messages = messages.len(),
+            tools = tools.len(),
+            thinking = %thinking,
+            "Starting streamed completion"
+        );
+        let started = std::time::Instant::now();
 
         let resp = self
             .http
@@ -317,7 +422,19 @@ impl ChatClient for OpenAiClient {
                 }
             }
         }
-        Ok(acc.finish())
+        let completion = acc.finish();
+        tracing::debug!(
+            target: "housebot::llm",
+            model,
+            finish_reason = completion.finish_reason.as_deref().unwrap_or("none"),
+            tool_calls = completion.tool_calls.len(),
+            prompt_tokens = completion.usage.prompt_tokens,
+            completion_tokens = completion.usage.completion_tokens,
+            cached_tokens = completion.usage.prompt_tokens_details.cached_tokens,
+            elapsed_ms = started.elapsed().as_millis() as u64,
+            "Streamed completion finished"
+        );
+        Ok(completion)
     }
 
     async fn chat_once(
@@ -407,6 +524,54 @@ mod tests {
         assert!(parse_sse_line("data: [DONE]").is_none());
         assert!(parse_sse_line(": comment").is_none());
         assert!(parse_sse_line(r#"data: {"choices":[]}"#).is_some());
+    }
+
+    #[test]
+    fn thinking_mode_budgets_match_spec() {
+        assert_eq!(ThinkingMode::Low.budget_tokens(), Some(2_048));
+        assert_eq!(ThinkingMode::Medium.budget_tokens(), Some(4_096));
+        assert_eq!(ThinkingMode::High.budget_tokens(), Some(8_192));
+        assert_eq!(ThinkingMode::XHigh.budget_tokens(), Some(16_384));
+        assert_eq!(ThinkingMode::Max.budget_tokens(), None);
+    }
+
+    #[test]
+    fn thinking_mode_parses_and_displays() {
+        for mode in ThinkingMode::ALL {
+            assert_eq!(mode.as_str().parse::<ThinkingMode>(), Ok(mode));
+        }
+        assert_eq!("XHIGH".parse::<ThinkingMode>(), Ok(ThinkingMode::XHigh));
+        assert!("turbo".parse::<ThinkingMode>().is_err());
+    }
+
+    #[test]
+    fn thinking_mode_serde_roundtrip() {
+        assert_eq!(
+            serde_json::to_string(&ThinkingMode::XHigh).unwrap(),
+            "\"xhigh\""
+        );
+        assert_eq!(
+            serde_json::from_str::<ThinkingMode>("\"max\"").unwrap(),
+            ThinkingMode::Max
+        );
+    }
+
+    #[test]
+    fn thinking_mode_max_tokens_leave_room_for_answer() {
+        assert_eq!(ThinkingMode::Low.max_completion_tokens(), 2_048 + 4_096);
+        assert_eq!(ThinkingMode::Max.max_completion_tokens(), 32_768);
+    }
+
+    #[test]
+    fn reasoning_field_caps_bounded_modes_only() {
+        assert_eq!(
+            ThinkingMode::Medium.reasoning_field(),
+            serde_json::json!({"enabled": true, "max_tokens": 4096})
+        );
+        assert_eq!(
+            ThinkingMode::Max.reasoning_field(),
+            serde_json::json!({"enabled": true})
+        );
     }
 
     #[test]

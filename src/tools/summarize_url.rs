@@ -1,6 +1,7 @@
 //! Agent tool for fetching and summarizing a web page.
 
-use once_cell::sync::Lazy;
+use std::sync::LazyLock;
+
 use regex::Regex;
 use serde_json::{json, Value};
 
@@ -26,8 +27,8 @@ pub fn definition() -> Value {
     })
 }
 
-static TAG_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"<[^>]+>").unwrap());
-static WS_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"\s+").unwrap());
+static TAG_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"<[^>]+>").unwrap());
+static WS_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\s+").unwrap());
 
 /// Strip HTML tags and collapse whitespace, truncating to the model's input budget.
 pub fn strip_html(raw: &str) -> String {

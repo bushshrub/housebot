@@ -5,7 +5,8 @@ A Discord-based house assistant bot powered by a local LLM (llama.cpp) with MCP 
 ## Features
 
 - **LLM-powered chat** — per-user conversation history and persistent memory
-- **Web search** — DuckDuckGo MCP integration for live information retrieval
+- **Web search** — SearXNG JSON API integration for live information retrieval
+- **Adjustable thinking effort** — `/effort low|medium|high|xhigh|max` sets the model's reasoning budget (2k/4k/8k/16k/unlimited thinking tokens)
 - **Jellyfin media server** — browse and query your media library via MCP
 - **Built-in tools** — reminders, URL summarization, translation, and GitHub feature-request filing
 
@@ -34,6 +35,7 @@ See `.env.example` for all available options. Key variables:
 | `DISCORD_BOT_TOKEN` | Discord bot auth |
 | `OWNER_DISCORD_ID` | Owner user ID |
 | `LLM_BASE_URL` / `LLM_MODEL` | OpenAI-compatible LLM endpoint (llama.cpp) |
+| `SEARXNG_URL` | SearXNG instance for the `web_search` tool |
 | `JELLYFIN_URL` + `JELLYFIN_API_KEY` | Enables Jellyfin MCP |
 | `GITHUB_*` | GitHub App credentials for issue filing |
 | `SENTRY_DSN` / `SENTRY_ENVIRONMENT` | Optional Sentry error reporting for the chatbot |
@@ -45,7 +47,8 @@ Discord message → HouseBot::message() → Agent::run()
   ├── LLM agentic loop with tool dispatch
   │   ├── update_memory → user memory (markdown)
   │   ├── set_reminder / summarize_url / translate / create_feature_request
-  │   └── MCP tools → ddg__*, jellyfin__* (stdio JSON-RPC)
+  │   ├── web_search / fetch_webpage → SearXNG + guarded HTTP fetch
+  │   └── MCP tools → jellyfin__* (stdio JSON-RPC)
   └── streamed response back to Discord
 ```
 
