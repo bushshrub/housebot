@@ -599,9 +599,7 @@ impl Agent {
                     }
                 }
             }
-            "get_bot_features" => {
-                ToolOutcome::Text(tools::features::features_text().to_string())
-            }
+            "get_bot_features" => ToolOutcome::Text(tools::features::features_text().to_string()),
             _ if name.contains("__") => {
                 let (prefix, tool_name) = name.split_once("__").unwrap();
                 for server in &self.mcp_servers {
