@@ -7,6 +7,7 @@ use tokio::sync::Mutex;
 
 pub mod common_crawl;
 pub mod feature_request;
+pub mod features;
 pub mod remind;
 pub mod searxng;
 pub mod summarize_url;

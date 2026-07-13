@@ -558,28 +558,7 @@ async fn reply_no_ping(ctx: &Context, msg: &Message, content: &str) -> serenity:
 }
 
 fn help_response() -> String {
-    "\
-**Slash commands**
-`/help` — show this message
-`/new` / `/reset` — start a fresh conversation
-`/compact` — summarise the conversation and start fresh
-`/session` — show token and context usage
-`/status` — show your current settings at a glance
-`/effort [level]` — set thinking depth: `low` (2k) · `medium` (4k, default) · `high` (8k) · `xhigh` (16k) · `max` (unlimited)
-`/config personality [text]` — set (or clear) a tone/personality override
-`/config followup enabled [timeout]` — toggle unpinged follow-up replies in a server channel
-`/config channel add/remove/list/clear` — restrict which channels the bot responds in
-`/labs pagination enabled` — toggle paginated responses (experimental)
-`/commit` — show the running commit hash
-`/model` — show the current model name and context size
-`/erase_my_data` — permanently delete all your stored data
-
-**Prefix commands**
-`!skill list|add|delete|info <name>` — manage custom prompt skills
-`!note list|save|get|delete <name>` — manage personal notes
-`!stats` — show your conversation and memory stats
-`!new` / `!reset` / `!compact` — same as the slash variants"
-        .to_string()
+    crate::tools::features::features_text().to_string()
 }
 
 fn commit_hash_response(sha: Option<&str>) -> String {
