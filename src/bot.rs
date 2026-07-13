@@ -557,6 +557,31 @@ async fn reply_no_ping(ctx: &Context, msg: &Message, content: &str) -> serenity:
     msg.channel_id.send_message(&ctx.http, builder).await
 }
 
+fn help_response() -> String {
+    "\
+**Slash commands**
+`/help` — show this message
+`/new` / `/reset` — start a fresh conversation
+`/compact` — summarise the conversation and start fresh
+`/session` — show token and context usage
+`/status` — show your current settings at a glance
+`/effort [level]` — set thinking depth: `low` (2k) · `medium` (4k, default) · `high` (8k) · `xhigh` (16k) · `max` (unlimited)
+`/config personality [text]` — set (or clear) a tone/personality override
+`/config followup enabled [timeout]` — toggle unpinged follow-up replies in a server channel
+`/config channel add/remove/list/clear` — restrict which channels the bot responds in
+`/labs pagination enabled` — toggle paginated responses (experimental)
+`/commit` — show the running commit hash
+`/model` — show the current model name and context size
+`/erase_my_data` — permanently delete all your stored data
+
+**Prefix commands**
+`!skill list|add|delete|info <name>` — manage custom prompt skills
+`!note list|save|get|delete <name>` — manage personal notes
+`!stats` — show your conversation and memory stats
+`!new` / `!reset` / `!compact` — same as the slash variants"
+        .to_string()
+}
+
 fn commit_hash_response(sha: Option<&str>) -> String {
     match sha.filter(|sha| !sha.is_empty()) {
         Some(sha) => format!("Running commit: `{sha}`"),
@@ -699,6 +724,7 @@ impl EventHandler for HouseBot {
             tracing::error!("Failed to register /effort slash command: {e}");
         }
         for command in [
+            CreateCommand::new("help").description("Show all available commands"),
             CreateCommand::new("commit").description("Show the bot's running commit hash"),
             CreateCommand::new("model").description("Show information about the current model"),
             CreateCommand::new("session")
@@ -791,6 +817,7 @@ impl EventHandler for HouseBot {
             "labs" => handle_labs_interaction(&self.user_cfg, &cmd.data.options, user_id).await,
             "effort" => handle_effort_interaction(&self.user_cfg, &cmd.data.options, user_id).await,
             "status" => handle_status_interaction(&self.user_cfg, user_id).await,
+            "help" => help_response(),
             "commit" => commit_hash_response(option_env!("HOUSEBOT_GIT_SHA")),
             "model" => self.agent.model_info(),
             "session" => {
