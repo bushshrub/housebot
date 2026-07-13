@@ -471,6 +471,7 @@ impl Agent {
             tools::remind::definition(),
             tools::summarize_url::definition(),
             tools::translate::definition(),
+            tools::features::definition(),
         ] {
             let (name, desc, params) = flatten_tool(&def);
             tools.push(to_openai_tool(&name, &desc, params));
@@ -598,6 +599,9 @@ impl Agent {
                     }
                 }
             }
+            "get_bot_features" => {
+                ToolOutcome::Text(tools::features::features_text().to_string())
+            }
             _ if name.contains("__") => {
                 let (prefix, tool_name) = name.split_once("__").unwrap();
                 for server in &self.mcp_servers {
@@ -710,7 +714,7 @@ pub fn build_system_prompt(
     };
     format!(
         "You are a helpful house assistant bot in a Discord server. You help with media, web \
-search, and general information tasks.\n\nCurrent date/time: {now}\nCurrent user: {username} \
+search, general information, and software development questions.\n\nCurrent date/time: {now}\nCurrent user: {username} \
 (ID: {user_id}){memory_section}{personality_section}\n\n## Tools\n\
 - web_search — Search the web (SearXNG) for current information.\n\
 - fetch_webpage — Fetch and read the text of a public webpage.\n\
@@ -721,24 +725,15 @@ READ ONLY — only call get_* / search_* / list_* methods; never call mutating a
 - create_feature_request — File a GitHub issue for a feature the user wants added to this bot.\n\
 - set_reminder — Set a timed reminder; the bot will DM the user when the delay elapses.\n\
 - summarize_url — Fetch a public web URL and return a concise summary.\n\
-- translate — Translate text to any language using the LLM.{skills_section}\n\n\
-## Commands\n\
-Slash: `/new`/`/reset` — clear conversation; `/compact` — summarize + reset; \
-`/session` — token/context usage; `/status` — current settings at a glance; \
-`/effort [level]` — set thinking depth (low/medium/high/xhigh/max, default medium); \
-`/config` — personality override, follow-up replies, channel allowlist; \
-`/labs` — experimental features (e.g. paginated responses); \
-`/erase_my_data` — permanently delete all stored data.\n\
-Prefix: `!skill list|add|delete|info <name>` — manage custom prompt skills; \
-`!note list|save|get|delete <name>` — personal notes; `!stats` — usage summary.\n\
-Effort levels by thinking tokens: low (2k, fastest), medium (4k, default), high (8k), xhigh (16k), max (unlimited, slowest). \
-Change with `/effort level:<name>`; view current with `/status`.\n\
-When users ask what you can do or how to use a feature, answer from the above.\n\n\
+- translate — Translate text to any language using the LLM.\n\
+- get_bot_features — Return the full list of this bot's commands and capabilities. \
+Call this when a user asks what you can do, what commands exist, or how to use any feature.{skills_section}\n\n\
 ## Guidelines\n- Be conversational and friendly.\n- Use Jellyfin tools for any media questions \
 before guessing.\n- Use web_search for factual or current-events questions. If web_search returns a rate-limit \
 error, stop using it for this request and do not retry it repeatedly; use \
 common_crawl__search for historical URL evidence when appropriate, or explain that the search \
-service is temporarily unavailable.\n- Do not execute code or delegate coding tasks.\n- Update memory when you learn \
+service is temporarily unavailable.\n- You can discuss, explain, review, and advise on software \
+development, but you cannot execute code.\n- Update memory when you learn \
 something worth remembering.\n- Keep responses concise unless asked for detail.\n- If a user \
 requests a feature or improvement to this bot, immediately call create_feature_request with a \
 clear title and description, then tell them the issue URL.\n- If a tool returns an error message \
