@@ -479,6 +479,28 @@ async fn handle_effort_interaction(
     )
 }
 
+/// Handle a `/status` interaction: show the user's current settings at a glance.
+async fn handle_status_interaction(user_cfg: &UserConfigStore, author_id: u64) -> String {
+    let cfg = user_cfg.load(author_id).await;
+    let effort = format!(
+        "**{}** — {}",
+        cfg.thinking_mode,
+        cfg.thinking_mode.budget_label()
+    );
+    let followup = if cfg.followup_enabled {
+        format!("enabled (timeout: {}s)", cfg.followup_timeout_secs)
+    } else {
+        "disabled".to_string()
+    };
+    let personality = match &cfg.personality {
+        Some(p) if !p.trim().is_empty() => format!("> {}", p.trim().replace('\n', "\n> ")),
+        _ => "default".to_string(),
+    };
+    format!(
+        "**Your current settings:**\n• Effort level: {effort}\n• Follow-up replies: {followup}\n• Personality: {personality}\n\nUse `/effort` to change the thinking effort level."
+    )
+}
+
 async fn handle_labs_interaction(
     user_cfg: &UserConfigStore,
     options: &[serenity::all::CommandDataOption],
@@ -681,6 +703,8 @@ impl EventHandler for HouseBot {
             CreateCommand::new("model").description("Show information about the current model"),
             CreateCommand::new("session")
                 .description("Show context and token usage for this session"),
+            CreateCommand::new("status")
+                .description("Show your current settings (effort level, follow-up, personality)"),
             CreateCommand::new("new").description("Start a new conversation and clear the old one"),
             CreateCommand::new("reset").description("Clear the conversation and start fresh"),
             CreateCommand::new("compact")
@@ -766,6 +790,7 @@ impl EventHandler for HouseBot {
             }
             "labs" => handle_labs_interaction(&self.user_cfg, &cmd.data.options, user_id).await,
             "effort" => handle_effort_interaction(&self.user_cfg, &cmd.data.options, user_id).await,
+            "status" => handle_status_interaction(&self.user_cfg, user_id).await,
             "commit" => commit_hash_response(option_env!("HOUSEBOT_GIT_SHA")),
             "model" => self.agent.model_info(),
             "session" => {
