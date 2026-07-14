@@ -60,12 +60,25 @@ impl<'a> AgentRequest<'a> {
     }
 }
 
+/// Structured bot-control action extracted from a tool call, carried alongside text.
+#[derive(Debug, Clone)]
+pub enum AgentControlAction {
+    /// Owner immediate dispatch is ready.
+    OwnerDispatchReady { job_id: uuid::Uuid },
+    /// Owner wants to configure interactively.
+    OwnerConfigurationRequired { job_id: uuid::Uuid },
+    /// Non-owner request created; owner must approve.
+    OwnerApprovalRequired { job_id: uuid::Uuid },
+}
+
 /// The outcome of one `Agent::run`.
 #[derive(Debug, Clone, Default)]
 pub struct AgentResult {
     pub text: String,
     pub session_notice: Option<String>,
     pub tools_called: Vec<String>,
+    /// Set when a `prepare_feature_development` tool call produces a structured outcome.
+    pub control_action: Option<AgentControlAction>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -106,6 +119,11 @@ impl TextSink for TextStreamAdapter<'_> {
 /// Result of dispatching a single tool call.
 enum ToolOutcome {
     Text(String),
+    /// A development-flow tool call that also carries a control action.
+    DevelopmentAction {
+        text: String,
+        action: AgentControlAction,
+    },
 }
 
 /// The agent: LLM client, storage, tools, and connected MCP servers.
@@ -119,7 +137,11 @@ pub struct Agent {
     reminders: Reminders,
     reporter: Arc<GitHubIssueReporter>,
     rate_limiter: RateLimiter,
-    dispatch_limiter: RateLimiter,
+    /// Non-owner per-user development request limiter.
+    non_owner_dev_limiter: RateLimiter,
+    /// Owner safety limiter — consumed only at actual GitHub dispatch (reserved for future use).
+    #[allow(dead_code)]
+    owner_dispatch_limiter: RateLimiter,
     pending_jobs: Arc<PendingJobStore>,
     searxng: SearxNg,
     web_fetch: WebFetch,
@@ -162,7 +184,8 @@ impl Agent {
             reminders: Reminders::default(),
             reporter: Arc::new(GitHubIssueReporter::default()),
             rate_limiter: tools::feature_request::default_rate_limiter(),
-            dispatch_limiter: tools::feature_development::default_rate_limiter(),
+            non_owner_dev_limiter: tools::feature_development::default_rate_limiter(),
+            owner_dispatch_limiter: tools::feature_development::owner_dispatch_limiter(),
             pending_jobs: Arc::new(PendingJobStore::default()),
             searxng: SearxNg::from_env(),
             web_fetch: WebFetch::default(),
@@ -366,6 +389,8 @@ impl Agent {
         let mut turn_messages: Vec<Value> = Vec::new();
         let mut tools_called = Vec::new();
 
+        let mut control_action: Option<AgentControlAction> = None;
+
         let final_text = 'agent_loop: loop {
             let text_sink = TextStreamAdapter(hooks);
             let completion = match self
@@ -424,9 +449,18 @@ impl Agent {
                 tools_called.push(tc.name.clone());
                 hooks.on_tool_called(&tc.name, &args).await;
                 let outcome = self
-                    .dispatch_tool(&tc.name, &args, user_id, channel_id, hooks)
+                    .dispatch_tool(&tc.name, &args, user_id, username, channel_id, hooks)
                     .await;
-                let ToolOutcome::Text(content) = outcome;
+                let content = match outcome {
+                    ToolOutcome::Text(ref t) => t.clone(),
+                    ToolOutcome::DevelopmentAction {
+                        ref text,
+                        ref action,
+                    } => {
+                        control_action = Some(action.clone());
+                        text.clone()
+                    }
+                };
                 let tool_msg = json!({
                     "role": "tool",
                     "tool_call_id": tc.id,
@@ -468,6 +502,7 @@ impl Agent {
             },
             session_notice,
             tools_called,
+            control_action,
         }
     }
 
@@ -506,14 +541,18 @@ impl Agent {
         name: &str,
         args: &Value,
         user_id: &str,
+        username: &str,
         channel_id: u64,
         _hooks: &dyn AgentHooks,
     ) -> ToolOutcome {
         let started = std::time::Instant::now();
         let outcome = self
-            .dispatch_tool_inner(name, args, user_id, channel_id)
+            .dispatch_tool_inner(name, args, user_id, username, channel_id)
             .await;
-        let ToolOutcome::Text(content) = &outcome;
+        let content = match &outcome {
+            ToolOutcome::Text(t) => t.as_str(),
+            ToolOutcome::DevelopmentAction { text, .. } => text.as_str(),
+        };
         tracing::info!(
             target: "housebot::agent",
             user_id,
@@ -531,6 +570,7 @@ impl Agent {
         name: &str,
         args: &Value,
         user_id: &str,
+        username: &str,
         channel_id: u64,
     ) -> ToolOutcome {
         match name {
@@ -580,6 +620,11 @@ impl Agent {
                 .await,
             ),
             "prepare_feature_development" => {
+                use crate::coding_agent::pending::{
+                    DevelopmentRequester, DiscordMessageRef, PartialAgentSelection,
+                };
+                use crate::tools::feature_development::{DispatchMode, FeatureDevelopmentOutcome};
+
                 let requirements: Vec<String> = args
                     .get("requirements")
                     .and_then(|v| v.as_array())
@@ -598,18 +643,71 @@ impl Agent {
                             .collect()
                     })
                     .unwrap_or_default();
-                ToolOutcome::Text(tools::feature_development::prepare_feature_development(
-                    &self.pending_jobs,
-                    &self.dispatch_limiter,
-                    config::owner_id(),
-                    user_id,
+
+                let owner_id = config::owner_id();
+                let requester_user_id: u64 = user_id.parse().unwrap_or(0);
+                let interactive = args
+                    .get("interactive")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false);
+
+                let dispatch_mode = if requester_user_id == owner_id {
+                    if interactive {
+                        DispatchMode::Interactive
+                    } else {
+                        DispatchMode::Immediate
+                    }
+                } else {
+                    DispatchMode::RequireOwnerApproval
+                };
+
+                let requester = DevelopmentRequester {
+                    user_id: requester_user_id,
+                    username: username.to_string(),
                     channel_id,
+                    guild_id: None,
+                    source_message_id: 0,
+                };
+                let source_message = DiscordMessageRef {
+                    channel_id,
+                    message_id: 0,
+                };
+
+                let defaults = PartialAgentSelection::default();
+
+                let outcome = tools::feature_development::prepare_feature_development(
+                    &self.pending_jobs,
+                    &self.non_owner_dev_limiter,
+                    owner_id,
+                    requester,
+                    source_message,
                     str_arg(args, "title"),
                     str_arg(args, "objective"),
                     str_arg(args, "context"),
                     requirements,
                     acceptance_criteria,
-                ))
+                    dispatch_mode,
+                    &defaults,
+                );
+
+                let text = outcome.tool_response();
+                let action = match &outcome {
+                    FeatureDevelopmentOutcome::OwnerDispatchReady { job_id } => {
+                        Some(AgentControlAction::OwnerDispatchReady { job_id: *job_id })
+                    }
+                    FeatureDevelopmentOutcome::OwnerConfigurationRequired { job_id } => {
+                        Some(AgentControlAction::OwnerConfigurationRequired { job_id: *job_id })
+                    }
+                    FeatureDevelopmentOutcome::OwnerApprovalRequired { job_id } => {
+                        Some(AgentControlAction::OwnerApprovalRequired { job_id: *job_id })
+                    }
+                    FeatureDevelopmentOutcome::Rejected { .. } => None,
+                };
+                if let Some(action) = action {
+                    ToolOutcome::DevelopmentAction { text, action }
+                } else {
+                    ToolOutcome::Text(text)
+                }
             }
             "set_reminder" => {
                 let delay = args
@@ -905,7 +1003,8 @@ impl Agent {
                 String::new(),
             )),
             rate_limiter: tools::feature_request::default_rate_limiter(),
-            dispatch_limiter: tools::feature_development::default_rate_limiter(),
+            non_owner_dev_limiter: tools::feature_development::default_rate_limiter(),
+            owner_dispatch_limiter: tools::feature_development::owner_dispatch_limiter(),
             pending_jobs: Arc::new(PendingJobStore::default()),
             searxng: SearxNg::from_env(),
             web_fetch: WebFetch::default(),
@@ -1145,10 +1244,20 @@ mod tests {
         let client = Arc::new(MockChatClient::new());
         let (_t, agent) = test_agent(client);
         let out = agent
-            .dispatch_tool("run_unknown_code_agent", &json!({}), "u", 0, &NoHooks)
+            .dispatch_tool(
+                "run_unknown_code_agent",
+                &json!({}),
+                "u",
+                "testuser",
+                0,
+                &NoHooks,
+            )
             .await;
         match out {
             ToolOutcome::Text(t) => assert!(t.contains("Unknown tool")),
+            ToolOutcome::DevelopmentAction { text, .. } => {
+                panic!("unexpected development action: {text}")
+            }
         }
     }
 
