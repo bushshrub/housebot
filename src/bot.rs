@@ -9,19 +9,23 @@ use std::time::{Duration, Instant};
 use async_trait::async_trait;
 use regex::Regex;
 use serenity::all::{
-    ButtonStyle, Command, CommandDataOptionValue, CommandOptionType, Context, CreateActionRow,
-    CreateAllowedMentions, CreateAttachment, CreateButton, CreateCommand, CreateCommandOption,
-    CreateEmbed, CreateInteractionResponse, CreateInteractionResponseMessage,
-    EditInteractionResponse, EditMessage, EventHandler, GatewayIntents, Interaction, Message,
-    Ready, UserId,
+    ButtonStyle, Command, CommandDataOptionValue, CommandOptionType, ComponentInteractionDataKind,
+    Context, CreateActionRow, CreateAllowedMentions, CreateAttachment, CreateButton, CreateCommand,
+    CreateCommandOption, CreateEmbed, CreateInteractionResponse, CreateInteractionResponseMessage,
+    CreateSelectMenu, CreateSelectMenuKind, CreateSelectMenuOption, EditInteractionResponse,
+    EditMessage, EventHandler, GatewayIntents, Interaction, Message, Ready, UserId,
 };
 use serenity::builder::CreateMessage;
 use serenity::Client;
 use tokio::sync::Mutex;
+use uuid::Uuid;
 
 use crate::agent::{Agent, AgentHooks, AgentRequest, AgentResult, MediaData, NoHooks};
 use crate::bot_config::{ServerConfigStore, UserConfigStore};
 pub use crate::bot_response::SecretRedactor;
+use crate::coding_agent::catalog::{AgentCatalog, CodingAgent};
+use crate::coding_agent::issue::{build_issue_body, dispatch_labels};
+use crate::coding_agent::pending::{DispatchStage, PendingJobStore};
 use crate::config;
 use crate::history::History;
 use crate::llm::ThinkingMode;
@@ -30,6 +34,7 @@ use crate::message_log::MessageLog;
 use crate::notes::Notes;
 use crate::rate_limit::RateLimiter;
 use crate::skills::Skills;
+use crate::tools::feature_development::DISPATCH_FLOW_PREFIX;
 
 pub use crate::bot_commands::{erase_data_command, note_command, skill_command, stats_command};
 use crate::bot_formatting::append_tool_summary;
@@ -38,6 +43,7 @@ pub use crate::bot_formatting::{extract_code_files, lang_ext, split_text, tool_h
 const MAX_MESSAGE_LENGTH: usize = 2000;
 const EMBED_DESCRIPTION_LIMIT: usize = 4096;
 const PAGINATION_PREFIX: &str = "housebot_labs_page:";
+const DEVELOP_PREFIX: &str = "develop:";
 
 struct PaginatedResponse {
     owner_id: u64,
@@ -202,6 +208,10 @@ pub struct HouseBot {
     paginated: Mutex<HashMap<String, PaginatedResponse>>,
     reminder_started: AtomicBool,
     chat_rate_limiter: RateLimiter,
+    /// Shared with `Agent` — holds pending coding-agent dispatch jobs.
+    pending_jobs: Arc<PendingJobStore>,
+    /// Catalog of agents, models, and effort levels.
+    catalog: AgentCatalog,
 }
 
 impl HouseBot {
@@ -211,6 +221,7 @@ impl HouseBot {
         let chat_rate_max: usize = config::env_parse("CHAT_RATE_LIMIT_MAX", 20);
         let chat_rate_window =
             Duration::from_secs(config::env_parse("CHAT_RATE_LIMIT_WINDOW_SECS", 60u64));
+        let pending_jobs = agent.pending_jobs();
         Self {
             agent,
             redactor: Arc::new(SecretRedactor::from_env()),
@@ -227,6 +238,8 @@ impl HouseBot {
             paginated: Mutex::new(HashMap::new()),
             reminder_started: AtomicBool::new(false),
             chat_rate_limiter: RateLimiter::new(chat_rate_max, chat_rate_window),
+            pending_jobs,
+            catalog: AgentCatalog::load_embedded(),
         }
     }
 
@@ -747,7 +760,11 @@ impl EventHandler for HouseBot {
 
     async fn interaction_create(&self, ctx: Context, interaction: Interaction) {
         if let Interaction::Component(component) = &interaction {
-            self.handle_pagination_component(&ctx, component).await;
+            if component.data.custom_id.starts_with(DEVELOP_PREFIX) {
+                self.handle_develop_component(&ctx, component).await;
+            } else {
+                self.handle_pagination_component(&ctx, component).await;
+            }
             return;
         }
         let Interaction::Command(cmd) = interaction else {
@@ -1080,6 +1097,7 @@ impl HouseBot {
                     media: &media,
                     personality: personality.as_deref(),
                     thinking,
+                    channel_id: msg.channel_id.get(),
                 },
                 response_hooks
                     .as_ref()
@@ -1097,6 +1115,20 @@ impl HouseBot {
                 Instant::now(),
                 followup_timeout,
             );
+        }
+
+        // Intercept the DISPATCH_FLOW marker before displaying any text.
+        if let Some(uuid_str) = result.text.strip_prefix(DISPATCH_FLOW_PREFIX) {
+            if let Ok(job_id) = uuid_str.trim().parse::<Uuid>() {
+                if let Some(reaction) = pending_reaction {
+                    let _ = reaction.delete(&ctx.http).await;
+                }
+                if let Some(progress) = progress.as_ref() {
+                    let _ = progress.delete(&ctx.http).await;
+                }
+                self.start_develop_flow(ctx, msg, job_id).await;
+                return;
+            }
         }
 
         let safe = self.redactor.redact(&result.text);
@@ -1130,6 +1162,529 @@ impl HouseBot {
                         .add_file(CreateAttachment::bytes(safe.into_bytes(), filename)),
                 )
                 .await;
+        }
+    }
+
+    /// Send the initial agent-selection message for a newly prepared develop job.
+    async fn start_develop_flow(&self, ctx: &Context, msg: &Message, job_id: Uuid) {
+        let title = self
+            .pending_jobs
+            .with_job(job_id, |j| j.specification.title.clone());
+        let Some(title) = title else {
+            let _ = reply_no_ping(ctx, msg, "Error: Development job not found.").await;
+            return;
+        };
+        let content = format!(
+            "**Feature development: {title}**\n\nChoose a coding agent to implement this feature:"
+        );
+        let components = develop_agent_components(&job_id.to_string());
+        let builder = CreateMessage::new()
+            .content(content)
+            .components(components)
+            .reference_message(msg)
+            .allowed_mentions(CreateAllowedMentions::new());
+        if let Ok(sent) = msg.channel_id.send_message(&ctx.http, builder).await {
+            self.pending_jobs
+                .with_job_mut(job_id, |j| j.message_id = Some(sent.id.get()));
+        }
+    }
+
+    /// Handle a Discord component interaction for the develop flow.
+    async fn handle_develop_component(
+        &self,
+        ctx: &Context,
+        component: &serenity::all::ComponentInteraction,
+    ) {
+        // custom_id format: develop:<job-id>:<action>
+        let rest = component
+            .data
+            .custom_id
+            .strip_prefix(DEVELOP_PREFIX)
+            .unwrap_or("");
+        let Some((id_str, action)) = rest.split_once(':') else {
+            return;
+        };
+        let Ok(job_id) = id_str.parse::<Uuid>() else {
+            return;
+        };
+
+        let owner_id = self.pending_jobs.with_job(job_id, |j| j.owner_id);
+        let Some(owner_id) = owner_id else {
+            let _ = component
+                .create_response(
+                    &ctx.http,
+                    CreateInteractionResponse::Message(
+                        CreateInteractionResponseMessage::new()
+                            .content(
+                                "This development job has expired. Please ask the bot to prepare a new one.",
+                            )
+                            .ephemeral(true),
+                    ),
+                )
+                .await;
+            return;
+        };
+
+        // Only the owner may interact.
+        if component.user.id.get() != owner_id {
+            let _ = component
+                .create_response(
+                    &ctx.http,
+                    CreateInteractionResponse::Message(
+                        CreateInteractionResponseMessage::new()
+                            .content("Only the configured bot owner can use these controls.")
+                            .ephemeral(true),
+                    ),
+                )
+                .await;
+            return;
+        }
+
+        // Check expiry.
+        let expired = self
+            .pending_jobs
+            .with_job(job_id, |j| j.is_expired())
+            .unwrap_or(true);
+        if expired {
+            let _ = component
+                .create_response(
+                    &ctx.http,
+                    CreateInteractionResponse::Message(
+                        CreateInteractionResponseMessage::new()
+                            .content(
+                                "This development job has expired (15-minute timeout). Please ask the bot to prepare a new one.",
+                            )
+                            .ephemeral(true),
+                    ),
+                )
+                .await;
+            return;
+        }
+
+        let id_str = job_id.to_string();
+        match action {
+            "agent" => {
+                // Value from the select menu.
+                let selected = match &component.data.kind {
+                    ComponentInteractionDataKind::StringSelect { values } => {
+                        values.first().cloned()
+                    }
+                    _ => None,
+                };
+                let Some(agent_id) = selected else {
+                    return;
+                };
+                let Ok(agent) = agent_id.parse::<CodingAgent>() else {
+                    let _ = component
+                        .create_response(
+                            &ctx.http,
+                            CreateInteractionResponse::Message(
+                                CreateInteractionResponseMessage::new()
+                                    .content(format!("Unknown agent: {agent_id}"))
+                                    .ephemeral(true),
+                            ),
+                        )
+                        .await;
+                    return;
+                };
+                self.pending_jobs.with_job_mut(job_id, |j| {
+                    j.selection.agent = Some(agent);
+                    j.selection.model = None;
+                    j.selection.effort = None;
+                    j.stage = DispatchStage::ChoosingModel;
+                });
+                let (title, models_text) = self
+                    .pending_jobs
+                    .with_job(job_id, |j| {
+                        (
+                            j.specification.title.clone(),
+                            format!(
+                                "**Feature development: {}**\n\n\
+                                 Agent: **{}**\nChoose a model:",
+                                j.specification.title,
+                                agent.display_name()
+                            ),
+                        )
+                    })
+                    .unwrap_or_default();
+                let _ = title;
+                let components = develop_model_components(&id_str, agent, &self.catalog);
+                let _ = component
+                    .create_response(
+                        &ctx.http,
+                        CreateInteractionResponse::UpdateMessage(
+                            CreateInteractionResponseMessage::new()
+                                .content(models_text)
+                                .components(components),
+                        ),
+                    )
+                    .await;
+            }
+            "model" => {
+                let selected = match &component.data.kind {
+                    ComponentInteractionDataKind::StringSelect { values } => {
+                        values.first().cloned()
+                    }
+                    _ => None,
+                };
+                let Some(model_id) = selected else {
+                    return;
+                };
+                let agent = self
+                    .pending_jobs
+                    .with_job(job_id, |j| j.selection.agent)
+                    .flatten();
+                let Some(agent) = agent else {
+                    return;
+                };
+                // Validate model against catalog.
+                if self.catalog.efforts_for(agent, &model_id).is_none() {
+                    let _ = component
+                        .create_response(
+                            &ctx.http,
+                            CreateInteractionResponse::Message(
+                                CreateInteractionResponseMessage::new()
+                                    .content(format!(
+                                        "Model `{model_id}` is not valid for {agent}."
+                                    ))
+                                    .ephemeral(true),
+                            ),
+                        )
+                        .await;
+                    return;
+                }
+                self.pending_jobs.with_job_mut(job_id, |j| {
+                    j.selection.model = Some(model_id.clone());
+                    j.selection.effort = None;
+                    j.stage = DispatchStage::ChoosingEffort;
+                });
+                let content = self
+                    .pending_jobs
+                    .with_job(job_id, |j| {
+                        format!(
+                            "**Feature development: {}**\n\n\
+                             Agent: **{}**\nModel: **{}**\nChoose effort level:",
+                            j.specification.title,
+                            agent.display_name(),
+                            model_id
+                        )
+                    })
+                    .unwrap_or_default();
+                let components =
+                    develop_effort_components(&id_str, agent, &model_id, &self.catalog);
+                let _ = component
+                    .create_response(
+                        &ctx.http,
+                        CreateInteractionResponse::UpdateMessage(
+                            CreateInteractionResponseMessage::new()
+                                .content(content)
+                                .components(components),
+                        ),
+                    )
+                    .await;
+            }
+            "effort" => {
+                let selected = match &component.data.kind {
+                    ComponentInteractionDataKind::StringSelect { values } => {
+                        values.first().cloned()
+                    }
+                    _ => None,
+                };
+                let Some(effort_id) = selected else {
+                    return;
+                };
+                let (agent, model) = self
+                    .pending_jobs
+                    .with_job(job_id, |j| (j.selection.agent, j.selection.model.clone()))
+                    .unwrap_or_default();
+                let (Some(agent), Some(model)) = (agent, model) else {
+                    return;
+                };
+                // Validate effort.
+                if self
+                    .catalog
+                    .efforts_for(agent, &model)
+                    .and_then(|efs| efs.iter().find(|e| e.id == effort_id))
+                    .is_none()
+                {
+                    let _ = component
+                        .create_response(
+                            &ctx.http,
+                            CreateInteractionResponse::Message(
+                                CreateInteractionResponseMessage::new()
+                                    .content(format!(
+                                        "Effort `{effort_id}` is not valid for model `{model}`."
+                                    ))
+                                    .ephemeral(true),
+                            ),
+                        )
+                        .await;
+                    return;
+                }
+                self.pending_jobs.with_job_mut(job_id, |j| {
+                    j.selection.effort = Some(effort_id.clone());
+                    j.stage = DispatchStage::Confirming;
+                });
+                let content = self
+                    .pending_jobs
+                    .with_job(job_id, |j| {
+                        format!(
+                            "**Feature development: {}**\n\n\
+                             **Agent:** {}\n\
+                             **Model:** {}\n\
+                             **Effort:** {}\n\n\
+                             **Objective:**\n{}\n\n\
+                             Confirm dispatch to create a GitHub issue and queue the coding job.",
+                            j.specification.title,
+                            agent.display_name(),
+                            model,
+                            effort_id,
+                            j.specification.objective
+                        )
+                    })
+                    .unwrap_or_default();
+                let components = develop_confirm_components(&id_str);
+                let _ = component
+                    .create_response(
+                        &ctx.http,
+                        CreateInteractionResponse::UpdateMessage(
+                            CreateInteractionResponseMessage::new()
+                                .content(content)
+                                .components(components),
+                        ),
+                    )
+                    .await;
+            }
+            "confirm" => {
+                // Atomic dispatch: only succeeds once.
+                if !self.pending_jobs.try_start_dispatch(job_id) {
+                    let _ = component
+                        .create_response(
+                            &ctx.http,
+                            CreateInteractionResponse::Message(
+                                CreateInteractionResponseMessage::new()
+                                    .content(
+                                        "This job is already being dispatched or has been dispatched.",
+                                    )
+                                    .ephemeral(true),
+                            ),
+                        )
+                        .await;
+                    return;
+                }
+
+                // Acknowledge immediately so Discord doesn't timeout.
+                let _ = component
+                    .create_response(
+                        &ctx.http,
+                        CreateInteractionResponse::UpdateMessage(
+                            CreateInteractionResponseMessage::new()
+                                .content("⏳ **Dispatching...** Creating GitHub issue...")
+                                .components(vec![]),
+                        ),
+                    )
+                    .await;
+
+                // Gather all needed data.
+                let job_data = self.pending_jobs.with_job(job_id, |j| {
+                    let agent = j.selection.agent?;
+                    let model = j.selection.model.clone()?;
+                    let effort = j.selection.effort.clone()?;
+                    Some((j.specification.clone(), agent, model, effort, j.owner_id))
+                });
+                let Some(Some((spec, agent, model, effort, _owner_discord_id))) = job_data else {
+                    self.pending_jobs.mark_dispatch_failed(job_id);
+                    let _ = component
+                        .edit_response(
+                            &ctx.http,
+                            EditInteractionResponse::new().content(
+                                "❌ Failed to dispatch: incomplete selection. Please start again.",
+                            ),
+                        )
+                        .await;
+                    return;
+                };
+
+                let selection = match self.catalog.validate_selection(agent, &model, &effort) {
+                    Ok(s) => s,
+                    Err(e) => {
+                        self.pending_jobs.mark_dispatch_failed(job_id);
+                        let _ = component
+                            .edit_response(
+                                &ctx.http,
+                                EditInteractionResponse::new().content(format!(
+                                    "❌ Configuration error: {e}. Please start again."
+                                )),
+                            )
+                            .await;
+                        return;
+                    }
+                };
+
+                let requester_name = component.user.name.clone();
+                let requester_id = component.user.id.get();
+
+                let body = match build_issue_body(&spec, &selection, &requester_name, requester_id)
+                {
+                    Ok(b) => b,
+                    Err(e) => {
+                        self.pending_jobs.mark_dispatch_failed(job_id);
+                        let _ = component
+                            .edit_response(
+                                &ctx.http,
+                                EditInteractionResponse::new()
+                                    .content(format!("❌ Failed to build issue body: {e}")),
+                            )
+                            .await;
+                        return;
+                    }
+                };
+
+                let title = format!("[agent:{}] {}", agent.id_str(), spec.title);
+                let labels = dispatch_labels(agent);
+                let label_refs: Vec<&str> = labels.iter().map(String::as_str).collect();
+
+                // Get the reporter from the agent.
+                let reporter = self.agent.reporter();
+                match reporter.create_issue_full(&title, &body, &label_refs).await {
+                    Some(issue) => {
+                        self.pending_jobs.mark_dispatched(job_id);
+                        tracing::info!(
+                            target: "housebot::develop",
+                            issue_number = issue.number,
+                            agent = agent.id_str(),
+                            "Development job dispatched"
+                        );
+                        let _ = component
+                            .edit_response(
+                                &ctx.http,
+                                EditInteractionResponse::new().content(format!(
+                                    "✅ **Dispatched!**\n\
+                                     Issue #{num} created: {url}\n\
+                                     Agent: **{agent_name}** | Model: `{model}` | Effort: `{effort}`\n\
+                                     The GitHub Actions workflow will pick this up and open a draft PR.",
+                                    num = issue.number,
+                                    url = issue.html_url,
+                                    agent_name = agent.display_name(),
+                                )),
+                            )
+                            .await;
+                    }
+                    None => {
+                        self.pending_jobs.mark_dispatch_failed(job_id);
+                        let _ = component
+                            .edit_response(
+                                &ctx.http,
+                                EditInteractionResponse::new().content(
+                                    "❌ Failed to create GitHub issue. Check bot logs for details.\n\
+                                     The job has been reset to the confirmation stage — click Dispatch to retry.",
+                                ),
+                            )
+                            .await;
+                    }
+                }
+            }
+            "back" => {
+                // Navigate back one stage.
+                let stage = self.pending_jobs.with_job(job_id, |j| j.stage);
+                let (content, components) = match stage {
+                    Some(DispatchStage::ChoosingModel) => {
+                        self.pending_jobs.with_job_mut(job_id, |j| {
+                            j.selection.agent = None;
+                            j.stage = DispatchStage::ChoosingAgent;
+                        });
+                        let title = self
+                            .pending_jobs
+                            .with_job(job_id, |j| j.specification.title.clone())
+                            .unwrap_or_default();
+                        (
+                            format!(
+                                "**Feature development: {title}**\n\nChoose a coding agent to implement this feature:"
+                            ),
+                            develop_agent_components(&id_str),
+                        )
+                    }
+                    Some(DispatchStage::ChoosingEffort) => {
+                        let agent = self
+                            .pending_jobs
+                            .with_job(job_id, |j| j.selection.agent)
+                            .flatten();
+                        self.pending_jobs.with_job_mut(job_id, |j| {
+                            j.selection.model = None;
+                            j.stage = DispatchStage::ChoosingModel;
+                        });
+                        let (title, agent_name) = self
+                            .pending_jobs
+                            .with_job(job_id, |j| {
+                                (
+                                    j.specification.title.clone(),
+                                    j.selection.agent.map(|a| a.display_name().to_string()),
+                                )
+                            })
+                            .unwrap_or_default();
+                        let agent = agent.unwrap_or(CodingAgent::Claude);
+                        (
+                            format!(
+                                "**Feature development: {title}**\n\nAgent: **{}**\nChoose a model:",
+                                agent_name.unwrap_or_default()
+                            ),
+                            develop_model_components(&id_str, agent, &self.catalog),
+                        )
+                    }
+                    Some(DispatchStage::Confirming) => {
+                        let agent_opt = self
+                            .pending_jobs
+                            .with_job(job_id, |j| j.selection.agent)
+                            .flatten();
+                        let model_opt = self
+                            .pending_jobs
+                            .with_job(job_id, |j| j.selection.model.clone())
+                            .flatten();
+                        self.pending_jobs.with_job_mut(job_id, |j| {
+                            j.selection.effort = None;
+                            j.stage = DispatchStage::ChoosingEffort;
+                        });
+                        let title = self
+                            .pending_jobs
+                            .with_job(job_id, |j| j.specification.title.clone())
+                            .unwrap_or_default();
+                        let agent = agent_opt.unwrap_or(CodingAgent::Claude);
+                        let model = model_opt.unwrap_or_default();
+                        (
+                            format!(
+                                "**Feature development: {title}**\n\nAgent: **{}**\nModel: `{model}`\nChoose effort level:",
+                                agent.display_name()
+                            ),
+                            develop_effort_components(&id_str, agent, &model, &self.catalog),
+                        )
+                    }
+                    _ => return,
+                };
+                let _ = component
+                    .create_response(
+                        &ctx.http,
+                        CreateInteractionResponse::UpdateMessage(
+                            CreateInteractionResponseMessage::new()
+                                .content(content)
+                                .components(components),
+                        ),
+                    )
+                    .await;
+            }
+            "cancel" => {
+                self.pending_jobs.cancel(job_id);
+                let _ = component
+                    .create_response(
+                        &ctx.http,
+                        CreateInteractionResponse::UpdateMessage(
+                            CreateInteractionResponseMessage::new()
+                                .content("❌ Development job cancelled.")
+                                .components(vec![]),
+                        ),
+                    )
+                    .await;
+            }
+            _ => {}
         }
     }
 
@@ -1186,6 +1741,115 @@ impl HouseBot {
         );
         let _ = component.create_response(&ctx.http, response).await;
     }
+}
+
+// ── develop flow component builders ──────────────────────────────────────────
+
+fn develop_agent_components(job_id: &str) -> Vec<CreateActionRow> {
+    let options = vec![
+        CreateSelectMenuOption::new("Codex", "codex"),
+        CreateSelectMenuOption::new("Claude Code", "claude"),
+        CreateSelectMenuOption::new("OpenCode (NVIDIA)", "opencode"),
+    ];
+    vec![
+        CreateActionRow::SelectMenu(
+            CreateSelectMenu::new(
+                format!("{DEVELOP_PREFIX}{job_id}:agent"),
+                CreateSelectMenuKind::String { options },
+            )
+            .placeholder("Select coding agent"),
+        ),
+        CreateActionRow::Buttons(vec![CreateButton::new(format!(
+            "{DEVELOP_PREFIX}{job_id}:cancel"
+        ))
+        .label("Cancel")
+        .style(ButtonStyle::Danger)]),
+    ]
+}
+
+fn develop_model_components(
+    job_id: &str,
+    agent: CodingAgent,
+    catalog: &AgentCatalog,
+) -> Vec<CreateActionRow> {
+    let models = catalog.models_for(agent);
+    let options: Vec<CreateSelectMenuOption> = models
+        .iter()
+        .map(|m| {
+            let mut opt = CreateSelectMenuOption::new(&m.display_name, &m.id);
+            if let Some(desc) = &m.description {
+                opt = opt.description(desc.chars().take(100).collect::<String>());
+            }
+            opt
+        })
+        .collect();
+    vec![
+        CreateActionRow::SelectMenu(
+            CreateSelectMenu::new(
+                format!("{DEVELOP_PREFIX}{job_id}:model"),
+                CreateSelectMenuKind::String { options },
+            )
+            .placeholder("Select model"),
+        ),
+        CreateActionRow::Buttons(vec![
+            CreateButton::new(format!("{DEVELOP_PREFIX}{job_id}:back"))
+                .label("← Back")
+                .style(ButtonStyle::Secondary),
+            CreateButton::new(format!("{DEVELOP_PREFIX}{job_id}:cancel"))
+                .label("Cancel")
+                .style(ButtonStyle::Danger),
+        ]),
+    ]
+}
+
+fn develop_effort_components(
+    job_id: &str,
+    agent: CodingAgent,
+    model: &str,
+    catalog: &AgentCatalog,
+) -> Vec<CreateActionRow> {
+    let efforts = catalog.efforts_for(agent, model).unwrap_or(&[]);
+    let options: Vec<CreateSelectMenuOption> = efforts
+        .iter()
+        .map(|e| {
+            let mut opt = CreateSelectMenuOption::new(&e.display_name, &e.id);
+            if let Some(desc) = &e.description {
+                opt = opt.description(desc.chars().take(100).collect::<String>());
+            }
+            opt
+        })
+        .collect();
+    vec![
+        CreateActionRow::SelectMenu(
+            CreateSelectMenu::new(
+                format!("{DEVELOP_PREFIX}{job_id}:effort"),
+                CreateSelectMenuKind::String { options },
+            )
+            .placeholder("Select effort level"),
+        ),
+        CreateActionRow::Buttons(vec![
+            CreateButton::new(format!("{DEVELOP_PREFIX}{job_id}:back"))
+                .label("← Back")
+                .style(ButtonStyle::Secondary),
+            CreateButton::new(format!("{DEVELOP_PREFIX}{job_id}:cancel"))
+                .label("Cancel")
+                .style(ButtonStyle::Danger),
+        ]),
+    ]
+}
+
+fn develop_confirm_components(job_id: &str) -> Vec<CreateActionRow> {
+    vec![CreateActionRow::Buttons(vec![
+        CreateButton::new(format!("{DEVELOP_PREFIX}{job_id}:confirm"))
+            .label("Dispatch")
+            .style(ButtonStyle::Success),
+        CreateButton::new(format!("{DEVELOP_PREFIX}{job_id}:back"))
+            .label("← Change Effort")
+            .style(ButtonStyle::Secondary),
+        CreateButton::new(format!("{DEVELOP_PREFIX}{job_id}:cancel"))
+            .label("Cancel")
+            .style(ButtonStyle::Danger),
+    ])]
 }
 
 fn split_command(content: &str) -> (String, String) {

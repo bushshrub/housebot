@@ -38,8 +38,16 @@ struct TokenResponse {
     token: String,
 }
 
+/// The result of successfully creating a GitHub issue.
+#[derive(Debug, Clone)]
+pub struct CreatedIssue {
+    pub number: u64,
+    pub html_url: String,
+}
+
 #[derive(Deserialize)]
 struct IssueResponse {
+    number: u64,
     html_url: String,
 }
 
@@ -134,11 +142,23 @@ impl GitHubIssueReporter {
 
     /// Create an issue and return its URL, or `None` on any failure / when unconfigured.
     pub async fn create_issue(&self, title: &str, body: &str, labels: &[&str]) -> Option<String> {
+        self.create_issue_full(title, body, labels)
+            .await
+            .map(|i| i.html_url)
+    }
+
+    /// Create an issue and return the full `CreatedIssue` (number + URL), or `None` on failure.
+    pub async fn create_issue_full(
+        &self,
+        title: &str,
+        body: &str,
+        labels: &[&str],
+    ) -> Option<CreatedIssue> {
         if !self.is_configured() {
             return None;
         }
         match self.try_create_issue(title, body, labels).await {
-            Ok(url) => Some(url),
+            Ok(issue) => Some(issue),
             Err(e) => {
                 tracing::error!("Failed to create GitHub issue: {e}");
                 None
@@ -151,7 +171,7 @@ impl GitHubIssueReporter {
         title: &str,
         body: &str,
         labels: &[&str],
-    ) -> anyhow::Result<String> {
+    ) -> anyhow::Result<CreatedIssue> {
         let token = self.installation_token().await?;
         let url = format!("https://api.github.com/repos/{}/issues", self.repo);
         let labels: Vec<String> = if labels.is_empty() {
@@ -173,7 +193,10 @@ impl GitHubIssueReporter {
             .error_for_status()?
             .json::<IssueResponse>()
             .await?;
-        Ok(resp.html_url)
+        Ok(CreatedIssue {
+            number: resp.number,
+            html_url: resp.html_url,
+        })
     }
 
     /// Create an issue that references a Sentry event, with no sensitive data in the body.

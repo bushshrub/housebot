@@ -1,0 +1,95 @@
+{
+  "schema_version": 1,
+  "catalog_revision": "2026-07-14-1",
+  "cli_versions": {
+    "codex": "0.1.0",
+    "claude": "1.0.0",
+    "opencode": "0.1.0"
+  },
+  "agents": {
+    "codex": {
+      "display_name": "Codex",
+      "default_model": "default",
+      "models": [
+        {
+          "id": "default",
+          "display_name": "Account default",
+          "description": "Use the model configured by the authenticated Codex account.",
+          "default_effort": "default",
+          "efforts": [
+            {
+              "id": "default",
+              "display_name": "Model default",
+              "description": "Use the reasoning effort configured by the authenticated account.",
+              "mechanism": "native"
+            }
+          ]
+        }
+      ]
+    },
+    "claude": {
+      "display_name": "Claude Code",
+      "default_model": "default",
+      "models": [
+        {
+          "id": "default",
+          "display_name": "Account default",
+          "description": "Use the model configured by the authenticated Claude Code account.",
+          "default_effort": "high",
+          "efforts": [
+            {
+              "id": "low",
+              "display_name": "Low",
+              "description": "Faster, less thorough implementation.",
+              "mechanism": "native"
+            },
+            {
+              "id": "medium",
+              "display_name": "Medium",
+              "description": "Balanced implementation depth.",
+              "mechanism": "native"
+            },
+            {
+              "id": "high",
+              "display_name": "High",
+              "description": "Thorough implementation with full validation.",
+              "mechanism": "native"
+            }
+          ]
+        }
+      ]
+    },
+    "opencode": {
+      "display_name": "OpenCode",
+      "default_model": "nvidia/qwen3-235b-a22b",
+      "models": [
+        {
+          "id": "nvidia/qwen3-235b-a22b",
+          "display_name": "Qwen3 235B (NVIDIA)",
+          "description": "Qwen3 235B via NVIDIA NIM API.",
+          "default_effort": "high",
+          "efforts": [
+            {
+              "id": "low",
+              "display_name": "Low",
+              "description": "Shorter timeout, focused implementation.",
+              "mechanism": "execution_budget"
+            },
+            {
+              "id": "medium",
+              "display_name": "Medium",
+              "description": "Standard timeout and verification.",
+              "mechanism": "execution_budget"
+            },
+            {
+              "id": "high",
+              "display_name": "High",
+              "description": "Longer timeout with thorough inspection.",
+              "mechanism": "execution_budget"
+            }
+          ]
+        }
+      ]
+    }
+  }
+}

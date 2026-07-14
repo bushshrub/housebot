@@ -8,6 +8,7 @@ use async_trait::async_trait;
 use chrono::Local;
 use serde_json::{json, Value};
 
+use crate::coding_agent::pending::PendingJobStore;
 use crate::config;
 use crate::github_issues::GitHubIssueReporter;
 use crate::history::History;
@@ -40,6 +41,8 @@ pub struct AgentRequest<'a> {
     pub personality: Option<&'a str>,
     /// Reasoning budget for this user's requests.
     pub thinking: ThinkingMode,
+    /// Discord channel ID (0 if unknown). Used by the `prepare_feature_development` tool.
+    pub channel_id: u64,
 }
 
 impl<'a> AgentRequest<'a> {
@@ -52,6 +55,7 @@ impl<'a> AgentRequest<'a> {
             media: &[],
             personality: None,
             thinking: ThinkingMode::default(),
+            channel_id: 0,
         }
     }
 }
@@ -115,6 +119,8 @@ pub struct Agent {
     reminders: Reminders,
     reporter: Arc<GitHubIssueReporter>,
     rate_limiter: RateLimiter,
+    dispatch_limiter: RateLimiter,
+    pending_jobs: Arc<PendingJobStore>,
     searxng: SearxNg,
     web_fetch: WebFetch,
     common_crawl: CommonCrawl,
@@ -156,6 +162,8 @@ impl Agent {
             reminders: Reminders::default(),
             reporter: Arc::new(GitHubIssueReporter::default()),
             rate_limiter: tools::feature_request::default_rate_limiter(),
+            dispatch_limiter: tools::feature_development::default_rate_limiter(),
+            pending_jobs: Arc::new(PendingJobStore::default()),
             searxng: SearxNg::from_env(),
             web_fetch: WebFetch::default(),
             common_crawl: CommonCrawl::default(),
@@ -167,6 +175,16 @@ impl Agent {
     /// Access to the reminders store (the bot's delivery loop needs it).
     pub fn reminders(&self) -> &Reminders {
         &self.reminders
+    }
+
+    /// Shared pending-job store; also held by `HouseBot` to drive the Discord component UI.
+    pub fn pending_jobs(&self) -> Arc<PendingJobStore> {
+        Arc::clone(&self.pending_jobs)
+    }
+
+    /// Access to the GitHub issue reporter (used by `HouseBot` for development job dispatch).
+    pub fn reporter(&self) -> &GitHubIssueReporter {
+        &self.reporter
     }
 
     // ── session lifecycle ────────────────────────────────────────────────────
@@ -304,6 +322,7 @@ impl Agent {
             media,
             personality,
             thinking,
+            channel_id,
         } = request;
         let run_started = std::time::Instant::now();
         tracing::info!(
@@ -404,7 +423,9 @@ impl Agent {
                 let args: Value = serde_json::from_str(&tc.arguments).unwrap_or(json!({}));
                 tools_called.push(tc.name.clone());
                 hooks.on_tool_called(&tc.name, &args).await;
-                let outcome = self.dispatch_tool(&tc.name, &args, user_id, hooks).await;
+                let outcome = self
+                    .dispatch_tool(&tc.name, &args, user_id, channel_id, hooks)
+                    .await;
                 let ToolOutcome::Text(content) = outcome;
                 let tool_msg = json!({
                     "role": "tool",
@@ -468,6 +489,7 @@ impl Agent {
             update_memory_tool(),
             run_skill_tool(),
             tools::feature_request::definition(),
+            tools::feature_development::definition(),
             tools::remind::definition(),
             tools::summarize_url::definition(),
             tools::translate::definition(),
@@ -484,10 +506,13 @@ impl Agent {
         name: &str,
         args: &Value,
         user_id: &str,
+        channel_id: u64,
         _hooks: &dyn AgentHooks,
     ) -> ToolOutcome {
         let started = std::time::Instant::now();
-        let outcome = self.dispatch_tool_inner(name, args, user_id).await;
+        let outcome = self
+            .dispatch_tool_inner(name, args, user_id, channel_id)
+            .await;
         let ToolOutcome::Text(content) = &outcome;
         tracing::info!(
             target: "housebot::agent",
@@ -501,7 +526,13 @@ impl Agent {
         outcome
     }
 
-    async fn dispatch_tool_inner(&self, name: &str, args: &Value, user_id: &str) -> ToolOutcome {
+    async fn dispatch_tool_inner(
+        &self,
+        name: &str,
+        args: &Value,
+        user_id: &str,
+        channel_id: u64,
+    ) -> ToolOutcome {
         match name {
             "web_search" => ToolOutcome::Text(
                 self.searxng
@@ -548,6 +579,38 @@ impl Agent {
                 )
                 .await,
             ),
+            "prepare_feature_development" => {
+                let requirements: Vec<String> = args
+                    .get("requirements")
+                    .and_then(|v| v.as_array())
+                    .map(|arr| {
+                        arr.iter()
+                            .filter_map(|v| v.as_str().map(str::to_string))
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                let acceptance_criteria: Vec<String> = args
+                    .get("acceptance_criteria")
+                    .and_then(|v| v.as_array())
+                    .map(|arr| {
+                        arr.iter()
+                            .filter_map(|v| v.as_str().map(str::to_string))
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                ToolOutcome::Text(tools::feature_development::prepare_feature_development(
+                    &self.pending_jobs,
+                    &self.dispatch_limiter,
+                    config::owner_id(),
+                    user_id,
+                    channel_id,
+                    str_arg(args, "title"),
+                    str_arg(args, "objective"),
+                    str_arg(args, "context"),
+                    requirements,
+                    acceptance_criteria,
+                ))
+            }
             "set_reminder" => {
                 let delay = args
                     .get("delay_minutes")
@@ -721,6 +784,7 @@ search, general information, and software development questions.\n\nCurrent date
 READ ONLY — only call get_* / search_* / list_* methods; never call mutating actions.\n\
 - update_memory — Persist important facts about the current user for future conversations. Write the full memory each time.\n\
 - create_feature_request — File a GitHub issue for a feature the user wants added to this bot.\n\
+- prepare_feature_development — Prepare an automated coding-agent development job for the configured bot owner to review and confirm. Only call this when the owner explicitly asks to have a feature automatically implemented by a coding agent. For ordinary feature suggestions, use create_feature_request instead.\n\
 - set_reminder — Set a timed reminder; the bot will DM the user when the delay elapses.\n\
 - summarize_url — Fetch a public web URL and return a concise summary.\n\
 - translate — Translate text to any language using the LLM.\n\
@@ -841,6 +905,8 @@ impl Agent {
                 String::new(),
             )),
             rate_limiter: tools::feature_request::default_rate_limiter(),
+            dispatch_limiter: tools::feature_development::default_rate_limiter(),
+            pending_jobs: Arc::new(PendingJobStore::default()),
             searxng: SearxNg::from_env(),
             web_fetch: WebFetch::default(),
             common_crawl: CommonCrawl::default(),
@@ -1079,7 +1145,7 @@ mod tests {
         let client = Arc::new(MockChatClient::new());
         let (_t, agent) = test_agent(client);
         let out = agent
-            .dispatch_tool("run_unknown_code_agent", &json!({}), "u", &NoHooks)
+            .dispatch_tool("run_unknown_code_agent", &json!({}), "u", 0, &NoHooks)
             .await;
         match out {
             ToolOutcome::Text(t) => assert!(t.contains("Unknown tool")),
