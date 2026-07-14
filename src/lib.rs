@@ -12,6 +12,7 @@ mod bot_formatting;
 mod bot_response;
 pub mod coding_agent;
 pub mod config;
+pub mod discord_bridge;
 pub mod github_issues;
 pub mod history;
 pub mod llm;

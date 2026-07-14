@@ -10,6 +10,7 @@ use serde_json::{json, Value};
 
 use crate::coding_agent::pending::PendingJobStore;
 use crate::config;
+use crate::discord_bridge::DiscordBridge;
 use crate::github_issues::GitHubIssueReporter;
 use crate::history::History;
 use crate::llm::{ChatClient, OpenAiClient, TextSink, ThinkingMode, TokenUsage};
@@ -148,6 +149,7 @@ pub struct Agent {
     common_crawl: CommonCrawl,
     mcp_servers: Vec<McpServer>,
     session_stats: tokio::sync::Mutex<HashMap<String, SessionStats>>,
+    discord: Arc<DiscordBridge>,
 }
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -161,7 +163,7 @@ struct SessionStats {
 
 impl Agent {
     /// Build an agent from environment configuration and start MCP servers.
-    pub async fn from_env() -> Self {
+    pub async fn from_env(discord: Arc<DiscordBridge>) -> Self {
         let client: Arc<dyn ChatClient> = Arc::new(OpenAiClient::new(
             config::env_or("LLM_BASE_URL", "http://server-slop:8080/v1"),
             config::env_or("LLM_API_KEY", "not-required"),
@@ -192,6 +194,7 @@ impl Agent {
             common_crawl: CommonCrawl::default(),
             mcp_servers,
             session_stats: tokio::sync::Mutex::new(HashMap::new()),
+            discord,
         }
     }
 
@@ -529,6 +532,8 @@ impl Agent {
             tools::summarize_url::definition(),
             tools::translate::definition(),
             tools::features::definition(),
+            read_chat_history_tool(),
+            get_discord_user_tool(),
         ] {
             let (name, desc, params) = flatten_tool(&def);
             tools.push(to_openai_tool(&name, &desc, params));
@@ -761,6 +766,48 @@ impl Agent {
                 }
             }
             "get_bot_features" => ToolOutcome::Text(tools::features::features_text().to_string()),
+            "read_chat_history" => {
+                let count = u64_arg(args, "count", 20).min(50) as u8;
+                let target_channel = args
+                    .get("channel_id")
+                    .and_then(Value::as_str)
+                    .and_then(|s| s.parse::<u64>().ok())
+                    .unwrap_or(channel_id);
+                ToolOutcome::Text(
+                    match self.discord.fetch_messages(target_channel, count).await {
+                        Ok(msgs) if msgs.is_empty() => "No messages found.".to_string(),
+                        Ok(msgs) => msgs
+                            .iter()
+                            .map(|m| {
+                                let bot_tag = if m.is_bot { " [bot]" } else { "" };
+                                format!(
+                                    "[{}] {}{}({}): {}",
+                                    m.timestamp, m.author_name, bot_tag, m.author_id, m.content
+                                )
+                            })
+                            .collect::<Vec<_>>()
+                            .join("\n"),
+                        Err(e) => format!("Error: {e}"),
+                    },
+                )
+            }
+            "get_discord_user" => {
+                let uid: u64 = str_arg(args, "user_id").parse().unwrap_or(0);
+                ToolOutcome::Text(if uid == 0 {
+                    "Error: invalid user_id.".to_string()
+                } else {
+                    match self.discord.fetch_user(uid).await {
+                        Ok(u) => {
+                            let avatar = u.avatar_url.as_deref().unwrap_or("(none)");
+                            format!(
+                                "Username: {}\nDisplay name: {}\nID: {}\nBot: {}\nAccount created: {}\nAvatar URL: {}",
+                                u.username, u.display_name, u.id, u.bot, u.created_at, avatar
+                            )
+                        }
+                        Err(e) => format!("Error: {e}"),
+                    }
+                })
+            }
             _ if name.contains("__") => {
                 let (prefix, tool_name) = name.split_once("__").unwrap();
                 for server in &self.mcp_servers {
@@ -887,7 +934,11 @@ READ ONLY — only call get_* / search_* / list_* methods; never call mutating a
 - summarize_url — Fetch a public web URL and return a concise summary.\n\
 - translate — Translate text to any language using the LLM.\n\
 - get_bot_features — Return the full list of this bot's commands and capabilities. \
-Call this when a user asks what you can do, what commands exist, or how to use any feature.{skills_section}\n\n\
+Call this when a user asks what you can do, what commands exist, or how to use any feature.\n\
+- read_chat_history — Fetch the most recent messages from the current Discord channel. \
+Use this when a user asks what was said, who said something, or what was discussed in the chat.\n\
+- get_discord_user — Look up a Discord user's profile by their user ID (username, display name, \
+account creation date, bot status).{skills_section}\n\n\
 ## Guidelines\n- Be conversational and friendly.\n- Use Jellyfin tools for any media questions \
 before guessing.\n- Use web_search for factual or current-events questions. If web_search returns a rate-limit \
 error, stop using it for this request and do not retry it repeatedly; use \
@@ -970,6 +1021,47 @@ fn u64_arg(args: &Value, key: &str, default: u64) -> u64 {
     args.get(key).and_then(Value::as_u64).unwrap_or(default)
 }
 
+fn read_chat_history_tool() -> Value {
+    json!({
+        "name": "read_chat_history",
+        "description": "Fetch the most recent messages from a Discord channel. Use this when a \
+            user asks about what was said in the chat, what was discussed, who said something, \
+            or anything related to recent channel messages.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "count": {
+                    "type": "integer",
+                    "description": "Number of recent messages to retrieve (1–50, default 20)."
+                },
+                "channel_id": {
+                    "type": "string",
+                    "description": "Discord channel ID to read from. Omit to use the current channel."
+                }
+            }
+        }
+    })
+}
+
+fn get_discord_user_tool() -> Value {
+    json!({
+        "name": "get_discord_user",
+        "description": "Fetch public profile information for a Discord user by their user ID. \
+            Returns the username, display name, account creation date, and whether the account \
+            is a bot.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "user_id": {
+                    "type": "string",
+                    "description": "The Discord user ID (snowflake) to look up."
+                }
+            },
+            "required": ["user_id"]
+        }
+    })
+}
+
 fn search_rate_limited(content: &str) -> bool {
     let content = content.to_ascii_lowercase();
     content.contains("returned http 429")
@@ -1011,6 +1103,7 @@ impl Agent {
             common_crawl: CommonCrawl::default(),
             mcp_servers: vec![],
             session_stats: tokio::sync::Mutex::new(HashMap::new()),
+            discord: Arc::new(DiscordBridge::default()),
         }
     }
 

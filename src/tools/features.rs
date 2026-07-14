@@ -36,7 +36,9 @@ pub fn features_text() -> &'static str {
 - Timed reminders delivered by DM
 - Custom skills (user-defined prompt templates) via `!skill`
 - Personal notes and persistent memory across sessions
-- Software development help: discuss, explain, review, and advise on code (cannot execute)"
+- Software development help: discuss, explain, review, and advise on code (cannot execute)
+- Chat history: read recent messages from the current channel (the bot can look up what was said)
+- Discord user profiles: look up a user's username, display name, and account creation date by their user ID"
 }
 
 pub fn definition() -> Value {
