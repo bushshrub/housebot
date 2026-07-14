@@ -33,11 +33,17 @@ impl JobMetadata {
 }
 
 /// Build the structured GitHub issue body for a development job.
+///
+/// `requester_display` / `requester_id` identify the original submitter.
+/// `approver_display` / `approver_id` identify who authorized execution (often the owner).
+/// For owner-direct jobs these pairs are identical.
 pub fn build_issue_body(
     spec: &DevelopmentSpecification,
     selection: &ValidatedAgentSelection,
     requester_display: &str,
     requester_id: u64,
+    approver_display: &str,
+    approver_id: u64,
 ) -> Result<String, String> {
     let requirements = spec
         .requirements
@@ -78,9 +84,12 @@ pub fn build_issue_body(
          - Model: `{model}`\n\
          - Effort: `{effort}`\n\
          - Effort mechanism: `{mechanism}`\n\
-         - Catalog revision: `{revision}`\n\
-         - Requested by Discord user: `{requester_display}`\n\
-         - Discord user ID: `{requester_id}`\n\n\
+         - Catalog revision: `{revision}`\n\n\
+         ## Request Metadata\n\
+         - Requested by: `{requester_display}`\n\
+         - Requester Discord ID: `{requester_id}`\n\
+         - Approved by: `{approver_display}`\n\
+         - Approver Discord ID: `{approver_id}`\n\n\
          <!-- housebot-development-job\n\
          {metadata_json}\n\
          -->",
@@ -142,7 +151,7 @@ mod tests {
     fn build_issue_body_contains_objective() {
         let sel = make_selection();
         let spec = make_spec();
-        let body = build_issue_body(&spec, &sel, "testuser", 12345).unwrap();
+        let body = build_issue_body(&spec, &sel, "testuser", 12345, "owner", 1).unwrap();
         assert!(body.contains("Make X work"));
         assert!(body.contains("Implement X"));
         assert!(body.contains("X works"));
@@ -152,10 +161,22 @@ mod tests {
     fn build_issue_body_contains_machine_metadata() {
         let sel = make_selection();
         let spec = make_spec();
-        let body = build_issue_body(&spec, &sel, "testuser", 12345).unwrap();
+        let body = build_issue_body(&spec, &sel, "testuser", 12345, "owner", 1).unwrap();
         assert!(body.contains("housebot-development-job"));
         assert!(body.contains("schema_version"));
         assert!(body.contains("catalog_revision"));
+    }
+
+    #[test]
+    fn build_issue_body_contains_requester_and_approver() {
+        let sel = make_selection();
+        let spec = make_spec();
+        let body = build_issue_body(&spec, &sel, "alice", 111, "owner", 1).unwrap();
+        assert!(body.contains("alice"));
+        assert!(body.contains("owner"));
+        assert!(body.contains("111"));
+        assert!(body.contains("Requested by"));
+        assert!(body.contains("Approved by"));
     }
 
     #[test]
