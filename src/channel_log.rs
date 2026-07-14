@@ -72,6 +72,46 @@ impl ChannelLog {
         append_line(&self.path(channel_id), &line).await
     }
 
+    /// Remove all entries for a given user from this channel log file.
+    pub async fn remove_user_entries(&self, user_id: String) -> std::io::Result<()> {
+        // Read all channel log files and remove entries for this user.
+        let entries = match tokio::fs::read_dir(&self.dir).await {
+            Ok(entries) => entries,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+            Err(error) => return Err(error),
+        };
+        let mut paths: Vec<std::path::PathBuf> = Vec::new();
+        let mut entries_iter = entries;
+        while let Some(entry) = entries_iter.next_entry().await? {
+            if entry.path().is_file() {
+                paths.push(entry.path());
+            }
+        }
+        for path in paths {
+            let raw = match tokio::fs::read_to_string(&path).await {
+                Ok(s) => s,
+                Err(_) => continue,
+            };
+            let filtered: Vec<String> = raw
+                .lines()
+                .filter(|line| {
+                    let trimmed = line.trim();
+                    if trimmed.is_empty() {
+                        return true;
+                    }
+                    match serde_json::from_str::<Value>(trimmed) {
+                        Ok(val) => val.get("uid").and_then(Value::as_str) != Some(&user_id),
+                        Err(_) => true, // Keep non-JSON lines
+                    }
+                })
+                .map(|l| l.to_string())
+                .collect();
+            let new_content = filtered.join("\n");
+            tokio::fs::write(&path, new_content).await?;
+        }
+        Ok(())
+    }
+
     /// Search messages in `channel_id` whose content matches `pattern` (regex).
     /// Returns up to `max_results` of the most recent matches.
     /// Returns an error string if the regex is invalid.
@@ -217,5 +257,60 @@ mod tests {
         let results = log.search(1, "content", 10).await.unwrap();
         assert_eq!(results[0].user_id, "42");
         assert!(!results[0].ts.is_empty());
+    }
+
+    #[tokio::test]
+    async fn remove_user_entries_removes_matching_user() {
+        let (_t, log) = store();
+        log.append(1, 10, "Alice", "hello").await;
+        log.append(1, 20, "Bob", "world").await;
+        log.append(1, 10, "Alice", "foo").await;
+        log.remove_user_entries("10".to_string()).await.unwrap();
+        let results = log.search(1, ".*", 10).await.unwrap();
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].user_id, "20");
+    }
+
+    #[tokio::test]
+    async fn remove_user_entries_preserves_other_users() {
+        let (_t, log) = store();
+        log.append(1, 10, "Alice", "hello").await;
+        log.append(1, 20, "Bob", "world").await;
+        log.append(1, 30, "Charlie", "bar").await;
+        log.remove_user_entries("10".to_string()).await.unwrap();
+        let results = log.search(1, ".*", 10).await.unwrap();
+        assert_eq!(results.len(), 2);
+        assert!(results.iter().any(|r| r.user_id == "20"));
+        assert!(results.iter().any(|r| r.user_id == "30"));
+    }
+
+    #[tokio::test]
+    async fn remove_user_entries_noop_when_user_not_found() {
+        let (_t, log) = store();
+        log.append(1, 10, "Alice", "hello").await;
+        log.remove_user_entries("999".to_string()).await.unwrap();
+        let results = log.search(1, ".*", 10).await.unwrap();
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].user_id, "10");
+    }
+
+    #[tokio::test]
+    async fn remove_user_entries_noop_when_directory_is_missing() {
+        let (_t, log) = store();
+        log.remove_user_entries("10".to_string()).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn remove_user_entries_removes_from_all_channels() {
+        let (_t, log) = store();
+        log.append(1, 10, "Alice", "channel one").await;
+        log.append(2, 10, "Alice", "channel two").await;
+        log.append(1, 20, "Bob", "channel one bob").await;
+        log.remove_user_entries("10".to_string()).await.unwrap();
+        let results1 = log.search(1, ".*", 10).await.unwrap();
+        let results2 = log.search(2, ".*", 10).await.unwrap();
+        assert_eq!(results1.len(), 1);
+        assert_eq!(results1[0].user_id, "20");
+        assert!(results2.is_empty());
     }
 }

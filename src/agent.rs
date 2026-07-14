@@ -5,7 +5,7 @@ use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use chrono::Local;
+use chrono::{Local, Utc};
 use serde_json::{json, Value};
 
 use crate::channel_log::ChannelLog;
@@ -17,6 +17,7 @@ use crate::history::History;
 use crate::llm::{ChatClient, OpenAiClient, TextSink, ThinkingMode, TokenUsage};
 use crate::mcp::McpServer;
 use crate::memory::Memory;
+use crate::profile::ProfileStore;
 use crate::rate_limit::RateLimiter;
 use crate::reminders::Reminders;
 use crate::skills::{Skill, Skills};
@@ -45,6 +46,17 @@ pub struct AgentRequest<'a> {
     pub thinking: ThinkingMode,
     /// Discord channel ID (0 if unknown). Used by the `prepare_feature_development` tool.
     pub channel_id: u64,
+    /// Whether deep memory (update_memory tool + auto-summary) is enabled for this user.
+    pub deep_memory_enabled: bool,
+    /// User's display name from their profile (for personalized greetings).
+    pub display_name: &'a str,
+    /// User's guild nickname from their profile (empty if none).
+    pub nickname: &'a str,
+    pub profile_tags: &'a str,
+    pub quick_actions: &'a str,
+    pub guild_id: Option<u64>,
+    pub proactive: bool,
+    pub record_profile_usage: bool,
 }
 
 impl<'a> AgentRequest<'a> {
@@ -58,6 +70,14 @@ impl<'a> AgentRequest<'a> {
             personality: None,
             thinking: ThinkingMode::default(),
             channel_id: 0,
+            deep_memory_enabled: true,
+            display_name: username,
+            nickname: "",
+            profile_tags: "",
+            quick_actions: "",
+            guild_id: None,
+            proactive: false,
+            record_profile_usage: true,
         }
     }
 }
@@ -135,6 +155,7 @@ pub struct Agent {
     context_window_tokens: usize,
     history: History,
     memory: Memory,
+    profile_store: ProfileStore,
     skills: Skills,
     reminders: Reminders,
     reporter: Arc<GitHubIssueReporter>,
@@ -184,6 +205,7 @@ impl Agent {
             context_window_tokens,
             history: History::default(),
             memory: Memory::default(),
+            profile_store: ProfileStore::default(),
             skills: Skills::default(),
             reminders: Reminders::default(),
             reporter: Arc::new(GitHubIssueReporter::default()),
@@ -225,18 +247,31 @@ impl Agent {
     }
 
     /// Summarize the current conversation, then start a fresh session.
-    pub async fn compact_session(&self, user_id: &str) {
-        self.compact_session_with_hooks(user_id, &NoHooks).await;
+    pub async fn compact_session(&self, user_id: &str, deep_memory_enabled: bool) {
+        self.compact_session_with_hooks(user_id, deep_memory_enabled, &NoHooks)
+            .await;
     }
 
     /// Summarize the current conversation, reporting coarse-grained progress to the caller.
-    pub async fn compact_session_with_hooks(&self, user_id: &str, hooks: &dyn AgentHooks) {
+    pub async fn compact_session_with_hooks(
+        &self,
+        user_id: &str,
+        deep_memory_enabled: bool,
+        hooks: &dyn AgentHooks,
+    ) {
         tracing::info!(target: "housebot::agent", user_id, "Compacting session");
         hooks.on_progress("compact:10").await;
         self.session_stats.lock().await.remove(user_id);
         let past = self.history.load(user_id).await;
         if past.is_empty() {
             hooks.on_progress("compact:100:Nothing to compact.").await;
+            return;
+        }
+        if !deep_memory_enabled {
+            let _ = self.history.clear(user_id).await;
+            hooks
+                .on_progress("compact:100:Conversation cleared without saving a memory summary.")
+                .await;
             return;
         }
         hooks.on_progress("compact:25").await;
@@ -352,6 +387,14 @@ impl Agent {
             personality,
             thinking,
             channel_id,
+            deep_memory_enabled,
+            display_name,
+            nickname,
+            profile_tags,
+            quick_actions,
+            guild_id,
+            proactive,
+            record_profile_usage,
         } = request;
         let run_started = std::time::Instant::now();
         tracing::info!(
@@ -367,12 +410,21 @@ impl Agent {
         let mut past = self.history.load(user_id).await;
         let mut session_notice = None;
         let new_user_message = build_user_message(text, media);
+        let mut history_user_message = new_user_message.clone();
+        history_user_message["discord_context"] = json!({
+            "guild_id": guild_id,
+            "channel_id": channel_id,
+            "timestamp": Utc::now().to_rfc3339(),
+            "username": username,
+            "display_name": display_name,
+        });
 
         let previous_usage = self.last_context_tokens(user_id).await as f64
             / self.context_window_tokens.max(1) as f64;
         if !past.is_empty() && previous_usage >= 0.8 {
             tracing::info!("Context at 80% for {user_id} — auto-compacting session");
-            self.compact_session_with_hooks(user_id, hooks).await;
+            self.compact_session_with_hooks(user_id, deep_memory_enabled, hooks)
+                .await;
             past.clear();
             user_memory = self.memory.load(user_id).await;
             session_notice = Some(
@@ -384,14 +436,25 @@ impl Agent {
         let all_skills = self.skills.load_all().await;
         let system = json!({
             "role": "system",
-            "content": build_system_prompt(username, user_id, &user_memory, &all_skills, personality),
+            "content": build_system_prompt_with_profile(
+                username,
+                user_id,
+                display_name,
+                nickname,
+                &user_memory,
+                &all_skills,
+                personality,
+                deep_memory_enabled,
+                profile_tags,
+                quick_actions,
+            ),
         });
         let mut messages: Vec<Value> = Vec::with_capacity(past.len() + 2);
         messages.push(system);
         messages.extend(past);
         messages.push(new_user_message.clone());
 
-        let tools = self.build_tools().await;
+        let tools = self.build_tools(deep_memory_enabled).await;
         let mut turn_messages: Vec<Value> = Vec::new();
         let mut tools_called = Vec::new();
 
@@ -486,10 +549,20 @@ impl Agent {
 
         if let Err(e) = self
             .history
-            .append_turn(user_id, new_user_message, turn_messages)
+            .append_turn(user_id, history_user_message, turn_messages)
             .await
         {
             tracing::error!("Failed to save history for {user_id}: {e}");
+        }
+
+        // Record only direct-turn tool usage in the user's profile. Proactive
+        // replies must not learn profile tags from unsolicited messages.
+        if record_profile_usage && !proactive && !tools_called.is_empty() {
+            let mut profile = self.profile_store.load(user_id).await;
+            for tool_name in &tools_called {
+                profile.record_tool_use(tool_name);
+            }
+            let _ = self.profile_store.save(user_id, &profile).await;
         }
 
         tracing::info!(
@@ -512,7 +585,7 @@ impl Agent {
         }
     }
 
-    async fn build_tools(&self) -> Vec<Value> {
+    async fn build_tools(&self, deep_memory_enabled: bool) -> Vec<Value> {
         let mut tools = Vec::new();
         for server in &self.mcp_servers {
             for tool in server.list_tools().await {
@@ -523,11 +596,10 @@ impl Agent {
                 ));
             }
         }
-        for def in [
+        let mut defs: Vec<Value> = vec![
             tools::searxng::definition(),
             tools::web_fetch::definition(),
             tools::common_crawl::definition(),
-            update_memory_tool(),
             run_skill_tool(),
             tools::feature_request::definition(),
             tools::feature_development::definition(),
@@ -537,7 +609,12 @@ impl Agent {
             tools::features::definition(),
             search_messages_tool(),
             get_discord_user_tool(),
-        ] {
+        ];
+        // Conditionally include update_memory based on user's privacy setting.
+        if deep_memory_enabled {
+            defs.push(update_memory_tool());
+        }
+        for def in defs {
             let (name, desc, params) = flatten_tool(&def);
             tools.push(to_openai_tool(&name, &desc, params));
         }
@@ -887,12 +964,43 @@ fn build_user_message(text: &str, media_data: &[MediaData]) -> Value {
 }
 
 /// Build the system prompt for a turn.
+#[allow(clippy::too_many_arguments)]
 pub fn build_system_prompt(
     username: &str,
     user_id: &str,
+    display_name: &str,
+    nickname: &str,
     user_memory: &str,
     all_skills: &BTreeMap<String, Skill>,
     personality: Option<&str>,
+    deep_memory_enabled: bool,
+) -> String {
+    build_system_prompt_with_profile(
+        username,
+        user_id,
+        display_name,
+        nickname,
+        user_memory,
+        all_skills,
+        personality,
+        deep_memory_enabled,
+        "",
+        "",
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn build_system_prompt_with_profile(
+    username: &str,
+    user_id: &str,
+    display_name: &str,
+    nickname: &str,
+    user_memory: &str,
+    all_skills: &BTreeMap<String, Skill>,
+    personality: Option<&str>,
+    deep_memory_enabled: bool,
+    profile_tags: &str,
+    quick_actions: &str,
 ) -> String {
     let now = Local::now().format("%Y-%m-%d %H:%M");
     let memory_section = if user_memory.trim().is_empty() {
@@ -905,6 +1013,41 @@ pub fn build_system_prompt(
             format!("\n\n## Personality / tone for this user\n{}", p.trim())
         }
         _ => String::new(),
+    };
+    let profile_section = if display_name != username
+        || !nickname.is_empty()
+        || !profile_tags.is_empty()
+        || !quick_actions.is_empty()
+    {
+        let name_line = if !nickname.is_empty() {
+            format!("Display name: {display_name}, Nickname: {nickname}")
+        } else {
+            format!("Display name: {display_name}")
+        };
+        let tags_line = if profile_tags.is_empty() {
+            String::new()
+        } else {
+            format!("\nRelevant usage tags: {profile_tags}")
+        };
+        let actions_line = if quick_actions.is_empty() {
+            String::new()
+        } else {
+            format!("\nFrequently used actions: {quick_actions}")
+        };
+        format!("\n\n## User profile\n{name_line}{tags_line}{actions_line}")
+    } else {
+        String::new()
+    };
+    let memory_guidance = if deep_memory_enabled {
+        "Update memory when you learn something worth remembering."
+    } else {
+        "Deep memory is disabled for this user. Do NOT call update_memory and do NOT suggest \
+         persisting facts. Short-term conversation history within this session still works normally."
+    };
+    let memory_tool_line = if deep_memory_enabled {
+        "- update_memory — Persist important facts about the current user for future conversations. Write the full memory each time.\n"
+    } else {
+        ""
     };
     let skills_section = if all_skills.is_empty() {
         "\n- run_skill — Execute a custom skill by name. No skills are defined yet; users can add \
@@ -923,13 +1066,13 @@ pub fn build_system_prompt(
     format!(
         "You are a helpful house assistant bot in a Discord server. You help with media, web \
 search, general information, and software development questions.\n\nCurrent date/time: {now}\nCurrent user: {username} \
-(ID: {user_id}){memory_section}{personality_section}\n\n## Tools\n\
+(ID: {user_id}){profile_section}{memory_section}{personality_section}\n\n## Tools\n\
 - web_search — Search the web (SearXNG) for current information.\n\
 - fetch_webpage — Fetch and read the text of a public webpage.\n\
 - common_crawl__search — Search historical URL captures in the Common Crawl index.\n\
 - jellyfin__* — Query the household Jellyfin media server for movies, shows, music. \
 READ ONLY — only call get_* / search_* / list_* methods; never call mutating actions.\n\
-- update_memory — Persist important facts about the current user for future conversations. Write the full memory each time.\n\
+{memory_tool_line}\
 - create_feature_request — File a GitHub issue for a feature the user wants added to this bot.\n\
 - prepare_feature_development — Prepare an automated coding-agent development job for the configured bot owner to review and confirm. Only call this when the owner explicitly asks to have a feature automatically implemented by a coding agent. For ordinary feature suggestions, use create_feature_request instead.\n\
 - set_reminder — Set a timed reminder; the bot will DM the user when the delay elapses.\n\
@@ -947,8 +1090,7 @@ before guessing.\n- Use web_search for factual or current-events questions. If w
 error, stop using it for this request and do not retry it repeatedly; use \
 common_crawl__search for historical URL evidence when appropriate, or explain that the search \
 service is temporarily unavailable.\n- You can discuss, explain, review, and advise on software \
-development, but you cannot execute code.\n- Update memory when you learn \
-something worth remembering.\n- Keep responses concise unless asked for detail.\n- If a user \
+development, but you cannot execute code.\n- {memory_guidance}\n- Keep responses concise unless asked for detail.\n- If a user \
 requests a feature or improvement to this bot, immediately call create_feature_request with a \
 clear title and description, then tell them the issue URL.\n- If a tool returns an error message \
 (starts with \"Error:\"), quote it exactly — do not paraphrase or soften it.\n- When the user's \
@@ -1088,6 +1230,7 @@ impl Agent {
         client: Arc<dyn ChatClient>,
         history: History,
         memory: Memory,
+        profile_store: ProfileStore,
         skills: Skills,
         reminders: Reminders,
     ) -> Self {
@@ -1097,6 +1240,7 @@ impl Agent {
             context_window_tokens: 10_000,
             history,
             memory,
+            profile_store,
             skills,
             reminders,
             reporter: Arc::new(GitHubIssueReporter::new(
@@ -1136,24 +1280,40 @@ mod tests {
 
     #[test]
     fn system_prompt_includes_username_and_id() {
-        let p = build_system_prompt("Alice", "123", "", &empty_skills(), None);
+        let p = build_system_prompt("Alice", "123", "Alice", "", "", &empty_skills(), None, true);
         assert!(p.contains("Alice"));
         assert!(p.contains("123"));
     }
 
     #[test]
     fn system_prompt_memory_section_present_when_nonempty() {
-        let p = build_system_prompt("Alice", "123", "Likes cats", &empty_skills(), None);
+        let p = build_system_prompt(
+            "Alice",
+            "123",
+            "Alice",
+            "",
+            "Likes cats",
+            &empty_skills(),
+            None,
+            true,
+        );
         assert!(p.contains("Likes cats"));
         assert!(p.contains("Your memory"));
     }
 
     #[test]
     fn system_prompt_memory_absent_when_blank() {
-        assert!(
-            !build_system_prompt("Alice", "123", "   ", &empty_skills(), None)
-                .contains("Your memory")
-        );
+        assert!(!build_system_prompt(
+            "Alice",
+            "123",
+            "Alice",
+            "",
+            "   ",
+            &empty_skills(),
+            None,
+            true
+        )
+        .contains("Your memory"));
     }
 
     #[test]
@@ -1168,7 +1328,7 @@ mod tests {
                 created_by: None,
             },
         );
-        let p = build_system_prompt("Alice", "123", "", &skills, None);
+        let p = build_system_prompt("Alice", "123", "Alice", "", "", &skills, None, true);
         assert!(p.contains("greet"));
         assert!(p.contains("Say hello"));
     }
@@ -1176,22 +1336,84 @@ mod tests {
     #[test]
     fn system_prompt_placeholder_without_skills() {
         assert!(
-            build_system_prompt("Alice", "123", "", &empty_skills(), None)
+            build_system_prompt("Alice", "123", "Alice", "", "", &empty_skills(), None, true)
                 .contains("No skills are defined yet")
         );
     }
 
     #[test]
     fn system_prompt_has_tldr_and_500() {
-        let p = build_system_prompt("Alice", "123", "", &empty_skills(), None);
+        let p = build_system_prompt("Alice", "123", "Alice", "", "", &empty_skills(), None, true);
         assert!(p.contains("TL;DR"));
         assert!(p.contains("500"));
     }
 
     #[test]
     fn system_prompt_excludes_code_execution() {
-        let p = build_system_prompt("Alice", "123", "", &empty_skills(), None);
+        let p = build_system_prompt("Alice", "123", "Alice", "", "", &empty_skills(), None, true);
         assert!(!p.contains("code execution"));
+    }
+
+    #[test]
+    fn system_prompt_includes_profile_section_with_nickname() {
+        let p = build_system_prompt(
+            "Alice",
+            "123",
+            "Alice",
+            "Ali",
+            "",
+            &empty_skills(),
+            None,
+            true,
+        );
+        assert!(p.contains("User profile"));
+        assert!(p.contains("Nickname: Ali"));
+    }
+
+    #[test]
+    fn system_prompt_skips_profile_section_when_identical() {
+        let p = build_system_prompt("Alice", "123", "Alice", "", "", &empty_skills(), None, true);
+        assert!(!p.contains("User profile"));
+    }
+
+    #[test]
+    fn system_prompt_includes_usage_profile() {
+        let p = build_system_prompt_with_profile(
+            "Alice",
+            "123",
+            "Alice",
+            "",
+            "",
+            &empty_skills(),
+            None,
+            true,
+            "media, reminders",
+            "media (4), reminders (2)",
+        );
+        assert!(p.contains("Relevant usage tags: media, reminders"));
+        assert!(p.contains("Frequently used actions: media (4), reminders (2)"));
+    }
+
+    #[test]
+    fn system_prompt_respects_deep_memory_disabled() {
+        let p = build_system_prompt(
+            "Alice",
+            "123",
+            "Alice",
+            "",
+            "",
+            &empty_skills(),
+            None,
+            false,
+        );
+        assert!(p.contains("Deep memory is disabled"));
+        assert!(p.contains("Do NOT call update_memory"));
+    }
+
+    #[test]
+    fn system_prompt_allows_deep_memory_when_enabled() {
+        let p = build_system_prompt("Alice", "123", "Alice", "", "", &empty_skills(), None, true);
+        assert!(p.contains("Update memory when you learn something worth remembering"));
     }
 
     #[test]
@@ -1274,6 +1496,7 @@ mod tests {
             client,
             History::new(tmp.path().join("history"), 30),
             Memory::new(tmp.path().join("memories")),
+            ProfileStore::new(tmp.path().join("profiles")),
             Skills::new(tmp.path().join("skills.json")),
             Reminders::new(tmp.path().join("reminders.json")),
         );
@@ -1383,6 +1606,7 @@ mod tests {
             client,
             History::new(tmp.path().join("history"), 30),
             Memory::new(tmp.path().join("memories")),
+            ProfileStore::new(tmp.path().join("profiles")),
             Skills::new(tmp.path().join("skills.json")),
             Reminders::new(tmp.path().join("reminders.json")),
         );
@@ -1440,7 +1664,7 @@ mod tests {
             .await
             .unwrap();
 
-        agent.compact_session("u6").await;
+        agent.compact_session("u6", true).await;
 
         let info = agent.session_info("u6").await;
         assert_eq!(info.context_tokens, 150);
@@ -1450,10 +1674,50 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn disabled_memory_compaction_clears_history_without_writing_memory() {
+        let client = Arc::new(MockChatClient::new().with_once_reply("should not be called"));
+        let (_t, agent) = test_agent(client);
+        agent.memory.save("u7", "Keep this memory").await.unwrap();
+        agent
+            .history
+            .save(
+                "u7",
+                &[
+                    json!({"role": "user", "content": "private conversation"}),
+                    json!({"role": "assistant", "content": "reply"}),
+                ],
+            )
+            .await
+            .unwrap();
+
+        agent.compact_session("u7", false).await;
+
+        assert_eq!(agent.memory.load("u7").await, "Keep this memory");
+        assert!(agent.history.load("u7").await.is_empty());
+    }
+
+    #[tokio::test]
+    async fn history_turn_contains_discord_context_metadata() {
+        let client = Arc::new(MockChatClient::new().with_once_reply("ok"));
+        let (_t, agent) = test_agent(client);
+        let mut request = AgentRequest::text("u8", "alice", "hello");
+        request.channel_id = 42;
+        request.guild_id = Some(7);
+        request.display_name = "Alice";
+        agent.run(request, &NoHooks).await;
+
+        let history = agent.history.load("u8").await;
+        assert_eq!(history[0]["discord_context"]["guild_id"], 7);
+        assert_eq!(history[0]["discord_context"]["channel_id"], 42);
+        assert_eq!(history[0]["discord_context"]["username"], "alice");
+        assert!(history[0]["discord_context"]["timestamp"].is_string());
+    }
+
+    #[tokio::test]
     async fn build_tools_excludes_code_execution() {
         let client = Arc::new(MockChatClient::new());
         let (_t, agent) = test_agent(client);
-        let tools = agent.build_tools().await;
+        let tools = agent.build_tools(true).await;
         let names: Vec<&str> = tools
             .iter()
             .filter_map(|t| t["function"]["name"].as_str())

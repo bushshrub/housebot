@@ -96,6 +96,14 @@ pub struct UserConfig {
     /// Reasoning budget used for this user's requests (set with `/effort`).
     #[serde(default)]
     pub thinking_mode: ThinkingMode,
+    /// Whether the bot may use `update_memory` and auto-save conversation summaries.
+    /// When disabled, short-term conversation history still works normally.
+    #[serde(default)]
+    pub deep_memory_enabled: bool,
+    /// Whether the bot may respond proactively to messages it wasn't mentioned in.
+    /// Only narrow cases are handled (obvious reminder requests, help questions).
+    #[serde(default)]
+    pub proactive_assistance_enabled: bool,
 }
 
 fn default_followup_timeout() -> u64 {
@@ -110,6 +118,8 @@ impl Default for UserConfig {
             followup_timeout_secs: default_followup_timeout(),
             labs_pagination_enabled: false,
             thinking_mode: ThinkingMode::default(),
+            deep_memory_enabled: false,
+            proactive_assistance_enabled: false,
         }
     }
 }
@@ -143,6 +153,14 @@ impl UserConfigStore {
         let data = serde_json::to_vec_pretty(cfg)?;
         fs::write(self.path(user_id), data).await?;
         Ok(())
+    }
+
+    pub async fn clear(&self, user_id: u64) -> std::io::Result<()> {
+        match fs::remove_file(self.path(user_id)).await {
+            Ok(()) => Ok(()),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(error) => Err(error),
+        }
     }
 }
 
@@ -184,5 +202,36 @@ mod tests {
         let json = serde_json::to_string(&config).unwrap();
         let restored: UserConfig = serde_json::from_str(&json).unwrap();
         assert_eq!(restored.thinking_mode, ThinkingMode::XHigh);
+    }
+
+    #[test]
+    fn deep_memory_is_off_by_default() {
+        assert!(!UserConfig::default().deep_memory_enabled);
+    }
+
+    #[test]
+    fn proactive_assistance_is_off_by_default() {
+        assert!(!UserConfig::default().proactive_assistance_enabled);
+    }
+
+    #[test]
+    fn old_user_config_defaults_privacy_fields_to_off() {
+        let config: UserConfig =
+            serde_json::from_str(r#"{"personality":null,"followup_timeout_secs":300}"#).unwrap();
+        assert!(!config.deep_memory_enabled);
+        assert!(!config.proactive_assistance_enabled);
+    }
+
+    #[test]
+    fn privacy_fields_persist_through_serde() {
+        let config = UserConfig {
+            deep_memory_enabled: true,
+            proactive_assistance_enabled: true,
+            ..UserConfig::default()
+        };
+        let json = serde_json::to_string(&config).unwrap();
+        let restored: UserConfig = serde_json::from_str(&json).unwrap();
+        assert!(restored.deep_memory_enabled);
+        assert!(restored.proactive_assistance_enabled);
     }
 }

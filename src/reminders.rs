@@ -33,7 +33,7 @@ impl Reminders {
         Self { path: path.into() }
     }
 
-    async fn load(&self) -> Vec<Reminder> {
+    pub async fn load(&self) -> Vec<Reminder> {
         let raw = match tokio::fs::read_to_string(&self.path).await {
             Ok(s) => s,
             Err(_) => return Vec::new(),
@@ -44,7 +44,8 @@ impl Reminders {
         serde_json::from_str(&raw).unwrap_or_default()
     }
 
-    async fn store(&self, reminders: &[Reminder]) -> std::io::Result<()> {
+    /// Save reminders to disk.
+    pub async fn store(&self, reminders: &[Reminder]) -> std::io::Result<()> {
         if let Some(parent) = self.path.parent() {
             ensure_dir(parent).await?;
         }
