@@ -102,11 +102,12 @@ fn search_sync(path: &Path, re: &Regex, max_results: usize) -> Result<Vec<LogEnt
             continue;
         };
         let content = val["msg"].as_str().unwrap_or("").to_string();
-        if re.is_match(&content) {
+        let username = val["name"].as_str().unwrap_or("").to_string();
+        if re.is_match(&content) || re.is_match(&username) {
             matches.push(LogEntry {
                 ts: val["ts"].as_str().unwrap_or("").to_string(),
                 user_id: val["uid"].as_str().unwrap_or("").to_string(),
-                username: val["name"].as_str().unwrap_or("").to_string(),
+                username,
                 content,
             });
         }
@@ -197,6 +198,16 @@ mod tests {
         assert_eq!(log.search(1, "channel", 10).await.unwrap().len(), 1);
         assert_eq!(log.search(2, "channel", 10).await.unwrap().len(), 1);
         assert!(log.search(1, "two", 10).await.unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn search_matches_username() {
+        let (_t, log) = store();
+        log.append(1, 10, "AliceWonder", "some message").await;
+        log.append(1, 11, "BobSmith", "another message").await;
+        let results = log.search(1, "Alice", 10).await.unwrap();
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].username, "AliceWonder");
     }
 
     #[tokio::test]
