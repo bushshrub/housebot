@@ -147,5 +147,5 @@ jobs:
             --arg sha "$SHA" \
             --arg message "$COMMIT_MESSAGE" \
             --arg url "$SERVER_URL/$REPOSITORY/commit/$SHA" \
-            '{embeds:[{title:"Build succeeded",color:3066993,fields:[{name:"Commit",value:("`"+$sha+"`")},{name:"Message",value:$message},{name:"Source",value:("[View commit]("+$url+")")}]}]}' \
+            '{embeds:[{title:"Build succeeded",color:3066993,fields:[{name:"Commit",value:("`"+$sha+"`")},{name:"Message",value:($message | .[0:1000] + (if length > 1000 then "…" else "" end))},{name:"Source",value:("[View commit]("+$url+")")}]}]}' \
             | curl --fail --silent --show-error -X POST "$WEBHOOK" -H "Content-Type: application/json" --data-binary @-
