@@ -70,10 +70,7 @@ async fn append_line(path: &Path, line: &str) -> std::io::Result<()> {
         .append(true)
         .open(path)
         .await?;
-    file.write_all(line.as_bytes()).await?;
-    // Flush ensures tokio's internal file state machine resolves before the
-    // file is dropped, so a subsequent read sees the written bytes.
-    file.flush().await
+    file.write_all(line.as_bytes()).await
 }
 
 #[cfg(test)]
@@ -109,7 +106,7 @@ mod tests {
     #[tokio::test]
     async fn entries_are_valid_json() {
         let (_t, log) = store();
-        log.append(2u64, "test message").await;
+        log.try_append(2u64, "test message").await.unwrap();
         let raw = tokio::fs::read_to_string(log.path(2u64)).await.unwrap();
         let val: serde_json::Value = serde_json::from_str(raw.trim()).unwrap();
         assert_eq!(val["message"], "test message");
