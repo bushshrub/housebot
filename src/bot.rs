@@ -1312,8 +1312,15 @@ impl EventHandler for HouseBot {
         }
 
         if !is_dm {
+            // Prefer server nickname, then global display name, over the raw username.
+            let nick = msg
+                .member
+                .as_ref()
+                .and_then(|m| m.nick.as_deref())
+                .or(msg.author.global_name.as_deref())
+                .filter(|n| *n != msg.author.name);
             self.channel_log
-                .append(channel_id, user_id, &msg.author.name, &content)
+                .append(channel_id, user_id, &msg.author.name, nick, &content)
                 .await;
         }
 

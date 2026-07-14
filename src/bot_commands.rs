@@ -348,7 +348,9 @@ mod tests {
             )
             .await
             .unwrap();
-        channel_log.append(1, user_id, "Alice", "channel msg").await;
+        channel_log
+            .append(1, user_id, "Alice", None, "channel msg")
+            .await;
 
         let reply = erase_data_command(
             &msg_log,
@@ -428,8 +430,8 @@ mod tests {
             )
             .await
             .unwrap();
-        channel_log.append(1, user_a, "Alice", "msg a").await;
-        channel_log.append(1, user_b, "Bob", "msg b").await;
+        channel_log.append(1, user_a, "Alice", None, "msg a").await;
+        channel_log.append(1, user_b, "Bob", None, "msg b").await;
 
         // Erase user A
         erase_data_command(
