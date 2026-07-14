@@ -70,7 +70,10 @@ async fn append_line(path: &Path, line: &str) -> std::io::Result<()> {
         .append(true)
         .open(path)
         .await?;
-    file.write_all(line.as_bytes()).await
+    file.write_all(line.as_bytes()).await?;
+    // Flush ensures tokio's internal file state machine resolves before the
+    // file is dropped, so a subsequent read sees the written bytes.
+    file.flush().await
 }
 
 #[cfg(test)]
