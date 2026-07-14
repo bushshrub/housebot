@@ -6,6 +6,7 @@ use std::time::{Duration, Instant};
 use tokio::sync::Mutex;
 
 pub mod common_crawl;
+pub mod feature_development;
 pub mod feature_request;
 pub mod features;
 pub mod remind;

@@ -56,6 +56,24 @@ src/
     summarize_url.rs # summarize_url
     translate.rs     # translate
     feature_request.rs # create_feature_request + per-user RateLimiter
+    feature_development.rs # prepare_feature_development + owner auth + rate limit
+  coding_agent/
+    catalog.rs       # versioned agent/model/effort catalog (loaded from .github/agents/catalog.json)
+    pending.rs       # PendingDevelopmentJob state machine (15-min expiry, atomic dispatch guard)
+    issue.rs         # GitHub issue body builder + hidden metadata comment
+.github/
+  agents/
+    catalog.json     # single source of truth for selectable agent/model/effort combos
+    common.sh        # shared shell utilities for adapter scripts
+    run-codex.sh     # Codex adapter
+    run-claude.sh    # Claude Code adapter
+    run-opencode.sh  # OpenCode + NVIDIA NIM adapter
+  workflows/
+    develop-feature.yml    # triggered by agent:queued label; runs the selected agent
+    check-agent-runner.yml # daily runner health check
+CLAUDE.md            # instructions for Claude Code when running as the automated agent
+docs/
+  automated-development.md # full dispatch flow documentation
 sandbox/             # standalone coding-sandbox image (built/published by CI; not used by the bot at runtime)
 data/                # runtime — gitignored
 ```
@@ -81,6 +99,7 @@ data/                # runtime — gitignored
 | `SEARXNG_SAFE_SEARCH` | no | moderate | `OFF` / moderate / `STRICT` |
 | `JELLYFIN_URL` + `JELLYFIN_API_KEY` | no | — | Enables Jellyfin MCP server |
 | `GITHUB_APP_ID` / `GITHUB_APP_PRIVATE_KEY` / `GITHUB_INSTALLATION_ID` / `GITHUB_REPO` | no | — | GitHub App creds for feature-request issue filing (all four required) |
+| `OWNER_DISCORD_ID` | no | `0` | Discord user ID allowed to dispatch coding jobs; `0` disables dispatch |
 
 (`DOCKER_NETWORK` is read only by the independent `deployment-bot` crate, not the chatbot.)
 
@@ -107,6 +126,7 @@ Discord message
                  │    ├─ web_search → SearXNG / fetch_webpage → guarded HTTP fetch
                  │    ├─ update_memory → memory.save()
                  │    ├─ set_reminder / summarize_url / translate / create_feature_request / run_skill
+                 │    ├─ prepare_feature_development → PendingJobStore (owner-only; returns DISPATCH_FLOW:<uuid>)
                  │    └─ prefix__tool → McpServer::call_tool()
                  └─ repeat until finish_reason == "stop"
 ```
@@ -146,7 +166,30 @@ handshake, lists tools, and calls them. Tool names are namespaced `{server}__{to
 
 ---
 
-## Adding a new tool
+## Automated coding-agent dispatch
+
+The bot can dispatch automated feature-development jobs to a self-hosted runner.
+See [`docs/automated-development.md`](docs/automated-development.md) for the full
+specification, runner requirements, and security model.
+
+### Key points for agents working on this repo
+
+- **Owner-only.** Only the configured `OWNER_DISCORD_ID` can dispatch.  
+  This is enforced in Rust (`src/tools/feature_development.rs`) — not in the system prompt.
+- **Two-step flow.** The LLM calls `prepare_feature_development` to draft a spec, then the
+  Discord owner selects agent/model/effort and explicitly confirms.  The LLM cannot dispatch
+  unilaterally.
+- **Catalog.** Agent, model, and effort combinations are defined in
+  `.github/agents/catalog.json`.  Update `catalog_revision` whenever you add or remove entries.
+- **Labels.** `agent:queued` → `agent:running` → `agent:completed` / `agent:no-changes` /
+  `agent:failed`.  Do not add or remove these labels manually outside the workflow.
+- **No force-push. No auto-merge. No auto-deploy.** All PRs opened by the agent require
+  a human review and explicit merge.
+- **Secrets on runner.** `NVIDIA_API_KEY` is the only secret injected at runtime.
+  OAuth sessions for Codex and Claude are pre-configured on the runner and must never be
+  read, printed, or uploaded by workflow steps.
+
+### New tool checklist
 
 1. Add `definition()` and the async implementation in `src/tools/your_tool.rs`; register the module in `src/tools/mod.rs`.
 2. Push `definition()` into `Agent::build_tools`.

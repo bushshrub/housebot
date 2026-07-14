@@ -1,0 +1,304 @@
+name: Develop Feature
+
+# Triggered when the Discord dispatch flow adds agent:queued to an issue, or
+# manually via workflow_dispatch for testing.
+#
+# Security properties:
+#   - Runs only on issues (never on PRs from forks or untrusted branches).
+#   - Only the configured self-hosted runner executes agent code.
+#   - Issue content is written to a temp file and never shell-eval'd.
+#   - NVIDIA_API_KEY is injected only for the opencode adapter.
+#   - OAuth credentials for Codex and Claude are pre-configured on the runner.
+#   - No force-push.  No auto-merge.  No deployment.
+#   - Production secrets (Housebot .env, Discord token, GitHub App key, etc.)
+#     must NOT be present on the agent runner account.
+
+on:
+  issues:
+    types: [labeled]
+  workflow_dispatch:
+    inputs:
+      issue_number:
+        description: Issue number to develop (for testing)
+        required: true
+        type: number
+
+# One run per issue at a time; a newer dispatch cancels an in-progress one.
+concurrency:
+  group: develop-feature-${{ github.event.issue.number || inputs.issue_number }}
+  cancel-in-progress: true
+
+jobs:
+  develop:
+    # Fire only when agent:queued is the label that was just added, or on
+    # manual dispatch.  This prevents re-triggering on every other label change.
+    if: |
+      github.event_name == 'workflow_dispatch' ||
+      github.event.label.name == 'agent:queued'
+
+    runs-on: [self-hosted, housebot-agent]
+
+    permissions:
+      contents: write
+      issues: write
+      pull-requests: write
+
+    env:
+      GH_TOKEN: ${{ github.token }}
+      REPO: ${{ github.repository }}
+
+    steps:
+      # ── 1. Resolve issue number ────────────────────────────────────────────
+      - name: Resolve issue number
+        id: issue-num
+        run: |
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+            echo "number=${{ inputs.issue_number }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "number=${{ github.event.issue.number }}" >> "$GITHUB_OUTPUT"
+          fi
+
+      # ── 2. Ensure required labels exist (idempotent) ───────────────────────
+      - name: Ensure labels
+        run: |
+          declare -A LABEL_COLORS=(
+            ["agent:queued"]="0075ca"
+            ["agent:running"]="e4e669"
+            ["agent:completed"]="0e8a16"
+            ["agent:failed"]="d73a4a"
+            ["agent:failed-auth"]="b60205"
+            ["agent:failed-config"]="b60205"
+            ["agent:no-changes"]="cfd3d7"
+            ["agent:codex"]="7057ff"
+            ["agent:claude"]="7057ff"
+            ["agent:opencode"]="7057ff"
+            ["source:discord"]="0075ca"
+          )
+          for label in "${!LABEL_COLORS[@]}"; do
+            color="${LABEL_COLORS[$label]}"
+            gh label create "$label" --repo "$REPO" --color "$color" --force 2>/dev/null || true
+          done
+
+      # ── 3. Fetch issue body and extract housebot metadata ─────────────────
+      - name: Extract job metadata
+        id: meta
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const issueNumber = parseInt('${{ steps.issue-num.outputs.number }}');
+            const { data: issue } = await github.rest.issues.get({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: issueNumber,
+            });
+
+            const body = issue.body || '';
+            const match = body.match(/<!--\s*housebot-development-job\s*([\s\S]*?)\s*-->/);
+            if (!match) {
+              core.setFailed('Issue body contains no housebot-development-job metadata block.');
+              return;
+            }
+
+            let meta;
+            try {
+              meta = JSON.parse(match[1]);
+            } catch (e) {
+              core.setFailed(`Could not parse metadata JSON: ${e.message}`);
+              return;
+            }
+
+            if (meta.schema_version !== 1) {
+              core.setFailed(`Unsupported metadata schema_version: ${meta.schema_version}`);
+              return;
+            }
+
+            // Write the complete prompt to a temp file.  Issue content is
+            // written here in JS — it is never expanded in a shell command.
+            const fs   = require('fs');
+            const path = require('path');
+            const promptPath = path.join(process.env.RUNNER_TEMP, 'housebot_prompt.txt');
+            const lines = [
+              `Implement the feature described in GitHub issue #${issueNumber}.`,
+              `Repository: ${context.repo.owner}/${context.repo.repo}`,
+              '',
+              `Issue title: ${issue.title}`,
+              '',
+              issue.body || '(no body)',
+              '',
+              '---',
+              'Additional instructions:',
+              '- Make all necessary code changes to implement this feature.',
+              '- Follow the existing code style, conventions, and module boundaries.',
+              '- Add or update tests; run the full test suite before finishing.',
+              '- Commit your changes with a descriptive message.',
+              '- Do NOT merge branches, deploy, or push to main/master.',
+              '- Keep changes scoped to this issue only.',
+              '- Do NOT access, read, or print any production credentials or secrets.',
+            ];
+            fs.writeFileSync(promptPath, lines.join('\n'), { encoding: 'utf8', mode: 0o600 });
+
+            core.setOutput('agent',            meta.agent);
+            core.setOutput('model',            meta.model);
+            core.setOutput('effort',           meta.effort);
+            core.setOutput('effort_mechanism', meta.effort_mechanism);
+            core.setOutput('catalog_revision', meta.catalog_revision);
+            core.setOutput('prompt_path',      promptPath);
+            core.setOutput('issue_title',      issue.title);
+
+      # ── 4. Transition: queued → running ────────────────────────────────────
+      - name: Mark running
+        run: |
+          gh issue edit "${{ steps.issue-num.outputs.number }}" \
+            --repo "$REPO" \
+            --remove-label "agent:queued" \
+            --add-label "agent:running"
+          gh issue comment "${{ steps.issue-num.outputs.number }}" \
+            --repo "$REPO" \
+            --body "🤖 **Agent started.** Running \`${{ steps.meta.outputs.agent }}\` (model: \`${{ steps.meta.outputs.model }}\`, effort: \`${{ steps.meta.outputs.effort }}\`)."
+
+      # ── 5. Checkout ────────────────────────────────────────────────────────
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      # ── 6. Validate catalog ───────────────────────────────────────────────
+      - name: Validate catalog
+        run: |
+          source .github/agents/common.sh
+          validate_catalog \
+            "${{ steps.meta.outputs.agent }}" \
+            "${{ steps.meta.outputs.model }}" \
+            "${{ steps.meta.outputs.effort }}" \
+            "${{ steps.meta.outputs.catalog_revision }}"
+
+      # ── 7. Configure git identity for agent commits ───────────────────────
+      - name: Configure git
+        run: |
+          git config user.name "Housebot Agent"
+          git config user.email "housebot-agent@users.noreply.github.com"
+
+      # ── 8. Create a dedicated branch for this job ─────────────────────────
+      - name: Create feature branch
+        id: branch
+        run: |
+          BRANCH="agent/${{ steps.meta.outputs.agent }}/issue-${{ steps.issue-num.outputs.number }}"
+          git checkout -b "$BRANCH"
+          echo "name=$BRANCH" >> "$GITHUB_OUTPUT"
+
+      # ── 9. Run the agent ──────────────────────────────────────────────────
+      - name: Run agent
+        run: |
+          bash ".github/agents/run-${{ steps.meta.outputs.agent }}.sh" \
+            "${{ steps.meta.outputs.prompt_path }}" \
+            "${{ steps.meta.outputs.model }}" \
+            "${{ steps.meta.outputs.effort }}"
+        env:
+          # NVIDIA_API_KEY is only non-empty for opencode runs; the secret is
+          # always injected but the other adapters ignore it.
+          NVIDIA_API_KEY: ${{ secrets.NVIDIA_API_KEY }}
+
+      # ── 10. Detect whether the agent produced any changes ─────────────────
+      - name: Check for changes
+        id: changes
+        run: |
+          git add -A
+          if git diff --cached --quiet; then
+            echo "has_changes=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "has_changes=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      # ── 11. Commit (when the agent produced changes) ──────────────────────
+      - name: Commit changes
+        if: steps.changes.outputs.has_changes == 'true'
+        run: |
+          git commit -m "feat: implement #${{ steps.issue-num.outputs.number }}"
+
+      # ── 12. Push branch ───────────────────────────────────────────────────
+      - name: Push branch
+        if: steps.changes.outputs.has_changes == 'true'
+        run: |
+          git push -u origin "${{ steps.branch.outputs.name }}"
+
+      # ── 13. Open a pull request ───────────────────────────────────────────
+      - name: Create pull request
+        if: steps.changes.outputs.has_changes == 'true'
+        id: pr
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const agent  = '${{ steps.meta.outputs.agent }}';
+            const model  = '${{ steps.meta.outputs.model }}';
+            const effort = '${{ steps.meta.outputs.effort }}';
+            const issue  = '${{ steps.issue-num.outputs.number }}';
+            const branch = '${{ steps.branch.outputs.name }}';
+            const base   = context.payload.repository?.default_branch || 'main';
+
+            const body = [
+              `Closes #${issue}`,
+              '',
+              `Auto-implemented by **${agent}**.`,
+              '',
+              '| | |',
+              '|---|---|',
+              `| Agent | \`${agent}\` |`,
+              `| Model | \`${model}\` |`,
+              `| Effort | \`${effort}\` |`,
+              `| Issue | #${issue} |`,
+              `| Workflow | [run](${process.env.GITHUB_SERVER_URL}/${process.env.GITHUB_REPOSITORY}/actions/runs/${process.env.GITHUB_RUN_ID}) |`,
+              '',
+              '> ⚠️ **Review carefully before merging.** This PR was generated automatically.',
+              '> Verify correctness, run tests locally, and check for unintended side effects.',
+            ].join('\n');
+
+            const { data: pr } = await github.rest.pulls.create({
+              owner: context.repo.owner,
+              repo:  context.repo.repo,
+              title: `feat: implement #${issue}`,
+              body,
+              head: branch,
+              base,
+              draft: false,
+            });
+
+            core.info(`PR #${pr.number}: ${pr.html_url}`);
+            core.setOutput('url',    pr.html_url);
+            core.setOutput('number', String(pr.number));
+
+      # ── 14a. Mark completed ───────────────────────────────────────────────
+      - name: Mark completed
+        if: steps.changes.outputs.has_changes == 'true' && success()
+        run: |
+          gh issue edit "${{ steps.issue-num.outputs.number }}" \
+            --repo "$REPO" \
+            --remove-label "agent:running" \
+            --add-label "agent:completed"
+          gh issue comment "${{ steps.issue-num.outputs.number }}" \
+            --repo "$REPO" \
+            --body "✅ **Agent completed.** PR: ${{ steps.pr.outputs.url }}"
+
+      # ── 14b. Mark no-changes ──────────────────────────────────────────────
+      - name: Mark no-changes
+        if: steps.changes.outputs.has_changes == 'false' && success()
+        run: |
+          gh issue edit "${{ steps.issue-num.outputs.number }}" \
+            --repo "$REPO" \
+            --remove-label "agent:running" \
+            --add-label "agent:no-changes"
+          gh issue comment "${{ steps.issue-num.outputs.number }}" \
+            --repo "$REPO" \
+            --body "🤖 Agent finished but produced no changes."
+
+      # ── 15. Mark failed (runs when any earlier step fails) ────────────────
+      - name: Mark failed
+        if: failure()
+        run: |
+          gh issue edit "${{ steps.issue-num.outputs.number }}" \
+            --repo "$REPO" \
+            --remove-label "agent:running" \
+            --remove-label "agent:queued" \
+            --add-label "agent:failed" || true
+          gh issue comment "${{ steps.issue-num.outputs.number }}" \
+            --repo "$REPO" \
+            --body "❌ **Agent run failed.** See [workflow logs](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}) for details." || true
