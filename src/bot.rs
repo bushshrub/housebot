@@ -29,6 +29,7 @@ use crate::coding_agent::catalog::{AgentCatalog, CodingAgent};
 use crate::coding_agent::issue::{build_issue_body, dispatch_labels};
 use crate::coding_agent::pending::{DiscordMessageRef, DispatchStage, PendingJobStore};
 use crate::config;
+use crate::discord_bridge::DiscordBridge;
 use crate::history::History;
 use crate::llm::ThinkingMode;
 use crate::memory::Memory;
@@ -213,11 +214,13 @@ pub struct HouseBot {
     pending_jobs: Arc<PendingJobStore>,
     /// Catalog of agents, models, and effort levels.
     catalog: AgentCatalog,
+    /// Shared with `Agent` — provides Discord API access to the agent tools.
+    discord: Arc<DiscordBridge>,
 }
 
 impl HouseBot {
     /// Build the bot from environment configuration.
-    pub fn new(agent: Arc<Agent>) -> Self {
+    pub fn new(agent: Arc<Agent>, discord: Arc<DiscordBridge>) -> Self {
         let idle = Duration::from_secs(config::env_parse("CONVERSATION_IDLE_TIMEOUT", 300));
         let chat_rate_max: usize = config::env_parse("CHAT_RATE_LIMIT_MAX", 20);
         let chat_rate_window =
@@ -241,6 +244,7 @@ impl HouseBot {
             chat_rate_limiter: RateLimiter::new(chat_rate_max, chat_rate_window),
             pending_jobs,
             catalog: AgentCatalog::load_embedded(),
+            discord,
         }
     }
 
@@ -586,6 +590,7 @@ fn commit_hash_response(sha: Option<&str>) -> String {
 impl EventHandler for HouseBot {
     async fn ready(&self, ctx: Context, ready: Ready) {
         tracing::info!("Logged in as {} (ID: {})", ready.user.name, ready.user.id);
+        self.discord.set_http(ctx.http.clone()).await;
 
         // Register the /config global slash command.
         let config_cmd = CreateCommand::new("config")
@@ -2533,8 +2538,9 @@ fn unix_now() -> f64 {
 pub async fn run() -> anyhow::Result<()> {
     let token = std::env::var("DISCORD_BOT_TOKEN")
         .map_err(|_| anyhow::anyhow!("DISCORD_BOT_TOKEN is not set"))?;
-    let agent = Arc::new(Agent::from_env().await);
-    let bot = HouseBot::new(agent);
+    let discord = Arc::new(DiscordBridge::default());
+    let agent = Arc::new(Agent::from_env(discord.clone()).await);
+    let bot = HouseBot::new(agent, discord);
 
     let intents = GatewayIntents::non_privileged() | GatewayIntents::MESSAGE_CONTENT;
     let mut client = Client::builder(&token, intents).event_handler(bot).await?;
