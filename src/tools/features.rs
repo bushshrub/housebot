@@ -11,7 +11,7 @@ pub fn features_text() -> &'static str {
 **Slash commands**
 `/help` — show this reference
 `/new` / `/reset` — start a fresh conversation
-`/compact` — summarise the conversation into memory and start fresh
+`/compact` — summarise the conversation into memory and start fresh (or clear it without saving when deep memory is disabled)
 `/session` — show token and context usage for the current session
 `/status` — show your current settings at a glance (effort, follow-up, personality)
 `/effort [level]` — set thinking depth: `low` (2k tokens) · `medium` (4k, default) · `high` (8k) · `xhigh` (16k) · `max` (unlimited)
@@ -21,6 +21,9 @@ pub fn features_text() -> &'static str {
 `/labs pagination enabled` — toggle paginated responses (experimental)
 `/commit` — show the running commit hash
 `/model` — show the current model name and context size
+`/profile show|clear` — inspect your stored profile or clear learned profile data and memory
+`/history show|clear` — inspect or clear your global conversation history
+`/privacy status|deep_memory|proactive` — view or change privacy and proactive-assistance settings
 `/erase_my_data` — permanently delete all your stored data (messages, history, memory, notes)
 
 **Prefix commands**
@@ -38,7 +41,9 @@ pub fn features_text() -> &'static str {
 - Personal notes and persistent memory across sessions
 - Software development help: discuss, explain, review, and advise on code (cannot execute)
 - Chat search: search channel messages by regex to find what was said or who mentioned something
-- Discord user profiles: look up a user's username, display name, and account creation date by their user ID"
+- Discord user profiles: look up a user's username, display name, and account creation date by their user ID
+- Opt-in proactive assistance for narrowly detected questions, feature-help requests, and reminders
+"
 }
 
 pub fn definition() -> Value {

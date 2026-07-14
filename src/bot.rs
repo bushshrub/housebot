@@ -36,6 +36,7 @@ use crate::llm::ThinkingMode;
 use crate::memory::Memory;
 use crate::message_log::MessageLog;
 use crate::notes::Notes;
+use crate::profile::ProfileStore;
 use crate::rate_limit::RateLimiter;
 use crate::skills::Skills;
 
@@ -202,12 +203,14 @@ pub struct HouseBot {
     skills: Skills,
     memory: Memory,
     history: History,
+    profile_store: ProfileStore,
     message_log: MessageLog,
     server_cfg: ServerConfigStore,
     user_cfg: UserConfigStore,
     conversations: Mutex<ConversationTracker>,
     processing: Mutex<HashSet<u64>>,
     responded: Mutex<VecDeque<u64>>,
+    proactive_cooldowns: Mutex<HashMap<(u64, u64), Instant>>,
     paginated: Mutex<HashMap<String, PaginatedResponse>>,
     reminder_started: AtomicBool,
     chat_rate_limiter: RateLimiter,
@@ -236,12 +239,14 @@ impl HouseBot {
             skills: Skills::default(),
             memory: Memory::default(),
             history: History::default(),
+            profile_store: ProfileStore::default(),
             message_log: MessageLog::default(),
             server_cfg: ServerConfigStore::default(),
             user_cfg: UserConfigStore::default(),
             conversations: Mutex::new(ConversationTracker::new(idle)),
             processing: Mutex::new(HashSet::new()),
             responded: Mutex::new(VecDeque::with_capacity(200)),
+            proactive_cooldowns: Mutex::new(HashMap::new()),
             paginated: Mutex::new(HashMap::new()),
             reminder_started: AtomicBool::new(false),
             chat_rate_limiter: RateLimiter::new(chat_rate_max, chat_rate_window),
@@ -276,7 +281,30 @@ impl HouseBot {
         tracing::info!(target: "housebot::commands", user_id, "Session reset requested");
         self.agent.reset_session(&user_id.to_string()).await;
         self.conversations.lock().await.remove(channel_id, user_id);
-        "New conversation started. Your previous conversation history has been cleared.".into()
+        let name = self
+            .profile_store
+            .load(user_id)
+            .await
+            .best_name()
+            .to_string();
+        format!("New conversation started, {name}. Your previous conversation history has been cleared.")
+    }
+
+    async fn proactive_cooldown_allows(&self, channel_id: u64, user_id: u64) -> bool {
+        let now = Instant::now();
+        let cooldown = Duration::from_secs(config::env_parse(
+            "PROACTIVE_ASSISTANCE_COOLDOWN_SECS",
+            300u64,
+        ));
+        let mut cooldowns = self.proactive_cooldowns.lock().await;
+        if cooldowns
+            .get(&(channel_id, user_id))
+            .is_some_and(|last| now.duration_since(*last) < cooldown)
+        {
+            return false;
+        }
+        cooldowns.insert((channel_id, user_id), now);
+        true
     }
 
     async fn respond(&self, ctx: &Context, msg: &Message, content: &str) {
@@ -571,6 +599,200 @@ async fn handle_labs_interaction(
     }
 }
 
+/// Handle a `/profile` interaction: show or clear profile data.
+async fn handle_profile_interaction(
+    profile_store: &ProfileStore,
+    memory: &Memory,
+    options: &[serenity::all::CommandDataOption],
+    author_id: u64,
+    guild_id: Option<u64>,
+) -> String {
+    let profile = profile_store.load(author_id).await;
+    let subcommand = options.first().map(|o| o.name.as_str());
+    match subcommand {
+        Some("clear") => {
+            let mut profile = profile_store.load(author_id).await;
+            profile.clear_learned();
+            let profile_result = profile_store.save(author_id, &profile).await;
+            let memory_result = memory.clear(author_id.to_string()).await;
+            if profile_result.is_err() || memory_result.is_err() {
+                "⚠️ Could not clear all learned profile data.".into()
+            } else {
+                "✅ Profile learned data and memory cleared. Your Discord identity is preserved."
+                    .into()
+            }
+        }
+        _ => {
+            let name = profile.best_name();
+            let tags: Vec<String> = profile
+                .tags
+                .iter()
+                .map(|t| t.as_str().to_string())
+                .collect();
+            let actions = profile.quick_actions();
+            let mut lines = vec![
+                format!("**Profile for {name}**"),
+                format!("Username: {}", profile.username),
+                format!("Display name: {}", profile.display_name),
+                format!(
+                    "Guild: {}",
+                    guild_id
+                        .map(|g| g.to_string())
+                        .unwrap_or_else(|| "DM".to_string())
+                ),
+            ];
+            if !profile.nickname.is_empty() {
+                lines.push(format!("Nickname: {}", profile.nickname));
+            }
+            if !profile.avatar_url.is_empty() {
+                lines.push("Avatar: (set)".to_string());
+            }
+            if !tags.is_empty() {
+                lines.push(format!("Tags: {}", tags.join(", ")));
+            }
+            if !actions.is_empty() {
+                let action_strs: Vec<String> =
+                    actions.iter().map(|(k, v)| format!("{k}: {v}")).collect();
+                lines.push(format!("Quick actions: {}", action_strs.join(", ")));
+            }
+            lines.join("\n")
+        }
+    }
+}
+
+/// Handle a `/history` interaction: show or clear history.
+async fn handle_history_interaction(
+    history: &History,
+    profile_store: &ProfileStore,
+    options: &[serenity::all::CommandDataOption],
+    author_id: u64,
+    _guild_id: Option<u64>,
+) -> String {
+    let profile = profile_store.load(author_id).await;
+    let name = profile.best_name();
+    let subcommand = options.first().map(|o| o.name.as_str());
+    match subcommand {
+        Some("clear") => {
+            let _ = history.clear(author_id.to_string()).await;
+            format!("✅ Conversation history cleared for {name}.")
+        }
+        _ => {
+            let hist = history.load(author_id.to_string()).await;
+            let turn_count = hist
+                .iter()
+                .filter(|m| m.get("role").and_then(|r| r.as_str()) == Some("user"))
+                .count();
+            if hist.is_empty() {
+                format!("**History for {name}**\nNo conversation history yet.")
+            } else {
+                let recent: Vec<&serde_json::Value> = hist
+                    .iter()
+                    .rev()
+                    .take(10)
+                    .filter(|m| m.get("content").and_then(|c| c.as_str()).is_some())
+                    .collect();
+                let mut lines = vec![
+                    format!("**History for {name}**"),
+                    format!("Total messages: {} ({} turns)", hist.len(), turn_count),
+                    "Recent interactions:".to_string(),
+                ];
+                for msg in recent {
+                    let role = msg["role"].as_str().unwrap_or("?");
+                    let content = msg["content"].as_str().unwrap_or("");
+                    let preview: String = content.chars().take(80).collect();
+                    lines.push(format!("[{role}] {preview}"));
+                }
+                if hist.len() > 10 {
+                    lines.push(format!("... and {} more messages", hist.len() - 10));
+                }
+                lines.join("\n")
+            }
+        }
+    }
+}
+
+/// Handle a `/privacy` interaction: view or change privacy settings.
+async fn handle_privacy_interaction(
+    user_cfg: &UserConfigStore,
+    options: &[serenity::all::CommandDataOption],
+    author_id: u64,
+) -> String {
+    let subcommand = options.first().map(|o| o.name.as_str());
+    match subcommand {
+        None | Some("status") => {
+            let cfg = user_cfg.load(author_id).await;
+            let deep_memory = if cfg.deep_memory_enabled {
+                "enabled"
+            } else {
+                "disabled"
+            };
+            let proactive = if cfg.proactive_assistance_enabled {
+                "enabled"
+            } else {
+                "disabled"
+            };
+            format!(
+                "**Privacy settings:**\n• Deep memory: {deep_memory} (persistent facts across sessions)\n• Proactive assistance: {proactive} (bot may respond without ping)\n\nUse `/privacy deep_memory enabled:true` or `/privacy proactive enabled:false` to change."
+            )
+        }
+        Some("deep_memory") => {
+            let sub_opts = match &options[0].value {
+                serenity::all::CommandDataOptionValue::SubCommand(opts) => opts,
+                _ => return "Unexpected option structure.".into(),
+            };
+            let enabled =
+                sub_opts
+                    .iter()
+                    .find(|o| o.name == "enabled")
+                    .and_then(|o| match &o.value {
+                        serenity::all::CommandDataOptionValue::Boolean(b) => Some(*b),
+                        _ => None,
+                    });
+            let Some(enabled) = enabled else {
+                return "Please specify `enabled`.".into();
+            };
+            let mut cfg = user_cfg.load(author_id).await;
+            cfg.deep_memory_enabled = enabled;
+            if user_cfg.save(author_id, &cfg).await.is_err() {
+                return "Error: failed to save config.".into();
+            }
+            format!(
+                "✅ Deep memory {}.",
+                if enabled { "enabled" } else { "disabled" }
+            )
+        }
+        Some("proactive") => {
+            let sub_opts = match &options[0].value {
+                serenity::all::CommandDataOptionValue::SubCommand(opts) => opts,
+                _ => return "Unexpected option structure.".into(),
+            };
+            let enabled =
+                sub_opts
+                    .iter()
+                    .find(|o| o.name == "enabled")
+                    .and_then(|o| match &o.value {
+                        serenity::all::CommandDataOptionValue::Boolean(b) => Some(*b),
+                        _ => None,
+                    });
+            let Some(enabled) = enabled else {
+                return "Please specify `enabled`.".into();
+            };
+            let mut cfg = user_cfg.load(author_id).await;
+            cfg.proactive_assistance_enabled = enabled;
+            if user_cfg.save(author_id, &cfg).await.is_err() {
+                return "Error: failed to save config.".into();
+            }
+            format!(
+                "✅ Proactive assistance {}.",
+                if enabled { "enabled" } else { "disabled" }
+            )
+        }
+        other => {
+            format!("Unknown privacy option `{other:?}`. Use `/privacy` to see available options.")
+        }
+    }
+}
+
 async fn reply_no_ping(ctx: &Context, msg: &Message, content: &str) -> serenity::Result<Message> {
     let builder = CreateMessage::new()
         .content(content)
@@ -581,6 +803,32 @@ async fn reply_no_ping(ctx: &Context, msg: &Message, content: &str) -> serenity:
 
 fn help_response() -> String {
     crate::tools::features::features_text().to_string()
+}
+
+fn is_proactive_candidate(content: &str) -> bool {
+    let normalized = content.trim().to_ascii_lowercase();
+    if normalized.is_empty() {
+        return false;
+    }
+    normalized.contains('?')
+        || normalized.starts_with("how ")
+        || normalized.starts_with("what ")
+        || normalized.starts_with("where ")
+        || normalized.starts_with("when ")
+        || normalized.starts_with("why ")
+        || normalized.starts_with("can you ")
+        || normalized.starts_with("could you ")
+        || normalized.starts_with("remind me ")
+        || normalized.starts_with("how do i ")
+        || normalized.starts_with("what can you do")
+}
+
+fn compact_done_message(deep_memory_enabled: bool) -> &'static str {
+    if deep_memory_enabled {
+        "✅ Conversation compacted into memory. A new session has started."
+    } else {
+        "✅ Conversation cleared without saving a memory summary. A new session has started."
+    }
 }
 
 fn commit_hash_response(sha: Option<&str>) -> String {
@@ -740,6 +988,67 @@ impl EventHandler for HouseBot {
             CreateCommand::new("erase_my_data").description(
                 "Permanently delete all your stored data (messages, history, memory, notes)",
             ),
+            CreateCommand::new("profile")
+                .description("Show or clear your stored profile information")
+                .add_option(CreateCommandOption::new(
+                    CommandOptionType::SubCommand,
+                    "show",
+                    "Show your stored profile information",
+                ))
+                .add_option(CreateCommandOption::new(
+                    CommandOptionType::SubCommand,
+                    "clear",
+                    "Clear learned profile data and memory",
+                )),
+            CreateCommand::new("history")
+                .description("Show or clear your recent conversation history")
+                .add_option(CreateCommandOption::new(
+                    CommandOptionType::SubCommand,
+                    "show",
+                    "Show recent conversation history",
+                ))
+                .add_option(CreateCommandOption::new(
+                    CommandOptionType::SubCommand,
+                    "clear",
+                    "Clear your conversation history",
+                )),
+            CreateCommand::new("privacy")
+                .description("View or change your privacy settings")
+                .add_option(CreateCommandOption::new(
+                    CommandOptionType::SubCommand,
+                    "status",
+                    "Show current privacy settings",
+                ))
+                .add_option(
+                    CreateCommandOption::new(
+                        CommandOptionType::SubCommand,
+                        "deep_memory",
+                        "Toggle deep memory",
+                    )
+                    .add_sub_option(
+                        CreateCommandOption::new(
+                            CommandOptionType::Boolean,
+                            "enabled",
+                            "Enable or disable deep memory",
+                        )
+                        .required(true),
+                    ),
+                )
+                .add_option(
+                    CreateCommandOption::new(
+                        CommandOptionType::SubCommand,
+                        "proactive",
+                        "Toggle proactive assistance",
+                    )
+                    .add_sub_option(
+                        CreateCommandOption::new(
+                            CommandOptionType::Boolean,
+                            "enabled",
+                            "Enable or disable proactive assistance",
+                        )
+                        .required(true),
+                    ),
+                ),
         ] {
             if let Err(e) = Command::create_global_command(&ctx.http, command).await {
                 tracing::error!("Failed to register slash command: {e}");
@@ -789,6 +1098,7 @@ impl EventHandler for HouseBot {
             "Slash command received"
         );
         if cmd.data.name == "compact" {
+            let deep_memory_enabled = self.user_cfg.load(user_id).await.deep_memory_enabled;
             let response = CreateInteractionResponse::Defer(
                 CreateInteractionResponseMessage::new().ephemeral(true),
             );
@@ -801,7 +1111,7 @@ impl EventHandler for HouseBot {
                 command: Box::new(cmd.clone()),
             });
             self.agent
-                .compact_session_with_hooks(&user_id.to_string(), &hooks)
+                .compact_session_with_hooks(&user_id.to_string(), deep_memory_enabled, &hooks)
                 .await;
             self.conversations
                 .lock()
@@ -863,6 +1173,10 @@ impl EventHandler for HouseBot {
                     &self.history,
                     &self.memory,
                     &self.notes,
+                    &self.profile_store,
+                    &self.user_cfg,
+                    &self.agent.reminders().clone(),
+                    &self.channel_log,
                     user_id,
                 )
                 .await;
@@ -872,6 +1186,29 @@ impl EventHandler for HouseBot {
                     .await
                     .remove(cmd.channel_id.get(), user_id);
                 reply
+            }
+            "profile" => {
+                handle_profile_interaction(
+                    &self.profile_store,
+                    &self.memory,
+                    &cmd.data.options,
+                    user_id,
+                    guild_id,
+                )
+                .await
+            }
+            "history" => {
+                handle_history_interaction(
+                    &self.history,
+                    &self.profile_store,
+                    &cmd.data.options,
+                    user_id,
+                    guild_id,
+                )
+                .await
+            }
+            "privacy" => {
+                handle_privacy_interaction(&self.user_cfg, &cmd.data.options, user_id).await
             }
             _ => return,
         };
@@ -901,6 +1238,7 @@ impl EventHandler for HouseBot {
             return;
         }
         if content == "!compact" {
+            let deep_memory_enabled = self.user_cfg.load(user_id).await.deep_memory_enabled;
             let progress = reply_no_ping(&ctx, &msg, &compact_progress(0, None))
                 .await
                 .ok();
@@ -911,28 +1249,24 @@ impl EventHandler for HouseBot {
                     message_id: progress.id,
                 });
                 self.agent
-                    .compact_session_with_hooks(&user_id.to_string(), &hooks)
+                    .compact_session_with_hooks(&user_id.to_string(), deep_memory_enabled, &hooks)
                     .await;
             } else {
-                self.agent.compact_session(&user_id.to_string()).await;
+                self.agent
+                    .compact_session(&user_id.to_string(), deep_memory_enabled)
+                    .await;
             }
             self.conversations.lock().await.remove(channel_id, user_id);
             if let Some(mut progress) = progress {
                 let _ = progress
                     .edit(
                         &ctx.http,
-                        EditMessage::new().content(
-                            "✅ Conversation compacted into memory. A new session has started.",
-                        ),
+                        EditMessage::new().content(compact_done_message(deep_memory_enabled)),
                     )
                     .await;
             } else {
-                self.respond(
-                    &ctx,
-                    &msg,
-                    "✅ Conversation compacted into memory. A new session has started.",
-                )
-                .await;
+                self.respond(&ctx, &msg, compact_done_message(deep_memory_enabled))
+                    .await;
             }
             return;
         }
@@ -1015,7 +1349,20 @@ impl EventHandler for HouseBot {
             (active, expired)
         };
 
-        if !(is_dm || is_mentioned || is_reply_to_bot || is_reply_to_media || is_active) {
+        let proactive = !is_dm
+            && user_config.proactive_assistance_enabled
+            && !is_mentioned
+            && !is_reply_to_bot
+            && !is_reply_to_media
+            && is_proactive_candidate(&content)
+            && self.proactive_cooldown_allows(channel_id, user_id).await;
+        if !(is_dm
+            || is_mentioned
+            || is_reply_to_bot
+            || is_reply_to_media
+            || is_active
+            || proactive)
+        {
             return;
         }
         if self.already_seen(msg.id.get()).await {
@@ -1023,8 +1370,15 @@ impl EventHandler for HouseBot {
             return;
         }
 
-        self.handle_message(&ctx, &msg, bot_id, session_expired, followup_timeout)
-            .await;
+        self.handle_message(
+            &ctx,
+            &msg,
+            bot_id,
+            session_expired,
+            followup_timeout,
+            proactive,
+        )
+        .await;
         self.mark_done(msg.id.get()).await;
     }
 }
@@ -1037,6 +1391,7 @@ impl HouseBot {
         bot_id: UserId,
         session_expired: bool,
         followup_timeout: Duration,
+        proactive: bool,
     ) {
         let mut text = msg.content.clone();
         for token in [format!("<@{bot_id}>"), format!("<@!{bot_id}>")] {
@@ -1070,9 +1425,14 @@ impl HouseBot {
             return;
         }
 
+        let user_config = self.user_cfg.load(msg.author.id.get()).await;
+
         if session_expired {
             self.agent
-                .compact_session(&msg.author.id.get().to_string())
+                .compact_session(
+                    &msg.author.id.get().to_string(),
+                    user_config.deep_memory_enabled,
+                )
                 .await;
         }
 
@@ -1081,10 +1441,51 @@ impl HouseBot {
             media.extend(extract_media(referenced).await);
         }
 
-        // Load per-user settings (personality, thinking effort, pagination).
-        let user_config = self.user_cfg.load(msg.author.id.get()).await;
+        // Load per-user settings (personality, thinking effort, and privacy).
         let personality = user_config.personality.clone();
         let thinking = user_config.thinking_mode;
+
+        // Refresh user profile from Discord and persist learned data.
+        let mut profile = self.profile_store.load(msg.author.id.get()).await;
+        let guild_id = msg.guild_id.map(|g| g.get()).unwrap_or(0);
+        if profile.username.is_empty() || profile.guild_id != guild_id {
+            // First time seeing this user in this guild — fetch profile from Discord.
+            if let Ok(user_info) = self.discord.fetch_user(msg.author.id.get()).await {
+                profile.username = user_info.username;
+                profile.display_name = user_info.display_name;
+                profile.avatar_url = user_info.avatar_url.unwrap_or_default();
+                profile.guild_id = guild_id;
+                profile.nickname.clear();
+                if let Some(guild) = msg.guild(&ctx.cache) {
+                    if let Some(member) = guild.members.get(&msg.author.id) {
+                        if let Some(nick) = &member.nick {
+                            profile.nickname = nick.clone();
+                        }
+                    }
+                }
+                let _ = self.profile_store.save(msg.author.id.get(), &profile).await;
+            }
+        } else {
+            // Update display name and nickname if they've changed.
+            if let Ok(user_info) = self.discord.fetch_user(msg.author.id.get()).await {
+                if profile.display_name != user_info.display_name {
+                    profile.display_name = user_info.display_name;
+                }
+                let avatar = user_info.avatar_url.clone().unwrap_or_default();
+                if profile.avatar_url != avatar {
+                    profile.avatar_url = avatar;
+                }
+                if let Some(guild) = msg.guild(&ctx.cache) {
+                    if let Some(member) = guild.members.get(&msg.author.id) {
+                        let current_nick = member.nick.as_deref().unwrap_or("");
+                        if profile.nickname != current_nick {
+                            profile.nickname = current_nick.to_string();
+                        }
+                    }
+                }
+                let _ = self.profile_store.save(msg.author.id.get(), &profile).await;
+            }
+        }
 
         // Keep the progress message in the thinking state until the model starts its final reply.
         let progress = reply_no_ping(ctx, msg, "🧠 **Thinking...**").await.ok();
@@ -1103,6 +1504,18 @@ impl HouseBot {
             .append(msg.author.id.get().to_string(), &user_text)
             .await;
         let user_id_string = msg.author.id.get().to_string();
+        let profile_tags = profile
+            .tags
+            .iter()
+            .map(|tag| tag.as_str())
+            .collect::<Vec<_>>()
+            .join(", ");
+        let quick_actions = profile
+            .quick_actions()
+            .into_iter()
+            .map(|(name, count)| format!("{name} ({count})"))
+            .collect::<Vec<_>>()
+            .join(", ");
         let result: AgentResult = self
             .agent
             .run(
@@ -1114,6 +1527,14 @@ impl HouseBot {
                     personality: personality.as_deref(),
                     thinking,
                     channel_id: msg.channel_id.get(),
+                    deep_memory_enabled: user_config.deep_memory_enabled && !proactive,
+                    display_name: &profile.display_name,
+                    nickname: &profile.nickname,
+                    profile_tags: &profile_tags,
+                    quick_actions: &quick_actions,
+                    guild_id: msg.guild_id.map(|guild| guild.get()),
+                    proactive,
+                    record_profile_usage: !proactive,
                 },
                 response_hooks
                     .as_ref()
@@ -2813,6 +3234,13 @@ mod tests {
             commit_hash_response(None),
             "Running commit is unavailable for this build."
         );
+    }
+
+    #[test]
+    fn proactive_candidate_is_narrow() {
+        assert!(is_proactive_candidate("How do I use reminders?"));
+        assert!(is_proactive_candidate("Remind me tomorrow"));
+        assert!(!is_proactive_candidate("hello everyone"));
     }
 
     fn stores() -> (TempDir, Skills, Notes, Memory, History) {
