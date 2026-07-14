@@ -8,7 +8,7 @@
 use std::io::{BufRead as _, BufReader};
 use std::path::{Path, PathBuf};
 
-use chrono::Utc;
+use chrono::{Duration, Utc};
 use regex::Regex;
 use serde_json::{json, Value};
 
@@ -20,6 +20,8 @@ pub struct LogEntry {
     pub ts: String,
     pub user_id: String,
     pub username: String,
+    /// Server nickname or global display name, if different from username.
+    pub nick: Option<String>,
     pub content: String,
 }
 
@@ -44,9 +46,19 @@ impl ChannelLog {
     }
 
     /// Append a message (fire-and-forget; errors are logged but not returned).
-    pub async fn append(&self, channel_id: u64, user_id: u64, username: &str, content: &str) {
+    ///
+    /// `nick` is the server nickname or global display name when it differs from the
+    /// Discord username; pass `None` if the username is the only name to store.
+    pub async fn append(
+        &self,
+        channel_id: u64,
+        user_id: u64,
+        username: &str,
+        nick: Option<&str>,
+        content: &str,
+    ) {
         if let Err(e) = self
-            .try_append(channel_id, user_id, username, content)
+            .try_append(channel_id, user_id, username, nick, content)
             .await
         {
             tracing::warn!(target: "housebot::channel_log", "Failed to append: {e}");
@@ -58,6 +70,7 @@ impl ChannelLog {
         channel_id: u64,
         user_id: u64,
         username: &str,
+        nick: Option<&str>,
         content: &str,
     ) -> std::io::Result<()> {
         ensure_dir(&self.dir).await?;
@@ -65,6 +78,7 @@ impl ChannelLog {
             "ts": Utc::now().to_rfc3339(),
             "uid": user_id.to_string(),
             "name": username,
+            "nick": nick,
             "msg": content,
         });
         let mut line = serde_json::to_string(&entry).unwrap_or_else(|_| "{}".into());
@@ -112,7 +126,7 @@ impl ChannelLog {
         Ok(())
     }
 
-    /// Search messages in `channel_id` whose content matches `pattern` (regex).
+    /// Search messages in `channel_id` whose content or author name matches `pattern` (regex).
     /// Returns up to `max_results` of the most recent matches.
     /// Returns an error string if the regex is invalid.
     pub async fn search(
@@ -126,6 +140,15 @@ impl ChannelLog {
         tokio::task::spawn_blocking(move || search_sync(&path, &re, max_results))
             .await
             .map_err(|e| format!("Search error: {e}"))?
+    }
+
+    /// Return all messages in `channel_id` from the last `minutes` minutes, in
+    /// chronological order.
+    pub async fn get_recent(&self, channel_id: u64, minutes: u32) -> Result<Vec<LogEntry>, String> {
+        let path = self.path(channel_id);
+        tokio::task::spawn_blocking(move || get_recent_sync(&path, minutes))
+            .await
+            .map_err(|e| format!("Error: {e}"))?
     }
 }
 
@@ -143,17 +166,52 @@ fn search_sync(path: &Path, re: &Regex, max_results: usize) -> Result<Vec<LogEnt
         };
         let content = val["msg"].as_str().unwrap_or("").to_string();
         let username = val["name"].as_str().unwrap_or("").to_string();
-        if re.is_match(&content) || re.is_match(&username) {
+        let nick = val["nick"].as_str().map(str::to_string);
+        let matches_nick = nick.as_deref().is_some_and(|n| re.is_match(n));
+        if re.is_match(&content) || re.is_match(&username) || matches_nick {
             matches.push(LogEntry {
                 ts: val["ts"].as_str().unwrap_or("").to_string(),
                 user_id: val["uid"].as_str().unwrap_or("").to_string(),
                 username,
+                nick,
                 content,
             });
         }
     }
     let skip = matches.len().saturating_sub(max_results);
     Ok(matches.into_iter().skip(skip).collect())
+}
+
+fn get_recent_sync(path: &Path, minutes: u32) -> Result<Vec<LogEntry>, String> {
+    let file = match std::fs::File::open(path) {
+        Ok(f) => f,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(vec![]),
+        Err(e) => return Err(format!("Could not open channel log: {e}")),
+    };
+    let cutoff = Utc::now() - Duration::minutes(i64::from(minutes));
+    let mut entries = Vec::new();
+    for line in BufReader::new(file).lines() {
+        let Ok(line) = line else { continue };
+        let Ok(val) = serde_json::from_str::<Value>(&line) else {
+            continue;
+        };
+        let ts_str = val["ts"].as_str().unwrap_or("");
+        let Ok(ts) = ts_str.parse::<chrono::DateTime<Utc>>() else {
+            continue;
+        };
+        if ts >= cutoff {
+            let username = val["name"].as_str().unwrap_or("").to_string();
+            let nick = val["nick"].as_str().map(str::to_string);
+            entries.push(LogEntry {
+                ts: ts_str.to_string(),
+                user_id: val["uid"].as_str().unwrap_or("").to_string(),
+                username,
+                nick,
+                content: val["msg"].as_str().unwrap_or("").to_string(),
+            });
+        }
+    }
+    Ok(entries)
 }
 
 async fn append_line(path: &Path, line: &str) -> std::io::Result<()> {
@@ -180,8 +238,8 @@ mod tests {
     #[tokio::test]
     async fn append_and_search_basic() {
         let (_t, log) = store();
-        log.append(1, 10, "Alice", "hello world").await;
-        log.append(1, 11, "Bob", "goodbye moon").await;
+        log.append(1, 10, "Alice", None, "hello world").await;
+        log.append(1, 11, "Bob", None, "goodbye moon").await;
         let results = log.search(1, "hello", 10).await.unwrap();
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].username, "Alice");
@@ -191,7 +249,7 @@ mod tests {
     #[tokio::test]
     async fn search_returns_no_match() {
         let (_t, log) = store();
-        log.append(1, 10, "Alice", "hello world").await;
+        log.append(1, 10, "Alice", None, "hello world").await;
         let results = log.search(1, "notfound", 10).await.unwrap();
         assert!(results.is_empty());
     }
@@ -207,7 +265,7 @@ mod tests {
     async fn search_respects_max_results() {
         let (_t, log) = store();
         for i in 0..10u64 {
-            log.append(1, i, "User", "match").await;
+            log.append(1, i, "User", None, "match").await;
         }
         let results = log.search(1, "match", 3).await.unwrap();
         assert_eq!(results.len(), 3);
@@ -216,9 +274,9 @@ mod tests {
     #[tokio::test]
     async fn search_returns_most_recent_when_capped() {
         let (_t, log) = store();
-        log.append(1, 1, "First", "match").await;
-        log.append(1, 2, "Second", "match").await;
-        log.append(1, 3, "Third", "match").await;
+        log.append(1, 1, "First", None, "match").await;
+        log.append(1, 2, "Second", None, "match").await;
+        log.append(1, 3, "Third", None, "match").await;
         let results = log.search(1, "match", 2).await.unwrap();
         assert_eq!(results[0].username, "Second");
         assert_eq!(results[1].username, "Third");
@@ -233,8 +291,8 @@ mod tests {
     #[tokio::test]
     async fn channels_are_isolated() {
         let (_t, log) = store();
-        log.append(1, 10, "Alice", "channel one").await;
-        log.append(2, 11, "Bob", "channel two").await;
+        log.append(1, 10, "Alice", None, "channel one").await;
+        log.append(2, 11, "Bob", None, "channel two").await;
         assert_eq!(log.search(1, "channel", 10).await.unwrap().len(), 1);
         assert_eq!(log.search(2, "channel", 10).await.unwrap().len(), 1);
         assert!(log.search(1, "two", 10).await.unwrap().is_empty());
@@ -243,8 +301,8 @@ mod tests {
     #[tokio::test]
     async fn search_matches_username() {
         let (_t, log) = store();
-        log.append(1, 10, "AliceWonder", "some message").await;
-        log.append(1, 11, "BobSmith", "another message").await;
+        log.append(1, 10, "AliceWonder", None, "some message").await;
+        log.append(1, 11, "BobSmith", None, "another message").await;
         let results = log.search(1, "Alice", 10).await.unwrap();
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].username, "AliceWonder");
@@ -253,7 +311,7 @@ mod tests {
     #[tokio::test]
     async fn entries_have_valid_timestamp_and_ids() {
         let (_t, log) = store();
-        log.append(1, 42, "TestUser", "content").await;
+        log.append(1, 42, "TestUser", None, "content").await;
         let results = log.search(1, "content", 10).await.unwrap();
         assert_eq!(results[0].user_id, "42");
         assert!(!results[0].ts.is_empty());
@@ -262,9 +320,9 @@ mod tests {
     #[tokio::test]
     async fn remove_user_entries_removes_matching_user() {
         let (_t, log) = store();
-        log.append(1, 10, "Alice", "hello").await;
-        log.append(1, 20, "Bob", "world").await;
-        log.append(1, 10, "Alice", "foo").await;
+        log.append(1, 10, "Alice", None, "hello").await;
+        log.append(1, 20, "Bob", None, "world").await;
+        log.append(1, 10, "Alice", None, "foo").await;
         log.remove_user_entries("10".to_string()).await.unwrap();
         let results = log.search(1, ".*", 10).await.unwrap();
         assert_eq!(results.len(), 1);
@@ -274,9 +332,9 @@ mod tests {
     #[tokio::test]
     async fn remove_user_entries_preserves_other_users() {
         let (_t, log) = store();
-        log.append(1, 10, "Alice", "hello").await;
-        log.append(1, 20, "Bob", "world").await;
-        log.append(1, 30, "Charlie", "bar").await;
+        log.append(1, 10, "Alice", None, "hello").await;
+        log.append(1, 20, "Bob", None, "world").await;
+        log.append(1, 30, "Charlie", None, "bar").await;
         log.remove_user_entries("10".to_string()).await.unwrap();
         let results = log.search(1, ".*", 10).await.unwrap();
         assert_eq!(results.len(), 2);
@@ -287,7 +345,7 @@ mod tests {
     #[tokio::test]
     async fn remove_user_entries_noop_when_user_not_found() {
         let (_t, log) = store();
-        log.append(1, 10, "Alice", "hello").await;
+        log.append(1, 10, "Alice", None, "hello").await;
         log.remove_user_entries("999".to_string()).await.unwrap();
         let results = log.search(1, ".*", 10).await.unwrap();
         assert_eq!(results.len(), 1);
@@ -303,14 +361,43 @@ mod tests {
     #[tokio::test]
     async fn remove_user_entries_removes_from_all_channels() {
         let (_t, log) = store();
-        log.append(1, 10, "Alice", "channel one").await;
-        log.append(2, 10, "Alice", "channel two").await;
-        log.append(1, 20, "Bob", "channel one bob").await;
+        log.append(1, 10, "Alice", None, "channel one").await;
+        log.append(2, 10, "Alice", None, "channel two").await;
+        log.append(1, 20, "Bob", None, "channel one bob").await;
         log.remove_user_entries("10".to_string()).await.unwrap();
         let results1 = log.search(1, ".*", 10).await.unwrap();
         let results2 = log.search(2, ".*", 10).await.unwrap();
         assert_eq!(results1.len(), 1);
         assert_eq!(results1[0].user_id, "20");
         assert!(results2.is_empty());
+    }
+
+    #[tokio::test]
+    async fn search_matches_nick() {
+        let (_t, log) = store();
+        log.append(1, 10, "username1", Some("Teddio"), "some message")
+            .await;
+        log.append(1, 11, "username2", None, "another message")
+            .await;
+        let results = log.search(1, "(?i)teddio", 10).await.unwrap();
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].username, "username1");
+        assert_eq!(results[0].nick, Some("Teddio".to_string()));
+    }
+
+    #[tokio::test]
+    async fn get_recent_returns_messages_within_window() {
+        let (_t, log) = store();
+        log.append(1, 10, "Alice", None, "recent message").await;
+        let results = log.get_recent(1, 5).await.unwrap();
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].content, "recent message");
+    }
+
+    #[tokio::test]
+    async fn get_recent_empty_for_missing_channel() {
+        let (_t, log) = store();
+        let results = log.get_recent(999, 30).await.unwrap();
+        assert!(results.is_empty());
     }
 }

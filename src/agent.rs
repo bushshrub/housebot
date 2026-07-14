@@ -608,6 +608,7 @@ impl Agent {
             tools::translate::definition(),
             tools::features::definition(),
             search_messages_tool(),
+            get_recent_messages_tool(),
             get_discord_user_tool(),
         ];
         // Conditionally include update_memory based on user's privacy setting.
@@ -864,7 +865,34 @@ impl Agent {
                         Ok(msgs) if msgs.is_empty() => "No matching messages found.".to_string(),
                         Ok(msgs) => msgs
                             .iter()
-                            .map(|m| format!("[{}] {}: {}", m.ts, m.username, m.content))
+                            .map(|m| {
+                                let author = m.nick.as_deref().unwrap_or(&m.username);
+                                format!("[{}] {}: {}", m.ts, author, m.content)
+                            })
+                            .collect::<Vec<_>>()
+                            .join("\n"),
+                    },
+                )
+            }
+            "get_recent_messages" => {
+                let minutes = u64_arg(args, "minutes", 30).clamp(1, 1440) as u32;
+                let target_channel = args
+                    .get("channel_id")
+                    .and_then(Value::as_str)
+                    .and_then(|s| s.parse::<u64>().ok())
+                    .unwrap_or(channel_id);
+                ToolOutcome::Text(
+                    match self.channel_log.get_recent(target_channel, minutes).await {
+                        Err(e) => format!("Error: {e}"),
+                        Ok(msgs) if msgs.is_empty() => {
+                            format!("No messages found in the last {minutes} minutes.")
+                        }
+                        Ok(msgs) => msgs
+                            .iter()
+                            .map(|m| {
+                                let author = m.nick.as_deref().unwrap_or(&m.username);
+                                format!("[{}] {}: {}", m.ts, author, m.content)
+                            })
                             .collect::<Vec<_>>()
                             .join("\n"),
                     },
@@ -1169,17 +1197,18 @@ fn u64_arg(args: &Value, key: &str, default: u64) -> u64 {
 fn search_messages_tool() -> Value {
     json!({
         "name": "search_messages",
-        "description": "Search Discord channel messages by regex pattern. Returns only matching \
-            messages, so token usage stays proportional to what you need. Use this when a user \
-            asks what was said, who mentioned something, or what was discussed — provide a \
-            targeted pattern rather than fetching everything. Supports full Rust regex syntax; \
-            simple keywords and case-insensitive patterns ((?i)) are common use cases.",
+        "description": "Search Discord channel messages by regex pattern. The pattern is matched \
+            against message content, the author's Discord username, AND the author's server \
+            nickname or display name. Use this when a user asks what someone said or what was \
+            discussed — e.g. to find all messages by 'hexagone', search for '(?i)hexagone' and \
+            it will match any message where that name appears as the author or in the text. \
+            Supports full Rust regex syntax; case-insensitive patterns ((?i)) are common.",
         "input_schema": {
             "type": "object",
             "properties": {
                 "query": {
                     "type": "string",
-                    "description": "Regex pattern matched against message content."
+                    "description": "Regex pattern matched against message content, author username, and author nickname/display name."
                 },
                 "max_results": {
                     "type": "integer",
@@ -1192,6 +1221,29 @@ fn search_messages_tool() -> Value {
                 }
             },
             "required": ["query"]
+        }
+    })
+}
+
+fn get_recent_messages_tool() -> Value {
+    json!({
+        "name": "get_recent_messages",
+        "description": "Return all messages from the current channel posted in the last N minutes, \
+            in chronological order. Use this to summarize a recent conversation, catch up on what \
+            was discussed, or answer questions like 'what happened in the last 30 minutes'.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "minutes": {
+                    "type": "integer",
+                    "description": "How far back to look, in minutes (1–1440, default 30)."
+                },
+                "channel_id": {
+                    "type": "string",
+                    "description": "Discord channel ID to fetch. Omit to use the current channel."
+                }
+            },
+            "required": []
         }
     })
 }
