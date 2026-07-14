@@ -9,6 +9,7 @@ data/
 # Repository and editor metadata.
 .git/
 .github/
+!.github/agents/catalog.json
 .agents/
 .codex/
 *.swp
