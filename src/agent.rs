@@ -8,6 +8,7 @@ use async_trait::async_trait;
 use chrono::Local;
 use serde_json::{json, Value};
 
+use crate::channel_log::ChannelLog;
 use crate::coding_agent::pending::PendingJobStore;
 use crate::config;
 use crate::discord_bridge::DiscordBridge;
@@ -150,6 +151,7 @@ pub struct Agent {
     mcp_servers: Vec<McpServer>,
     session_stats: tokio::sync::Mutex<HashMap<String, SessionStats>>,
     discord: Arc<DiscordBridge>,
+    channel_log: ChannelLog,
 }
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -195,6 +197,7 @@ impl Agent {
             mcp_servers,
             session_stats: tokio::sync::Mutex::new(HashMap::new()),
             discord,
+            channel_log: ChannelLog::default(),
         }
     }
 
@@ -532,7 +535,7 @@ impl Agent {
             tools::summarize_url::definition(),
             tools::translate::definition(),
             tools::features::definition(),
-            read_chat_history_tool(),
+            search_messages_tool(),
             get_discord_user_tool(),
         ] {
             let (name, desc, params) = flatten_tool(&def);
@@ -766,28 +769,27 @@ impl Agent {
                 }
             }
             "get_bot_features" => ToolOutcome::Text(tools::features::features_text().to_string()),
-            "read_chat_history" => {
-                let count = u64_arg(args, "count", 20).min(50) as u8;
+            "search_messages" => {
+                let query = str_arg(args, "query");
+                let max_results = u64_arg(args, "max_results", 10).clamp(1, 20) as usize;
                 let target_channel = args
                     .get("channel_id")
                     .and_then(Value::as_str)
                     .and_then(|s| s.parse::<u64>().ok())
                     .unwrap_or(channel_id);
                 ToolOutcome::Text(
-                    match self.discord.fetch_messages(target_channel, count).await {
-                        Ok(msgs) if msgs.is_empty() => "No messages found.".to_string(),
+                    match self
+                        .channel_log
+                        .search(target_channel, query, max_results)
+                        .await
+                    {
+                        Err(e) => format!("Error: {e}"),
+                        Ok(msgs) if msgs.is_empty() => "No matching messages found.".to_string(),
                         Ok(msgs) => msgs
                             .iter()
-                            .map(|m| {
-                                let bot_tag = if m.is_bot { " [bot]" } else { "" };
-                                format!(
-                                    "[{}] {}{}({}): {}",
-                                    m.timestamp, m.author_name, bot_tag, m.author_id, m.content
-                                )
-                            })
+                            .map(|m| format!("[{}] {}: {}", m.ts, m.username, m.content))
                             .collect::<Vec<_>>()
                             .join("\n"),
-                        Err(e) => format!("Error: {e}"),
                     },
                 )
             }
@@ -935,8 +937,9 @@ READ ONLY — only call get_* / search_* / list_* methods; never call mutating a
 - translate — Translate text to any language using the LLM.\n\
 - get_bot_features — Return the full list of this bot's commands and capabilities. \
 Call this when a user asks what you can do, what commands exist, or how to use any feature.\n\
-- read_chat_history — Fetch the most recent messages from the current Discord channel. \
-Use this when a user asks what was said, who said something, or what was discussed in the chat.\n\
+- search_messages — Search the current channel's message log by regex pattern. Only matching \
+messages are returned, keeping token usage low. Use this when a user asks what was said, who \
+mentioned something, or what was discussed. Prefer a targeted pattern over a broad one.\n\
 - get_discord_user — Look up a Discord user's profile by their user ID (username, display name, \
 account creation date, bot status).{skills_section}\n\n\
 ## Guidelines\n- Be conversational and friendly.\n- Use Jellyfin tools for any media questions \
@@ -1021,24 +1024,32 @@ fn u64_arg(args: &Value, key: &str, default: u64) -> u64 {
     args.get(key).and_then(Value::as_u64).unwrap_or(default)
 }
 
-fn read_chat_history_tool() -> Value {
+fn search_messages_tool() -> Value {
     json!({
-        "name": "read_chat_history",
-        "description": "Fetch the most recent messages from a Discord channel. Use this when a \
-            user asks about what was said in the chat, what was discussed, who said something, \
-            or anything related to recent channel messages.",
+        "name": "search_messages",
+        "description": "Search Discord channel messages by regex pattern. Returns only matching \
+            messages, so token usage stays proportional to what you need. Use this when a user \
+            asks what was said, who mentioned something, or what was discussed — provide a \
+            targeted pattern rather than fetching everything. Supports full Rust regex syntax; \
+            simple keywords and case-insensitive patterns ((?i)) are common use cases.",
         "input_schema": {
             "type": "object",
             "properties": {
-                "count": {
+                "query": {
+                    "type": "string",
+                    "description": "Regex pattern matched against message content."
+                },
+                "max_results": {
                     "type": "integer",
-                    "description": "Number of recent messages to retrieve (1–50, default 20)."
+                    "description": "Maximum number of matches to return (1–20, default 10). \
+                        Matches are the most recent ones in the log."
                 },
                 "channel_id": {
                     "type": "string",
-                    "description": "Discord channel ID to read from. Omit to use the current channel."
+                    "description": "Discord channel ID to search. Omit to search the current channel."
                 }
-            }
+            },
+            "required": ["query"]
         }
     })
 }
@@ -1104,6 +1115,7 @@ impl Agent {
             mcp_servers: vec![],
             session_stats: tokio::sync::Mutex::new(HashMap::new()),
             discord: Arc::new(DiscordBridge::default()),
+            channel_log: ChannelLog::default(),
         }
     }
 

@@ -25,6 +25,7 @@ use crate::agent::{
 };
 use crate::bot_config::{ServerConfigStore, UserConfigStore};
 pub use crate::bot_response::SecretRedactor;
+use crate::channel_log::ChannelLog;
 use crate::coding_agent::catalog::{AgentCatalog, CodingAgent};
 use crate::coding_agent::issue::{build_issue_body, dispatch_labels};
 use crate::coding_agent::pending::{DiscordMessageRef, DispatchStage, PendingJobStore};
@@ -216,6 +217,8 @@ pub struct HouseBot {
     catalog: AgentCatalog,
     /// Shared with `Agent` — provides Discord API access to the agent tools.
     discord: Arc<DiscordBridge>,
+    /// Logs all guild channel messages for the search_messages tool.
+    channel_log: ChannelLog,
 }
 
 impl HouseBot {
@@ -245,6 +248,7 @@ impl HouseBot {
             pending_jobs,
             catalog: AgentCatalog::load_embedded(),
             discord,
+            channel_log: ChannelLog::default(),
         }
     }
 
@@ -971,6 +975,12 @@ impl EventHandler for HouseBot {
             .await
         {
             return;
+        }
+
+        if !is_dm {
+            self.channel_log
+                .append(channel_id, user_id, &msg.author.name, &content)
+                .await;
         }
 
         let is_mentioned = msg.mentions.iter().any(|u| u.id == bot_id);

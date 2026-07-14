@@ -1,19 +1,10 @@
-//! Shared bridge between the Discord bot and the agent, used to fetch channel messages
-//! and user profiles on demand.
+//! Shared bridge between the Discord bot and the agent, used to fetch
+//! public user profiles on demand.
 
 use std::sync::Arc;
 
-use serenity::all::{GetMessages, UserId};
-use serenity::model::id::ChannelId;
+use serenity::all::UserId;
 use tokio::sync::RwLock;
-
-pub struct ChatMessage {
-    pub author_id: String,
-    pub author_name: String,
-    pub content: String,
-    pub timestamp: String,
-    pub is_bot: bool,
-}
 
 pub struct UserInfo {
     pub id: String,
@@ -37,34 +28,6 @@ pub struct DiscordBridge {
 impl DiscordBridge {
     pub async fn set_http(&self, http: Arc<serenity::http::Http>) {
         *self.http.write().await = Some(http);
-    }
-
-    pub async fn fetch_messages(
-        &self,
-        channel_id: u64,
-        count: u8,
-    ) -> Result<Vec<ChatMessage>, String> {
-        let guard = self.http.read().await;
-        let Some(http) = guard.as_ref() else {
-            return Err("Discord bridge not available.".to_string());
-        };
-        let limit = count.clamp(1, 50);
-        let msgs = ChannelId::new(channel_id)
-            .messages(http.as_ref(), GetMessages::new().limit(limit))
-            .await
-            .map_err(|e| format!("Failed to fetch messages: {e}"))?;
-        let result = msgs
-            .into_iter()
-            .rev()
-            .map(|m| ChatMessage {
-                author_id: m.author.id.get().to_string(),
-                author_name: m.author.name.clone(),
-                content: m.content.clone(),
-                timestamp: m.timestamp.to_string(),
-                is_bot: m.author.bot,
-            })
-            .collect();
-        Ok(result)
     }
 
     pub async fn fetch_user(&self, user_id: u64) -> Result<UserInfo, String> {

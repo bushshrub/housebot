@@ -37,7 +37,7 @@ pub fn features_text() -> &'static str {
 - Custom skills (user-defined prompt templates) via `!skill`
 - Personal notes and persistent memory across sessions
 - Software development help: discuss, explain, review, and advise on code (cannot execute)
-- Chat history: read recent messages from the current channel (the bot can look up what was said)
+- Chat search: search channel messages by regex to find what was said or who mentioned something
 - Discord user profiles: look up a user's username, display name, and account creation date by their user ID"
 }
 
