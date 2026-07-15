@@ -44,7 +44,7 @@ pub fn features_text() -> &'static str {
 - Software development help: discuss, explain, review, and advise on code (cannot execute)
 - Chat search: search channel messages by regex to find what was said or who mentioned something
 - Discord user profiles: look up a user's username, display name, and account creation date by their user ID
-- Opt-in proactive assistance for narrowly detected questions, feature-help requests, and reminders
+- Opt-in proactive assistance plus privacy-aware greetings and contextual quick-action suggestions
 "
 }
 
