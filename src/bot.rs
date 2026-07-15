@@ -1915,11 +1915,22 @@ impl HouseBot {
             discord: Arc::clone(&self.discord),
             channel_id: cmd.channel_id.get(),
         });
-        let output = lua_engine::run_script(script, host, lua_engine::LuaLimits::from_env()).await;
-        let mut edit = EditInteractionResponse::new();
-        if !output.text.is_empty() {
-            edit = edit.content(format_lua_reply(&self.redactor.redact(&output.text)));
-        }
+        let redactor = Arc::clone(&self.redactor);
+        let output = lua_engine::run_script(
+            script,
+            host,
+            lua_engine::LuaLimits::from_env(),
+            move |s: &str| redactor.redact(s),
+        )
+        .await;
+        // Always set content explicitly, even when empty: omitting it on an
+        // edit leaves the earlier "Reviewing…" progress message in place
+        // (Discord treats an absent `content` field as "leave unchanged").
+        let mut edit = EditInteractionResponse::new().content(if output.text.is_empty() {
+            String::new()
+        } else {
+            format_lua_reply(&self.redactor.redact(&output.text))
+        });
         if let Some(image) = output.image {
             edit = edit.new_attachment(CreateAttachment::bytes(image, "graph.png"));
         }

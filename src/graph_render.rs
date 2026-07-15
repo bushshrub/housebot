@@ -98,6 +98,19 @@ impl GraphBuilder {
     pub fn add_edge(&mut self, from: usize, to: usize) {
         self.edges.push((from, to));
     }
+
+    /// Applies `redact` to every label and the title, in place. Node/edge
+    /// text comes straight from the script and can echo back a bridge-call
+    /// result, so callers use this to strip known secrets out before the
+    /// text is baked into image pixels, which can't be redacted afterward.
+    pub fn redact_with(&mut self, redact: impl Fn(&str) -> String) {
+        for label in &mut self.labels {
+            *label = redact(label);
+        }
+        if let Some(title) = &mut self.title {
+            *title = redact(title);
+        }
+    }
 }
 
 /// BFS layer (row) index for every node, by distance from the nearest root
@@ -490,5 +503,18 @@ mod tests {
     fn sweep_on_missing_dir_returns_zero() {
         let missing = std::path::Path::new("/nonexistent/housebot-graph-sweep-test");
         assert_eq!(sweep_stale_temp_files(missing, Duration::ZERO), 0);
+    }
+
+    #[test]
+    fn redact_with_applies_to_every_label_and_the_title() {
+        let mut g = GraphBuilder::default();
+        g.set_title("leaked: secret-token-value");
+        let a = g.add_node("a", "contains secret-token-value here");
+        let b = g.add_node("b", "clean label");
+        let _ = (a, b);
+        g.redact_with(|s| s.replace("secret-token-value", "[REDACTED]"));
+        assert_eq!(g.title.as_deref(), Some("leaked: [REDACTED]"));
+        assert_eq!(g.labels[0], "contains [REDACTED] here");
+        assert_eq!(g.labels[1], "clean label");
     }
 }

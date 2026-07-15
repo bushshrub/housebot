@@ -205,12 +205,13 @@ pub async fn run_script(
     script: String,
     host: Arc<dyn ScriptHost>,
     limits: LuaLimits,
+    redact: impl Fn(&str) -> String + Send + 'static,
 ) -> ScriptOutput {
     let handle = tokio::runtime::Handle::current();
     // The instruction hook cannot fire while a bridge call blocks, so give the
     // backstop some slack beyond the script's own budget before abandoning it.
     let backstop = limits.timeout * 2 + Duration::from_secs(5);
-    let task = tokio::task::spawn_blocking(move || execute(&script, host, limits, handle));
+    let task = tokio::task::spawn_blocking(move || execute(&script, host, limits, handle, &redact));
     let timeout_output = || ScriptOutput {
         text: format!(
             "Error: script exceeded the time limit ({}s).",
@@ -252,6 +253,7 @@ fn execute(
     host: Arc<dyn ScriptHost>,
     limits: LuaLimits,
     handle: tokio::runtime::Handle,
+    redact: &dyn Fn(&str) -> String,
 ) -> ScriptOutput {
     let state = Rc::new(RunState {
         output: RefCell::new(String::new()),
@@ -276,7 +278,7 @@ fn execute(
         Err(e) => report_error(&state, &e, &limits),
     }
 
-    let image = render_graph(&state);
+    let image = render_graph(&state, redact);
 
     let output = state.output.borrow();
     let trimmed = output.trim_end();
@@ -292,12 +294,17 @@ fn execute(
     ScriptOutput { text, image }
 }
 
-/// Render the script's graph, if it built one. Failures are appended to the
-/// output as an error line, past the truncation cap, same as `report_error`.
-fn render_graph(state: &RunState) -> Option<Vec<u8>> {
+/// Render the script's graph, if it built one. Node/edge labels and the
+/// title are script-supplied text that may echo back a `discord.web_search`
+/// or `discord.jellyfin_search` result, so they're redacted before
+/// rendering — pixels can't be redacted after the fact the way `output.text`
+/// is at the call site. Render failures are appended to the output as an
+/// error line, past the truncation cap, same as `report_error`.
+fn render_graph(state: &RunState, redact: &dyn Fn(&str) -> String) -> Option<Vec<u8>> {
     if state.graph.borrow().is_empty() {
         return None;
     }
+    state.graph.borrow_mut().redact_with(redact);
     match graph_render::render_png(&state.graph.borrow()) {
         Ok(bytes) => Some(bytes),
         Err(e) => {
@@ -623,6 +630,7 @@ mod tests {
             script.to_string(),
             Arc::clone(host) as Arc<dyn ScriptHost>,
             limits,
+            |s: &str| s.to_string(),
         )
         .await
     }
@@ -971,6 +979,44 @@ mod tests {
         )
         .await;
         assert!(result.image.is_some());
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn graph_text_is_redacted_before_rendering() {
+        let host = Arc::new(FakeHost::default());
+        let called = Arc::new(AtomicUsize::new(0));
+        let called_clone = Arc::clone(&called);
+        let result = run_script(
+            "graph.title(\"t\") graph.node(\"a\", \"A\")".to_string(),
+            Arc::clone(&host) as Arc<dyn ScriptHost>,
+            limits(),
+            move |s: &str| {
+                called_clone.fetch_add(1, Ordering::SeqCst);
+                s.to_string()
+            },
+        )
+        .await;
+        assert!(result.image.is_some());
+        // Once for the title, once for the one node label.
+        assert_eq!(called.load(Ordering::SeqCst), 2);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn script_without_a_graph_never_calls_redact() {
+        let host = Arc::new(FakeHost::default());
+        let called = Arc::new(AtomicUsize::new(0));
+        let called_clone = Arc::clone(&called);
+        run_script(
+            "return 1".to_string(),
+            Arc::clone(&host) as Arc<dyn ScriptHost>,
+            limits(),
+            move |s: &str| {
+                called_clone.fetch_add(1, Ordering::SeqCst);
+                s.to_string()
+            },
+        )
+        .await;
+        assert_eq!(called.load(Ordering::SeqCst), 0);
     }
 
     #[test]
