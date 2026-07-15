@@ -10,6 +10,7 @@ pub mod edit_feature_request;
 pub mod feature_development;
 pub mod feature_request;
 pub mod features;
+pub mod file_download;
 pub mod remind;
 pub mod searxng;
 pub mod summarize_url;

@@ -131,7 +131,7 @@ pub fn definition() -> Value {
 }
 
 /// Reject URLs that are not plain public http(s) — loopback, private ranges, etc.
-async fn validate_public_url(raw: &str) -> Result<(), String> {
+pub(crate) async fn validate_public_url(raw: &str) -> Result<(), String> {
     let url = Url::parse(raw).map_err(|e| e.to_string())?;
     if !matches!(url.scheme(), "http" | "https") {
         return Err("only http and https URLs are allowed".into());

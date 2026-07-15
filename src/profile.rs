@@ -41,6 +41,7 @@ pub fn tool_to_tag(tool_name: &str) -> Option<ProfileTag> {
         "web_search"
         | "deep_research"
         | "fetch_webpage"
+        | "download_file"
         | "common_crawl__search"
         | "summarize_url" => Some(ProfileTag::WebResearch),
         "update_memory" => Some(ProfileTag::Coding),
