@@ -3473,15 +3473,7 @@ async fn extract_pdf_pages(url: &str, filename: &str) -> Vec<MediaData> {
         tokio::fs::create_dir_all(&directory).await.ok()?;
         tokio::fs::write(&input, bytes).await.ok()?;
         let output = tokio::process::Command::new("pdftoppm")
-            .args([
-                "-png",
-                "-r",
-                "144",
-                "-f",
-                "1",
-                "-l",
-                &MAX_PDF_PAGES.to_string(),
-            ])
+            .args(pdf_render_arguments())
             .arg(&input)
             .arg(&output_prefix)
             .output()
@@ -3519,6 +3511,18 @@ async fn extract_pdf_pages(url: &str, filename: &str) -> Vec<MediaData> {
     result
 }
 
+fn pdf_render_arguments() -> [String; 7] {
+    [
+        "-png".to_string(),
+        "-r".to_string(),
+        "144".to_string(),
+        "-f".to_string(),
+        "1".to_string(),
+        "-l".to_string(),
+        MAX_PDF_PAGES.to_string(),
+    ]
+}
+
 fn is_pdf(filename: &str) -> bool {
     filename
         .rsplit_once('.')
@@ -3550,7 +3554,7 @@ fn media_type(filename: &str) -> Option<&'static str> {
 
 #[cfg(test)]
 mod media_tests {
-    use super::{attachment_context, is_pdf, media_type};
+    use super::{attachment_context, is_pdf, media_type, pdf_render_arguments};
 
     #[test]
     fn recognizes_supported_media_extensions() {
@@ -3582,6 +3586,14 @@ mod media_tests {
     #[test]
     fn attachment_context_omits_empty_attachment_lists() {
         assert!(attachment_context(std::iter::empty()).is_none());
+    }
+
+    #[test]
+    fn pdfs_are_rendered_as_png_pages_at_a_readable_resolution() {
+        assert_eq!(
+            pdf_render_arguments(),
+            ["-png", "-r", "144", "-f", "1", "-l", "10"]
+        );
     }
 }
 
