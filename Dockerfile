@@ -7,6 +7,7 @@ COPY Cargo.toml Cargo.lock ./
 COPY crates/deployment-bot/Cargo.toml crates/deployment-bot/Cargo.toml
 COPY crates/common-crawl/Cargo.toml crates/common-crawl/Cargo.toml
 COPY src/ src/
+COPY db/ db/
 COPY crates/ crates/
 COPY assets/ assets/
 COPY .github/agents/catalog.json .github/agents/catalog.json
