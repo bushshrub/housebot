@@ -230,6 +230,30 @@ impl Agent {
         &self.reminders
     }
 
+    /// Restricted read-only web search exposed to the Lua sandbox.
+    pub async fn script_web_search(&self, query: &str) -> String {
+        self.searxng.search(query, 5, "").await
+    }
+
+    /// Restricted channel-local history exposed to the Lua sandbox.
+    pub async fn script_recent_messages(&self, channel_id: u64, limit: usize) -> String {
+        match self.channel_log.get_recent(channel_id, 1440).await {
+            Err(error) => format!("Error: {error}"),
+            Ok(messages) if messages.is_empty() => "No recent messages found.".to_string(),
+            Ok(messages) => {
+                let start = messages.len().saturating_sub(limit.clamp(1, 20));
+                messages[start..]
+                    .iter()
+                    .map(|message| {
+                        let author = message.nick.as_deref().unwrap_or(&message.username);
+                        format!("[{}] {}: {}", message.ts, author, message.content)
+                    })
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            }
+        }
+    }
+
     /// Shared pending-job store; also held by `HouseBot` to drive the Discord component UI.
     pub fn pending_jobs(&self) -> Arc<PendingJobStore> {
         Arc::clone(&self.pending_jobs)

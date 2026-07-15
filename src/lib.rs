@@ -17,6 +17,7 @@ pub mod discord_bridge;
 pub mod github_issues;
 pub mod history;
 pub mod llm;
+pub mod lua_sandbox;
 pub mod mcp;
 pub mod memory;
 pub mod message_log;

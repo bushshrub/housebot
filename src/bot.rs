@@ -9,11 +9,12 @@ use std::time::{Duration, Instant};
 use async_trait::async_trait;
 use regex::Regex;
 use serenity::all::{
-    ButtonStyle, Command, CommandDataOptionValue, CommandOptionType, ComponentInteractionDataKind,
-    Context, CreateActionRow, CreateAllowedMentions, CreateAttachment, CreateButton, CreateCommand,
-    CreateCommandOption, CreateEmbed, CreateInteractionResponse, CreateInteractionResponseMessage,
-    CreateSelectMenu, CreateSelectMenuKind, CreateSelectMenuOption, EditInteractionResponse,
-    EditMessage, EventHandler, GatewayIntents, Interaction, Message, Ready, UserId,
+    ButtonStyle, Command, CommandDataOptionValue, CommandInteraction, CommandOptionType,
+    ComponentInteractionDataKind, Context, CreateActionRow, CreateAllowedMentions,
+    CreateAttachment, CreateButton, CreateCommand, CreateCommandOption, CreateEmbed,
+    CreateInteractionResponse, CreateInteractionResponseMessage, CreateSelectMenu,
+    CreateSelectMenuKind, CreateSelectMenuOption, EditInteractionResponse, EditMessage,
+    EventHandler, GatewayIntents, Interaction, Message, Permissions, Ready, UserId,
 };
 use serenity::builder::CreateMessage;
 use serenity::Client;
@@ -908,6 +909,28 @@ fn commit_hash_response(sha: Option<&str>) -> String {
     }
 }
 
+async fn can_execute_lua(ctx: &Context, command: &CommandInteraction) -> bool {
+    if command.user.id.get() == config::owner_id() && config::owner_id() != 0 {
+        return true;
+    }
+    let (Some(guild_id), Some(member)) = (command.guild_id, command.member.as_ref()) else {
+        return false;
+    };
+    let Ok(roles) = guild_id.roles(&ctx.http).await else {
+        return false;
+    };
+    member.roles.iter().any(|role_id| {
+        roles
+            .get(role_id)
+            .is_some_and(|role| role_allows_lua(&role.name, role.permissions))
+    })
+}
+
+fn role_allows_lua(name: &str, permissions: Permissions) -> bool {
+    name.eq_ignore_ascii_case("Scripting")
+        || permissions.intersects(Permissions::ADMINISTRATOR | Permissions::MANAGE_GUILD)
+}
+
 #[serenity::async_trait]
 impl EventHandler for HouseBot {
     async fn ready(&self, ctx: Context, ready: Ready) {
@@ -1058,6 +1081,16 @@ impl EventHandler for HouseBot {
             CreateCommand::new("erase_my_data").description(
                 "Permanently delete all your stored data (messages, history, memory, notes)",
             ),
+            CreateCommand::new("lua")
+                .description("Run a sandboxed Lua script (Scripting role required)")
+                .add_option(
+                    CreateCommandOption::new(
+                        CommandOptionType::String,
+                        "code",
+                        "Lua code to execute",
+                    )
+                    .required(true),
+                ),
             CreateCommand::new("profile")
                 .description("Show or clear your stored profile information")
                 .add_option(CreateCommandOption::new(
@@ -1199,6 +1232,64 @@ impl EventHandler for HouseBot {
                 .lock()
                 .await
                 .remove(cmd.channel_id.get(), user_id);
+            return;
+        }
+        if cmd.data.name == "lua" {
+            if !can_execute_lua(&ctx, &cmd).await {
+                let _ = cmd
+                    .create_response(
+                        &ctx.http,
+                        CreateInteractionResponse::Message(
+                            CreateInteractionResponseMessage::new()
+                                .content(
+                                    "You need the **Scripting** role (or a server-management role) to use `/lua`.",
+                                )
+                                .ephemeral(true),
+                        ),
+                    )
+                    .await;
+                return;
+            }
+            let code = cmd
+                .data
+                .options
+                .iter()
+                .find(|option| option.name == "code")
+                .and_then(|option| match &option.value {
+                    CommandDataOptionValue::String(code) => Some(code.as_str()),
+                    _ => None,
+                })
+                .unwrap_or("");
+            if cmd
+                .create_response(
+                    &ctx.http,
+                    CreateInteractionResponse::Defer(CreateInteractionResponseMessage::new()),
+                )
+                .await
+                .is_err()
+            {
+                return;
+            }
+            let output = crate::lua_sandbox::execute(
+                code,
+                crate::lua_sandbox::LuaContext {
+                    user_id,
+                    channel_id: cmd.channel_id.get(),
+                },
+                Arc::clone(&self.agent),
+            )
+            .await;
+            let safe = self.redactor.redact(&output);
+            let chunks = split_text(&format!("**Lua output**\n{safe}"), 1_900);
+            let _ = cmd
+                .edit_response(
+                    &ctx.http,
+                    EditInteractionResponse::new().content(&chunks[0]),
+                )
+                .await;
+            for chunk in chunks.iter().skip(1) {
+                let _ = cmd.channel_id.say(&ctx.http, chunk).await;
+            }
             return;
         }
         let reply = match cmd.data.name.as_str() {
@@ -3077,6 +3168,15 @@ mod tests {
     use crate::profile::{ProfileTag, UserProfile};
     use serde_json::json;
     use tempfile::TempDir;
+
+    #[test]
+    fn lua_permission_accepts_scripting_and_server_managers() {
+        assert!(role_allows_lua("Scripting", Permissions::empty()));
+        assert!(role_allows_lua("scripting", Permissions::empty()));
+        assert!(role_allows_lua("Admin", Permissions::ADMINISTRATOR));
+        assert!(role_allows_lua("Moderator", Permissions::MANAGE_GUILD));
+        assert!(!role_allows_lua("Member", Permissions::SEND_MESSAGES));
+    }
 
     #[test]
     fn global_history_combines_profile_and_channel_context() {

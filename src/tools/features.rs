@@ -26,6 +26,7 @@ pub fn features_text() -> &'static str {
 `/privacy status|deep_memory|proactive` — view or change privacy and proactive-assistance settings
 `/memory show|clear` — view or clear the bot's persistent memory about you (requires deep memory to be enabled)
 `/erase_my_data` — permanently delete all your stored data (messages, history, memory, notes)
+`/lua code` — run a sandboxed script with captured output and read-only Discord helpers (Scripting role required)
 
 **Prefix commands**
 `!skill list|add|delete|info <name>` — manage custom prompt skills shared across all users
@@ -44,6 +45,7 @@ pub fn features_text() -> &'static str {
 - Software development help: discuss, explain, review, and advise on code (cannot execute)
 - Chat search: search channel messages by regex to find what was said or who mentioned something
 - Discord user profiles: look up a user's username, display name, and account creation date by their user ID
+- Sandboxed `/lua` scripting for users with the Scripting or server-management role
 - Opt-in proactive assistance plus privacy-aware greetings and contextual quick-action suggestions
 "
 }
