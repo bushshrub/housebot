@@ -104,6 +104,16 @@ fn trim(msgs: &mut Vec<Value>, cutoff: usize) {
     if msgs.len() > cutoff {
         let start = msgs.len() - cutoff;
         msgs.drain(0..start);
+        // The cut can land mid-turn, leaving an assistant or tool message
+        // first. A history that does not start with a user message is
+        // rejected by strict OpenAI-compatible servers (a tool message
+        // requires its preceding assistant tool call), so drop the partial
+        // turn as well.
+        let keep_from = msgs
+            .iter()
+            .position(|m| m.get("role").and_then(Value::as_str) == Some("user"))
+            .unwrap_or(msgs.len());
+        msgs.drain(0..keep_from);
     }
 }
 
@@ -183,6 +193,36 @@ mod tests {
         assert_eq!(
             result[result.len() - 1],
             json!({"role":"assistant","content":"r2"})
+        );
+    }
+
+    #[tokio::test]
+    async fn trimmed_history_always_starts_with_a_user_message() {
+        let (_t, h) = store(1);
+        // One turn = user + assistant tool call + tool result + assistant.
+        h.append_turn(
+            "u_trim",
+            json!({"role":"user","content":"first"}),
+            vec![
+                json!({"role":"assistant","content":null,"tool_calls":[{"id":"c1"}]}),
+                json!({"role":"tool","tool_call_id":"c1","content":"result"}),
+                json!({"role":"assistant","content":"r1"}),
+            ],
+        )
+        .await
+        .unwrap();
+        let result = h
+            .append_turn(
+                "u_trim",
+                json!({"role":"user","content":"second"}),
+                vec![json!({"role":"assistant","content":"r2"})],
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            result.first().and_then(|m| m["role"].as_str()),
+            Some("user"),
+            "history must never start mid-turn: {result:?}"
         );
     }
 

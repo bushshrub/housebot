@@ -1,0 +1,198 @@
+//! Native tool JSON definitions and small argument helpers.
+
+use super::*;
+
+pub(crate) fn run_skill_tool() -> Value {
+    json!({
+        "name": "run_skill",
+        "description": "Execute a named skill — a custom prompt template saved by users. Pass the \
+            skill name and the text input to process.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "name": {"type": "string", "description": "The skill name to execute."},
+                "input": {"type": "string", "description": "The text input to pass to the skill."}
+            },
+            "required": ["name", "input"]
+        }
+    })
+}
+
+/// Wrap a tool in the OpenAI function-calling envelope.
+pub fn to_openai_tool(name: &str, description: &str, parameters: Value) -> Value {
+    json!({
+        "type": "function",
+        "function": {"name": name, "description": description, "parameters": parameters},
+    })
+}
+
+/// Convert an internal tool definition into `(name, description, parameters)`.
+pub fn flatten_tool(tool_def: &Value) -> (String, String, Value) {
+    let name = tool_def
+        .get("name")
+        .and_then(|n| n.as_str())
+        .unwrap_or("")
+        .to_string();
+    let description = tool_def
+        .get("description")
+        .and_then(|d| d.as_str())
+        .unwrap_or("")
+        .to_string();
+    let parameters = tool_def
+        .get("input_schema")
+        .or_else(|| tool_def.get("parameters"))
+        .cloned()
+        .unwrap_or_else(|| json!({}));
+    (name, description, parameters)
+}
+
+/// Extract a string argument from tool-call args, defaulting to empty.
+pub(crate) fn str_arg<'a>(args: &'a Value, key: &str) -> &'a str {
+    args.get(key).and_then(Value::as_str).unwrap_or("")
+}
+
+/// Extract an unsigned integer argument from tool-call args.
+pub(crate) fn u64_arg(args: &Value, key: &str, default: u64) -> u64 {
+    args.get(key).and_then(Value::as_u64).unwrap_or(default)
+}
+
+pub(crate) fn search_messages_tool() -> Value {
+    json!({
+        "name": "search_messages",
+        "description": "Search Discord channel messages by regex pattern. The pattern is matched \
+            against message content, the author's Discord username, AND the author's server \
+            nickname or display name. Use this when a user asks what someone said or what was \
+            discussed — e.g. to find all messages by 'hexagone', search for '(?i)hexagone' and \
+            it will match any message where that name appears as the author or in the text. \
+            Supports full Rust regex syntax; case-insensitive patterns ((?i)) are common.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "query": {
+                    "type": "string",
+                    "description": "Regex pattern matched against message content, author username, and author nickname/display name."
+                },
+                "max_results": {
+                    "type": "integer",
+                    "description": "Maximum number of matches to return (1–20, default 10). \
+                        Matches are the most recent ones in the log."
+                },
+                "channel_id": {
+                    "type": "string",
+                    "description": "Discord channel ID to search. Omit to search the current channel."
+                }
+            },
+            "required": ["query"]
+        }
+    })
+}
+
+pub(crate) fn get_recent_messages_tool() -> Value {
+    json!({
+        "name": "get_recent_messages",
+        "description": "Return all messages from the current channel posted in the last N minutes, \
+            in chronological order. Use this to summarize a recent conversation, catch up on what \
+            was discussed, or answer questions like 'what happened in the last 30 minutes'.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "minutes": {
+                    "type": "integer",
+                    "description": "How far back to look, in minutes (1–1440, default 30)."
+                },
+                "channel_id": {
+                    "type": "string",
+                    "description": "Discord channel ID to fetch. Omit to use the current channel."
+                }
+            },
+            "required": []
+        }
+    })
+}
+
+pub(crate) fn get_discord_user_tool() -> Value {
+    json!({
+        "name": "get_discord_user",
+        "description": "Fetch public profile information for a Discord user by their user ID. \
+            Returns the username, display name, account creation date, and whether the account \
+            is a bot.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "user_id": {
+                    "type": "string",
+                    "description": "The Discord user ID (snowflake) to look up."
+                }
+            },
+            "required": ["user_id"]
+        }
+    })
+}
+
+pub(crate) fn find_discord_users_tool() -> Value {
+    json!({
+        "name": "find_discord_users",
+        "description": "Find Discord users previously seen in the current channel by username, nickname, or user ID. Use this before get_discord_user when a person is named but their numeric ID is unknown. Results are limited to the selected channel's message history.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "query": {
+                    "type": "string",
+                    "description": "Case-insensitive username, nickname, or user ID substring."
+                },
+                "max_results": {
+                    "type": "integer",
+                    "description": "Maximum number of users to return (1–20, default 10)."
+                },
+                "channel_id": {
+                    "type": "string",
+                    "description": "Discord channel ID to search. Omit to use the current channel."
+                }
+            },
+            "required": ["query"]
+        }
+    })
+}
+
+pub(crate) fn run_lua_tool() -> Value {
+    json!({
+        "name": "run_lua",
+        "description": "Write and execute a sandboxed Lua 5.4 script for calculations, data \
+            processing, or algorithmic tasks. `print(...)` output and return values are captured \
+            and returned as the tool result. `discord.web_search` and `discord.jellyfin_search` \
+            are available as bridge functions. Call `get_lua_docs` first if you need the full \
+            API reference for the sandbox.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "script": {
+                    "type": "string",
+                    "description": "Lua 5.4 source code to execute. May be wrapped in a ```lua … ``` fence."
+                }
+            },
+            "required": ["script"]
+        }
+    })
+}
+
+pub(crate) fn get_lua_docs_tool() -> Value {
+    json!({
+        "name": "get_lua_docs",
+        "description": "Return the full API reference for the bot's Lua scripting sandbox: \
+            which standard libraries and built-in globals are available, the discord.* bridge API \
+            (web_search, jellyfin_search), execution limits (timeout, memory, call caps), and \
+            usage examples. Call this before writing a Lua script to understand the environment.",
+        "input_schema": {
+            "type": "object",
+            "properties": {}
+        }
+    })
+}
+
+pub(crate) fn search_rate_limited(content: &str) -> bool {
+    let content = content.to_ascii_lowercase();
+    content.contains("returned http 429")
+        || content.contains("too many requests")
+        || content.contains("rate limit")
+        || content.contains("temporarily blocked")
+}

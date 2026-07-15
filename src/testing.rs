@@ -59,7 +59,8 @@ impl MockChatClient {
         });
     }
 
-    fn push_completion(&self, completion: ChatCompletion) {
+    /// Queue an arbitrary streamed completion (e.g. one with several tool calls).
+    pub fn push_completion(&self, completion: ChatCompletion) {
         self.stream_script.lock().unwrap().push_back(completion);
     }
 
