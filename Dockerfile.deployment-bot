@@ -7,6 +7,11 @@ RUN apk add --no-cache musl-dev
 WORKDIR /app
 COPY Cargo.toml Cargo.lock ./
 COPY crates/common-crawl/Cargo.toml crates/common-crawl/Cargo.toml
+COPY crates/common-crawl/src/ crates/common-crawl/src/
+COPY crates/graph-render/Cargo.toml crates/graph-render/Cargo.toml
+COPY crates/graph-render/src/ crates/graph-render/src/
+COPY crates/llm/Cargo.toml crates/llm/Cargo.toml
+COPY crates/llm/src/ crates/llm/src/
 COPY crates/deployment-bot/Cargo.toml crates/deployment-bot/Cargo.toml
 COPY crates/deployment-bot/src/ crates/deployment-bot/src/
 RUN --mount=type=cache,id=deployment-bot-cargo-registry,target=/usr/local/cargo/registry \
