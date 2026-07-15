@@ -13,6 +13,7 @@ pub fn features_text() -> &'static str {
 `/new` / `/reset` — start a fresh conversation
 `/compact` — summarise the conversation into memory and start fresh (or clear it without saving when deep memory is disabled)
 `/session` — show token and context usage for the current session
+`/token_leaderboard` — show persistent global token usage by user and conversation
 `/status` — show your current settings at a glance (effort, follow-up, personality)
 `/effort [level]` — set thinking depth: `low` (2k tokens) · `medium` (4k, default) · `high` (8k) · `xhigh` (16k) · `max` (unlimited)
 `/config personality [text]` — set (or clear) a personal tone/personality override
@@ -25,7 +26,7 @@ pub fn features_text() -> &'static str {
 `/history show|clear` — inspect or clear your global conversation history
 `/privacy status|deep_memory|proactive` — view or change privacy and proactive-assistance settings
 `/memory show|clear` — view or clear the bot's persistent memory about you (requires deep memory to be enabled)
-`/erase_my_data` — permanently delete all your stored data (messages, history, memory, notes)
+`/erase_my_data` — permanently delete all your stored data (including archived conversations and token statistics)
 `/lua <script>` — run a sandboxed Lua script with `discord.send_message`, `discord.web_search`, and `discord.jellyfin_search` (requires the Scripting role or higher, or guild administrator / bot owner)
 
 **Prefix commands**
@@ -42,6 +43,7 @@ pub fn features_text() -> &'static str {
 - Create and edit your own GitHub feature requests
 - Custom skills (user-defined prompt templates) via `!skill`
 - Personal notes and persistent memory across sessions
+- Persistent conversation archives and global token-usage leaderboards
 - Software development help: discuss, explain, review, and advise on code (cannot execute)
 - Chat search: search channel messages by regex to find what was said or who mentioned something
 - Discord user profiles: look up a user's username, display name, and account creation date by their user ID
