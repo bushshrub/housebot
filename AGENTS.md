@@ -45,6 +45,7 @@ src/
   history.rs         # per-user conversation JSONL (data/history/<user_id>.jsonl)
   memory.rs          # per-user persistent markdown (data/memories/<user_id>.md)
   notes.rs           # per-user named notes (data/notes/<user_id>.json)
+  grocery_list.rs    # per-user grocery lists (data/grocery_lists/<user_id>.json)
   skills.rs          # global custom skills (data/skills.json)
   reminders.rs       # timed reminders (data/reminders.json)
   github_issues.rs   # GitHub App JWT (RS256) auth + issue creation
@@ -113,7 +114,7 @@ data/                # runtime — gitignored
 ```
 Discord message
   └─ HouseBot::message()
-       ├─ !commands (!new / !reset / !skill / !note / !stats)
+       ├─ !commands (!new / !reset / !skill / !note / !grocery / !stats)
        ├─ filter (DM / mention / reply-to-bot / active conversation)
        ├─ extract media attachments (base64)
        ├─ post "⚙️ Generating..." progress message
@@ -217,7 +218,7 @@ Its tools appear as `prefix__tool_name` automatically.
 
 - **History** (`data/history/<user_id>.jsonl`): one JSON message per line, trimmed to `MAX_HISTORY_TURNS` pairs.
 - **Memory** (PostgreSQL `user_memories`): per-user markdown, rewritten in full on each `update_memory`.
-- **Notes** (`data/notes/<user_id>.json`), **skills** (`data/skills.json`), **reminders** (`data/reminders.json`).
+- **Notes** (`data/notes/<user_id>.json`), **grocery lists** (`data/grocery_lists/<user_id>.json`), **skills** (`data/skills.json`), **reminders** (`data/reminders.json`).
 
 `data/` and the PostgreSQL volume are mounted in docker-compose so they survive restarts.
 

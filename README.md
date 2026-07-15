@@ -10,7 +10,7 @@ A Discord-based house assistant bot powered by a local LLM (llama.cpp) with MCP 
 - **Web search** — SearXNG JSON API integration for live information retrieval
 - **Adjustable thinking effort** — `/effort low|medium|high|xhigh|max` sets the model's reasoning budget (2k/4k/8k/16k/unlimited thinking tokens)
 - **Jellyfin media server** — browse and query your media library via MCP
-- **Built-in tools** — reminders, URL summarization, translation, and GitHub feature-request filing
+- **Built-in tools** — reminders, personal grocery lists, URL summarization, translation, and GitHub feature-request filing
 - **Automated feature development** — owner-approved jobs can dispatch Codex, Claude Code, or OpenCode to open reviewable pull requests
 
 ## Quick start

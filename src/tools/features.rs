@@ -33,6 +33,7 @@ pub fn features_text() -> &'static str {
 **Prefix commands**
 `!skill list|add|delete|info <name>` — manage custom prompt skills shared across all users
 `!note list|save|get|delete <name>` — manage your personal notes
+`!grocery [list]` / `!grocery add <item>` / `!grocery remove <number or item>` / `!grocery flush` — manage your persistent personal grocery list
 `!stats` — show your conversation and memory stats
 `!new` / `!reset` / `!compact` — same as the slash variants
 
@@ -43,7 +44,7 @@ pub fn features_text() -> &'static str {
 - Timed reminders delivered by DM
 - Create and edit your own GitHub feature requests
 - Custom skills (user-defined prompt templates) via `!skill`
-- Personal notes and persistent memory across sessions
+- Personal notes, grocery lists, and persistent memory across sessions
 - Persistent conversation archives and global token-usage leaderboards
 - Guild voting for user-specific tool-call restrictions and bans
 - Software development help: discuss, explain, review, advise on code, and execute sandboxed Lua scripts for calculations or data processing

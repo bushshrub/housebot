@@ -31,6 +31,7 @@ use crate::coding_agent::issue::{build_issue_body, dispatch_labels};
 use crate::coding_agent::pending::{DiscordMessageRef, DispatchStage, PendingJobStore};
 use crate::config;
 use crate::discord_bridge::DiscordBridge;
+use crate::grocery_list::GroceryLists;
 use crate::history::History;
 use crate::llm::ThinkingMode;
 use crate::lua_engine;
@@ -43,7 +44,7 @@ use crate::skills::Skills;
 use crate::tool_permissions::{ToolPermissions, VoteResult};
 
 pub use crate::bot_commands::{
-    erase_data_command, memory_command, note_command, skill_command, stats_command,
+    erase_data_command, grocery_command, memory_command, note_command, skill_command, stats_command,
 };
 use crate::bot_formatting::append_tool_summary;
 pub use crate::bot_formatting::{extract_code_files, lang_ext, split_text, tool_hint};
@@ -204,6 +205,7 @@ pub struct HouseBot {
     agent: Arc<Agent>,
     redactor: Arc<SecretRedactor>,
     notes: Notes,
+    grocery_lists: GroceryLists,
     skills: Skills,
     memory: Memory,
     history: History,
@@ -242,6 +244,7 @@ impl HouseBot {
             agent,
             redactor: Arc::new(SecretRedactor::from_env()),
             notes: Notes::default(),
+            grocery_lists: GroceryLists::default(),
             skills: Skills::default(),
             memory,
             history: History::default(),
@@ -1590,6 +1593,7 @@ impl EventHandler for HouseBot {
                     &self.history,
                     &self.memory,
                     &self.notes,
+                    &self.grocery_lists,
                     &self.profile_store,
                     &self.user_cfg,
                     &self.agent.reminders().clone(),
@@ -1703,6 +1707,13 @@ impl EventHandler for HouseBot {
             tracing::info!(target: "housebot::commands", user_id, "!note command received");
             let (first, rest) = split_command(&msg.content);
             let reply = note_command(&self.notes, &first, &rest, user_id).await;
+            self.respond(&ctx, &msg, &reply).await;
+            return;
+        }
+        if is_prefix_command(&content, "!grocery") {
+            tracing::info!(target: "housebot::commands", user_id, "!grocery command received");
+            let (first, _rest) = split_command(&msg.content);
+            let reply = grocery_command(&self.grocery_lists, &first, user_id).await;
             self.respond(&ctx, &msg, &reply).await;
             return;
         }
@@ -3356,6 +3367,13 @@ fn split_command(content: &str) -> (String, String) {
     }
 }
 
+fn is_prefix_command(content: &str, command: &str) -> bool {
+    let Some(remainder) = content.strip_prefix(command) else {
+        return false;
+    };
+    remainder.is_empty() || remainder.chars().next().is_some_and(char::is_whitespace)
+}
+
 async fn send_final_message(
     ctx: &Context,
     msg: &Message,
@@ -4005,6 +4023,13 @@ mod tests {
             commit_hash_response(None),
             "Running commit is unavailable for this build."
         );
+    }
+
+    #[test]
+    fn prefix_commands_require_a_command_boundary() {
+        assert!(is_prefix_command("!grocery", "!grocery"));
+        assert!(is_prefix_command("!grocery add milk", "!grocery"));
+        assert!(!is_prefix_command("!grocerylist", "!grocery"));
     }
 
     #[test]
