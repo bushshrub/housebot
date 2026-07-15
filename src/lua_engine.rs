@@ -496,12 +496,16 @@ fn build_sandbox(
             if builder.edge_count() >= MAX_GRAPH_EDGES {
                 return Err(graph_limit_error("edges", MAX_GRAPH_EDGES));
             }
-            for id in [&from, &to] {
-                if !builder.has_node(id) && builder.node_count() >= MAX_GRAPH_NODES {
-                    return Err(graph_limit_error("nodes", MAX_GRAPH_NODES));
-                }
+            // Checked and created one endpoint at a time: `to` may be the
+            // node that fills the last slot `from` just took, so its check
+            // must see the count *after* `from` was (maybe) created.
+            if !builder.has_node(&from) && builder.node_count() >= MAX_GRAPH_NODES {
+                return Err(graph_limit_error("nodes", MAX_GRAPH_NODES));
             }
             let from_i = builder.get_or_create(&from);
+            if !builder.has_node(&to) && builder.node_count() >= MAX_GRAPH_NODES {
+                return Err(graph_limit_error("nodes", MAX_GRAPH_NODES));
+            }
             let to_i = builder.get_or_create(&to);
             builder.add_edge(from_i, to_i);
             Ok(())
@@ -929,6 +933,20 @@ mod tests {
         )
         .await;
         assert!(out.contains("graph edges"), "unexpected output: {out}");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn graph_edge_with_two_new_endpoints_does_not_exceed_node_cap() {
+        let host = Arc::new(FakeHost::default());
+        // One slot free before the edge call: an edge naming two brand-new
+        // endpoints must not be allowed to create both and overshoot the cap.
+        let script = format!(
+            "for i = 1, {} do graph.node(\"n\" .. i, \"N\" .. i) end \
+             graph.edge(\"new_a\", \"new_b\")",
+            MAX_GRAPH_NODES - 1
+        );
+        let out = run(&script, &host, limits()).await;
+        assert!(out.contains("graph nodes"), "unexpected output: {out}");
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
