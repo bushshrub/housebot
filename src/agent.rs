@@ -195,7 +195,7 @@ const LUA_DOCS: &str = "\
 - `tostring`, `tonumber`, `type`, `pairs`, `ipairs`, `select`, `next`
 - `pcall`, `xpcall`, `error`, `assert`
 - `setmetatable`, `getmetatable`, `rawget`, `rawset`, `rawequal`, `rawlen`
-- `table.unpack` / `unpack`
+- `table.unpack`
 
 **Removed globals (will be nil)**
 `os`, `io`, `require`, `load`, `dofile`, `loadfile`, `debug`, `package`, `coroutine`,
@@ -212,6 +212,7 @@ const LUA_DOCS: &str = "\
 - Timeout: LUA_TIMEOUT_SECS env var (default 5 s, clamp 1–30 s)
 - Memory: LUA_MEMORY_LIMIT_MB env var (default 16 MB, clamp 1–256 MB)
 - Max discord.* bridge calls per run: 10
+- Max web/Jellyfin search query: 500 characters (longer queries are truncated)
 - Max `discord.send_message` calls per run: 5
 - Max captured output: 4 000 characters (truncated if exceeded)
 
@@ -270,11 +271,7 @@ impl ScriptHost for AgentScriptHost {
             return "Error: Jellyfin is not available.".to_string();
         };
         let tools = server.list_tools().await;
-        let Some(tool) = tools
-            .iter()
-            .find(|t| t.name == "search")
-            .or_else(|| tools.iter().find(|t| t.name.contains("search")))
-        else {
+        let Some(tool) = tools.iter().find(|t| t.name == "search") else {
             return "Error: the Jellyfin server exposes no search tool.".to_string();
         };
         match server.call_tool(&tool.name, json!({"query": query})).await {
@@ -375,11 +372,7 @@ impl Agent {
             return "Error: Jellyfin is not available.".to_string();
         };
         let tools = server.list_tools().await;
-        let Some(tool) = tools
-            .iter()
-            .find(|t| t.name == "search")
-            .or_else(|| tools.iter().find(|t| t.name.contains("search")))
-        else {
+        let Some(tool) = tools.iter().find(|t| t.name == "search") else {
             return "Error: the Jellyfin server exposes no search tool.".to_string();
         };
         match server.call_tool(&tool.name, json!({"query": query})).await {
@@ -694,7 +687,7 @@ impl Agent {
                 // Search rate limits are not recoverable within this run. Stop the
                 // tool loop after the first limited response so the model cannot keep
                 // retrying the search and waiting for another rate-limit window.
-                if matches!(tc.name.as_str(), "web_search" | "deep_research")
+                if matches!(tc.name.as_str(), "web_search" | "deep_research" | "run_lua")
                     && search_rate_limited(&content)
                 {
                     break 'agent_loop "Web search is temporarily rate-limited. Please try again in a few minutes.".to_string();
