@@ -114,7 +114,10 @@ impl ChannelLog {
                 Ok(s) => s,
                 Err(_) => continue,
             };
-            let filtered: Vec<String> = raw
+            // Every kept line keeps its own trailing newline: rewriting the
+            // file without one would make the next `append` glue its JSON
+            // onto the last line, corrupting both entries.
+            let new_content: String = raw
                 .lines()
                 .filter(|line| {
                     let trimmed = line.trim();
@@ -126,9 +129,8 @@ impl ChannelLog {
                         Err(_) => true, // Keep non-JSON lines
                     }
                 })
-                .map(|l| l.to_string())
+                .map(|line| format!("{line}\n"))
                 .collect();
-            let new_content = filtered.join("\n");
             tokio::fs::write(&path, new_content).await?;
         }
         Ok(())
@@ -457,6 +459,20 @@ mod tests {
         let results = log.search(1, ".*", 10).await.unwrap();
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].user_id, "10");
+    }
+
+    #[tokio::test]
+    async fn append_after_remove_user_entries_does_not_corrupt_the_log() {
+        let (_t, log) = store();
+        log.append(1, 10, "Alice", None, "hello").await;
+        log.append(1, 20, "Bob", None, "world").await;
+        log.remove_user_entries("10".to_string()).await.unwrap();
+        log.append(1, 30, "Charlie", None, "after removal").await;
+        let results = log.search(1, ".*", 10).await.unwrap();
+        assert_eq!(results.len(), 2);
+        assert_eq!(results[0].user_id, "20");
+        assert_eq!(results[1].user_id, "30");
+        assert_eq!(results[1].content, "after removal");
     }
 
     #[tokio::test]

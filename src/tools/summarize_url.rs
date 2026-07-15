@@ -6,6 +6,7 @@ use regex::Regex;
 use serde_json::{json, Value};
 
 use crate::llm::ChatClient;
+use crate::tools::web_fetch::validate_public_url;
 
 const MAX_CONTENT_CHARS: usize = 8000;
 const FETCH_TIMEOUT_SECS: u64 = 15;
@@ -60,8 +61,13 @@ pub async fn summarize_content(
 }
 
 /// Fetch `url` and summarize it, returning an `Error:` string on any fetch failure.
+///
+/// Redirects are followed manually so every hop is re-validated against the
+/// same private-address blocklist as `fetch_webpage` and `download_file`.
 pub async fn fetch_and_summarize(client: &dyn ChatClient, model: &str, url: &str) -> String {
+    const MAX_REDIRECTS: usize = 5;
     let http = reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
         .timeout(std::time::Duration::from_secs(FETCH_TIMEOUT_SECS))
         .user_agent("house-chatbot/1.0")
         .build();
@@ -69,9 +75,36 @@ pub async fn fetch_and_summarize(client: &dyn ChatClient, model: &str, url: &str
         Ok(c) => c,
         Err(e) => return format!("Error: could not build HTTP client: {e}"),
     };
-    let resp = match http.get(url).send().await {
-        Ok(r) => r,
-        Err(e) => return format!("Error: could not fetch URL: {e}"),
+    let mut current = url.to_string();
+    let mut final_response = None;
+    for _ in 0..=MAX_REDIRECTS {
+        if let Err(error) = validate_public_url(&current).await {
+            return format!("Error: refusing to fetch {url} ({error})");
+        }
+        let response = match http.get(&current).send().await {
+            Ok(r) => r,
+            Err(e) => return format!("Error: could not fetch URL: {e}"),
+        };
+        if response.status().is_redirection() {
+            let Some(location) = response
+                .headers()
+                .get(reqwest::header::LOCATION)
+                .and_then(|value| value.to_str().ok())
+            else {
+                return format!("Error: redirect from {current} had no location");
+            };
+            let Ok(next) = reqwest::Url::parse(&current).and_then(|base| base.join(location))
+            else {
+                return format!("Error: invalid redirect from {current}");
+            };
+            current = next.to_string();
+            continue;
+        }
+        final_response = Some(response);
+        break;
+    }
+    let Some(resp) = final_response else {
+        return format!("Error: too many redirects when fetching {url}");
     };
     if !resp.status().is_success() {
         return format!("Error: HTTP {} when fetching {url}", resp.status().as_u16());
@@ -122,6 +155,16 @@ mod tests {
         let client = MockChatClient::new();
         let out = summarize_content(&client, "m", "u", "<p>x</p>").await;
         assert!(out.contains("no summary"));
+    }
+
+    #[tokio::test]
+    async fn refuses_private_and_non_http_urls() {
+        let client = MockChatClient::new();
+        let out = fetch_and_summarize(&client, "m", "http://localhost:8080/admin").await;
+        assert!(out.starts_with("Error: refusing to fetch"), "got: {out}");
+        let out = fetch_and_summarize(&client, "m", "file:///etc/passwd").await;
+        assert!(out.starts_with("Error: refusing to fetch"), "got: {out}");
+        assert!(client.once_calls.lock().unwrap().is_empty());
     }
 
     #[test]

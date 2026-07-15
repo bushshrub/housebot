@@ -7,7 +7,12 @@ description = "House chatbot with Discord interface and MCP tools (Rust rewrite)
 license = "AGPL-3.0-or-later"
 
 [workspace]
-members = ["crates/common-crawl", "crates/deployment-bot"]
+members = [
+    "crates/common-crawl",
+    "crates/deployment-bot",
+    "crates/graph-render",
+    "crates/llm",
+]
 resolver = "2"
 
 [[bin]]
@@ -47,8 +52,9 @@ sentry = { version = "0.38.0", default-features = false, features = [
 bytes = "1"
 sha2 = "0.10"
 mlua = { version = "0.12", features = ["lua54", "vendored"] }
-plotters = { version = "0.3", default-features = false, features = ["bitmap_backend", "bitmap_encoder", "ab_glyph"] }
 common-crawl = { path = "crates/common-crawl" }
+graph-render = { path = "crates/graph-render" }
+housebot-llm = { path = "crates/llm" }
 
 [dev-dependencies]
 tempfile = "3"

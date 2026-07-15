@@ -15,9 +15,13 @@ pub mod coding_agent;
 pub mod config;
 pub mod discord_bridge;
 pub mod github_issues;
-pub mod graph_render;
+/// Re-exported from the `graph-render` workspace crate; kept at this path so
+/// existing `crate::graph_render::…` references continue to resolve.
+pub use graph_render;
 pub mod history;
-pub mod llm;
+/// Re-exported from the `housebot-llm` workspace crate; kept at this path so
+/// existing `crate::llm::…` references continue to resolve.
+pub use housebot_llm as llm;
 pub mod llm_queue;
 pub mod lua_engine;
 pub mod mcp;

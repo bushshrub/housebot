@@ -26,7 +26,7 @@ const NODE_FILL: RGBColor = RGBColor(198, 224, 244);
 const NODE_BORDER: RGBColor = RGBColor(41, 98, 155);
 const EDGE_COLOR: RGBColor = RGBColor(90, 90, 90);
 
-const FONT_BYTES: &[u8] = include_bytes!("../assets/fonts/LiberationSans-Regular.ttf");
+const FONT_BYTES: &[u8] = include_bytes!("../../../assets/fonts/LiberationSans-Regular.ttf");
 
 /// Naming prefix for `render_png`'s scratch files, shared with
 /// `sweep_stale_temp_files` so the sweep only ever touches files we made.
