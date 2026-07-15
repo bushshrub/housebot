@@ -44,7 +44,6 @@ impl Memory {
                 tracing::error!(%error, "PostgreSQL memory connection closed");
             }
         });
-        crate::database::migrate(&client).await?;
         migrate_markdown_memories(&client, &config::data_dir().join("memories")).await?;
         Ok(Self {
             backend: Backend::Postgres(Arc::new(client)),

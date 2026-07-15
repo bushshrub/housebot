@@ -52,11 +52,11 @@ fn deployment_webhook_text_is_classified_strictly() {
 fn rollback_plan_uses_only_the_checkpoint_digest() {
     let digest = "ghcr.io/bushshrub/housebot@sha256:abc123";
     let commands = container_commands(digest, "network").unwrap();
-    assert_eq!(commands.len(), 4);
+    assert_eq!(commands.len(), 5);
     assert_eq!(commands[0].stage, DeploymentStage::PullHousebotImage);
     assert_eq!(commands[0].args, vec!["pull", digest]);
-    assert_eq!(commands[2].stage, DeploymentStage::StartRequestedImage);
-    assert_eq!(commands[2].args.last().unwrap(), digest);
+    assert_eq!(commands[3].stage, DeploymentStage::StartRequestedImage);
+    assert_eq!(commands[3].args.last().unwrap(), digest);
 }
 
 #[test]
@@ -69,7 +69,7 @@ fn rollback_rejects_tags_and_unrelated_images() {
 #[test]
 fn deploy_plan_is_sha_scoped_and_rejects_injection() {
     let commands = deploy_commands(Some("abcdef123456"), "network").unwrap();
-    assert_eq!(commands.len(), 4);
+    assert_eq!(commands.len(), 5);
     assert_eq!(
         commands
             .iter()
@@ -77,13 +77,14 @@ fn deploy_plan_is_sha_scoped_and_rejects_injection() {
             .collect::<Vec<_>>(),
         vec![
             DeploymentStage::PullHousebotImage,
+            DeploymentStage::RunDatabaseMigrations,
             DeploymentStage::RemovePreviousContainer,
             DeploymentStage::StartRequestedImage,
             DeploymentStage::CheckContainerState,
         ]
     );
     assert!(commands[0].args[1].ends_with(":sha-abcdef123456"));
-    assert!(!commands[3].args.contains(&"/deployment".to_string()));
+    assert!(!commands[4].args.contains(&"/deployment".to_string()));
     assert_eq!(
         deploy_commands(None, "network").unwrap()[0].args[1],
         "ghcr.io/bushshrub/housebot:latest"

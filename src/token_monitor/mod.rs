@@ -105,7 +105,6 @@ impl TokenMonitor {
                 tracing::error!(%error, "PostgreSQL token-monitor connection closed");
             }
         });
-        crate::database::migrate(&client).await?;
         Ok(Self {
             backend: Backend::Postgres(Arc::new(client)),
         })
