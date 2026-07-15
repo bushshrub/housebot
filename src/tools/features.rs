@@ -34,7 +34,7 @@ pub fn features_text() -> &'static str {
 `!new` / `!reset` / `!compact` — same as the slash variants
 
 **Capabilities**
-- Web search, webpage fetching, and public-file downloads delivered as Discord attachments
+- Web search, multi-step deep research with cross-referenced sources, webpage fetching, and public-file downloads delivered as Discord attachments
 - Jellyfin media server queries (movies, shows, music) — read-only
 - URL summarisation and translation
 - Timed reminders delivered by DM
@@ -44,7 +44,7 @@ pub fn features_text() -> &'static str {
 - Software development help: discuss, explain, review, and advise on code (cannot execute)
 - Chat search: search channel messages by regex to find what was said or who mentioned something
 - Discord user profiles: look up a user's username, display name, and account creation date by their user ID
-- Opt-in proactive assistance for narrowly detected questions, feature-help requests, and reminders
+- Opt-in proactive assistance plus privacy-aware greetings and contextual quick-action suggestions
 "
 }
 
