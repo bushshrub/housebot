@@ -53,6 +53,8 @@ pub struct AgentRequest<'a> {
     pub display_name: &'a str,
     /// User's guild nickname from their profile (empty if none).
     pub nickname: &'a str,
+    /// User's Discord avatar URL from their persisted profile (empty if none).
+    pub avatar_url: &'a str,
     pub profile_tags: &'a str,
     pub quick_actions: &'a str,
     pub guild_id: Option<u64>,
@@ -74,6 +76,7 @@ impl<'a> AgentRequest<'a> {
             deep_memory_enabled: true,
             display_name: username,
             nickname: "",
+            avatar_url: "",
             profile_tags: "",
             quick_actions: "",
             guild_id: None,
@@ -446,6 +449,7 @@ impl Agent {
             deep_memory_enabled,
             display_name,
             nickname,
+            avatar_url,
             profile_tags,
             quick_actions,
             guild_id,
@@ -473,6 +477,7 @@ impl Agent {
             "timestamp": Utc::now().to_rfc3339(),
             "username": username,
             "display_name": display_name,
+            "avatar_url": avatar_url,
         });
 
         let previous_usage = self.last_context_tokens(user_id).await as f64
@@ -497,6 +502,7 @@ impl Agent {
                 user_id,
                 display_name,
                 nickname,
+                avatar_url,
                 &user_memory,
                 &all_skills,
                 personality,
@@ -1144,6 +1150,7 @@ pub fn build_system_prompt(
         user_id,
         display_name,
         nickname,
+        "",
         user_memory,
         all_skills,
         personality,
@@ -1159,6 +1166,7 @@ fn build_system_prompt_with_profile(
     user_id: &str,
     display_name: &str,
     nickname: &str,
+    avatar_url: &str,
     user_memory: &str,
     all_skills: &BTreeMap<String, Skill>,
     personality: Option<&str>,
@@ -1180,6 +1188,7 @@ fn build_system_prompt_with_profile(
     };
     let profile_section = if display_name != username
         || !nickname.is_empty()
+        || !avatar_url.is_empty()
         || !profile_tags.is_empty()
         || !quick_actions.is_empty()
     {
@@ -1193,13 +1202,18 @@ fn build_system_prompt_with_profile(
         } else {
             format!("\nRelevant usage tags: {profile_tags}")
         };
+        let avatar_line = if avatar_url.is_empty() {
+            String::new()
+        } else {
+            format!("\nAvatar URL: {avatar_url}")
+        };
         let actions_line = if quick_actions.is_empty() {
             String::new()
         } else {
             format!("\nFrequently used actions: {quick_actions}")
         };
         format!(
-            "\n\n## User profile\n{name_line}{tags_line}{actions_line}\n\
+            "\n\n## User profile\n{name_line}{avatar_line}{tags_line}{actions_line}\n\
              Personalization guidance:\n\
              - If the user greets you, naturally address them by their nickname or display name.\n\
              - If they ask what to do or how you can help, suggest at most one relevant quick action.\n\
@@ -1260,7 +1274,7 @@ mentioned something, or what was discussed. Prefer a targeted pattern over a bro
 - get_discord_user — Look up a Discord user's profile by their user ID (username, display name, \
 account creation date, bot status).{skills_section}\n\n\
 ## Guidelines\n- Be conversational and friendly.\n- Use Jellyfin tools for any media questions \
-before guessing.\n- Call generate_image only for explicit image requests. Never bypass, retry around, or weaken a safety rejection.\n- Use web_search for simple factual or current-events questions. For complex questions requiring multiple perspectives, comparisons, or a comprehensive report, use deep_research and synthesize its dossier with source links. If either search tool returns a rate-limit \
+before guessing.\n- Never infer sensitive traits, identity, or intent from a user's avatar.\n- Call generate_image only for explicit image requests. Never bypass, retry around, or weaken a safety rejection.\n- Use web_search for simple factual or current-events questions. For complex questions requiring multiple perspectives, comparisons, or a comprehensive report, use deep_research and synthesize its dossier with source links. If either search tool returns a rate-limit \
 error, stop using search tools for this request and do not retry repeatedly; use \
 common_crawl__search for historical URL evidence when appropriate, or explain that the search \
 service is temporarily unavailable.\n- You can discuss, explain, review, and advise on software \
@@ -1600,6 +1614,7 @@ mod tests {
             "Alice",
             "",
             "",
+            "",
             &empty_skills(),
             None,
             true,
@@ -1611,6 +1626,27 @@ mod tests {
         assert!(p.contains("naturally address them by their nickname or display name"));
         assert!(p.contains("suggest at most one relevant quick action"));
         assert!(p.contains("Never infer sensitive traits"));
+    }
+
+    #[test]
+    fn system_prompt_includes_profile_avatar_with_safety_guidance() {
+        let p = build_system_prompt_with_profile(
+            "Alice",
+            "123",
+            "Alice",
+            "",
+            "https://cdn.discordapp.com/avatars/123/avatar.png",
+            "",
+            &empty_skills(),
+            None,
+            true,
+            "",
+            "",
+        );
+        assert!(p.contains("Avatar URL: https://cdn.discordapp.com/avatars/123/avatar.png"));
+        assert!(
+            p.contains("Never infer sensitive traits, identity, or intent from a user's avatar.")
+        );
     }
 
     #[test]
@@ -1924,12 +1960,17 @@ mod tests {
         request.channel_id = 42;
         request.guild_id = Some(7);
         request.display_name = "Alice";
+        request.avatar_url = "https://cdn.discordapp.com/avatars/u8/avatar.png";
         agent.run(request, &NoHooks).await;
 
         let history = agent.history.load("u8").await;
         assert_eq!(history[0]["discord_context"]["guild_id"], 7);
         assert_eq!(history[0]["discord_context"]["channel_id"], 42);
         assert_eq!(history[0]["discord_context"]["username"], "alice");
+        assert_eq!(
+            history[0]["discord_context"]["avatar_url"],
+            "https://cdn.discordapp.com/avatars/u8/avatar.png"
+        );
         assert!(history[0]["discord_context"]["timestamp"].is_string());
     }
 
