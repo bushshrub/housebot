@@ -42,7 +42,9 @@ pub fn tool_to_tag(tool_name: &str) -> Option<ProfileTag> {
             Some(ProfileTag::WebResearch)
         }
         "update_memory" => Some(ProfileTag::Coding),
-        "create_feature_request" | "prepare_feature_development" => Some(ProfileTag::Coding),
+        "create_feature_request" | "edit_feature_request" | "prepare_feature_development" => {
+            Some(ProfileTag::Coding)
+        }
         "set_reminder" => Some(ProfileTag::Reminders),
         "translate" => Some(ProfileTag::Translation),
         name if name.starts_with("jellyfin__") => Some(ProfileTag::Media),
@@ -95,7 +97,7 @@ impl UserProfile {
         if let Some(tag) = tool_to_tag(tool_name) {
             let key = tag.as_str().to_string();
             let count = self.action_counts.entry(key).or_insert(0);
-            *count += 1;
+            *count = count.saturating_add(1);
             // Add the tag if it's not already present and we've seen it at least once.
             if !self.tags.contains(&tag) {
                 self.tags.push(tag);
@@ -284,6 +286,16 @@ mod tests {
     }
 
     #[test]
+    fn record_tool_use_saturates_instead_of_overflowing() {
+        let mut profile = UserProfile::default();
+        profile
+            .action_counts
+            .insert("web research".to_string(), u64::MAX);
+        profile.record_tool_use("web_search");
+        assert_eq!(profile.action_counts["web research"], u64::MAX);
+    }
+
+    #[test]
     fn record_tool_use_jellyfin() {
         let mut p = UserProfile::default();
         p.record_tool_use("jellyfin__get_movies");
@@ -336,6 +348,10 @@ mod tests {
         assert_eq!(tool_to_tag("jellyfin__get_movies"), Some(ProfileTag::Media));
         assert_eq!(
             tool_to_tag("create_feature_request"),
+            Some(ProfileTag::Coding)
+        );
+        assert_eq!(
+            tool_to_tag("edit_feature_request"),
             Some(ProfileTag::Coding)
         );
         assert_eq!(tool_to_tag("random_tool"), None);

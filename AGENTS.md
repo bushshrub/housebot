@@ -186,6 +186,10 @@ specification, runner requirements, and security model.
   `agent:failed`.  Do not add or remove these labels manually outside the workflow.
 - **No force-push. No auto-merge. No auto-deploy.** All PRs opened by the agent require
   a human review and explicit merge.
+- **Always commit automatically.** The coding agent must create a commit for every set of
+  changes it produces before handing work back; do not leave implemented changes uncommitted.
+- **Codex attribution.** Every commit created by the Codex coding agent must include the exact
+  trailer `Co-authored-by: codex <codex@openai.com>`.
 - **Secrets on runner.** `NVIDIA_API_KEY` is the only secret injected at runtime.
   OAuth sessions for Codex and Claude are pre-configured on the runner and must never be
   read, printed, or uploaded by workflow steps.
@@ -212,7 +216,14 @@ Its tools appear as `prefix__tool_name` automatically.
 ## Data
 
 - **History** (`data/history/<user_id>.jsonl`): one JSON message per line, trimmed to `MAX_HISTORY_TURNS` pairs.
-- **Memory** (`data/memories/<user_id>.md`): free-form markdown, rewritten in full on each `update_memory`.
+- **Memory** (PostgreSQL `user_memories`): per-user markdown, rewritten in full on each `update_memory`.
 - **Notes** (`data/notes/<user_id>.json`), **skills** (`data/skills.json`), **reminders** (`data/reminders.json`).
 
-`data/` is volume-mounted in docker-compose so it survives restarts.
+`data/` and the PostgreSQL volume are mounted in docker-compose so they survive restarts.
+
+### Persistent-memory schema safety
+
+- Future changes must not destructively alter or replace the persistent-memory database schema.
+- Any necessary schema change must include a clear, ordered, backward-compatible migration path
+  that preserves all existing user memories across upgrades and rollbacks.
+- Never silently reset, truncate, or invalidate stored memory as part of application startup or deployment.

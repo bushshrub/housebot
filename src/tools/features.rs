@@ -24,6 +24,7 @@ pub fn features_text() -> &'static str {
 `/profile show|clear` — inspect your stored profile or clear learned profile data and memory
 `/history show|clear` — inspect or clear your global conversation history
 `/privacy status|deep_memory|proactive` — view or change privacy and proactive-assistance settings
+`/memory show|clear` — view or clear the bot's persistent memory about you (requires deep memory to be enabled)
 `/erase_my_data` — permanently delete all your stored data (messages, history, memory, notes)
 `/lua <script>` — run a sandboxed Lua script with `discord.send_message`, `discord.web_search`, and `discord.jellyfin_search` (requires the Scripting role)
 
@@ -38,12 +39,13 @@ pub fn features_text() -> &'static str {
 - Jellyfin media server queries (movies, shows, music) — read-only
 - URL summarisation and translation
 - Timed reminders delivered by DM
+- Create and edit your own GitHub feature requests
 - Custom skills (user-defined prompt templates) via `!skill`
 - Personal notes and persistent memory across sessions
 - Software development help: discuss, explain, review, and advise on code (cannot execute)
 - Chat search: search channel messages by regex to find what was said or who mentioned something
 - Discord user profiles: look up a user's username, display name, and account creation date by their user ID
-- Opt-in proactive assistance for narrowly detected questions, feature-help requests, and reminders
+- Opt-in proactive assistance plus privacy-aware greetings and contextual quick-action suggestions
 "
 }
 
