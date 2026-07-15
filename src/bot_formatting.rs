@@ -100,6 +100,30 @@ pub fn tool_hint(tool_name: &str, args: &Value) -> String {
     }
 }
 
+/// User-facing status shown while an agent tool is executing.
+pub fn tool_status(tool_name: &str) -> &'static str {
+    match tool_name {
+        "web_search" => "🔎 **Searching the web...**",
+        "deep_research" => "🔎 **Researching...**",
+        "fetch_webpage" | "summarize_url" => "🌐 **Reading a webpage...**",
+        "common_crawl__search" => "🗂️ **Searching web archives...**",
+        "download_file" => "📥 **Downloading a file...**",
+        "run_lua" => "⚙️ **Running a Lua script...**",
+        "get_lua_docs" => "📖 **Reading Lua documentation...**",
+        "run_skill" => "🧩 **Running a skill...**",
+        "translate" => "🌐 **Translating...**",
+        "set_reminder" => "⏰ **Setting a reminder...**",
+        "search_messages" | "get_recent_messages" => "💬 **Searching messages...**",
+        "find_discord_users" | "get_discord_user" => "👤 **Looking up Discord users...**",
+        "get_bot_features" => "🤖 **Checking bot features...**",
+        "create_feature_request" => "📝 **Creating a feature request...**",
+        "edit_feature_request" => "📝 **Updating a feature request...**",
+        "prepare_feature_development" => "🛠️ **Preparing feature development...**",
+        name if name.starts_with("jellyfin__") => "🎬 **Querying Jellyfin...**",
+        _ => "🔧 **Running a tool...**",
+    }
+}
+
 pub fn extract_code_files(text: &str) -> (String, Vec<(String, Vec<u8>)>) {
     let mut files = Vec::new();
     let mut counter = 0;
