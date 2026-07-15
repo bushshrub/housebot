@@ -4,6 +4,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use crate::config;
+use serde_json::{json, Value};
 use tokio_postgres::NoTls;
 
 const DEFAULT_DATABASE_URL: &str = "postgres://housebot:housebot@postgres/housebot";
@@ -154,6 +155,33 @@ async fn migrate_markdown_memories(
             .await?;
     }
     Ok(())
+}
+
+pub fn update_memory_tool() -> Value {
+    json!({
+        "name": "update_memory",
+        "description": "Update your persistent memory about the current user. Write the complete \
+            updated memory content each time, not just the new piece.",
+        "input_schema": {
+            "type": "object",
+            "properties": {"memory_content": {"type": "string", "description": "Full updated memory in markdown format."}},
+            "required": ["memory_content"]
+        }
+    })
+}
+
+pub fn search_memory_tool() -> Value {
+    json!({
+        "name": "search_memory",
+        "description": "Search the persistent memory for entries matching a keyword or phrase. \
+            Use this when the user asks about something specific you might have remembered, \
+            or when you want to check whether you already know something about a topic.",
+        "input_schema": {
+            "type": "object",
+            "properties": {"query": {"type": "string", "minLength": 1, "description": "Keyword or phrase to search for in memory."}},
+            "required": ["query"]
+        }
+    })
 }
 
 pub(crate) async fn ensure_dir(dir: &Path) -> std::io::Result<()> {
