@@ -190,6 +190,9 @@ specification, runner requirements, and security model.
   `agent:failed`.  Do not add or remove these labels manually outside the workflow.
 - **No force-push. No auto-merge. No auto-deploy.** All PRs opened by the agent require
   a human review and explicit merge.
+- **Development branch workflow.** For every development task, start from the up-to-date default
+  branch (`master` in this repository; `main` if it is renamed), create a new task branch, and
+  commit and push the completed work. Never commit directly to the default branch.
 - **Always commit automatically.** The coding agent must create a commit for every set of
   changes it produces before handing work back; do not leave implemented changes uncommitted.
 - **Codex attribution.** Every commit created by the Codex coding agent must include the exact
@@ -227,6 +230,9 @@ Its tools appear as `prefix__tool_name` automatically.
 
 ### Persistent-memory schema safety
 
+- **SQL migrations required.** Every database schema change must be an ordered, append-only SQL
+  migration in `db/migrations/`; never add, alter, or drop schema directly in application startup
+  code. Add a regression test that covers the migration or the bug it fixes.
 - Future changes must not destructively alter or replace the persistent-memory database schema.
 - Any necessary schema change must include a clear, ordered, backward-compatible migration path
   that preserves all existing user memories across upgrades and rollbacks.
