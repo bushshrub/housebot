@@ -14,6 +14,7 @@ pub fn features_text() -> &'static str {
 `/compact` — summarise the conversation into memory and start fresh (or clear it without saving when deep memory is disabled)
 `/session` — show token and context usage for the current session
 `/token_leaderboard` — show persistent global token usage by user and conversation
+`/tool_ban propose|vote|status` — vote on server-specific user restrictions for individual tools
 `/status` — show your current settings at a glance (effort, follow-up, personality)
 `/effort [level]` — set thinking depth: `low` (2k tokens) · `medium` (4k, default) · `high` (8k) · `xhigh` (16k) · `max` (unlimited)
 `/config personality [text]` — set (or clear) a personal tone/personality override
@@ -44,6 +45,7 @@ pub fn features_text() -> &'static str {
 - Custom skills (user-defined prompt templates) via `!skill`
 - Personal notes and persistent memory across sessions
 - Persistent conversation archives and global token-usage leaderboards
+- Guild voting for user-specific tool-call restrictions and bans
 - Software development help: discuss, explain, review, advise on code, and execute sandboxed Lua scripts for calculations or data processing
 - Self-executing Lua: the bot can write and run Lua 5.4 scripts internally to handle complex calculations, data processing, or algorithmic tasks (web search and Jellyfin search available from scripts)
 - Chat search: search channel messages by regex to find what was said or who mentioned something
