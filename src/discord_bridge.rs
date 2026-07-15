@@ -3,7 +3,7 @@
 
 use std::sync::Arc;
 
-use serenity::all::{ChannelId, UserId};
+use serenity::all::{ChannelId, CreateAllowedMentions, CreateMessage, UserId};
 use tokio::sync::RwLock;
 
 pub struct UserInfo {
@@ -30,13 +30,19 @@ impl DiscordBridge {
         *self.http.write().await = Some(http);
     }
 
+    /// Send a message on behalf of a Lua script. Mentions are suppressed so a
+    /// Scripting-role member without Discord's own mention permissions cannot
+    /// use the bridge to ping `@everyone`, roles, or arbitrary users.
     pub async fn send_message(&self, channel_id: u64, content: &str) -> Result<(), String> {
         let guard = self.http.read().await;
         let Some(http) = guard.as_ref() else {
             return Err("Discord bridge not available.".to_string());
         };
+        let builder = CreateMessage::new()
+            .content(content)
+            .allowed_mentions(CreateAllowedMentions::new());
         ChannelId::new(channel_id)
-            .say(http.as_ref(), content)
+            .send_message(http.as_ref(), builder)
             .await
             .map(|_| ())
             .map_err(|e| format!("Failed to send message: {e}"))
