@@ -33,6 +33,7 @@ use crate::config;
 use crate::discord_bridge::DiscordBridge;
 use crate::history::History;
 use crate::llm::ThinkingMode;
+use crate::lua_engine;
 use crate::memory::Memory;
 use crate::message_log::MessageLog;
 use crate::notes::Notes;
@@ -214,6 +215,7 @@ pub struct HouseBot {
     paginated: Mutex<HashMap<String, PaginatedResponse>>,
     reminder_started: AtomicBool,
     chat_rate_limiter: RateLimiter,
+    lua_rate_limiter: RateLimiter,
     /// Shared with `Agent` — holds pending coding-agent dispatch jobs.
     pending_jobs: Arc<PendingJobStore>,
     /// Catalog of agents, models, and effort levels.
@@ -251,6 +253,10 @@ impl HouseBot {
             paginated: Mutex::new(HashMap::new()),
             reminder_started: AtomicBool::new(false),
             chat_rate_limiter: RateLimiter::new(chat_rate_max, chat_rate_window),
+            lua_rate_limiter: RateLimiter::new(
+                config::env_parse("LUA_RATE_LIMIT_MAX", 6),
+                Duration::from_secs(config::env_parse("LUA_RATE_LIMIT_WINDOW_SECS", 60u64)),
+            ),
             pending_jobs,
             catalog: AgentCatalog::load_embedded(),
             discord,
@@ -909,6 +915,31 @@ fn commit_hash_response(sha: Option<&str>) -> String {
     }
 }
 
+/// Wrap `/lua` output in a code fence sized to fit a single Discord message.
+fn format_lua_reply(output: &str) -> String {
+    let sanitized = output.replace("```", "`\u{200b}``");
+    let budget = MAX_MESSAGE_LENGTH - "```\n\n```".chars().count();
+    let body: String = if sanitized.chars().count() > budget {
+        let mut truncated: String = sanitized.chars().take(budget - 1).collect();
+        truncated.push('…');
+        truncated
+    } else {
+        sanitized
+    };
+    format!("```\n{body}\n```")
+}
+
+async fn respond_ephemeral(ctx: &Context, cmd: &serenity::all::CommandInteraction, content: &str) {
+    let response = CreateInteractionResponse::Message(
+        CreateInteractionResponseMessage::new()
+            .content(content)
+            .ephemeral(true),
+    );
+    if let Err(e) = cmd.create_response(&ctx.http, response).await {
+        tracing::warn!("Failed to send interaction response: {e}");
+    }
+}
+
 #[serenity::async_trait]
 impl EventHandler for HouseBot {
     async fn ready(&self, ctx: Context, ready: Ready) {
@@ -1043,6 +1074,19 @@ impl EventHandler for HouseBot {
             .add_option(effort_level_option);
         if let Err(e) = Command::create_global_command(&ctx.http, effort_cmd).await {
             tracing::error!("Failed to register /effort slash command: {e}");
+        }
+        let lua_cmd = CreateCommand::new("lua")
+            .description("Run a sandboxed Lua script (requires the Scripting role)")
+            .add_option(
+                CreateCommandOption::new(
+                    CommandOptionType::String,
+                    "script",
+                    "Lua code to run (a ```lua code block``` is accepted)",
+                )
+                .required(true),
+            );
+        if let Err(e) = Command::create_global_command(&ctx.http, lua_cmd).await {
+            tracing::error!("Failed to register /lua slash command: {e}");
         }
         for command in [
             CreateCommand::new("help").description("Show all available commands"),
@@ -1200,6 +1244,10 @@ impl EventHandler for HouseBot {
                 .lock()
                 .await
                 .remove(cmd.channel_id.get(), user_id);
+            return;
+        }
+        if cmd.data.name == "lua" {
+            self.handle_lua_command(&ctx, &cmd).await;
             return;
         }
         let reply = match cmd.data.name.as_str() {
@@ -1476,6 +1524,91 @@ impl EventHandler for HouseBot {
 }
 
 impl HouseBot {
+    /// Handle the `/lua` slash command: permission and rate checks, then run
+    /// the script in the sandbox and post its output.
+    async fn handle_lua_command(&self, ctx: &Context, cmd: &serenity::all::CommandInteraction) {
+        let user_id = cmd.user.id.get();
+        let script = cmd
+            .data
+            .options
+            .iter()
+            .find(|o| o.name == "script")
+            .and_then(|o| match &o.value {
+                CommandDataOptionValue::String(s) => Some(s.clone()),
+                _ => None,
+            });
+        let Some(script) = script else {
+            respond_ephemeral(ctx, cmd, "Please provide a script to run.").await;
+            return;
+        };
+        if !self.lua_permitted(ctx, cmd).await {
+            let reply = format!(
+                "You need the **{}** role (or a higher one) to run scripts.",
+                lua_engine::scripting_role_name()
+            );
+            respond_ephemeral(ctx, cmd, &reply).await;
+            return;
+        }
+        if self.lua_rate_limiter.check(&user_id.to_string()) {
+            respond_ephemeral(
+                ctx,
+                cmd,
+                "You're running scripts too quickly — try again in a minute.",
+            )
+            .await;
+            return;
+        }
+        tracing::info!(target: "housebot::commands", user_id, "Running /lua script");
+        let defer = CreateInteractionResponse::Defer(CreateInteractionResponseMessage::new());
+        if let Err(e) = cmd.create_response(&ctx.http, defer).await {
+            tracing::warn!("Failed to defer /lua response: {e}");
+            return;
+        }
+        let host = Arc::new(lua_engine::BotScriptHost {
+            agent: Arc::clone(&self.agent),
+            discord: Arc::clone(&self.discord),
+            channel_id: cmd.channel_id.get(),
+        });
+        let script = lua_engine::strip_code_fence(&script).to_string();
+        let output = lua_engine::run_script(script, host, lua_engine::LuaLimits::from_env()).await;
+        let reply = format_lua_reply(&self.redactor.redact(&output));
+        if let Err(e) = cmd
+            .edit_response(&ctx.http, EditInteractionResponse::new().content(reply))
+            .await
+        {
+            tracing::warn!("Failed to send /lua response: {e}");
+        }
+    }
+
+    /// `/lua` is allowed for the bot owner, guild administrators, and members
+    /// holding the scripting role or a higher one.
+    async fn lua_permitted(&self, ctx: &Context, cmd: &serenity::all::CommandInteraction) -> bool {
+        let user_id = cmd.user.id.get();
+        let owner_id = config::owner_id();
+        if owner_id != 0 && user_id == owner_id {
+            return true;
+        }
+        let (Some(guild_id), Some(member)) = (cmd.guild_id, cmd.member.as_deref()) else {
+            return false;
+        };
+        if member.permissions.is_some_and(|p| p.administrator()) {
+            return true;
+        }
+        let Ok(roles) = guild_id.roles(&ctx.http).await else {
+            return false;
+        };
+        let guild_roles: Vec<(u64, String, u16)> = roles
+            .values()
+            .map(|role| (role.id.get(), role.name.clone(), role.position))
+            .collect();
+        let member_roles: Vec<u64> = member.roles.iter().map(|r| r.get()).collect();
+        lua_engine::scripting_permitted(
+            &member_roles,
+            &guild_roles,
+            &lua_engine::scripting_role_name(),
+        )
+    }
+
     async fn handle_message(
         &self,
         ctx: &Context,
@@ -3099,6 +3232,27 @@ mod tests {
     use crate::profile::{ProfileTag, UserProfile};
     use serde_json::json;
     use tempfile::TempDir;
+
+    // ── format_lua_reply ──
+    #[test]
+    fn lua_reply_is_fenced() {
+        assert_eq!(format_lua_reply("hello"), "```\nhello\n```");
+    }
+
+    #[test]
+    fn lua_reply_escapes_nested_fences() {
+        let reply = format_lua_reply("a ``` b");
+        assert_eq!(reply.matches("```").count(), 2);
+    }
+
+    #[test]
+    fn lua_reply_fits_discord_limit() {
+        let reply = format_lua_reply(&"x".repeat(5000));
+        assert!(reply.chars().count() <= MAX_MESSAGE_LENGTH);
+        assert!(reply.starts_with("```\n"));
+        assert!(reply.ends_with("\n```"));
+        assert!(reply.contains('…'));
+    }
 
     #[test]
     fn global_history_combines_profile_and_channel_context() {
