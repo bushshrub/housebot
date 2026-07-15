@@ -28,4 +28,5 @@ pub mod reminders;
 pub mod skills;
 pub mod testing;
 pub mod token_monitor;
+pub mod tool_permissions;
 pub mod tools;
