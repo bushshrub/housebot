@@ -310,6 +310,18 @@ fn build_sandbox(
         globals.raw_set(name, LuaValue::Nil)?;
     }
 
+    // Pattern matching (find/match/gmatch/gsub) runs entirely inside a single C
+    // call, during which the instruction hook never fires — a crafted pattern
+    // (polynomial backtracking over a long subject) would run past the timeout,
+    // and `spawn_blocking` cannot be cancelled, so it would pin a worker thread.
+    // Remove them; the remaining string functions are linear and memory-bounded.
+    // Nil-ing them on the `string` table also disables the `("x"):find(…)` method
+    // form, since the string metatable's `__index` is this table.
+    let string_lib: mlua::Table = globals.get("string")?;
+    for name in ["find", "match", "gmatch", "gsub"] {
+        string_lib.raw_set(name, LuaValue::Nil)?;
+    }
+
     let print_state = Rc::clone(state);
     globals.raw_set(
         "print",
@@ -494,6 +506,42 @@ mod tests {
         )
         .await;
         assert_eq!(out, "nil\tnil\tnil\tnil\tnil\tnil\tnil\tnil");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn pattern_matching_functions_are_removed() {
+        let host = Arc::new(FakeHost::default());
+        let out = run(
+            "return type(string.find), type(string.match), type(string.gmatch), type(string.gsub)",
+            &host,
+            limits(),
+        )
+        .await;
+        assert_eq!(out, "nil\tnil\tnil\tnil");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn pattern_method_form_is_removed() {
+        let host = Arc::new(FakeHost::default());
+        let out = run(
+            "return pcall(function() return (\"ab\"):find(\"a\") end)",
+            &host,
+            limits(),
+        )
+        .await;
+        assert!(out.starts_with("false"), "unexpected output: {out}");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn safe_string_functions_still_work() {
+        let host = Arc::new(FakeHost::default());
+        let out = run(
+            "return string.format(\"%s-%d\", string.upper(\"ab\"), 3) .. string.rep(\"!\", 2)",
+            &host,
+            limits(),
+        )
+        .await;
+        assert_eq!(out, "AB-3!!");
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
