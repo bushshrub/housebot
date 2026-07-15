@@ -378,7 +378,7 @@ mod tests {
         assert_eq!(memory.load(user_id.to_string()).await, "");
         assert!(notes.load_all(user_id).await.is_empty());
         assert_eq!(profile.load(user_id.to_string()).await.username, "");
-        assert!(!user_config.load(user_id).await.deep_memory_enabled);
+        assert!(user_config.load(user_id).await.deep_memory_enabled);
         assert!(reminders.load().await.is_empty());
     }
 
