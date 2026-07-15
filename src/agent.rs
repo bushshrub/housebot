@@ -23,7 +23,9 @@ use crate::profile::ProfileStore;
 use crate::rate_limit::RateLimiter;
 use crate::reminders::Reminders;
 use crate::skills::{Skill, Skills};
-use crate::token_monitor::{TokenLeaderboard, TokenMonitor};
+use crate::token_monitor::{
+    LeaderboardEntry, LeaderboardMetric, LeaderboardPeriod, TokenLeaderboard, TokenMonitor,
+};
 use crate::tool_permissions::ToolPermissions;
 use crate::tools;
 use crate::tools::common_crawl::CommonCrawl;
@@ -626,8 +628,17 @@ impl Agent {
     }
 
     /// Render the persistent global token leaderboard for Discord.
-    pub async fn token_leaderboard(&self) -> String {
-        match self.token_monitor.leaderboard(10).await {
+    pub async fn token_leaderboard(
+        &self,
+        period: LeaderboardPeriod,
+        metric: LeaderboardMetric,
+        requester_id: &str,
+    ) -> String {
+        match self
+            .token_monitor
+            .leaderboard_for(period, metric, 10, Some(requester_id))
+            .await
+        {
             Ok(leaderboard) => format_token_leaderboard(&leaderboard),
             Err(error) => {
                 tracing::error!(%error, "failed to load token leaderboard");
@@ -1921,24 +1932,43 @@ impl Agent {
 
 fn format_token_leaderboard(leaderboard: &TokenLeaderboard) -> String {
     if leaderboard.users.is_empty() {
-        return "**Global token leaderboard**\nNo token usage has been recorded yet.".into();
+        return format!(
+            "🏆 **{} token leaderboard**\nNo token usage has been recorded for this timeframe.",
+            leaderboard.period.label()
+        );
     }
-    let mut lines = vec![
-        "**Global token leaderboard**".to_string(),
-        "**Users**".to_string(),
-    ];
+    let icon = match leaderboard.period {
+        LeaderboardPeriod::Daily => "☀️",
+        LeaderboardPeriod::Weekly => "📅",
+        LeaderboardPeriod::Monthly => "🗓️",
+        LeaderboardPeriod::AllTime => "🏆",
+    };
+    let mut lines = vec![format!(
+        "{icon} **{} token leaderboard**\n*Ranked by {}*",
+        leaderboard.period.label(),
+        leaderboard.metric.label().to_lowercase()
+    )];
     for (index, entry) in leaderboard.users.iter().enumerate() {
         lines.push(format!(
-            "{}. **{}** — {} tokens across {} conversation{}",
+            "`{:>2}.` **{}** — {} · {} conversation{}",
             index + 1,
-            entry.label,
-            entry.total_tokens(),
+            format_leaderboard_label(&entry.label),
+            format_leaderboard_metric(entry, leaderboard.metric),
             entry.conversations,
             if entry.conversations == 1 { "" } else { "s" }
         ));
     }
-    lines.push("\n**Conversations**".to_string());
-    for (index, entry) in leaderboard.conversations.iter().enumerate() {
+
+    if let Some(rank) = &leaderboard.requester_rank {
+        lines.push(format!(
+            "\n👤 **Your rank:** #{} — {}",
+            rank.position,
+            format_leaderboard_metric(&rank.entry, leaderboard.metric)
+        ));
+    }
+
+    lines.push("\n**Top conversations**".to_string());
+    for (index, entry) in leaderboard.conversations.iter().take(5).enumerate() {
         let id = entry
             .conversation_id
             .as_deref()
@@ -1947,20 +1977,67 @@ fn format_token_leaderboard(leaderboard: &TokenLeaderboard) -> String {
             .take(8)
             .collect::<String>();
         lines.push(format!(
-            "{}. **{}** (`{id}`) — {} tokens",
+            "`{:>2}.` **{}** (`{id}`) — {}",
             index + 1,
-            entry.label,
-            entry.total_tokens()
+            format_leaderboard_label(&entry.label),
+            format_leaderboard_metric(entry, leaderboard.metric)
         ));
     }
     lines.join("\n")
+}
+
+fn format_leaderboard_label(label: &str) -> String {
+    label
+        .replace('\\', "\\\\")
+        .replace('*', "\\*")
+        .replace('_', "\\_")
+        .replace('`', "\\`")
+        .replace('~', "\\~")
+        .replace('|', "\\|")
+}
+
+fn format_leaderboard_metric(entry: &LeaderboardEntry, metric: LeaderboardMetric) -> String {
+    match metric {
+        LeaderboardMetric::TotalTokens => format!("{} tokens", entry.total_tokens()),
+        LeaderboardMetric::CacheEfficiency => format!(
+            "{:.1}% cache efficiency ({} tokens)",
+            entry.cache_efficiency(),
+            entry.total_tokens()
+        ),
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::testing::MockChatClient;
+    use crate::token_monitor::LeaderboardRank;
     use tempfile::TempDir;
+
+    #[test]
+    fn token_leaderboard_format_shows_period_metric_and_requester_rank() {
+        let entry = LeaderboardEntry {
+            user_id: Some("u1".into()),
+            label: "Alice".into(),
+            conversation_id: None,
+            conversations: 2,
+            input_tokens: 100,
+            output_tokens: 25,
+            cached_tokens: 50,
+        };
+        let leaderboard = TokenLeaderboard {
+            users: vec![entry.clone()],
+            conversations: Vec::new(),
+            requester_rank: Some(LeaderboardRank { position: 1, entry }),
+            period: LeaderboardPeriod::Weekly,
+            metric: LeaderboardMetric::CacheEfficiency,
+        };
+
+        let output = format_token_leaderboard(&leaderboard);
+        assert!(output.contains("Weekly token leaderboard"));
+        assert!(output.contains("50.0% cache efficiency"));
+        assert!(output.contains("Your rank:** #1"));
+    }
 
     fn empty_skills() -> BTreeMap<String, Skill> {
         BTreeMap::new()
