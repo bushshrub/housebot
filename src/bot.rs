@@ -233,12 +233,13 @@ impl HouseBot {
         let chat_rate_window =
             Duration::from_secs(config::env_parse("CHAT_RATE_LIMIT_WINDOW_SECS", 60u64));
         let pending_jobs = agent.pending_jobs();
+        let memory = agent.memory();
         Self {
             agent,
             redactor: Arc::new(SecretRedactor::from_env()),
             notes: Notes::default(),
             skills: Skills::default(),
-            memory: Memory::default(),
+            memory,
             history: History::default(),
             profile_store: ProfileStore::default(),
             message_log: MessageLog::default(),

@@ -35,7 +35,7 @@ pub fn features_text() -> &'static str {
 `!new` / `!reset` / `!compact` — same as the slash variants
 
 **Capabilities**
-- Web search (SearXNG) and webpage fetching
+- Web search, multi-step deep research with cross-referenced sources, and webpage fetching
 - Jellyfin media server queries (movies, shows, music) — read-only
 - URL summarisation and translation
 - Timed reminders delivered by DM
