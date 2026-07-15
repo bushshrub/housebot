@@ -13,7 +13,7 @@ use serenity::all::{
     Context, CreateActionRow, CreateAllowedMentions, CreateAttachment, CreateButton, CreateCommand,
     CreateCommandOption, CreateEmbed, CreateInteractionResponse, CreateInteractionResponseMessage,
     CreateSelectMenu, CreateSelectMenuKind, CreateSelectMenuOption, EditInteractionResponse,
-    EditMessage, EventHandler, GatewayIntents, Interaction, Message, Ready, UserId,
+    EditMessage, EventHandler, GatewayIntents, GuildId, Interaction, Message, Ready, UserId,
 };
 use serenity::builder::CreateMessage;
 use serenity::Client;
@@ -1085,8 +1085,38 @@ impl EventHandler for HouseBot {
                 )
                 .required(true),
             );
-        if let Err(e) = Command::create_global_command(&ctx.http, lua_cmd).await {
+        if let Err(e) = Command::create_global_command(&ctx.http, lua_cmd.clone()).await {
             tracing::error!("Failed to register /lua slash command: {e}");
+        }
+        let guild_id = match std::env::var("DEPLOYMENT_GUILD_ID") {
+            Ok(value) => match value.parse::<u64>() {
+                Ok(id) if id != 0 => Some(id),
+                Ok(_) => {
+                    tracing::warn!("DEPLOYMENT_GUILD_ID is set to 0, ignoring");
+                    None
+                }
+                Err(_) => {
+                    tracing::warn!(
+                        "DEPLOYMENT_GUILD_ID is set but invalid (must be a valid u64): {}",
+                        value
+                    );
+                    None
+                }
+            },
+            Err(_) => None,
+        };
+        if let Some(guild_id) = guild_id {
+            if let Err(e) = GuildId::new(guild_id)
+                .create_command(&ctx.http, lua_cmd)
+                .await
+            {
+                tracing::error!(
+                    guild_id,
+                    "Failed to register /lua slash command to guild: {e}"
+                );
+            } else {
+                tracing::info!(guild_id, "Registered /lua slash command to guild");
+            }
         }
         for command in [
             CreateCommand::new("help").description("Show all available commands"),
