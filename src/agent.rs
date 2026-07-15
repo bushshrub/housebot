@@ -322,7 +322,7 @@ struct SessionStats {
 
 impl Agent {
     /// Build an agent from environment configuration and start MCP servers.
-    pub async fn from_env(discord: Arc<DiscordBridge>) -> Self {
+    pub async fn from_env(discord: Arc<DiscordBridge>) -> anyhow::Result<Self> {
         let raw_client: Arc<dyn ChatClient> = Arc::new(OpenAiClient::new(
             config::env_or("LLM_BASE_URL", "http://server-slop:8080/v1"),
             config::env_or("LLM_API_KEY", "not-required"),
@@ -345,14 +345,12 @@ impl Agent {
                 Memory::default()
             }
         };
-        let token_monitor = match TokenMonitor::from_env().await {
-            Ok(monitor) => monitor,
-            Err(error) => {
-                tracing::warn!(%error, "PostgreSQL token monitor unavailable; token history will not survive this restart");
-                TokenMonitor::default()
-            }
-        };
-        Self {
+        let token_monitor = TokenMonitor::from_env().await.map_err(|error| {
+            anyhow::anyhow!(
+                "persistent token monitor initialization failed; refusing volatile fallback: {error}"
+            )
+        })?;
+        Ok(Self {
             client,
             queued_client,
             model: config::env_or("LLM_MODEL", "gemma-4-12b-qat-q4kxl"),
@@ -379,7 +377,7 @@ impl Agent {
             tool_permissions: ToolPermissions::default(),
             discord,
             channel_log: ChannelLog::default(),
-        }
+        })
     }
 
     /// Access to the reminders store (the bot's delivery loop needs it).
