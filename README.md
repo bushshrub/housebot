@@ -5,6 +5,8 @@ A Discord-based house assistant bot powered by a local LLM (llama.cpp) with MCP 
 ## Features
 
 - **LLM-powered chat** — per-user conversation history and persistent memory
+- **Global token monitor** — PostgreSQL conversation archives and usage leaderboards
+- **Tool permissions** — server votes can restrict individual users from specific agent tools
 - **Web search** — SearXNG JSON API integration for live information retrieval
 - **Adjustable thinking effort** — `/effort low|medium|high|xhigh|max` sets the model's reasoning budget (2k/4k/8k/16k/unlimited thinking tokens)
 - **Jellyfin media server** — browse and query your media library via MCP

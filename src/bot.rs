@@ -40,6 +40,7 @@ use crate::notes::Notes;
 use crate::profile::ProfileStore;
 use crate::rate_limit::RateLimiter;
 use crate::skills::Skills;
+use crate::tool_permissions::{ToolPermissions, VoteResult};
 
 pub use crate::bot_commands::{
     erase_data_command, memory_command, note_command, skill_command, stats_command,
@@ -538,6 +539,128 @@ async fn handle_effort_interaction(
     )
 }
 
+/// Handle guild-scoped `/tool_ban` proposals, votes, and status requests.
+async fn handle_tool_ban_interaction(
+    permissions: &ToolPermissions,
+    options: &[serenity::all::CommandDataOption],
+    author_id: u64,
+    guild_id: Option<u64>,
+) -> String {
+    let Some(guild_id) = guild_id else {
+        return "Tool-ban voting is only available inside a server.".into();
+    };
+    let Some(command) = options.first() else {
+        return "Choose `propose`, `vote`, or `status`.".into();
+    };
+    match command.name.as_str() {
+        "propose" => {
+            let CommandDataOptionValue::SubCommand(options) = &command.value else {
+                return "Unexpected option structure.".into();
+            };
+            let target = options
+                .iter()
+                .find(|option| option.name == "user")
+                .and_then(|option| match option.value {
+                    CommandDataOptionValue::User(user) => Some(user.get()),
+                    _ => None,
+                });
+            let tool = options
+                .iter()
+                .find(|option| option.name == "tool")
+                .and_then(|option| match &option.value {
+                    CommandDataOptionValue::String(tool) => Some(tool.as_str()),
+                    _ => None,
+                });
+            let (Some(target), Some(tool)) = (target, tool) else {
+                return "Please specify both a user and tool name.".into();
+            };
+            match permissions.propose(guild_id, target, tool, author_id).await {
+                Ok(proposal) => format!(
+                    "🗳️ Proposed banning <@{}> from `{}`. Proposal `{}` is open for 24 hours.\nVote with `/tool_ban vote proposal:{} approve:true|false`. The proposal needs at least {} votes; your approval was recorded automatically.",
+                    proposal.target_user_id,
+                    proposal.tool_name,
+                    &proposal.id[..8],
+                    &proposal.id[..8],
+                    permissions.min_votes()
+                ),
+                Err(error) => format!("⚠️ {error}"),
+            }
+        }
+        "vote" => {
+            let CommandDataOptionValue::SubCommand(options) = &command.value else {
+                return "Unexpected option structure.".into();
+            };
+            let proposal = options
+                .iter()
+                .find(|option| option.name == "proposal")
+                .and_then(|option| match &option.value {
+                    CommandDataOptionValue::String(id) => Some(id.as_str()),
+                    _ => None,
+                });
+            let approve = options
+                .iter()
+                .find(|option| option.name == "approve")
+                .and_then(|option| match option.value {
+                    CommandDataOptionValue::Boolean(approve) => Some(approve),
+                    _ => None,
+                });
+            let (Some(proposal), Some(approve)) = (proposal, approve) else {
+                return "Please specify a proposal ID and vote.".into();
+            };
+            match permissions.vote(guild_id, proposal, author_id, approve).await {
+                Ok(VoteResult::Pending {
+                    approvals,
+                    rejections,
+                    quorum,
+                }) => format!(
+                    "✅ Vote recorded. Current result: **{approvals} approve / {rejections} reject** (minimum {quorum} votes)."
+                ),
+                Ok(VoteResult::Approved(ban)) => format!(
+                    "🚫 Vote passed. <@{}> is now blocked from using `{}` in this server.",
+                    ban.user_id, ban.tool_name
+                ),
+                Ok(VoteResult::Rejected) => {
+                    "✅ The proposal was rejected by majority vote.".into()
+                }
+                Err(error) => format!("⚠️ {error}"),
+            }
+        }
+        "status" => {
+            let status = match permissions.status(guild_id).await {
+                Ok(status) => status,
+                Err(error) => {
+                    tracing::error!(%error, %guild_id, "failed to load tool permission status");
+                    return "⚠️ Tool permission status is temporarily unavailable.".into();
+                }
+            };
+            if status.bans.is_empty() && status.proposals.is_empty() {
+                return "No active tool bans or open proposals in this server.".into();
+            }
+            let mut lines = vec!["**Tool permissions**".to_string()];
+            if !status.bans.is_empty() {
+                lines.push("**Active bans**".into());
+                for ban in status.bans.iter().take(10) {
+                    lines.push(format!("• <@{}> — `{}`", ban.user_id, ban.tool_name));
+                }
+            }
+            if !status.proposals.is_empty() {
+                lines.push("**Open proposals**".into());
+                for proposal in status.proposals.iter().take(10) {
+                    let (approvals, rejections) = proposal.vote_counts();
+                    lines.push(format!(
+                        "• `{}`: <@{}> / `{}` — {approvals} approve, {rejections} reject",
+                        &proposal.id[..8],
+                        proposal.target_user_id,
+                        proposal.tool_name
+                    ));
+                }
+            }
+            lines.join("\n")
+        }
+        other => format!("Unknown tool-ban option `{other}`."),
+    }
+}
+
 /// Handle a `/status` interaction: show the user's current settings at a glance.
 async fn handle_status_interaction(user_cfg: &UserConfigStore, author_id: u64) -> String {
     let cfg = user_cfg.load(author_id).await;
@@ -961,6 +1084,15 @@ fn commit_hash_response(sha: Option<&str>) -> String {
     }
 }
 
+/// Whether a slash command response should only be visible to its requester.
+///
+/// The global token leaderboard is intentionally public so everyone in the
+/// channel can see the same rankings. Other command responses may contain
+/// user-specific configuration or history and remain private by default.
+fn command_response_is_ephemeral(command_name: &str) -> bool {
+    command_name != "token_leaderboard"
+}
+
 /// Wrap `/lua` output in a code fence sized to fit a single Discord message.
 fn format_lua_reply(output: &str) -> String {
     let sanitized = output.replace("```", "`\u{200b}``");
@@ -1121,6 +1253,58 @@ impl EventHandler for HouseBot {
         if let Err(e) = Command::create_global_command(&ctx.http, effort_cmd).await {
             tracing::error!("Failed to register /effort slash command: {e}");
         }
+        let tool_ban_cmd = CreateCommand::new("tool_ban")
+            .description("Propose and vote on user-specific tool restrictions")
+            .add_option(
+                CreateCommandOption::new(
+                    CommandOptionType::SubCommand,
+                    "propose",
+                    "Propose restricting a user from one tool",
+                )
+                .add_sub_option(
+                    CreateCommandOption::new(CommandOptionType::User, "user", "User to restrict")
+                        .required(true),
+                )
+                .add_sub_option(
+                    CreateCommandOption::new(
+                        CommandOptionType::String,
+                        "tool",
+                        "Exact tool name, for example web_search",
+                    )
+                    .required(true),
+                ),
+            )
+            .add_option(
+                CreateCommandOption::new(
+                    CommandOptionType::SubCommand,
+                    "vote",
+                    "Vote on an open tool-ban proposal",
+                )
+                .add_sub_option(
+                    CreateCommandOption::new(
+                        CommandOptionType::String,
+                        "proposal",
+                        "Proposal ID shown by propose or status",
+                    )
+                    .required(true),
+                )
+                .add_sub_option(
+                    CreateCommandOption::new(
+                        CommandOptionType::Boolean,
+                        "approve",
+                        "True to approve the ban; false to reject it",
+                    )
+                    .required(true),
+                ),
+            )
+            .add_option(CreateCommandOption::new(
+                CommandOptionType::SubCommand,
+                "status",
+                "Show active bans and open proposals",
+            ));
+        if let Err(error) = Command::create_global_command(&ctx.http, tool_ban_cmd).await {
+            tracing::error!(%error, "Failed to register /tool_ban slash command");
+        }
         let lua_cmd = CreateCommand::new("lua")
             .description(
                 "Run a sandboxed Lua script; use graph.node/edge to render a diagram (requires the Scripting role)",
@@ -1172,15 +1356,16 @@ impl EventHandler for HouseBot {
             CreateCommand::new("model").description("Show information about the current model"),
             CreateCommand::new("session")
                 .description("Show context and token usage for this session"),
+            CreateCommand::new("token_leaderboard")
+                .description("Show global token usage by user and conversation"),
             CreateCommand::new("status")
                 .description("Show your current settings (effort level, follow-up, personality)"),
             CreateCommand::new("new").description("Start a new conversation and clear the old one"),
             CreateCommand::new("reset").description("Clear the conversation and start fresh"),
             CreateCommand::new("compact")
                 .description("Summarize the conversation and start a new session"),
-            CreateCommand::new("erase_my_data").description(
-                "Permanently delete all your stored data (messages, history, memory, notes)",
-            ),
+            CreateCommand::new("erase_my_data")
+                .description("Permanently delete all your stored data, including token statistics"),
             CreateCommand::new("profile")
                 .description("Show or clear your stored profile information")
                 .add_option(CreateCommandOption::new(
@@ -1356,10 +1541,20 @@ impl EventHandler for HouseBot {
             }
             "labs" => handle_labs_interaction(&self.user_cfg, &cmd.data.options, user_id).await,
             "effort" => handle_effort_interaction(&self.user_cfg, &cmd.data.options, user_id).await,
+            "tool_ban" => {
+                handle_tool_ban_interaction(
+                    &self.agent.tool_permissions(),
+                    &cmd.data.options,
+                    user_id,
+                    guild_id,
+                )
+                .await
+            }
             "status" => handle_status_interaction(&self.user_cfg, user_id).await,
             "help" => help_response(),
             "commit" => commit_hash_response(option_env!("HOUSEBOT_GIT_SHA")),
             "model" => self.agent.model_info(),
+            "token_leaderboard" => self.agent.token_leaderboard().await,
             "session" => {
                 let info = self.agent.session_info(&user_id.to_string()).await;
                 let percent =
@@ -1405,6 +1600,7 @@ impl EventHandler for HouseBot {
                 )
                 .await;
                 self.agent.reset_session(&user_id.to_string()).await;
+                self.agent.clear_token_data(&user_id.to_string()).await;
                 self.conversations
                     .lock()
                     .await
@@ -1444,7 +1640,7 @@ impl EventHandler for HouseBot {
         let response = CreateInteractionResponse::Message(
             CreateInteractionResponseMessage::new()
                 .content(reply)
-                .ephemeral(true),
+                .ephemeral(command_response_is_ephemeral(&cmd.data.name)),
         );
         if let Err(e) = cmd.create_response(&ctx.http, response).await {
             tracing::warn!("Failed to send /config response: {e}");
@@ -1666,12 +1862,33 @@ impl HouseBot {
             tracing::warn!("Failed to defer /lua response: {e}");
             return;
         }
+        let script = lua_engine::strip_code_fence(&script).to_string();
+        let _ = cmd
+            .edit_response(
+                &ctx.http,
+                EditInteractionResponse::new()
+                    .content("🔍 Reviewing the Lua script for suspicious behavior…"),
+            )
+            .await;
+        let analysis = self.agent.analyze_lua_script(&script).await;
+        if !analysis.allowed {
+            let reason = self.redactor.redact(&analysis.reason);
+            let reply = format!(
+                "🚫 This Lua script was blocked because it was judged suspicious.\nReason: {reason}"
+            );
+            if let Err(e) = cmd
+                .edit_response(&ctx.http, EditInteractionResponse::new().content(reply))
+                .await
+            {
+                tracing::warn!("Failed to send blocked /lua response: {e}");
+            }
+            return;
+        }
         let host = Arc::new(lua_engine::BotScriptHost {
             agent: Arc::clone(&self.agent),
             discord: Arc::clone(&self.discord),
             channel_id: cmd.channel_id.get(),
         });
-        let script = lua_engine::strip_code_fence(&script).to_string();
         let output = lua_engine::run_script(script, host, lua_engine::LuaLimits::from_env()).await;
         let mut edit = EditInteractionResponse::new();
         if !output.text.is_empty() {
@@ -3338,6 +3555,13 @@ mod tests {
     use crate::profile::{ProfileTag, UserProfile};
     use serde_json::json;
     use tempfile::TempDir;
+
+    #[test]
+    fn token_leaderboard_response_is_public() {
+        assert!(!command_response_is_ephemeral("token_leaderboard"));
+        assert!(command_response_is_ephemeral("config"));
+        assert!(command_response_is_ephemeral("history"));
+    }
 
     // ── format_lua_reply ──
     #[test]
