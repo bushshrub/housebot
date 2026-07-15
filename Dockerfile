@@ -8,6 +8,7 @@ COPY crates/deployment-bot/Cargo.toml crates/deployment-bot/Cargo.toml
 COPY crates/common-crawl/Cargo.toml crates/common-crawl/Cargo.toml
 COPY src/ src/
 COPY crates/ crates/
+COPY assets/ assets/
 COPY .github/agents/catalog.json .github/agents/catalog.json
 RUN --mount=type=cache,id=housebot-cargo-registry,target=/usr/local/cargo/registry \
     --mount=type=cache,id=housebot-cargo-git,target=/usr/local/cargo/git \

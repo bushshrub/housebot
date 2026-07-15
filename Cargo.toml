@@ -47,6 +47,7 @@ sentry = { version = "0.38.0", default-features = false, features = [
 bytes = "1"
 sha2 = "0.10"
 mlua = { version = "0.12", features = ["lua54", "vendored"] }
+plotters = { version = "0.3", default-features = false, features = ["bitmap_backend", "bitmap_encoder", "ab_glyph"] }
 common-crawl = { path = "crates/common-crawl" }
 
 [dev-dependencies]

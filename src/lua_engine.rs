@@ -20,6 +20,7 @@ use mlua::{HookTriggers, Lua, LuaOptions, MultiValue, StdLib, Value as LuaValue,
 use crate::agent::Agent;
 use crate::config;
 use crate::discord_bridge::DiscordBridge;
+use crate::graph_render::{self, GraphBuilder};
 
 /// Maximum characters of captured output (print + return values) per script.
 pub const MAX_OUTPUT_CHARS: usize = 4000;
@@ -27,6 +28,11 @@ pub const MAX_OUTPUT_CHARS: usize = 4000;
 const MAX_API_CALLS: usize = 10;
 /// Maximum `discord.send_message` calls per script run.
 const MAX_MESSAGES_SENT: usize = 5;
+/// Maximum nodes/edges a script's `graph.*` calls may add, and the character
+/// cap on node ids, labels, and the graph title.
+const MAX_GRAPH_NODES: usize = 16;
+const MAX_GRAPH_EDGES: usize = 32;
+const MAX_GRAPH_TEXT_CHARS: usize = 60;
 /// Maximum characters accepted for a bridge search query (web_search / jellyfin_search).
 const MAX_QUERY_CHARS: usize = 500;
 /// How often (in VM instructions) the time-limit hook fires.
@@ -86,13 +92,21 @@ impl LuaLimits {
     }
 }
 
-/// Shared per-run state: captured output, bridge-call counters, and the deadline.
+/// Shared per-run state: captured output, bridge-call counters, the deadline,
+/// and any graph the script has built via `graph.node`/`graph.edge`.
 struct RunState {
     output: RefCell<String>,
     truncated: Cell<bool>,
     api_calls: Cell<usize>,
     messages_sent: Cell<usize>,
+    graph: RefCell<GraphBuilder>,
     deadline: Instant,
+}
+
+/// A script's captured text output plus an optional rendered graph image.
+pub struct ScriptOutput {
+    pub text: String,
+    pub image: Option<Vec<u8>>,
 }
 
 impl RunState {
@@ -187,28 +201,37 @@ pub fn scripting_role_name() -> String {
 ///
 /// The VM runs on a blocking thread; bridged `discord.*` calls are driven on the
 /// async runtime with the script's remaining time budget as their timeout.
-pub async fn run_script(script: String, host: Arc<dyn ScriptHost>, limits: LuaLimits) -> String {
+pub async fn run_script(
+    script: String,
+    host: Arc<dyn ScriptHost>,
+    limits: LuaLimits,
+    redact: impl Fn(&str) -> String + Send + 'static,
+) -> ScriptOutput {
     let handle = tokio::runtime::Handle::current();
     // The instruction hook cannot fire while a bridge call blocks, so give the
     // backstop some slack beyond the script's own budget before abandoning it.
     let backstop = limits.timeout * 2 + Duration::from_secs(5);
-    let task = tokio::task::spawn_blocking(move || execute(&script, host, limits, handle));
+    let task = tokio::task::spawn_blocking(move || execute(&script, host, limits, handle, &redact));
+    let timeout_output = || ScriptOutput {
+        text: format!(
+            "Error: script exceeded the time limit ({}s).",
+            limits.timeout.as_secs()
+        ),
+        image: None,
+    };
     match tokio::time::timeout(backstop, task).await {
         Ok(Ok(result)) => result,
         Ok(Err(join_error)) => {
             if panicked_on_time_limit(join_error) {
-                format!(
-                    "Error: script exceeded the time limit ({}s).",
-                    limits.timeout.as_secs()
-                )
+                timeout_output()
             } else {
-                "Error: script execution failed unexpectedly.".to_string()
+                ScriptOutput {
+                    text: "Error: script execution failed unexpectedly.".to_string(),
+                    image: None,
+                }
             }
         }
-        Err(_) => format!(
-            "Error: script exceeded the time limit ({}s).",
-            limits.timeout.as_secs()
-        ),
+        Err(_) => timeout_output(),
     }
 }
 
@@ -230,12 +253,14 @@ fn execute(
     host: Arc<dyn ScriptHost>,
     limits: LuaLimits,
     handle: tokio::runtime::Handle,
-) -> String {
+    redact: &dyn Fn(&str) -> String,
+) -> ScriptOutput {
     let state = Rc::new(RunState {
         output: RefCell::new(String::new()),
         truncated: Cell::new(false),
         api_calls: Cell::new(0),
         messages_sent: Cell::new(0),
+        graph: RefCell::new(GraphBuilder::default()),
         deadline: Instant::now() + limits.timeout,
     });
     // The returned values borrow from the VM, so keep `lua` alive until they
@@ -253,11 +278,43 @@ fn execute(
         Err(e) => report_error(&state, &e, &limits),
     }
 
+    let image = render_graph(&state, redact);
+
     let output = state.output.borrow();
-    if output.trim().is_empty() {
-        "(script completed with no output)".to_string()
+    let trimmed = output.trim_end();
+    let text = if trimmed.is_empty() {
+        if image.is_some() {
+            String::new()
+        } else {
+            "(script completed with no output)".to_string()
+        }
     } else {
-        output.trim_end().to_string()
+        trimmed.to_string()
+    };
+    ScriptOutput { text, image }
+}
+
+/// Render the script's graph, if it built one. Node/edge labels and the
+/// title are script-supplied text that may echo back a `discord.web_search`
+/// or `discord.jellyfin_search` result, so they're redacted before
+/// rendering — pixels can't be redacted after the fact the way `output.text`
+/// is at the call site. Render failures are appended to the output as an
+/// error line, past the truncation cap, same as `report_error`.
+fn render_graph(state: &RunState, redact: &dyn Fn(&str) -> String) -> Option<Vec<u8>> {
+    if state.graph.borrow().is_empty() {
+        return None;
+    }
+    state.graph.borrow_mut().redact_with(redact);
+    match graph_render::render_png(&state.graph.borrow()) {
+        Ok(bytes) => Some(bytes),
+        Err(e) => {
+            let mut output = state.output.borrow_mut();
+            if !output.is_empty() && !output.ends_with('\n') {
+                output.push('\n');
+            }
+            output.push_str(&format!("Error: failed to render graph: {e}"));
+            None
+        }
     }
 }
 
@@ -418,8 +475,73 @@ fn build_sandbox(
     )?;
 
     globals.raw_set("discord", discord)?;
+
+    let graph = lua.create_table()?;
+
+    let node_state = Rc::clone(state);
+    graph.raw_set(
+        "node",
+        lua.create_function(move |_, (id, label): (String, Option<String>)| {
+            let id = clamp_chars(&id, MAX_GRAPH_TEXT_CHARS);
+            let mut builder = node_state.graph.borrow_mut();
+            if !builder.has_node(&id) && builder.node_count() >= MAX_GRAPH_NODES {
+                return Err(graph_limit_error("nodes", MAX_GRAPH_NODES));
+            }
+            let label = clamp_chars(&label.unwrap_or_else(|| id.clone()), MAX_GRAPH_TEXT_CHARS);
+            builder.add_node(&id, &label);
+            Ok(())
+        })?,
+    )?;
+
+    let edge_state = Rc::clone(state);
+    graph.raw_set(
+        "edge",
+        lua.create_function(move |_, (from, to): (String, String)| {
+            let from = clamp_chars(&from, MAX_GRAPH_TEXT_CHARS);
+            let to = clamp_chars(&to, MAX_GRAPH_TEXT_CHARS);
+            let mut builder = edge_state.graph.borrow_mut();
+            if builder.edge_count() >= MAX_GRAPH_EDGES {
+                return Err(graph_limit_error("edges", MAX_GRAPH_EDGES));
+            }
+            // Checked and created one endpoint at a time: `to` may be the
+            // node that fills the last slot `from` just took, so its check
+            // must see the count *after* `from` was (maybe) created.
+            if !builder.has_node(&from) && builder.node_count() >= MAX_GRAPH_NODES {
+                return Err(graph_limit_error("nodes", MAX_GRAPH_NODES));
+            }
+            let from_i = builder.get_or_create(&from);
+            if !builder.has_node(&to) && builder.node_count() >= MAX_GRAPH_NODES {
+                return Err(graph_limit_error("nodes", MAX_GRAPH_NODES));
+            }
+            let to_i = builder.get_or_create(&to);
+            builder.add_edge(from_i, to_i);
+            Ok(())
+        })?,
+    )?;
+
+    let title_state = Rc::clone(state);
+    graph.raw_set(
+        "title",
+        lua.create_function(move |_, title: String| {
+            title_state
+                .graph
+                .borrow_mut()
+                .set_title(&clamp_chars(&title, MAX_GRAPH_TEXT_CHARS));
+            Ok(())
+        })?,
+    )?;
+
+    globals.raw_set("graph", graph)?;
     drop(globals);
     Ok(lua)
+}
+
+fn clamp_chars(s: &str, max: usize) -> String {
+    s.chars().take(max).collect()
+}
+
+fn graph_limit_error(what: &str, limit: usize) -> mlua::Error {
+    mlua::Error::RuntimeError(format!("script exceeded the limit of {limit} graph {what}"))
 }
 
 /// Drive an async host call from the VM's blocking thread, bounded by the
@@ -500,10 +622,15 @@ mod tests {
     }
 
     async fn run(script: &str, host: &Arc<FakeHost>, limits: LuaLimits) -> String {
+        run_full(script, host, limits).await.text
+    }
+
+    async fn run_full(script: &str, host: &Arc<FakeHost>, limits: LuaLimits) -> ScriptOutput {
         run_script(
             script.to_string(),
             Arc::clone(host) as Arc<dyn ScriptHost>,
             limits,
+            |s: &str| s.to_string(),
         )
         .await
     }
@@ -756,6 +883,140 @@ mod tests {
         .await;
         assert!(out.starts_with("false"), "unexpected output: {out}");
         assert!(out.contains("inner"), "unexpected output: {out}");
+    }
+
+    fn is_png(bytes: &[u8]) -> bool {
+        bytes.starts_with(b"\x89PNG\r\n\x1a\n")
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn graph_calls_render_an_image() {
+        let host = Arc::new(FakeHost::default());
+        let result = run_full(
+            "graph.node(\"a\", \"A\") graph.node(\"b\", \"B\") graph.edge(\"a\", \"b\")",
+            &host,
+            limits(),
+        )
+        .await;
+        let image = result.image.expect("expected a rendered graph image");
+        assert!(is_png(&image), "output was not a PNG");
+        assert_eq!(result.text, "");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn script_without_graph_calls_has_no_image() {
+        let host = Arc::new(FakeHost::default());
+        let result = run_full("return 1", &host, limits()).await;
+        assert!(result.image.is_none());
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn graph_edge_auto_creates_endpoints() {
+        let host = Arc::new(FakeHost::default());
+        let result = run_full("graph.edge(\"a\", \"b\")", &host, limits()).await;
+        let image = result.image.expect("expected a rendered graph image");
+        assert!(is_png(&image));
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn graph_node_cap_enforced() {
+        let host = Arc::new(FakeHost::default());
+        let out = run(
+            "for i = 1, 30 do graph.node(\"n\" .. i, \"N\" .. i) end",
+            &host,
+            limits(),
+        )
+        .await;
+        assert!(out.contains("graph nodes"), "unexpected output: {out}");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn graph_edge_cap_enforced() {
+        let host = Arc::new(FakeHost::default());
+        let out = run(
+            "graph.node(\"a\", \"A\") graph.node(\"b\", \"B\") \
+             for i = 1, 40 do graph.edge(\"a\", \"b\") end",
+            &host,
+            limits(),
+        )
+        .await;
+        assert!(out.contains("graph edges"), "unexpected output: {out}");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn graph_edge_with_two_new_endpoints_does_not_exceed_node_cap() {
+        let host = Arc::new(FakeHost::default());
+        // One slot free before the edge call: an edge naming two brand-new
+        // endpoints must not be allowed to create both and overshoot the cap.
+        let script = format!(
+            "for i = 1, {} do graph.node(\"n\" .. i, \"N\" .. i) end \
+             graph.edge(\"new_a\", \"new_b\")",
+            MAX_GRAPH_NODES - 1
+        );
+        let out = run(&script, &host, limits()).await;
+        assert!(out.contains("graph nodes"), "unexpected output: {out}");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn graph_node_relabel_does_not_duplicate() {
+        let host = Arc::new(FakeHost::default());
+        let out = run(
+            "graph.node(\"a\", \"First\") graph.node(\"a\", \"Second\") return \"ok\"",
+            &host,
+            limits(),
+        )
+        .await;
+        assert_eq!(out, "ok");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn graph_title_does_not_error() {
+        let host = Arc::new(FakeHost::default());
+        let result = run_full(
+            "graph.title(\"My Graph\") graph.node(\"a\", \"A\")",
+            &host,
+            limits(),
+        )
+        .await;
+        assert!(result.image.is_some());
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn graph_text_is_redacted_before_rendering() {
+        let host = Arc::new(FakeHost::default());
+        let called = Arc::new(AtomicUsize::new(0));
+        let called_clone = Arc::clone(&called);
+        let result = run_script(
+            "graph.title(\"t\") graph.node(\"a\", \"A\")".to_string(),
+            Arc::clone(&host) as Arc<dyn ScriptHost>,
+            limits(),
+            move |s: &str| {
+                called_clone.fetch_add(1, Ordering::SeqCst);
+                s.to_string()
+            },
+        )
+        .await;
+        assert!(result.image.is_some());
+        // Once for the title, once for the one node label.
+        assert_eq!(called.load(Ordering::SeqCst), 2);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn script_without_a_graph_never_calls_redact() {
+        let host = Arc::new(FakeHost::default());
+        let called = Arc::new(AtomicUsize::new(0));
+        let called_clone = Arc::clone(&called);
+        run_script(
+            "return 1".to_string(),
+            Arc::clone(&host) as Arc<dyn ScriptHost>,
+            limits(),
+            move |s: &str| {
+                called_clone.fetch_add(1, Ordering::SeqCst);
+                s.to_string()
+            },
+        )
+        .await;
+        assert_eq!(called.load(Ordering::SeqCst), 0);
     }
 
     #[test]

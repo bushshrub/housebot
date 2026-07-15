@@ -28,7 +28,7 @@ pub fn features_text() -> &'static str {
 `/privacy status|deep_memory|proactive` — view or change privacy and proactive-assistance settings
 `/memory show|clear` — view or clear the bot's persistent memory about you (requires deep memory to be enabled)
 `/erase_my_data` — permanently delete all your stored data (including archived conversations and token statistics)
-`/lua <script>` — run a sandboxed Lua script with `discord.send_message`, `discord.web_search`, and `discord.jellyfin_search` (requires the Scripting role or higher, or guild administrator / bot owner)
+`/lua <script>` — run a sandboxed Lua script with `discord.send_message`, `discord.web_search`, `discord.jellyfin_search`, and `graph.node`/`graph.edge`/`graph.title` to render a flowchart or network diagram as an image (requires the Scripting role or higher, or guild administrator / bot owner)
 
 **Prefix commands**
 `!skill list|add|delete|info <name>` — manage custom prompt skills shared across all users
@@ -42,7 +42,7 @@ pub fn features_text() -> &'static str {
 - Jellyfin media server queries (movies, shows, music) — read-only
 - URL summarisation and translation
 - Timed reminders delivered by DM
-- Create and edit your own GitHub feature requests
+- Create and edit your own GitHub feature requests and bug reports
 - Custom skills (user-defined prompt templates) via `!skill`
 - Personal notes, grocery lists, and persistent memory across sessions
 - Persistent conversation archives and global token-usage leaderboards
