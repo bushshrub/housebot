@@ -714,6 +714,7 @@ async fn handle_history_interaction(
 /// Handle a `/privacy` interaction: view or change privacy settings.
 async fn handle_privacy_interaction(
     user_cfg: &UserConfigStore,
+    memory: &Memory,
     options: &[serenity::all::CommandDataOption],
     author_id: u64,
 ) -> String {
@@ -721,10 +722,18 @@ async fn handle_privacy_interaction(
     match subcommand {
         None | Some("status") => {
             let cfg = user_cfg.load(author_id).await;
+            let mem_content = memory.load(author_id.to_string()).await;
             let deep_memory = if cfg.deep_memory_enabled {
-                "enabled"
+                if mem_content.trim().is_empty() {
+                    "enabled (no memories stored yet)".to_string()
+                } else {
+                    format!(
+                        "enabled ({} bytes stored — use `/memory show` to view)",
+                        mem_content.len()
+                    )
+                }
             } else {
-                "disabled"
+                "disabled".to_string()
             };
             let proactive = if cfg.proactive_assistance_enabled {
                 "enabled"
@@ -756,10 +765,11 @@ async fn handle_privacy_interaction(
             if user_cfg.save(author_id, &cfg).await.is_err() {
                 return "Error: failed to save config.".into();
             }
-            format!(
-                "✅ Deep memory {}.",
-                if enabled { "enabled" } else { "disabled" }
-            )
+            if enabled {
+                "✅ Deep memory enabled. I will now remember important facts about you across conversations. Use `/memory show` to see what I currently remember.".into()
+            } else {
+                "✅ Deep memory disabled. I will no longer save facts between sessions (your current memories are kept but won't be updated).".into()
+            }
         }
         Some("proactive") => {
             let sub_opts = match &options[0].value {
@@ -790,6 +800,30 @@ async fn handle_privacy_interaction(
         other => {
             format!("Unknown privacy option `{other:?}`. Use `/privacy` to see available options.")
         }
+    }
+}
+
+/// Handle a `/memory` interaction: view or clear the bot's memory about the user.
+async fn handle_memory_interaction(
+    memory: &Memory,
+    options: &[serenity::all::CommandDataOption],
+    author_id: u64,
+) -> String {
+    let subcommand = options.first().map(|o| o.name.as_str());
+    match subcommand {
+        None | Some("show") => {
+            let content = memory.load(author_id.to_string()).await;
+            if content.trim().is_empty() {
+                "No memories stored yet. Enable deep memory with `/privacy deep_memory enabled:true` and I will start remembering things about you across conversations.".into()
+            } else {
+                format!("**What I remember about you:**\n{content}")
+            }
+        }
+        Some("clear") => match memory.clear(author_id.to_string()).await {
+            Ok(()) => "✅ Your memory has been cleared. I no longer remember anything about you from past sessions.".into(),
+            Err(_) => "⚠️ Failed to clear memory. Please try again.".into(),
+        },
+        other => format!("Unknown memory subcommand `{other:?}`. Use `/memory show` or `/memory clear`."),
     }
 }
 
@@ -1049,6 +1083,18 @@ impl EventHandler for HouseBot {
                         .required(true),
                     ),
                 ),
+            CreateCommand::new("memory")
+                .description("View or clear the bot's persistent memory about you")
+                .add_option(CreateCommandOption::new(
+                    CommandOptionType::SubCommand,
+                    "show",
+                    "Show what the bot currently remembers about you",
+                ))
+                .add_option(CreateCommandOption::new(
+                    CommandOptionType::SubCommand,
+                    "clear",
+                    "Clear the bot's memory about you",
+                )),
         ] {
             if let Err(e) = Command::create_global_command(&ctx.http, command).await {
                 tracing::error!("Failed to register slash command: {e}");
@@ -1208,8 +1254,10 @@ impl EventHandler for HouseBot {
                 .await
             }
             "privacy" => {
-                handle_privacy_interaction(&self.user_cfg, &cmd.data.options, user_id).await
+                handle_privacy_interaction(&self.user_cfg, &self.memory, &cmd.data.options, user_id)
+                    .await
             }
+            "memory" => handle_memory_interaction(&self.memory, &cmd.data.options, user_id).await,
             _ => return,
         };
 

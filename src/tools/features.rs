@@ -24,6 +24,7 @@ pub fn features_text() -> &'static str {
 `/profile show|clear` — inspect your stored profile or clear learned profile data and memory
 `/history show|clear` — inspect or clear your global conversation history
 `/privacy status|deep_memory|proactive` — view or change privacy and proactive-assistance settings
+`/memory show|clear` — view or clear the bot's persistent memory about you (requires deep memory to be enabled)
 `/erase_my_data` — permanently delete all your stored data (messages, history, memory, notes)
 
 **Prefix commands**
