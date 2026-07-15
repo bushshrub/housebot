@@ -1084,6 +1084,15 @@ fn commit_hash_response(sha: Option<&str>) -> String {
     }
 }
 
+/// Whether a slash command response should only be visible to its requester.
+///
+/// The global token leaderboard is intentionally public so everyone in the
+/// channel can see the same rankings. Other command responses may contain
+/// user-specific configuration or history and remain private by default.
+fn command_response_is_ephemeral(command_name: &str) -> bool {
+    command_name != "token_leaderboard"
+}
+
 /// Wrap `/lua` output in a code fence sized to fit a single Discord message.
 fn format_lua_reply(output: &str) -> String {
     let sanitized = output.replace("```", "`\u{200b}``");
@@ -1629,7 +1638,7 @@ impl EventHandler for HouseBot {
         let response = CreateInteractionResponse::Message(
             CreateInteractionResponseMessage::new()
                 .content(reply)
-                .ephemeral(true),
+                .ephemeral(command_response_is_ephemeral(&cmd.data.name)),
         );
         if let Err(e) = cmd.create_response(&ctx.http, response).await {
             tracing::warn!("Failed to send /config response: {e}");
@@ -3541,6 +3550,13 @@ mod tests {
     use crate::profile::{ProfileTag, UserProfile};
     use serde_json::json;
     use tempfile::TempDir;
+
+    #[test]
+    fn token_leaderboard_response_is_public() {
+        assert!(!command_response_is_ephemeral("token_leaderboard"));
+        assert!(command_response_is_ephemeral("config"));
+        assert!(command_response_is_ephemeral("history"));
+    }
 
     // ── format_lua_reply ──
     #[test]
