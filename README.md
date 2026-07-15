@@ -1,6 +1,6 @@
 # house-chatbot
 
-A Discord-based house assistant bot powered by a local LLM (llama.cpp) with MCP server integration. Written in **Rust** using [serenity](https://github.com/serenity-rs/serenity) for the Discord connector.
+A Discord-based house assistant bot powered by a local LLM (llama.cpp) with MCP server integration. **Written in prompts**, implemented in Rust, and connected to Discord with [serenity](https://github.com/serenity-rs/serenity).
 
 ## Features
 
