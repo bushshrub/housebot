@@ -45,7 +45,7 @@ use crate::tool_permissions::{ToolPermissions, VoteResult};
 pub use crate::bot_commands::{
     erase_data_command, memory_command, note_command, skill_command, stats_command,
 };
-use crate::bot_formatting::append_tool_summary;
+use crate::bot_formatting::{append_tool_summary, tool_status};
 pub use crate::bot_formatting::{extract_code_files, lang_ext, split_text, tool_hint};
 
 const MAX_MESSAGE_LENGTH: usize = 2000;
@@ -141,6 +141,18 @@ impl AgentHooks for ResponseProgressHooks {
                 &self.ctx.http,
                 self.message_id,
                 EditMessage::new().content("⚙️ **Generating...**"),
+            )
+            .await;
+    }
+
+    async fn on_tool_called(&self, tool: &str, _args: &serde_json::Value) {
+        self.generating.store(false, Ordering::Release);
+        let _ = self
+            .channel_id
+            .edit_message(
+                &self.ctx.http,
+                self.message_id,
+                EditMessage::new().content(tool_status(tool)),
             )
             .await;
     }
@@ -3841,6 +3853,22 @@ mod tests {
     #[test]
     fn hint_unknown_tool_no_known_key() {
         assert_eq!(tool_hint("some_tool", &json!({"foo": "bar"})), "");
+    }
+
+    // ── tool_status ──
+    #[test]
+    fn status_describes_common_tools() {
+        assert_eq!(tool_status("web_search"), "🔎 **Searching the web...**");
+        assert_eq!(
+            tool_status("jellyfin__search"),
+            "🎬 **Querying Jellyfin...**"
+        );
+        assert_eq!(tool_status("run_lua"), "⚙️ **Running a Lua script...**");
+    }
+
+    #[test]
+    fn status_has_a_generic_fallback() {
+        assert_eq!(tool_status("new_external_tool"), "🔧 **Running a tool...**");
     }
 
     #[test]
