@@ -1851,12 +1851,33 @@ impl HouseBot {
             tracing::warn!("Failed to defer /lua response: {e}");
             return;
         }
+        let script = lua_engine::strip_code_fence(&script).to_string();
+        let _ = cmd
+            .edit_response(
+                &ctx.http,
+                EditInteractionResponse::new()
+                    .content("🔍 Reviewing the Lua script for suspicious behavior…"),
+            )
+            .await;
+        let analysis = self.agent.analyze_lua_script(&script).await;
+        if !analysis.allowed {
+            let reason = self.redactor.redact(&analysis.reason);
+            let reply = format!(
+                "🚫 This Lua script was blocked because it was judged suspicious.\nReason: {reason}"
+            );
+            if let Err(e) = cmd
+                .edit_response(&ctx.http, EditInteractionResponse::new().content(reply))
+                .await
+            {
+                tracing::warn!("Failed to send blocked /lua response: {e}");
+            }
+            return;
+        }
         let host = Arc::new(lua_engine::BotScriptHost {
             agent: Arc::clone(&self.agent),
             discord: Arc::clone(&self.discord),
             channel_id: cmd.channel_id.get(),
         });
-        let script = lua_engine::strip_code_fence(&script).to_string();
         let output = lua_engine::run_script(script, host, lua_engine::LuaLimits::from_env()).await;
         let reply = format_lua_reply(&self.redactor.redact(&output));
         if let Err(e) = cmd
