@@ -1423,8 +1423,17 @@ impl Agent {
                     searxng: Arc::clone(&self.searxng),
                     mcp_servers: Arc::clone(&self.mcp_servers),
                 });
+                // Only `.text` is surfaced here — no redaction needed for the
+                // graph image path since it's never attached from this tool.
                 ToolOutcome::Text(
-                    lua_engine::run_script(script, host, lua_engine::LuaLimits::from_env()).await,
+                    lua_engine::run_script(
+                        script,
+                        host,
+                        lua_engine::LuaLimits::from_env(),
+                        |s: &str| s.to_string(),
+                    )
+                    .await
+                    .text,
                 )
             }
             "get_lua_docs" => ToolOutcome::Text(LUA_DOCS.to_string()),
