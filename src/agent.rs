@@ -163,6 +163,7 @@ pub struct Agent {
     reminders: Reminders,
     reporter: Arc<GitHubIssueReporter>,
     rate_limiter: RateLimiter,
+    feature_edit_limiter: RateLimiter,
     /// Non-owner per-user development request limiter.
     non_owner_dev_limiter: RateLimiter,
     /// Owner safety limiter — consumed only at actual GitHub dispatch (reserved for future use).
@@ -213,6 +214,7 @@ impl Agent {
             reminders: Reminders::default(),
             reporter: Arc::new(GitHubIssueReporter::default()),
             rate_limiter: tools::feature_request::default_rate_limiter(),
+            feature_edit_limiter: tools::edit_feature_request::default_rate_limiter(),
             non_owner_dev_limiter: tools::feature_development::default_rate_limiter(),
             owner_dispatch_limiter: tools::feature_development::owner_dispatch_limiter(),
             pending_jobs: Arc::new(PendingJobStore::default()),
@@ -608,6 +610,7 @@ impl Agent {
             tools::common_crawl::definition(),
             run_skill_tool(),
             tools::feature_request::definition(),
+            tools::edit_feature_request::definition(),
             tools::feature_development::definition(),
             tools::remind::definition(),
             tools::summarize_url::definition(),
@@ -707,6 +710,17 @@ impl Agent {
                     &self.rate_limiter,
                     str_arg(args, "title"),
                     str_arg(args, "description"),
+                    user_id,
+                )
+                .await,
+            ),
+            "edit_feature_request" => ToolOutcome::Text(
+                tools::edit_feature_request::edit_feature_request(
+                    &self.reporter,
+                    &self.feature_edit_limiter,
+                    u64_arg(args, "issue_number", 0),
+                    args.get("title").and_then(Value::as_str),
+                    args.get("description").and_then(Value::as_str),
                     user_id,
                 )
                 .await,
@@ -1076,7 +1090,14 @@ fn build_system_prompt_with_profile(
         } else {
             format!("\nFrequently used actions: {quick_actions}")
         };
-        format!("\n\n## User profile\n{name_line}{avatar_line}{tags_line}{actions_line}")
+        format!(
+            "\n\n## User profile\n{name_line}{avatar_line}{tags_line}{actions_line}\n\
+             Personalization guidance:\n\
+             - If the user greets you, naturally address them by their nickname or display name.\n\
+             - If they ask what to do or how you can help, suggest at most one relevant quick action.\n\
+             - Use profile tags only to prioritize relevant help; do not announce, expose, or speculate about the profile.\n\
+             - Never infer sensitive traits or make unsolicited personal claims from usage patterns."
+        )
     } else {
         String::new()
     };
@@ -1116,6 +1137,7 @@ search, general information, and software development questions.\n\nCurrent date
 READ ONLY — only call get_* / search_* / list_* methods; never call mutating actions.\n\
 {memory_tool_line}\
 - create_feature_request — File a GitHub issue for a feature the user wants added to this bot.\n\
+- edit_feature_request — Edit a feature request filed by the current user; ownership is verified by the tool.\n\
 - prepare_feature_development — Prepare an automated coding-agent development job for the configured bot owner to review and confirm. Only call this when the owner explicitly asks to have a feature automatically implemented by a coding agent. For ordinary feature suggestions, use create_feature_request instead.\n\
 - set_reminder — Set a timed reminder; the bot will DM the user when the delay elapses.\n\
 - summarize_url — Fetch a public web URL and return a concise summary.\n\
@@ -1316,6 +1338,7 @@ impl Agent {
                 String::new(),
             )),
             rate_limiter: tools::feature_request::default_rate_limiter(),
+            feature_edit_limiter: tools::edit_feature_request::default_rate_limiter(),
             non_owner_dev_limiter: tools::feature_development::default_rate_limiter(),
             owner_dispatch_limiter: tools::feature_development::owner_dispatch_limiter(),
             pending_jobs: Arc::new(PendingJobStore::default()),
@@ -1459,6 +1482,9 @@ mod tests {
         );
         assert!(p.contains("Relevant usage tags: media, reminders"));
         assert!(p.contains("Frequently used actions: media (4), reminders (2)"));
+        assert!(p.contains("naturally address them by their nickname or display name"));
+        assert!(p.contains("suggest at most one relevant quick action"));
+        assert!(p.contains("Never infer sensitive traits"));
     }
 
     #[test]
@@ -1817,5 +1843,6 @@ mod tests {
         assert!(names.contains(&"translate"));
         assert!(names.contains(&"update_memory"));
         assert!(names.contains(&"common_crawl__search"));
+        assert!(names.contains(&"edit_feature_request"));
     }
 }
