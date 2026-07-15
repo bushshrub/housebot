@@ -40,7 +40,9 @@ use crate::profile::ProfileStore;
 use crate::rate_limit::RateLimiter;
 use crate::skills::Skills;
 
-pub use crate::bot_commands::{erase_data_command, note_command, skill_command, stats_command};
+pub use crate::bot_commands::{
+    erase_data_command, memory_command, note_command, skill_command, stats_command,
+};
 use crate::bot_formatting::append_tool_summary;
 pub use crate::bot_formatting::{extract_code_files, lang_ext, split_text, tool_hint};
 
@@ -1366,6 +1368,13 @@ impl EventHandler for HouseBot {
             tracing::info!(target: "housebot::commands", user_id, "!note command received");
             let (first, rest) = split_command(&msg.content);
             let reply = note_command(&self.notes, &first, &rest, user_id).await;
+            self.respond(&ctx, &msg, &reply).await;
+            return;
+        }
+        if msg.content.starts_with("!memory") {
+            tracing::info!(target: "housebot::commands", user_id, "!memory command received");
+            let (first, _rest) = split_command(&msg.content);
+            let reply = memory_command(&self.memory, &first, user_id).await;
             self.respond(&ctx, &msg, &reply).await;
             return;
         }

@@ -231,6 +231,55 @@ pub async fn erase_data_command(
     )
 }
 
+pub async fn memory_command(memory: &Memory, first_line: &str, author_id: u64) -> String {
+    let parts: Vec<&str> = first_line
+        .splitn(3, char::is_whitespace)
+        .filter(|s| !s.is_empty())
+        .collect();
+    if parts.len() < 2 {
+        return "Usage: `!memory show` | `!memory clear` | `!memory search <query>`".into();
+    }
+    match parts[1].to_lowercase().as_str() {
+        "show" => {
+            let content = memory.load(author_id.to_string()).await;
+            if content.trim().is_empty() {
+                "No memories stored yet. Enable deep memory with `/privacy deep_memory enabled:true`.".into()
+            } else {
+                format!("**What I remember about you:**\n{content}")
+            }
+        }
+        "clear" => match memory.clear(author_id.to_string()).await {
+            Ok(()) => "✅ Your memory has been cleared.".into(),
+            Err(_) => "⚠️ Failed to clear memory. Please try again.".into(),
+        },
+        "search" => {
+            let Some(query) = parts.get(2) else {
+                return "Usage: `!memory search <query>`".into();
+            };
+            let content = memory.load(author_id.to_string()).await;
+            if content.trim().is_empty() {
+                return "No memories stored yet.".into();
+            }
+            let query_lower = query.to_lowercase();
+            let matching: Vec<&str> = content
+                .lines()
+                .filter(|line| line.to_lowercase().contains(&query_lower))
+                .collect();
+            if matching.is_empty() {
+                format!("No memories matching `{query}`.")
+            } else {
+                format!(
+                    "**Memories matching `{query}`:**\n{}",
+                    matching.join("\n")
+                )
+            }
+        }
+        other => format!(
+            "Unknown subcommand `{other}`. Options: `show`, `clear`, `search`"
+        ),
+    }
+}
+
 pub async fn stats_command(
     history: &History,
     memory: &Memory,

@@ -629,9 +629,10 @@ impl Agent {
             get_recent_messages_tool(),
             get_discord_user_tool(),
         ];
-        // Conditionally include update_memory based on user's privacy setting.
+        // Conditionally include memory tools based on user's privacy setting.
         if deep_memory_enabled {
             defs.push(update_memory_tool());
+            defs.push(search_memory_tool());
         }
         for def in defs {
             let (name, desc, params) = flatten_tool(&def);
@@ -735,6 +736,24 @@ impl Agent {
                 let new_content = str_arg(args, "memory_content");
                 let _ = self.memory.save(user_id, new_content).await;
                 ToolOutcome::Text("Memory updated.".to_string())
+            }
+            "search_memory" => {
+                let query = str_arg(args, "query");
+                let content = self.memory.load(user_id).await;
+                if content.trim().is_empty() {
+                    ToolOutcome::Text("No memory stored for this user.".to_string())
+                } else {
+                    let query_lower = query.to_lowercase();
+                    let matching: Vec<&str> = content
+                        .lines()
+                        .filter(|line| line.to_lowercase().contains(&query_lower))
+                        .collect();
+                    if matching.is_empty() {
+                        ToolOutcome::Text(format!("No memory entries matching '{query}'."))
+                    } else {
+                        ToolOutcome::Text(matching.join("\n"))
+                    }
+                }
             }
             "create_feature_request" => ToolOutcome::Text(
                 tools::feature_request::create_feature_request(
@@ -1126,13 +1145,19 @@ fn build_system_prompt_with_profile(
         String::new()
     };
     let memory_guidance = if deep_memory_enabled {
-        "Use the saved memory to personalize this conversation naturally, and update it when you learn a durable preference, fact, ongoing project, or correction worth remembering. Never mention the memory store unless the user asks about it."
+        "Actively use memory: when the user says 'remember', 'don't forget', 'keep in mind', \
+         'note that', or expresses a preference, fact, or ongoing project, call update_memory \
+         immediately to persist it. Use search_memory when the user asks about something you \
+         might have remembered, or to check whether a topic is already in memory before asking \
+         them to repeat themselves. Use the saved memory to personalize responses naturally."
     } else {
-        "Deep memory is disabled for this user. Do NOT call update_memory and do NOT suggest \
-         persisting facts. Short-term conversation history within this session still works normally."
+        "Deep memory is disabled for this user. Do NOT call update_memory or search_memory and \
+         do NOT suggest persisting facts. Short-term conversation history within this session \
+         still works normally."
     };
     let memory_tool_line = if deep_memory_enabled {
-        "- update_memory — Persist important facts about the current user for future conversations. Write the full memory each time.\n"
+        "- update_memory — Persist important facts about the current user for future conversations. Write the full memory each time.\n\
+         - search_memory — Search stored memory for a keyword or phrase. Use when the user refers to something you may have remembered.\n"
     } else {
         ""
     };
@@ -1197,6 +1222,20 @@ fn update_memory_tool() -> Value {
             "type": "object",
             "properties": {"memory_content": {"type": "string", "description": "Full updated memory in markdown format."}},
             "required": ["memory_content"]
+        }
+    })
+}
+
+fn search_memory_tool() -> Value {
+    json!({
+        "name": "search_memory",
+        "description": "Search the persistent memory for entries matching a keyword or phrase. \
+            Use this when the user asks about something specific you might have remembered, \
+            or when you want to check whether you already know something about a topic.",
+        "input_schema": {
+            "type": "object",
+            "properties": {"query": {"type": "string", "description": "Keyword or phrase to search for in memory."}},
+            "required": ["query"]
         }
     })
 }
@@ -1538,7 +1577,7 @@ mod tests {
     #[test]
     fn system_prompt_allows_deep_memory_when_enabled() {
         let p = build_system_prompt("Alice", "123", "Alice", "", "", &empty_skills(), None, true);
-        assert!(p.contains("Use the saved memory to personalize this conversation naturally"));
+        assert!(p.contains("Actively use memory"));
     }
 
     #[test]
