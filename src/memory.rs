@@ -1,13 +1,23 @@
-//! Per-user persistent memory stored as markdown files (`<dir>/<user_id>.md`).
+//! Per-user persistent memory. Production uses PostgreSQL; tests may use markdown files.
 
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use crate::config;
+use tokio_postgres::NoTls;
+
+const DEFAULT_DATABASE_URL: &str = "postgres://housebot:housebot@postgres/housebot";
+
+#[derive(Clone)]
+enum Backend {
+    Files(PathBuf),
+    Postgres(Arc<tokio_postgres::Client>),
+}
 
 /// Handle to the per-user memory store.
 #[derive(Clone)]
 pub struct Memory {
-    dir: PathBuf,
+    backend: Backend,
 }
 
 impl Default for Memory {
@@ -19,37 +29,131 @@ impl Default for Memory {
 impl Memory {
     /// Create a store rooted at `dir` (created on first write).
     pub fn new(dir: impl Into<PathBuf>) -> Self {
-        Self { dir: dir.into() }
+        Self {
+            backend: Backend::Files(dir.into()),
+        }
     }
 
-    fn path(&self, user_id: impl std::fmt::Display) -> PathBuf {
-        self.dir.join(format!("{user_id}.md"))
+    /// Connect to the deployment's PostgreSQL memory store and create its schema.
+    pub async fn from_env() -> anyhow::Result<Self> {
+        let url = config::env_or("DATABASE_URL", DEFAULT_DATABASE_URL);
+        let (client, connection) = tokio_postgres::connect(&url, NoTls).await?;
+        tokio::spawn(async move {
+            if let Err(error) = connection.await {
+                tracing::error!(%error, "PostgreSQL memory connection closed");
+            }
+        });
+        client
+            .batch_execute(
+                "CREATE TABLE IF NOT EXISTS user_memories (\
+                    user_id TEXT PRIMARY KEY,\
+                    content TEXT NOT NULL,\
+                    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()\
+                )",
+            )
+            .await?;
+        migrate_markdown_memories(&client, &config::data_dir().join("memories")).await?;
+        Ok(Self {
+            backend: Backend::Postgres(Arc::new(client)),
+        })
+    }
+
+    fn path(dir: &Path, user_id: impl std::fmt::Display) -> PathBuf {
+        dir.join(format!("{user_id}.md"))
     }
 
     /// Load a user's memory, returning an empty string when none exists.
     pub async fn load(&self, user_id: impl std::fmt::Display) -> String {
-        let path = self.path(user_id);
-        tokio::fs::read_to_string(&path).await.unwrap_or_default()
+        let user_id = user_id.to_string();
+        match &self.backend {
+            Backend::Files(dir) => tokio::fs::read_to_string(Self::path(dir, user_id))
+                .await
+                .unwrap_or_default(),
+            Backend::Postgres(client) => match client
+                .query_opt(
+                    "SELECT content FROM user_memories WHERE user_id = $1",
+                    &[&user_id],
+                )
+                .await
+            {
+                Ok(Some(row)) => row.get(0),
+                Ok(None) => String::new(),
+                Err(error) => {
+                    tracing::error!(%error, %user_id, "failed to load user memory");
+                    String::new()
+                }
+            },
+        }
     }
 
     /// Delete a user's memory file (no-op when it does not exist).
-    pub async fn clear(&self, user_id: impl std::fmt::Display) -> std::io::Result<()> {
-        match tokio::fs::remove_file(self.path(user_id)).await {
-            Ok(()) => Ok(()),
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
-            Err(e) => Err(e),
+    pub async fn clear(&self, user_id: impl std::fmt::Display) -> anyhow::Result<()> {
+        let user_id = user_id.to_string();
+        match &self.backend {
+            Backend::Files(dir) => match tokio::fs::remove_file(Self::path(dir, user_id)).await {
+                Ok(()) => Ok(()),
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+                Err(e) => Err(e.into()),
+            },
+            Backend::Postgres(client) => {
+                client
+                    .execute("DELETE FROM user_memories WHERE user_id = $1", &[&user_id])
+                    .await?;
+                Ok(())
+            }
         }
     }
 
     /// Overwrite a user's memory with `content`.
-    pub async fn save(
-        &self,
-        user_id: impl std::fmt::Display,
-        content: &str,
-    ) -> std::io::Result<()> {
-        ensure_dir(&self.dir).await?;
-        tokio::fs::write(self.path(user_id), content).await
+    pub async fn save(&self, user_id: impl std::fmt::Display, content: &str) -> anyhow::Result<()> {
+        let user_id = user_id.to_string();
+        match &self.backend {
+            Backend::Files(dir) => {
+                ensure_dir(dir).await?;
+                tokio::fs::write(Self::path(dir, user_id), content).await?;
+            }
+            Backend::Postgres(client) => {
+                client
+                    .execute(
+                        "INSERT INTO user_memories (user_id, content) VALUES ($1, $2) \
+                         ON CONFLICT (user_id) DO UPDATE SET content = EXCLUDED.content, updated_at = NOW()",
+                        &[&user_id, &content],
+                    )
+                    .await?;
+            }
+        }
+        Ok(())
     }
+}
+
+/// One-time, non-destructive import from the former markdown-file backend.
+async fn migrate_markdown_memories(
+    client: &tokio_postgres::Client,
+    dir: &Path,
+) -> anyhow::Result<()> {
+    let mut entries = match tokio::fs::read_dir(dir).await {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => return Err(error.into()),
+    };
+    while let Some(entry) = entries.next_entry().await? {
+        let path = entry.path();
+        if path.extension().and_then(|ext| ext.to_str()) != Some("md") {
+            continue;
+        }
+        let Some(user_id) = path.file_stem().and_then(|stem| stem.to_str()) else {
+            continue;
+        };
+        let content = tokio::fs::read_to_string(&path).await?;
+        client
+            .execute(
+                "INSERT INTO user_memories (user_id, content) VALUES ($1, $2) \
+                 ON CONFLICT (user_id) DO NOTHING",
+                &[&user_id, &content],
+            )
+            .await?;
+    }
+    Ok(())
 }
 
 pub(crate) async fn ensure_dir(dir: &Path) -> std::io::Result<()> {
