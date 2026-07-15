@@ -23,7 +23,7 @@ use uuid::Uuid;
 use crate::agent::{
     Agent, AgentControlAction, AgentHooks, AgentRequest, AgentResult, MediaData, NoHooks,
 };
-use crate::bot_config::{ServerConfigStore, UserConfigStore};
+use crate::bot_config::{LeaderboardVisibility, ServerConfig, ServerConfigStore, UserConfigStore};
 pub use crate::bot_response::SecretRedactor;
 use crate::channel_log::ChannelLog;
 use crate::coding_agent::catalog::{AgentCatalog, CodingAgent};
@@ -40,6 +40,7 @@ use crate::notes::Notes;
 use crate::profile::ProfileStore;
 use crate::rate_limit::RateLimiter;
 use crate::skills::Skills;
+use crate::token_monitor::{LeaderboardMetric, LeaderboardPeriod};
 use crate::tool_permissions::{ToolPermissions, VoteResult};
 
 pub use crate::bot_commands::{
@@ -341,12 +342,105 @@ async fn handle_config_interaction(
     options: &[serenity::all::CommandDataOption],
     author_id: u64,
     guild_id: Option<u64>,
+    is_admin: bool,
 ) -> String {
     let Some(top) = options.first() else {
         return "No subcommand provided.".into();
     };
 
     match top.name.as_str() {
+        "leaderboard" => {
+            let Some(gid) = guild_id else {
+                return "Leaderboard configuration is only available in servers.".into();
+            };
+            if !is_admin {
+                return "Only server administrators can configure leaderboard visibility.".into();
+            }
+            let sub_opts = match &top.value {
+                CommandDataOptionValue::SubCommandGroup(options) => options,
+                _ => return "Unexpected option structure.".into(),
+            };
+            let Some(sub) = sub_opts.first() else {
+                return "No leaderboard subcommand provided.".into();
+            };
+            let mut cfg = server_cfg.load(gid).await;
+            match sub.name.as_str() {
+                "visibility" => {
+                    let options = match &sub.value {
+                        CommandDataOptionValue::SubCommand(options) => options,
+                        _ => return "Unexpected option structure.".into(),
+                    };
+                    let visibility = options.iter().find_map(|option| match &option.value {
+                        CommandDataOptionValue::String(value) if option.name == "mode" => {
+                            Some(value.as_str())
+                        }
+                        _ => None,
+                    });
+                    cfg.leaderboard_visibility = match visibility {
+                        Some("public") => LeaderboardVisibility::Public,
+                        Some("private") => LeaderboardVisibility::Private,
+                        Some("restricted") => LeaderboardVisibility::Restricted,
+                        _ => return "Please choose a valid visibility mode.".into(),
+                    };
+                    if server_cfg.save(gid, &cfg).await.is_err() {
+                        return "Error: failed to save config.".into();
+                    }
+                    format!(
+                        "✅ Token leaderboard visibility set to **{}**.",
+                        cfg.leaderboard_visibility.as_str()
+                    )
+                }
+                action @ ("role_add" | "role_remove") => {
+                    let options = match &sub.value {
+                        CommandDataOptionValue::SubCommand(options) => options,
+                        _ => return "Unexpected option structure.".into(),
+                    };
+                    let role_id = options.iter().find_map(|option| match option.value {
+                        CommandDataOptionValue::Role(role) if option.name == "role" => {
+                            Some(role.get())
+                        }
+                        _ => None,
+                    });
+                    let Some(role_id) = role_id else {
+                        return "Please provide a valid role.".into();
+                    };
+                    let changed = if action == "role_add" {
+                        cfg.leaderboard_role_ids.insert(role_id)
+                    } else {
+                        cfg.leaderboard_role_ids.remove(&role_id)
+                    };
+                    if server_cfg.save(gid, &cfg).await.is_err() {
+                        return "Error: failed to save config.".into();
+                    }
+                    match (action, changed) {
+                        ("role_add", true) => format!("✅ <@&{role_id}> can view the leaderboard."),
+                        ("role_remove", true) => {
+                            format!("✅ <@&{role_id}> removed from leaderboard access.")
+                        }
+                        ("role_add", false) => {
+                            format!("<@&{role_id}> already has leaderboard access.")
+                        }
+                        _ => format!("<@&{role_id}> did not have leaderboard access."),
+                    }
+                }
+                "role_list" => {
+                    if cfg.leaderboard_role_ids.is_empty() {
+                        "No roles are allowed in restricted mode. Administrators retain access."
+                            .into()
+                    } else {
+                        let roles = cfg
+                            .leaderboard_role_ids
+                            .iter()
+                            .map(|role| format!("<@&{role}>"))
+                            .collect::<Vec<_>>()
+                            .join(", ");
+                        format!("Leaderboard roles: {roles}")
+                    }
+                }
+                other => format!("Unknown leaderboard subcommand `{other}`."),
+            }
+        }
+
         "channel" => {
             let Some(gid) = guild_id else {
                 return "Channel configuration is only available in servers, not DMs.".into();
@@ -1097,12 +1191,64 @@ fn commit_hash_response(sha: Option<&str>) -> String {
 }
 
 /// Whether a slash command response should only be visible to its requester.
-///
-/// The global token leaderboard is intentionally public so everyone in the
-/// channel can see the same rankings. Other command responses may contain
-/// user-specific configuration or history and remain private by default.
-fn command_response_is_ephemeral(command_name: &str) -> bool {
-    command_name != "token_leaderboard"
+fn command_response_is_ephemeral(_command_name: &str) -> bool {
+    true
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum LeaderboardAccess {
+    Public,
+    Private,
+    Denied,
+}
+
+fn leaderboard_access(
+    config: &ServerConfig,
+    in_guild: bool,
+    member_roles: &[u64],
+    is_admin: bool,
+) -> LeaderboardAccess {
+    if !in_guild {
+        return LeaderboardAccess::Private;
+    }
+    match config.leaderboard_visibility {
+        LeaderboardVisibility::Public => LeaderboardAccess::Public,
+        LeaderboardVisibility::Private => LeaderboardAccess::Private,
+        LeaderboardVisibility::Restricted
+            if is_admin
+                || member_roles
+                    .iter()
+                    .any(|role| config.leaderboard_role_ids.contains(role)) =>
+        {
+            LeaderboardAccess::Private
+        }
+        LeaderboardVisibility::Restricted => LeaderboardAccess::Denied,
+    }
+}
+
+fn leaderboard_options(
+    options: &[serenity::all::CommandDataOption],
+) -> (LeaderboardPeriod, LeaderboardMetric) {
+    let string_option = |name| {
+        options
+            .iter()
+            .find(|option| option.name == name)
+            .and_then(|option| match &option.value {
+                CommandDataOptionValue::String(value) => Some(value.as_str()),
+                _ => None,
+            })
+    };
+    let period = match string_option("timeframe") {
+        Some("daily") => LeaderboardPeriod::Daily,
+        Some("weekly") => LeaderboardPeriod::Weekly,
+        Some("monthly") => LeaderboardPeriod::Monthly,
+        _ => LeaderboardPeriod::AllTime,
+    };
+    let metric = match string_option("metric") {
+        Some("efficiency") => LeaderboardMetric::CacheEfficiency,
+        _ => LeaderboardMetric::TotalTokens,
+    };
+    (period, metric)
 }
 
 /// Wrap `/lua` output in a code fence sized to fit a single Discord message.
@@ -1185,6 +1331,59 @@ impl EventHandler for HouseBot {
                     CommandOptionType::SubCommand,
                     "clear",
                     "Remove all channel restrictions (bot responds everywhere)",
+                )),
+            )
+            // ── leaderboard subcommand group ────────────────────────────────
+            .add_option(
+                CreateCommandOption::new(
+                    CommandOptionType::SubCommandGroup,
+                    "leaderboard",
+                    "Configure token leaderboard access (administrators only)",
+                )
+                .add_sub_option(
+                    CreateCommandOption::new(
+                        CommandOptionType::SubCommand,
+                        "visibility",
+                        "Set whether leaderboard responses are public, private, or restricted",
+                    )
+                    .add_sub_option(
+                        CreateCommandOption::new(
+                            CommandOptionType::String,
+                            "mode",
+                            "Leaderboard visibility mode",
+                        )
+                        .required(true)
+                        .add_string_choice("Public channel response", "public")
+                        .add_string_choice("Private response", "private")
+                        .add_string_choice("Restricted to roles", "restricted"),
+                    ),
+                )
+                .add_sub_option(
+                    CreateCommandOption::new(
+                        CommandOptionType::SubCommand,
+                        "role_add",
+                        "Allow a role to use the leaderboard in restricted mode",
+                    )
+                    .add_sub_option(
+                        CreateCommandOption::new(CommandOptionType::Role, "role", "Role to allow")
+                            .required(true),
+                    ),
+                )
+                .add_sub_option(
+                    CreateCommandOption::new(
+                        CommandOptionType::SubCommand,
+                        "role_remove",
+                        "Remove a role from restricted leaderboard access",
+                    )
+                    .add_sub_option(
+                        CreateCommandOption::new(CommandOptionType::Role, "role", "Role to remove")
+                            .required(true),
+                    ),
+                )
+                .add_sub_option(CreateCommandOption::new(
+                    CommandOptionType::SubCommand,
+                    "role_list",
+                    "List roles allowed to use the leaderboard",
                 )),
             )
             // ── personality subcommand ───────────────────────────────────────
@@ -1367,7 +1566,27 @@ impl EventHandler for HouseBot {
             CreateCommand::new("session")
                 .description("Show context and token usage for this session"),
             CreateCommand::new("token_leaderboard")
-                .description("Show global token usage by user and conversation"),
+                .description("Show token usage rankings")
+                .add_option(
+                    CreateCommandOption::new(
+                        CommandOptionType::String,
+                        "timeframe",
+                        "Ranking timeframe (default: all time)",
+                    )
+                    .add_string_choice("Daily", "daily")
+                    .add_string_choice("Weekly", "weekly")
+                    .add_string_choice("Monthly", "monthly")
+                    .add_string_choice("All time", "all_time"),
+                )
+                .add_option(
+                    CreateCommandOption::new(
+                        CommandOptionType::String,
+                        "metric",
+                        "Ranking metric (default: total tokens)",
+                    )
+                    .add_string_choice("Total tokens", "tokens")
+                    .add_string_choice("Cache efficiency", "efficiency"),
+                ),
             CreateCommand::new("status")
                 .description("Show your current settings (effort level, follow-up, personality)"),
             CreateCommand::new("new").description("Start a new conversation and clear the old one"),
@@ -1538,14 +1757,25 @@ impl EventHandler for HouseBot {
             self.handle_lua_command(&ctx, &cmd).await;
             return;
         }
+        if cmd.data.name == "token_leaderboard" {
+            self.handle_token_leaderboard_command(&ctx, &cmd).await;
+            return;
+        }
         let reply = match cmd.data.name.as_str() {
             "config" => {
+                let is_admin = (config::owner_id() != 0 && config::owner_id() == user_id)
+                    || cmd
+                        .member
+                        .as_deref()
+                        .and_then(|member| member.permissions)
+                        .is_some_and(|permissions| permissions.administrator());
                 handle_config_interaction(
                     &self.server_cfg,
                     &self.user_cfg,
                     &cmd.data.options,
                     user_id,
                     guild_id,
+                    is_admin,
                 )
                 .await
             }
@@ -1564,7 +1794,6 @@ impl EventHandler for HouseBot {
             "help" => help_response(),
             "commit" => commit_hash_response(option_env!("HOUSEBOT_GIT_SHA")),
             "model" => self.agent.model_info(),
-            "token_leaderboard" => self.agent.token_leaderboard().await,
             "session" => {
                 let info = self.agent.session_info(&user_id.to_string()).await;
                 let percent =
@@ -1936,6 +2165,60 @@ impl HouseBot {
             &guild_roles,
             &lua_engine::scripting_role_name(),
         )
+    }
+
+    async fn handle_token_leaderboard_command(
+        &self,
+        ctx: &Context,
+        cmd: &serenity::all::CommandInteraction,
+    ) {
+        let user_id = cmd.user.id.get();
+        let member_roles = cmd
+            .member
+            .as_deref()
+            .map(|member| {
+                member
+                    .roles
+                    .iter()
+                    .map(|role| role.get())
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+        let is_admin = (config::owner_id() != 0 && config::owner_id() == user_id)
+            || cmd
+                .member
+                .as_deref()
+                .and_then(|member| member.permissions)
+                .is_some_and(|permissions| permissions.administrator());
+        let server_config = match cmd.guild_id {
+            Some(guild_id) => self.server_cfg.load(guild_id.get()).await,
+            None => ServerConfig::default(),
+        };
+        let access = leaderboard_access(
+            &server_config,
+            cmd.guild_id.is_some(),
+            &member_roles,
+            is_admin,
+        );
+        let reply = if access == LeaderboardAccess::Denied {
+            "This server restricts the token leaderboard to configured roles.".into()
+        } else {
+            let (period, metric) = leaderboard_options(&cmd.data.options);
+            self.agent
+                .token_leaderboard(period, metric, &user_id.to_string())
+                .await
+        };
+        let reply = self.redactor.redact(&reply);
+        let reply = truncate_memory_reply("", &reply);
+        let response = CreateInteractionResponse::Message(
+            CreateInteractionResponseMessage::new()
+                .content(reply)
+                .ephemeral(access != LeaderboardAccess::Public)
+                .allowed_mentions(CreateAllowedMentions::new()),
+        );
+        if let Err(error) = cmd.create_response(&ctx.http, response).await {
+            tracing::warn!(%error, "Failed to send /token_leaderboard response");
+        }
     }
 
     async fn handle_message(
@@ -3701,10 +3984,44 @@ mod tests {
     use tempfile::TempDir;
 
     #[test]
-    fn token_leaderboard_response_is_public() {
-        assert!(!command_response_is_ephemeral("token_leaderboard"));
+    fn ordinary_command_responses_are_private() {
+        assert!(command_response_is_ephemeral("token_leaderboard"));
         assert!(command_response_is_ephemeral("config"));
         assert!(command_response_is_ephemeral("history"));
+    }
+
+    #[test]
+    fn leaderboard_visibility_controls_access_and_response_scope() {
+        let mut config = ServerConfig::default();
+        assert_eq!(
+            leaderboard_access(&config, true, &[], false),
+            LeaderboardAccess::Public
+        );
+
+        config.leaderboard_visibility = LeaderboardVisibility::Private;
+        assert_eq!(
+            leaderboard_access(&config, true, &[], false),
+            LeaderboardAccess::Private
+        );
+
+        config.leaderboard_visibility = LeaderboardVisibility::Restricted;
+        config.leaderboard_role_ids.insert(42);
+        assert_eq!(
+            leaderboard_access(&config, true, &[], false),
+            LeaderboardAccess::Denied
+        );
+        assert_eq!(
+            leaderboard_access(&config, true, &[42], false),
+            LeaderboardAccess::Private
+        );
+        assert_eq!(
+            leaderboard_access(&config, true, &[], true),
+            LeaderboardAccess::Private
+        );
+        assert_eq!(
+            leaderboard_access(&config, false, &[], false),
+            LeaderboardAccess::Private
+        );
     }
 
     // ── format_lua_reply ──
