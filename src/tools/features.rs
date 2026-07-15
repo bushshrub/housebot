@@ -13,13 +13,14 @@ pub fn features_text() -> &'static str {
 `/new` / `/reset` — start a fresh conversation
 `/compact` — summarise the conversation into memory and start fresh (or clear it without saving when deep memory is disabled)
 `/session` — show token and context usage for the current session
-`/token_leaderboard` — show persistent global token usage by user and conversation
+`/token_leaderboard [timeframe] [metric]` — rank token usage daily, weekly, monthly, or all-time by total tokens or cache efficiency; also shows your rank
 `/tool_ban propose|vote|status` — vote on server-specific user restrictions for individual tools
 `/status` — show your current settings at a glance (effort, follow-up, personality)
 `/effort [level]` — set thinking depth: `low` (2k tokens) · `medium` (4k, default) · `high` (8k) · `xhigh` (16k) · `max` (unlimited)
 `/config personality [text]` — set (or clear) a personal tone/personality override
 `/config followup enabled [timeout]` — toggle unpinged follow-up replies in a server channel
 `/config channel add|remove|list|clear` — restrict which channels the bot responds in
+`/config leaderboard visibility|role_add|role_remove|role_list` — administrators can make leaderboard responses public, private, or role-restricted
 `/labs pagination enabled` — toggle paginated responses (experimental)
 `/commit` — show the running commit hash
 `/model` — show the current model name and context size
