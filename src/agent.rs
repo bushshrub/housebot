@@ -21,6 +21,7 @@ use crate::profile::ProfileStore;
 use crate::rate_limit::RateLimiter;
 use crate::reminders::Reminders;
 use crate::skills::{Skill, Skills};
+use crate::token_monitor::{TokenLeaderboard, TokenMonitor};
 use crate::tools;
 use crate::tools::common_crawl::CommonCrawl;
 use crate::tools::file_download::FileDownloader;
@@ -189,6 +190,8 @@ pub struct Agent {
     common_crawl: CommonCrawl,
     mcp_servers: Vec<McpServer>,
     session_stats: tokio::sync::Mutex<HashMap<String, SessionStats>>,
+    token_monitor: TokenMonitor,
+    active_conversations: tokio::sync::Mutex<HashMap<String, String>>,
     discord: Arc<DiscordBridge>,
     channel_log: ChannelLog,
 }
@@ -224,6 +227,13 @@ impl Agent {
                 Memory::default()
             }
         };
+        let token_monitor = match TokenMonitor::from_env().await {
+            Ok(monitor) => monitor,
+            Err(error) => {
+                tracing::warn!(%error, "PostgreSQL token monitor unavailable; token history will not survive this restart");
+                TokenMonitor::default()
+            }
+        };
         Self {
             client,
             model: config::env_or("LLM_MODEL", "gemma-4-12b-qat-q4kxl"),
@@ -245,6 +255,8 @@ impl Agent {
             common_crawl: CommonCrawl::default(),
             mcp_servers,
             session_stats: tokio::sync::Mutex::new(HashMap::new()),
+            token_monitor,
+            active_conversations: tokio::sync::Mutex::new(HashMap::new()),
             discord,
             channel_log: ChannelLog::default(),
         }
@@ -304,6 +316,7 @@ impl Agent {
     pub async fn reset_session(&self, user_id: &str) {
         self.session_stats.lock().await.remove(user_id);
         let _ = self.history.clear(user_id).await;
+        self.finish_active_conversation(user_id).await;
     }
 
     /// Summarize the current conversation, then start a fresh session.
@@ -324,11 +337,14 @@ impl Agent {
         self.session_stats.lock().await.remove(user_id);
         let past = self.history.load(user_id).await;
         if past.is_empty() {
+            self.finish_active_conversation(user_id).await;
             hooks.on_progress("compact:100:Nothing to compact.").await;
             return;
         }
+        let conversation_id = self.current_conversation_id(user_id, user_id, 0).await;
         if !deep_memory_enabled {
             let _ = self.history.clear(user_id).await;
+            self.finish_active_conversation(user_id).await;
             hooks
                 .on_progress("compact:100:Conversation cleared without saving a memory summary.")
                 .await;
@@ -362,7 +378,8 @@ impl Agent {
             )
             .await
             .unwrap_or_default();
-        self.record_usage(user_id, completion.usage).await;
+        self.record_usage(user_id, &conversation_id, completion.usage)
+            .await;
         let summary = completion.content.unwrap_or_default();
 
         if !summary.trim().is_empty() {
@@ -377,6 +394,7 @@ impl Agent {
         }
         hooks.on_progress("compact:80").await;
         let _ = self.history.clear(user_id).await;
+        self.finish_active_conversation(user_id).await;
         hooks
             .on_progress("compact:100:Conversation compacted.")
             .await;
@@ -417,6 +435,24 @@ impl Agent {
         }
     }
 
+    /// Render the persistent global token leaderboard for Discord.
+    pub async fn token_leaderboard(&self) -> String {
+        match self.token_monitor.leaderboard(10).await {
+            Ok(leaderboard) => format_token_leaderboard(&leaderboard),
+            Err(error) => {
+                tracing::error!(%error, "failed to load token leaderboard");
+                "⚠️ Token usage statistics are temporarily unavailable.".into()
+            }
+        }
+    }
+
+    /// Remove a user's archived conversations and token statistics.
+    pub async fn clear_token_data(&self, user_id: &str) {
+        if let Err(error) = self.token_monitor.clear_user(user_id).await {
+            tracing::error!(%error, %user_id, "failed to erase token-monitor data");
+        }
+    }
+
     async fn last_context_tokens(&self, user_id: &str) -> u64 {
         self.session_stats
             .lock()
@@ -425,7 +461,45 @@ impl Agent {
             .map_or(0, |stats| stats.context_tokens)
     }
 
-    async fn record_usage(&self, user_id: &str, usage: TokenUsage) {
+    async fn current_conversation_id(
+        &self,
+        user_id: &str,
+        display_name: &str,
+        channel_id: u64,
+    ) -> String {
+        let mut active = self.active_conversations.lock().await;
+        if let Some(id) = active.get(user_id) {
+            return id.clone();
+        }
+        let id = uuid::Uuid::new_v4().to_string();
+        if let Err(error) = self
+            .token_monitor
+            .start_conversation(&id, user_id, display_name, channel_id)
+            .await
+        {
+            tracing::error!(%error, %user_id, conversation_id = %id, "failed to persist conversation");
+        }
+        active.insert(user_id.to_string(), id.clone());
+        id
+    }
+
+    async fn finish_active_conversation(&self, user_id: &str) {
+        let id = self.active_conversations.lock().await.remove(user_id);
+        if let Some(id) = id {
+            if let Err(error) = self.token_monitor.finish_conversation(&id).await {
+                tracing::error!(%error, %user_id, conversation_id = %id, "failed to close conversation");
+            }
+        }
+    }
+
+    async fn record_usage(&self, user_id: &str, conversation_id: &str, usage: TokenUsage) {
+        if let Err(error) = self
+            .token_monitor
+            .record_usage(conversation_id, usage)
+            .await
+        {
+            tracing::error!(%error, %user_id, %conversation_id, "failed to persist token usage");
+        }
         let mut all = self.session_stats.lock().await;
         let stats = all.entry(user_id.to_string()).or_default();
         stats.requests += 1;
@@ -494,6 +568,9 @@ impl Agent {
                     .into(),
             );
         }
+        let conversation_id = self
+            .current_conversation_id(user_id, display_name, channel_id)
+            .await;
 
         let all_skills = self.skills.load_all().await;
         let system = json!({
@@ -539,7 +616,8 @@ impl Agent {
             };
             let context_tokens =
                 completion.usage.prompt_tokens + completion.usage.completion_tokens;
-            self.record_usage(user_id, completion.usage).await;
+            self.record_usage(user_id, &conversation_id, completion.usage)
+                .await;
             let usage = context_tokens as f64 / self.context_window_tokens.max(1) as f64;
             if usage >= 0.7 {
                 session_notice = Some(if usage >= 0.8 {
@@ -616,6 +694,14 @@ impl Agent {
                 }
             }
         };
+
+        if let Err(error) = self
+            .token_monitor
+            .record_turn(&conversation_id, &history_user_message, &turn_messages)
+            .await
+        {
+            tracing::error!(%error, %user_id, %conversation_id, "failed to archive conversation turn");
+        }
 
         if let Err(e) = self
             .history
@@ -1536,6 +1622,8 @@ impl Agent {
             common_crawl: CommonCrawl::default(),
             mcp_servers: vec![],
             session_stats: tokio::sync::Mutex::new(HashMap::new()),
+            token_monitor: TokenMonitor::default(),
+            active_conversations: tokio::sync::Mutex::new(HashMap::new()),
             discord: Arc::new(DiscordBridge::default()),
             channel_log: ChannelLog::default(),
         }
@@ -1544,6 +1632,43 @@ impl Agent {
     pub fn set_max_context_tokens(&mut self, n: usize) {
         self.context_window_tokens = n;
     }
+}
+
+fn format_token_leaderboard(leaderboard: &TokenLeaderboard) -> String {
+    if leaderboard.users.is_empty() {
+        return "**Global token leaderboard**\nNo token usage has been recorded yet.".into();
+    }
+    let mut lines = vec![
+        "**Global token leaderboard**".to_string(),
+        "**Users**".to_string(),
+    ];
+    for (index, entry) in leaderboard.users.iter().enumerate() {
+        lines.push(format!(
+            "{}. **{}** — {} tokens across {} conversation{}",
+            index + 1,
+            entry.label,
+            entry.total_tokens(),
+            entry.conversations,
+            if entry.conversations == 1 { "" } else { "s" }
+        ));
+    }
+    lines.push("\n**Conversations**".to_string());
+    for (index, entry) in leaderboard.conversations.iter().enumerate() {
+        let id = entry
+            .conversation_id
+            .as_deref()
+            .unwrap_or("unknown")
+            .chars()
+            .take(8)
+            .collect::<String>();
+        lines.push(format!(
+            "{}. **{}** (`{id}`) — {} tokens",
+            index + 1,
+            entry.label,
+            entry.total_tokens()
+        ));
+    }
+    lines.join("\n")
 }
 
 #[cfg(test)]
@@ -1853,6 +1978,41 @@ mod tests {
         let hist = agent.history.load("u2").await;
         assert_eq!(hist.len(), 2); // user + assistant
         assert_eq!(hist[0]["content"], "remember this");
+    }
+
+    #[tokio::test]
+    async fn run_persists_tokens_by_conversation() {
+        let client = Arc::new(MockChatClient::new());
+        client.push_text_with_usage(
+            "first reply",
+            TokenUsage {
+                prompt_tokens: 40,
+                completion_tokens: 10,
+                ..Default::default()
+            },
+        );
+        client.push_text_with_usage(
+            "second reply",
+            TokenUsage {
+                prompt_tokens: 20,
+                completion_tokens: 5,
+                ..Default::default()
+            },
+        );
+        let (_t, agent) = test_agent(client);
+        agent
+            .run(AgentRequest::text("u_tokens", "Alice", "first"), &NoHooks)
+            .await;
+        agent.reset_session("u_tokens").await;
+        agent
+            .run(AgentRequest::text("u_tokens", "Alice", "second"), &NoHooks)
+            .await;
+
+        let board = agent.token_monitor.leaderboard(10).await.unwrap();
+        assert_eq!(board.users[0].label, "Alice");
+        assert_eq!(board.users[0].conversations, 2);
+        assert_eq!(board.users[0].total_tokens(), 75);
+        assert_eq!(board.conversations.len(), 2);
     }
 
     #[tokio::test]

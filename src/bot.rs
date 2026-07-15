@@ -1170,15 +1170,16 @@ impl EventHandler for HouseBot {
             CreateCommand::new("model").description("Show information about the current model"),
             CreateCommand::new("session")
                 .description("Show context and token usage for this session"),
+            CreateCommand::new("token_leaderboard")
+                .description("Show global token usage by user and conversation"),
             CreateCommand::new("status")
                 .description("Show your current settings (effort level, follow-up, personality)"),
             CreateCommand::new("new").description("Start a new conversation and clear the old one"),
             CreateCommand::new("reset").description("Clear the conversation and start fresh"),
             CreateCommand::new("compact")
                 .description("Summarize the conversation and start a new session"),
-            CreateCommand::new("erase_my_data").description(
-                "Permanently delete all your stored data (messages, history, memory, notes)",
-            ),
+            CreateCommand::new("erase_my_data")
+                .description("Permanently delete all your stored data, including token statistics"),
             CreateCommand::new("profile")
                 .description("Show or clear your stored profile information")
                 .add_option(CreateCommandOption::new(
@@ -1358,6 +1359,7 @@ impl EventHandler for HouseBot {
             "help" => help_response(),
             "commit" => commit_hash_response(option_env!("HOUSEBOT_GIT_SHA")),
             "model" => self.agent.model_info(),
+            "token_leaderboard" => self.agent.token_leaderboard().await,
             "session" => {
                 let info = self.agent.session_info(&user_id.to_string()).await;
                 let percent =
@@ -1403,6 +1405,7 @@ impl EventHandler for HouseBot {
                 )
                 .await;
                 self.agent.reset_session(&user_id.to_string()).await;
+                self.agent.clear_token_data(&user_id.to_string()).await;
                 self.conversations
                     .lock()
                     .await

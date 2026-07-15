@@ -27,4 +27,5 @@ pub mod rate_limit;
 pub mod reminders;
 pub mod skills;
 pub mod testing;
+pub mod token_monitor;
 pub mod tools;
