@@ -41,6 +41,7 @@ src/
   agent.rs           # agentic loop, MCP sessions, tool dispatch, AgentResult, session summary
   llm.rs             # ChatClient trait + OpenAiClient (streaming SSE)
   mcp.rs             # McpServer — stdio JSON-RPC client
+  lua_engine.rs      # sandboxed Lua VM for /lua (time/memory limits, discord.* bridge)
   history.rs         # per-user conversation JSONL (data/history/<user_id>.jsonl)
   memory.rs          # per-user persistent markdown (data/memories/<user_id>.md)
   notes.rs           # per-user named notes (data/notes/<user_id>.json)
