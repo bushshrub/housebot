@@ -87,6 +87,10 @@ data/                # runtime — gitignored
 |---|---|---|---|
 | `DISCORD_BOT_TOKEN` | yes | — | Discord bot auth |
 | `OWNER_DISCORD_ID` | no | `0` | Owner user ID |
+| `DATABASE_URL` | no | `postgres://housebot:housebot@postgres/housebot` | PostgreSQL persistence for memory, archives, and token leaderboards |
+| `DATABASE_CONNECT_MAX_ATTEMPTS` | no | `10` | Persistent token-monitor connection attempts at startup |
+| `DATABASE_CONNECT_RETRY_SECS` | no | `2` | Delay between token-monitor connection attempts |
+| `DATABASE_CONNECT_TIMEOUT_SECS` | no | `10` | Deadline for each token-monitor connection attempt |
 | `LLM_BASE_URL` | yes | `http://server-slop:8080/v1` | OpenAI-compatible LLM endpoint |
 | `LLM_MODEL` | yes | `gemma-4-12b-qat-q4kxl` | Model name |
 | `LLM_API_KEY` | no | `not-required` | API key (llama.cpp ignores it) |

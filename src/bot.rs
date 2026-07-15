@@ -4008,7 +4008,7 @@ pub async fn run() -> anyhow::Result<()> {
     let token = std::env::var("DISCORD_BOT_TOKEN")
         .map_err(|_| anyhow::anyhow!("DISCORD_BOT_TOKEN is not set"))?;
     let discord = Arc::new(DiscordBridge::default());
-    let agent = Arc::new(Agent::from_env(discord.clone()).await);
+    let agent = Arc::new(Agent::from_env(discord.clone()).await?);
     let bot = HouseBot::new(agent, discord);
 
     let intents = GatewayIntents::non_privileged() | GatewayIntents::MESSAGE_CONTENT;

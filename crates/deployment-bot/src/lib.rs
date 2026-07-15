@@ -595,6 +595,9 @@ const HOUSEBOT_ENV_VARS: &[&str] = &[
     "OWNER_DISCORD_ID",
     "DEPLOYMENT_GUILD_ID",
     "DATABASE_URL",
+    "DATABASE_CONNECT_MAX_ATTEMPTS",
+    "DATABASE_CONNECT_RETRY_SECS",
+    "DATABASE_CONNECT_TIMEOUT_SECS",
     "LLM_BASE_URL",
     "LLM_MODEL",
     "LLM_API_KEY",
@@ -1244,6 +1247,14 @@ mod tests {
         );
         assert!(deploy_commands(Some("latest"), "network").is_err());
         assert!(deploy_commands(Some("abcdef;reboot"), "network").is_err());
+    }
+
+    #[test]
+    fn deployment_forwards_persistent_token_monitor_settings() {
+        assert!(HOUSEBOT_ENV_VARS.contains(&"DATABASE_URL"));
+        assert!(HOUSEBOT_ENV_VARS.contains(&"DATABASE_CONNECT_MAX_ATTEMPTS"));
+        assert!(HOUSEBOT_ENV_VARS.contains(&"DATABASE_CONNECT_RETRY_SECS"));
+        assert!(HOUSEBOT_ENV_VARS.contains(&"DATABASE_CONNECT_TIMEOUT_SECS"));
     }
 
     #[test]
