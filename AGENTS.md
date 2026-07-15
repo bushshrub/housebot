@@ -185,6 +185,10 @@ specification, runner requirements, and security model.
   `agent:failed`.  Do not add or remove these labels manually outside the workflow.
 - **No force-push. No auto-merge. No auto-deploy.** All PRs opened by the agent require
   a human review and explicit merge.
+- **Always commit automatically.** The coding agent must create a commit for every set of
+  changes it produces before handing work back; do not leave implemented changes uncommitted.
+- **Codex attribution.** Every commit created by the Codex coding agent must include the exact
+  trailer `Co-authored-by: codex <codex@openai.com>`.
 - **Secrets on runner.** `NVIDIA_API_KEY` is the only secret injected at runtime.
   OAuth sessions for Codex and Claude are pre-configured on the runner and must never be
   read, printed, or uploaded by workflow steps.

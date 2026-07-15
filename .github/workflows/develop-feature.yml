@@ -213,7 +213,13 @@ jobs:
       - name: Commit changes
         if: steps.changes.outputs.has_changes == 'true'
         run: |
-          git commit -m "feat: implement #${{ steps.issue-num.outputs.number }}"
+          if [[ "${{ steps.meta.outputs.agent }}" == "codex" ]]; then
+            git commit \
+              -m "feat: implement #${{ steps.issue-num.outputs.number }}" \
+              -m "Co-authored-by: codex <codex@openai.com>"
+          else
+            git commit -m "feat: implement #${{ steps.issue-num.outputs.number }}"
+          fi
 
       # ── 12. Push branch ───────────────────────────────────────────────────
       - name: Push branch
