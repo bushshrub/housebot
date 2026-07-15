@@ -1695,6 +1695,26 @@ impl HouseBot {
         if let Some(reaction) = pending_reaction {
             let _ = reaction.delete(&ctx.http).await;
         }
+        for attachment in result.attachments {
+            if let Err(error) = msg
+                .channel_id
+                .send_message(
+                    &ctx.http,
+                    CreateMessage::new().add_file(CreateAttachment::bytes(
+                        attachment.bytes,
+                        attachment.filename.clone(),
+                    )),
+                )
+                .await
+            {
+                tracing::warn!(
+                    target: "housebot::images",
+                    filename = %attachment.filename,
+                    %error,
+                    "Failed to send generated image"
+                );
+            }
+        }
         // Upload extracted code blocks.
         for (filename, content) in code_files {
             let safe = self.redactor.redact(&String::from_utf8_lossy(&content));

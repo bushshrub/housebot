@@ -37,6 +37,7 @@ pub fn features_text() -> &'static str {
 - Web search (SearXNG) and webpage fetching
 - Jellyfin media server queries (movies, shows, music) — read-only
 - URL summarisation and translation
+- Safety-screened image generation delivered in Discord
 - Timed reminders delivered by DM
 - Create and edit your own GitHub feature requests
 - Custom skills (user-defined prompt templates) via `!skill`

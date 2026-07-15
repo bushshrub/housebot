@@ -47,6 +47,7 @@ pub fn tool_to_tag(tool_name: &str) -> Option<ProfileTag> {
         }
         "set_reminder" => Some(ProfileTag::Reminders),
         "translate" => Some(ProfileTag::Translation),
+        "generate_image" => Some(ProfileTag::Media),
         name if name.starts_with("jellyfin__") => Some(ProfileTag::Media),
         _ => None,
     }

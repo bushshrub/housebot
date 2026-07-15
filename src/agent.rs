@@ -23,6 +23,7 @@ use crate::reminders::Reminders;
 use crate::skills::{Skill, Skills};
 use crate::tools;
 use crate::tools::common_crawl::CommonCrawl;
+use crate::tools::image_generation::{GeneratedImage, ImageGenerator};
 use crate::tools::searxng::SearxNg;
 use crate::tools::web_fetch::WebFetch;
 
@@ -93,12 +94,19 @@ pub enum AgentControlAction {
     OwnerApprovalRequired { job_id: uuid::Uuid },
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AgentAttachment {
+    pub filename: String,
+    pub bytes: Vec<u8>,
+}
+
 /// The outcome of one `Agent::run`.
 #[derive(Debug, Clone, Default)]
 pub struct AgentResult {
     pub text: String,
     pub session_notice: Option<String>,
     pub tools_called: Vec<String>,
+    pub attachments: Vec<AgentAttachment>,
     /// Set when a `prepare_feature_development` tool call produces a structured outcome.
     pub control_action: Option<AgentControlAction>,
 }
@@ -141,6 +149,10 @@ impl TextSink for TextStreamAdapter<'_> {
 /// Result of dispatching a single tool call.
 enum ToolOutcome {
     Text(String),
+    Attachment {
+        text: String,
+        attachment: AgentAttachment,
+    },
     /// A development-flow tool call that also carries a control action.
     DevelopmentAction {
         text: String,
@@ -169,6 +181,7 @@ pub struct Agent {
     pending_jobs: Arc<PendingJobStore>,
     searxng: SearxNg,
     web_fetch: WebFetch,
+    image_generator: ImageGenerator,
     common_crawl: CommonCrawl,
     mcp_servers: Vec<McpServer>,
     session_stats: tokio::sync::Mutex<HashMap<String, SessionStats>>,
@@ -217,6 +230,7 @@ impl Agent {
             pending_jobs: Arc::new(PendingJobStore::default()),
             searxng: SearxNg::from_env(),
             web_fetch: WebFetch::default(),
+            image_generator: ImageGenerator::from_env(),
             common_crawl: CommonCrawl::default(),
             mcp_servers,
             session_stats: tokio::sync::Mutex::new(HashMap::new()),
@@ -459,6 +473,7 @@ impl Agent {
         let tools = self.build_tools(deep_memory_enabled).await;
         let mut turn_messages: Vec<Value> = Vec::new();
         let mut tools_called = Vec::new();
+        let mut attachments = Vec::new();
 
         let mut control_action: Option<AgentControlAction> = None;
 
@@ -524,6 +539,10 @@ impl Agent {
                     .await;
                 let content = match outcome {
                     ToolOutcome::Text(ref t) => t.clone(),
+                    ToolOutcome::Attachment { text, attachment } => {
+                        attachments.push(attachment);
+                        text
+                    }
                     ToolOutcome::DevelopmentAction {
                         ref text,
                         ref action,
@@ -583,6 +602,7 @@ impl Agent {
             },
             session_notice,
             tools_called,
+            attachments,
             control_action,
         }
     }
@@ -601,6 +621,7 @@ impl Agent {
         let mut defs: Vec<Value> = vec![
             tools::searxng::definition(),
             tools::web_fetch::definition(),
+            tools::image_generation::definition(),
             tools::common_crawl::definition(),
             run_skill_tool(),
             tools::feature_request::definition(),
@@ -640,6 +661,7 @@ impl Agent {
             .await;
         let content = match &outcome {
             ToolOutcome::Text(t) => t.as_str(),
+            ToolOutcome::Attachment { text, .. } => text.as_str(),
             ToolOutcome::DevelopmentAction { text, .. } => text.as_str(),
         };
         tracing::info!(
@@ -681,6 +703,40 @@ impl Agent {
                     )
                     .await,
             ),
+            "generate_image" => match self
+                .image_generator
+                .generate(
+                    str_arg(args, "prompt"),
+                    args.get("size")
+                        .and_then(Value::as_str)
+                        .unwrap_or("1024x1024"),
+                )
+                .await
+            {
+                Ok(GeneratedImage::Bytes {
+                    filename,
+                    bytes,
+                    revised_prompt,
+                }) => ToolOutcome::Attachment {
+                    text: revised_prompt.map_or_else(
+                        || format!("Generated and attached `{filename}`."),
+                        |prompt| {
+                            format!(
+                                "Generated and attached `{filename}`. Provider-revised prompt: {prompt}"
+                            )
+                        },
+                    ),
+                    attachment: AgentAttachment { filename, bytes },
+                },
+                Ok(GeneratedImage::Url {
+                    url,
+                    revised_prompt,
+                }) => ToolOutcome::Text(revised_prompt.map_or_else(
+                    || format!("Generated image: {url}"),
+                    |prompt| format!("Generated image: {url}\nProvider-revised prompt: {prompt}"),
+                )),
+                Err(error) => ToolOutcome::Text(error),
+            },
             "common_crawl__search" => ToolOutcome::Text(
                 self.common_crawl
                     .search(
@@ -1111,6 +1167,7 @@ search, general information, and software development questions.\n\nCurrent date
 (ID: {user_id}){profile_section}{memory_section}{personality_section}\n\n## Tools\n\
 - web_search — Search the web (SearXNG) for current information.\n\
 - fetch_webpage — Fetch and read the text of a public webpage.\n\
+- generate_image — Generate one image after mandatory fail-closed safety screening.\n\
 - common_crawl__search — Search historical URL captures in the Common Crawl index.\n\
 - jellyfin__* — Query the household Jellyfin media server for movies, shows, music. \
 READ ONLY — only call get_* / search_* / list_* methods; never call mutating actions.\n\
@@ -1129,7 +1186,7 @@ mentioned something, or what was discussed. Prefer a targeted pattern over a bro
 - get_discord_user — Look up a Discord user's profile by their user ID (username, display name, \
 account creation date, bot status).{skills_section}\n\n\
 ## Guidelines\n- Be conversational and friendly.\n- Use Jellyfin tools for any media questions \
-before guessing.\n- Use web_search for factual or current-events questions. If web_search returns a rate-limit \
+before guessing.\n- Call generate_image only for explicit image requests. Never bypass, retry around, or weaken a safety rejection.\n- Use web_search for factual or current-events questions. If web_search returns a rate-limit \
 error, stop using it for this request and do not retry it repeatedly; use \
 common_crawl__search for historical URL evidence when appropriate, or explain that the search \
 service is temporarily unavailable.\n- You can discuss, explain, review, and advise on software \
@@ -1323,6 +1380,7 @@ impl Agent {
             pending_jobs: Arc::new(PendingJobStore::default()),
             searxng: SearxNg::from_env(),
             web_fetch: WebFetch::default(),
+            image_generator: ImageGenerator::from_env(),
             common_crawl: CommonCrawl::default(),
             mcp_servers: vec![],
             session_stats: tokio::sync::Mutex::new(HashMap::new()),
@@ -1414,6 +1472,14 @@ mod tests {
         let p = build_system_prompt("Alice", "123", "Alice", "", "", &empty_skills(), None, true);
         assert!(p.contains("TL;DR"));
         assert!(p.contains("500"));
+    }
+
+    #[test]
+    fn system_prompt_requires_safe_explicit_image_requests() {
+        let prompt = build_system_prompt("Alice", "123", "", "", "", &empty_skills(), None, true);
+        assert!(prompt.contains("generate_image"));
+        assert!(prompt.contains("explicit image requests"));
+        assert!(prompt.contains("Never bypass"));
     }
 
     #[test]
@@ -1654,6 +1720,7 @@ mod tests {
             ToolOutcome::DevelopmentAction { text, .. } => {
                 panic!("unexpected development action: {text}")
             }
+            ToolOutcome::Attachment { text, .. } => panic!("unexpected attachment: {text}"),
         }
     }
 
@@ -1795,5 +1862,6 @@ mod tests {
         assert!(names.contains(&"update_memory"));
         assert!(names.contains(&"common_crawl__search"));
         assert!(names.contains(&"edit_feature_request"));
+        assert!(names.contains(&"generate_image"));
     }
 }
