@@ -1147,6 +1147,8 @@ impl Agent {
                     &self.rate_limiter,
                     str_arg(args, "title"),
                     str_arg(args, "description"),
+                    str_arg(args, "type"),
+                    username,
                     user_id,
                 )
                 .await,
@@ -1624,8 +1626,8 @@ search, general information, and software development questions.\n\nCurrent date
 - jellyfin__* — Query the household Jellyfin media server for movies, shows, music. \
 READ ONLY — only call get_* / search_* / list_* methods; never call mutating actions.\n\
 {memory_tool_line}\
-- create_feature_request — File a GitHub issue for a feature the user wants added to this bot.\n\
-- edit_feature_request — Edit a feature request filed by the current user; ownership is verified by the tool.\n\
+- create_feature_request — File a GitHub feature request or bug report, including the current user's Discord username and ID.\n\
+- edit_feature_request — Edit a feature request or bug report filed by the current user; ownership is verified by the tool.\n\
 - prepare_feature_development — Prepare an automated coding-agent development job for the configured bot owner to review and confirm. Only call this when the owner explicitly asks to have a feature automatically implemented by a coding agent. For ordinary feature suggestions, use create_feature_request instead.\n\
 - set_reminder — Set a timed reminder; the bot will DM the user when the delay elapses.\n\
 - summarize_url — Fetch a public web URL and return a concise summary.\n\
@@ -1650,8 +1652,10 @@ common_crawl__search for historical URL evidence when appropriate, or explain th
 service is temporarily unavailable.\n- For calculations, data processing, or algorithmic tasks \
 use run_lua to write and execute a Lua script; call get_lua_docs first if you are unsure of the \
 sandbox API.\n- {memory_guidance}\n- Keep responses concise unless asked for detail.\n- If a user \
-requests a feature or improvement to this bot, immediately call create_feature_request with a \
-clear title and description, then tell them the issue URL.\n- If a tool returns an error message \
+requests a feature or improvement to this bot, immediately call create_feature_request with type \
+`feature`, a clear title, and description, then tell them the issue URL. If a user reports broken \
+or incorrect bot behavior, call create_feature_request with type `bug` and include reproduction \
+details in the description.\n- If a tool returns an error message \
 (starts with \"Error:\"), quote it exactly — do not paraphrase or soften it.\n- When the user's \
 message exceeds 500 characters, begin your reply with a **TL;DR:** line (one sentence) \
 summarizing what they asked.\n"
