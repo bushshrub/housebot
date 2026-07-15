@@ -1128,7 +1128,6 @@ mentioned something, or what was discussed. Prefer a targeted pattern over a bro
 - get_discord_user — Look up a Discord user's profile by their user ID (username, display name, \
 account creation date, bot status).{skills_section}\n\n\
 ## Guidelines\n- Be conversational and friendly.\n- Use Jellyfin tools for any media questions \
-before guessing.\n- Use web_search for factual or current-events questions. If web_search returns a rate-limit \
 before guessing.\n- Never infer sensitive traits, identity, or intent from a user's avatar.\n- Use web_search for factual or current-events questions. If web_search returns a rate-limit \
 error, stop using it for this request and do not retry it repeatedly; use \
 common_crawl__search for historical URL evidence when appropriate, or explain that the search \
