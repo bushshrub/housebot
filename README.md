@@ -37,6 +37,7 @@ See `.env.example` for all available options. Key variables:
 | `DISCORD_BOT_TOKEN` | Discord bot auth |
 | `OWNER_DISCORD_ID` | Owner user ID |
 | `LLM_BASE_URL` / `LLM_MODEL` | OpenAI-compatible LLM endpoint (llama.cpp) |
+| `LLM_QUEUE_MAX_PARALLEL` | Maximum concurrent LLM requests (default: `4`) |
 | `SEARXNG_URL` | SearXNG instance for the `web_search` tool |
 | `JELLYFIN_URL` + `JELLYFIN_API_KEY` | Enables Jellyfin MCP |
 | `GITHUB_*` | GitHub App credentials for issue filing and coding-agent dispatch |

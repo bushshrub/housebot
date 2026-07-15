@@ -3,6 +3,7 @@
 
 use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
+use std::time::Duration;
 
 use async_trait::async_trait;
 use chrono::{Local, Utc};
@@ -331,7 +332,10 @@ impl Agent {
             .flatten()
             .map(|tokens| tokens as usize)
             .unwrap_or_else(|| config::env_parse("MAX_CONTEXT_TOKENS", 10_000));
-        let queue = Arc::new(LlmRequestQueue::default());
+        let queue = Arc::new(LlmRequestQueue::new(config::env_parse(
+            "LLM_QUEUE_MAX_PARALLEL",
+            4,
+        )));
         let queued_client = Arc::new(QueuedChatClient::new(raw_client, queue));
         let client: Arc<dyn ChatClient> = queued_client.clone();
         let memory = match Memory::from_env().await {
@@ -443,10 +447,25 @@ impl Agent {
             }),
             json!({"role": "user", "content": prompt}),
         ];
-        let completion = self
-            .queued_client
-            .chat_once_with_priority(LlmPriority::LuaAnalysis, &self.model, &messages, 256)
-            .await;
+        let completion = match tokio::time::timeout(
+            Duration::from_secs(30),
+            self.queued_client.chat_once_with_priority(
+                LlmPriority::LuaAnalysis,
+                &self.model,
+                &messages,
+                256,
+            ),
+        )
+        .await
+        {
+            Ok(completion) => completion,
+            Err(_) => {
+                return LuaAnalysis {
+                    allowed: false,
+                    reason: "the safety review timed out".to_string(),
+                };
+            }
+        };
         let Ok(completion) = completion else {
             return LuaAnalysis {
                 allowed: false,
