@@ -232,10 +232,7 @@ pub async fn erase_data_command(
 }
 
 pub async fn memory_command(memory: &Memory, first_line: &str, author_id: u64) -> String {
-    let parts: Vec<&str> = first_line
-        .splitn(3, char::is_whitespace)
-        .filter(|s| !s.is_empty())
-        .collect();
+    let parts: Vec<&str> = first_line.split_whitespace().collect();
     if parts.len() < 2 {
         return "Usage: `!memory show` | `!memory clear` | `!memory search <query>`".into();
     }
@@ -245,7 +242,7 @@ pub async fn memory_command(memory: &Memory, first_line: &str, author_id: u64) -
             if content.trim().is_empty() {
                 "No memories stored yet. Enable deep memory with `/privacy deep_memory enabled:true`.".into()
             } else {
-                format!("**What I remember about you:**\n{content}")
+                truncate_discord("**What I remember about you:**\n", &content)
             }
         }
         "clear" => match memory.clear(author_id.to_string()).await {
@@ -253,9 +250,10 @@ pub async fn memory_command(memory: &Memory, first_line: &str, author_id: u64) -
             Err(_) => "⚠️ Failed to clear memory. Please try again.".into(),
         },
         "search" => {
-            let Some(query) = parts.get(2) else {
+            let query = parts[2..].join(" ");
+            if query.is_empty() {
                 return "Usage: `!memory search <query>`".into();
-            };
+            }
             let content = memory.load(author_id.to_string()).await;
             if content.trim().is_empty() {
                 return "No memories stored yet.".into();
@@ -268,11 +266,25 @@ pub async fn memory_command(memory: &Memory, first_line: &str, author_id: u64) -
             if matching.is_empty() {
                 format!("No memories matching `{query}`.")
             } else {
-                format!("**Memories matching `{query}`:**\n{}", matching.join("\n"))
+                let header = format!("**Memories matching `{query}`:**\n");
+                truncate_discord(&header, &matching.join("\n"))
             }
         }
         other => format!("Unknown subcommand `{other}`. Options: `show`, `clear`, `search`"),
     }
+}
+
+/// Prepend `header` to `body`, truncating the combined result to Discord's 2000-char limit.
+fn truncate_discord(header: &str, body: &str) -> String {
+    const LIMIT: usize = 2000;
+    const ELLIPSIS: &str = "\n…(truncated)";
+    let full = format!("{header}{body}");
+    if full.chars().count() <= LIMIT {
+        return full;
+    }
+    let keep = LIMIT.saturating_sub(ELLIPSIS.chars().count());
+    let truncated: String = full.chars().take(keep).collect();
+    format!("{truncated}{ELLIPSIS}")
 }
 
 pub async fn stats_command(

@@ -842,6 +842,17 @@ async fn handle_privacy_interaction(
     }
 }
 
+fn truncate_memory_reply(header: &str, body: &str) -> String {
+    const LIMIT: usize = MAX_MESSAGE_LENGTH;
+    const ELLIPSIS: &str = "\n…(truncated)";
+    let full = format!("{header}{body}");
+    if full.chars().count() <= LIMIT {
+        return full;
+    }
+    let keep = LIMIT.saturating_sub(ELLIPSIS.chars().count());
+    format!("{}{ELLIPSIS}", full.chars().take(keep).collect::<String>())
+}
+
 /// Handle a `/memory` interaction: view or clear the bot's memory about the user.
 async fn handle_memory_interaction(
     memory: &Memory,
@@ -855,7 +866,7 @@ async fn handle_memory_interaction(
             if content.trim().is_empty() {
                 "No memories stored yet. Enable deep memory with `/privacy deep_memory enabled:true` and I will start remembering things about you across conversations.".into()
             } else {
-                format!("**What I remember about you:**\n{content}")
+                truncate_memory_reply("**What I remember about you:**\n", &content)
             }
         }
         Some("clear") => match memory.clear(author_id.to_string()).await {
@@ -891,7 +902,8 @@ async fn handle_memory_interaction(
             if matching.is_empty() {
                 format!("No memories matching `{query}`.")
             } else {
-                format!("**Memories matching `{query}`:**\n{}", matching.join("\n"))
+                let header = format!("**Memories matching `{query}`:**\n");
+                truncate_memory_reply(&header, &matching.join("\n"))
             }
         }
         other => format!("Unknown memory subcommand `{other:?}`. Use `/memory show`, `/memory search`, or `/memory clear`."),
@@ -1347,6 +1359,7 @@ impl EventHandler for HouseBot {
             _ => return,
         };
 
+        let reply = self.redactor.redact(&reply);
         let response = CreateInteractionResponse::Message(
             CreateInteractionResponseMessage::new()
                 .content(reply)

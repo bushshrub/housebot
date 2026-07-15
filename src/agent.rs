@@ -739,6 +739,10 @@ impl Agent {
             }
             "search_memory" => {
                 let query = str_arg(args, "query");
+                let query = query.trim();
+                if query.is_empty() {
+                    return ToolOutcome::Text("Error: search query cannot be blank.".to_string());
+                }
                 let content = self.memory.load(user_id).await;
                 if content.trim().is_empty() {
                     ToolOutcome::Text("No memory stored for this user.".to_string())
@@ -1234,7 +1238,7 @@ fn search_memory_tool() -> Value {
             or when you want to check whether you already know something about a topic.",
         "input_schema": {
             "type": "object",
-            "properties": {"query": {"type": "string", "description": "Keyword or phrase to search for in memory."}},
+            "properties": {"query": {"type": "string", "minLength": 1, "description": "Keyword or phrase to search for in memory."}},
             "required": ["query"]
         }
     })
