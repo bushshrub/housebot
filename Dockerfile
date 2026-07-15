@@ -32,6 +32,7 @@ FROM alpine:3.22
 WORKDIR /app
 COPY --from=rust-builder /app/housebot /usr/local/bin/housebot
 COPY --from=jellyfin-mcp-builder /go/bin/jellyfin-mcp /usr/local/bin/jellyfin-mcp
+RUN apk add --no-cache poppler-utils
 RUN test -x /usr/local/bin/jellyfin-mcp
 RUN mkdir -p data/history data/memories
 
