@@ -5,6 +5,7 @@
 //! applies a regex to message content, returning only matching entries — which
 //! keeps token usage proportional to what the model actually needs.
 
+use std::collections::HashMap;
 use std::io::{BufRead as _, BufReader};
 use std::path::{Path, PathBuf};
 
@@ -23,6 +24,13 @@ pub struct LogEntry {
     /// Server nickname or global display name, if different from username.
     pub nick: Option<String>,
     pub content: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct KnownAuthor {
+    pub user_id: String,
+    pub username: String,
+    pub nick: Option<String>,
 }
 
 #[derive(Clone)]
@@ -150,6 +158,71 @@ impl ChannelLog {
             .await
             .map_err(|e| format!("Error: {e}"))?
     }
+
+    /// Find distinct authors previously seen in a channel by username, nickname, or ID.
+    pub async fn find_authors(
+        &self,
+        channel_id: u64,
+        query: &str,
+        max_results: usize,
+    ) -> Result<Vec<KnownAuthor>, String> {
+        let path = self.path(channel_id);
+        let query = query.trim().to_lowercase();
+        tokio::task::spawn_blocking(move || find_authors_sync(&path, &query, max_results))
+            .await
+            .map_err(|e| format!("Author search error: {e}"))?
+    }
+}
+
+fn find_authors_sync(
+    path: &Path,
+    query: &str,
+    max_results: usize,
+) -> Result<Vec<KnownAuthor>, String> {
+    let file = match std::fs::File::open(path) {
+        Ok(file) => file,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(vec![]),
+        Err(error) => return Err(format!("Could not open channel log: {error}")),
+    };
+    let mut authors = HashMap::new();
+    for line in BufReader::new(file).lines() {
+        let Ok(line) = line else { continue };
+        let Ok(value) = serde_json::from_str::<Value>(&line) else {
+            continue;
+        };
+        let user_id = value["uid"].as_str().unwrap_or("").to_string();
+        if user_id.is_empty() {
+            continue;
+        }
+        authors.insert(
+            user_id.clone(),
+            KnownAuthor {
+                user_id,
+                username: value["name"].as_str().unwrap_or("").to_string(),
+                nick: value["nick"].as_str().map(str::to_string),
+            },
+        );
+    }
+    let mut matches: Vec<KnownAuthor> = authors
+        .into_values()
+        .filter(|author| {
+            query.is_empty()
+                || author.user_id.contains(query)
+                || author.username.to_lowercase().contains(query)
+                || author
+                    .nick
+                    .as_deref()
+                    .is_some_and(|nick| nick.to_lowercase().contains(query))
+        })
+        .collect();
+    matches.sort_by(|left, right| {
+        left.username
+            .to_lowercase()
+            .cmp(&right.username.to_lowercase())
+            .then_with(|| left.user_id.cmp(&right.user_id))
+    });
+    matches.truncate(max_results);
+    Ok(matches)
 }
 
 fn search_sync(path: &Path, re: &Regex, max_results: usize) -> Result<Vec<LogEntry>, String> {
@@ -244,6 +317,39 @@ mod tests {
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].username, "Alice");
         assert_eq!(results[0].content, "hello world");
+    }
+
+    #[tokio::test]
+    async fn find_authors_matches_username_nickname_and_id() {
+        let (_t, log) = store();
+        log.append(1, 10, "alice_dev", Some("Alice"), "hello").await;
+        log.append(1, 11, "bob", Some("Builder"), "hi").await;
+        log.append(2, 12, "outside", None, "hidden").await;
+
+        assert_eq!(
+            log.find_authors(1, "ALICE", 10).await.unwrap()[0].user_id,
+            "10"
+        );
+        assert_eq!(
+            log.find_authors(1, "build", 10).await.unwrap()[0].user_id,
+            "11"
+        );
+        assert_eq!(
+            log.find_authors(1, "10", 10).await.unwrap()[0].username,
+            "alice_dev"
+        );
+        assert!(log.find_authors(1, "outside", 10).await.unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn find_authors_deduplicates_and_keeps_latest_names() {
+        let (_t, log) = store();
+        log.append(1, 10, "alice", None, "hello").await;
+        log.append(1, 10, "alice_new", Some("Ali"), "again").await;
+        let authors = log.find_authors(1, "", 10).await.unwrap();
+        assert_eq!(authors.len(), 1);
+        assert_eq!(authors[0].username, "alice_new");
+        assert_eq!(authors[0].nick.as_deref(), Some("Ali"));
     }
 
     #[tokio::test]
