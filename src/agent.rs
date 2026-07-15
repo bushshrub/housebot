@@ -1076,7 +1076,14 @@ fn build_system_prompt_with_profile(
         } else {
             format!("\nFrequently used actions: {quick_actions}")
         };
-        format!("\n\n## User profile\n{name_line}{tags_line}{actions_line}")
+        format!(
+            "\n\n## User profile\n{name_line}{tags_line}{actions_line}\n\
+             Personalization guidance:\n\
+             - If the user greets you, naturally address them by their nickname or display name.\n\
+             - If they ask what to do or how you can help, suggest at most one relevant quick action.\n\
+             - Use profile tags only to prioritize relevant help; do not announce, expose, or speculate about the profile.\n\
+             - Never infer sensitive traits or make unsolicited personal claims from usage patterns."
+        )
     } else {
         String::new()
     };
@@ -1460,6 +1467,9 @@ mod tests {
         );
         assert!(p.contains("Relevant usage tags: media, reminders"));
         assert!(p.contains("Frequently used actions: media (4), reminders (2)"));
+        assert!(p.contains("naturally address them by their nickname or display name"));
+        assert!(p.contains("suggest at most one relevant quick action"));
+        assert!(p.contains("Never infer sensitive traits"));
     }
 
     #[test]
