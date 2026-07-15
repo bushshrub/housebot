@@ -98,7 +98,7 @@ pub struct UserConfig {
     pub thinking_mode: ThinkingMode,
     /// Whether the bot may use `update_memory` and auto-save conversation summaries.
     /// When disabled, short-term conversation history still works normally.
-    #[serde(default)]
+    #[serde(default = "default_deep_memory_enabled")]
     pub deep_memory_enabled: bool,
     /// Whether the bot may respond proactively to messages it wasn't mentioned in.
     /// Only narrow cases are handled (obvious reminder requests, help questions).
@@ -110,6 +110,10 @@ fn default_followup_timeout() -> u64 {
     crate::config::env_parse("CONVERSATION_IDLE_TIMEOUT", 300)
 }
 
+fn default_deep_memory_enabled() -> bool {
+    true
+}
+
 impl Default for UserConfig {
     fn default() -> Self {
         Self {
@@ -118,7 +122,7 @@ impl Default for UserConfig {
             followup_timeout_secs: default_followup_timeout(),
             labs_pagination_enabled: false,
             thinking_mode: ThinkingMode::default(),
-            deep_memory_enabled: false,
+            deep_memory_enabled: true,
             proactive_assistance_enabled: false,
         }
     }
@@ -205,8 +209,8 @@ mod tests {
     }
 
     #[test]
-    fn deep_memory_is_off_by_default() {
-        assert!(!UserConfig::default().deep_memory_enabled);
+    fn deep_memory_is_on_by_default() {
+        assert!(UserConfig::default().deep_memory_enabled);
     }
 
     #[test]
@@ -215,10 +219,10 @@ mod tests {
     }
 
     #[test]
-    fn old_user_config_defaults_privacy_fields_to_off() {
+    fn old_user_config_enables_memory_but_keeps_proactive_assistance_off() {
         let config: UserConfig =
             serde_json::from_str(r#"{"personality":null,"followup_timeout_secs":300}"#).unwrap();
-        assert!(!config.deep_memory_enabled);
+        assert!(config.deep_memory_enabled);
         assert!(!config.proactive_assistance_enabled);
     }
 

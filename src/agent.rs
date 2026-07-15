@@ -200,12 +200,15 @@ impl Agent {
             .flatten()
             .map(|tokens| tokens as usize)
             .unwrap_or_else(|| config::env_parse("MAX_CONTEXT_TOKENS", 10_000));
+        let memory = Memory::from_env()
+            .await
+            .expect("failed to initialize PostgreSQL persistent memory");
         Self {
             client,
             model: config::env_or("LLM_MODEL", "gemma-4-12b-qat-q4kxl"),
             context_window_tokens,
             history: History::default(),
-            memory: Memory::default(),
+            memory,
             profile_store: ProfileStore::default(),
             skills: Skills::default(),
             reminders: Reminders::default(),
@@ -228,6 +231,11 @@ impl Agent {
     /// Access to the reminders store (the bot's delivery loop needs it).
     pub fn reminders(&self) -> &Reminders {
         &self.reminders
+    }
+
+    /// Shared persistent memory store used by the Discord command surface.
+    pub fn memory(&self) -> Memory {
+        self.memory.clone()
     }
 
     /// Shared pending-job store; also held by `HouseBot` to drive the Discord component UI.
@@ -1088,7 +1096,7 @@ fn build_system_prompt_with_profile(
         String::new()
     };
     let memory_guidance = if deep_memory_enabled {
-        "Update memory when you learn something worth remembering."
+        "Use the saved memory to personalize this conversation naturally, and update it when you learn a durable preference, fact, ongoing project, or correction worth remembering. Never mention the memory store unless the user asks about it."
     } else {
         "Deep memory is disabled for this user. Do NOT call update_memory and do NOT suggest \
          persisting facts. Short-term conversation history within this session still works normally."
@@ -1491,7 +1499,7 @@ mod tests {
     #[test]
     fn system_prompt_allows_deep_memory_when_enabled() {
         let p = build_system_prompt("Alice", "123", "Alice", "", "", &empty_skills(), None, true);
-        assert!(p.contains("Update memory when you learn something worth remembering"));
+        assert!(p.contains("Use the saved memory to personalize this conversation naturally"));
     }
 
     #[test]
