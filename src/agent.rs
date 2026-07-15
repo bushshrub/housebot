@@ -1166,7 +1166,6 @@ Call this when a user asks what you can do, what commands exist, or how to use a
 - search_messages — Search the current channel's message log by regex pattern. Only matching \
 messages are returned, keeping token usage low. Use this when a user asks what was said, who \
 mentioned something, or what was discussed. Prefer a targeted pattern over a broad one.\n\
-- get_discord_user — Look up a Discord user's profile by their user ID (username, display name, \
 - find_discord_users — Resolve a username or nickname to users seen in the current channel.\n\
 - get_discord_user — Look up a Discord user's profile by their user ID (username, display name, \
 account creation date, bot status).{skills_section}\n\n\
@@ -1487,6 +1486,15 @@ mod tests {
     fn system_prompt_excludes_code_execution() {
         let p = build_system_prompt("Alice", "123", "Alice", "", "", &empty_skills(), None, true);
         assert!(!p.contains("code execution"));
+    }
+
+    #[test]
+    fn system_prompt_lists_discord_user_tools_once_and_in_order() {
+        let p = build_system_prompt("Alice", "123", "Alice", "", "", &empty_skills(), None, true);
+        let find = p.find("- find_discord_users —").unwrap();
+        let get = p.find("- get_discord_user —").unwrap();
+        assert!(find < get);
+        assert_eq!(p.matches("- get_discord_user —").count(), 1);
     }
 
     #[test]
