@@ -117,7 +117,7 @@ data/                # runtime — gitignored
 ```
 Discord message
   └─ HouseBot::message()
-       ├─ !commands (!new / !reset / !skill / !note / !stats)
+       ├─ commands (/session, /storage, /data; !session / !storage / !skill / !stats)
        ├─ filter (DM / mention / reply-to-bot / active conversation)
        ├─ extract media attachments (base64)
        ├─ post "⚙️ Generating..." progress message
