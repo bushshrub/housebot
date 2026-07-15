@@ -862,7 +862,39 @@ async fn handle_memory_interaction(
             Ok(()) => "✅ Your memory has been cleared. I no longer remember anything about you from past sessions.".into(),
             Err(_) => "⚠️ Failed to clear memory. Please try again.".into(),
         },
-        other => format!("Unknown memory subcommand `{other:?}`. Use `/memory show` or `/memory clear`."),
+        Some("search") => {
+            let query = options
+                .first()
+                .and_then(|o| match &o.value {
+                    serenity::all::CommandDataOptionValue::SubCommand(opts) => opts
+                        .iter()
+                        .find(|opt| opt.name == "query")
+                        .and_then(|opt| match &opt.value {
+                            serenity::all::CommandDataOptionValue::String(s) => Some(s.as_str()),
+                            _ => None,
+                        }),
+                    _ => None,
+                })
+                .unwrap_or("");
+            if query.is_empty() {
+                return "Please provide a search query.".into();
+            }
+            let content = memory.load(author_id.to_string()).await;
+            if content.trim().is_empty() {
+                return "No memories stored yet.".into();
+            }
+            let query_lower = query.to_lowercase();
+            let matching: Vec<&str> = content
+                .lines()
+                .filter(|line| line.to_lowercase().contains(&query_lower))
+                .collect();
+            if matching.is_empty() {
+                format!("No memories matching `{query}`.")
+            } else {
+                format!("**Memories matching `{query}`:**\n{}", matching.join("\n"))
+            }
+        }
+        other => format!("Unknown memory subcommand `{other:?}`. Use `/memory show`, `/memory search`, or `/memory clear`."),
     }
 }
 
@@ -1123,12 +1155,27 @@ impl EventHandler for HouseBot {
                     ),
                 ),
             CreateCommand::new("memory")
-                .description("View or clear the bot's persistent memory about you")
+                .description("View, search, or clear the bot's persistent memory about you")
                 .add_option(CreateCommandOption::new(
                     CommandOptionType::SubCommand,
                     "show",
                     "Show what the bot currently remembers about you",
                 ))
+                .add_option(
+                    CreateCommandOption::new(
+                        CommandOptionType::SubCommand,
+                        "search",
+                        "Search your stored memories for a keyword or phrase",
+                    )
+                    .add_sub_option(
+                        CreateCommandOption::new(
+                            CommandOptionType::String,
+                            "query",
+                            "Keyword or phrase to search for",
+                        )
+                        .required(true),
+                    ),
+                )
                 .add_option(CreateCommandOption::new(
                     CommandOptionType::SubCommand,
                     "clear",
