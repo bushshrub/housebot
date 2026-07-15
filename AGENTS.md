@@ -196,6 +196,10 @@ specification, runner requirements, and security model.
   work there, commit and push it, then open a normal ready-for-review (non-draft) PR against
   `master`. Do not wait for intermediate confirmation unless new authority or a material scope
   decision is required. Never commit directly to `master`.
+- **Issue linkage.** Before starting development, use issue numbers explicitly linked in the task.
+  If none are supplied, search open repository issues for the task's feature, symptom, or affected
+  component. Include every confirmed related issue in the PR body as `Closes #<number>`; do not
+  invent issue links when the search finds no match.
 - **Always commit automatically.** The coding agent must create a commit for every set of
   changes it produces before handing work back; do not leave implemented changes uncommitted.
 - **Codex attribution.** Every commit created by the Codex coding agent must include the exact
