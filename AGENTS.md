@@ -190,9 +190,12 @@ specification, runner requirements, and security model.
   `agent:failed`.  Do not add or remove these labels manually outside the workflow.
 - **No force-push. No auto-merge. No auto-deploy.** All PRs opened by the agent require
   a human review and explicit merge.
-- **Development branch workflow.** For every development task, start from the up-to-date default
-  branch (`master` in this repository; `main` if it is renamed), create a new task branch, and
-  commit and push the completed work. Never commit directly to the default branch.
+- **Autonomous development workflow.** A user only needs to provide the task. For every
+  development task, the agent must: fetch `origin`, fast-forward local `master` from
+  `origin/master`, create a new task branch from that updated `master`, implement and validate the
+  work there, commit and push it, then open a normal ready-for-review (non-draft) PR against
+  `master`. Do not wait for intermediate confirmation unless new authority or a material scope
+  decision is required. Never commit directly to `master`.
 - **Always commit automatically.** The coding agent must create a commit for every set of
   changes it produces before handing work back; do not leave implemented changes uncommitted.
 - **Codex attribution.** Every commit created by the Codex coding agent must include the exact
