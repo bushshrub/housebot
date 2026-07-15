@@ -1759,10 +1759,10 @@ impl EventHandler for HouseBot {
             .as_ref()
             .map(|m| m.author.id == bot_id)
             .unwrap_or(false);
-        let is_reply_to_media = msg
+        let is_reply_to_attachment = msg
             .referenced_message
             .as_deref()
-            .is_some_and(message_has_supported_media);
+            .is_some_and(message_has_attachments);
 
         // Follow-ups are on by default in DMs. In guild channels, users must
         // opt in and the channel must be explicitly configured by the server.
@@ -1789,13 +1789,13 @@ impl EventHandler for HouseBot {
             && user_config.proactive_assistance_enabled
             && !is_mentioned
             && !is_reply_to_bot
-            && !is_reply_to_media
+            && !is_reply_to_attachment
             && is_proactive_candidate(&content)
             && self.proactive_cooldown_allows(channel_id, user_id).await;
         if !(is_dm
             || is_mentioned
             || is_reply_to_bot
-            || is_reply_to_media
+            || is_reply_to_attachment
             || is_active
             || proactive)
         {
@@ -1940,6 +1940,12 @@ impl HouseBot {
             text = text.replace(&token, "");
         }
         let text = text.trim().to_string();
+        let attachment_text = message_attachment_context(msg);
+        let text = match attachment_text {
+            Some(attachments) if text.is_empty() => attachments,
+            Some(attachments) => format!("{text}\n\n{attachments}"),
+            None => text,
+        };
 
         let referenced_text = msg
             .referenced_message
@@ -1950,7 +1956,7 @@ impl HouseBot {
             Some(referenced) => format!("{text}\n\n{referenced}"),
             None => text,
         };
-        if text.is_empty() && !message_has_supported_media(msg) {
+        if text.is_empty() && !message_has_attachments(msg) {
             return;
         }
 
@@ -3439,6 +3445,10 @@ fn pagination_components(token: &str, page: usize, page_count: usize) -> Vec<Cre
 async fn extract_media(msg: &Message) -> Vec<MediaData> {
     let mut media = Vec::new();
     for att in &msg.attachments {
+        if is_pdf(&att.filename) {
+            media.extend(extract_pdf_pages(&att.url, &att.filename).await);
+            continue;
+        }
         let Some(media_type) = media_type(&att.filename) else {
             continue;
         };
@@ -3453,6 +3463,79 @@ async fn extract_media(msg: &Message) -> Vec<MediaData> {
         }
     }
     media
+}
+
+const MAX_PDF_PAGES: usize = 10;
+
+async fn extract_pdf_pages(url: &str, filename: &str) -> Vec<MediaData> {
+    let Ok(response) = reqwest::get(url).await else {
+        return Vec::new();
+    };
+    let Ok(bytes) = response.bytes().await else {
+        return Vec::new();
+    };
+
+    let directory = std::env::temp_dir().join(format!("housebot-pdf-{}", Uuid::new_v4()));
+    let input = directory.join("input.pdf");
+    let output_prefix = directory.join("page");
+    let result = async {
+        tokio::fs::create_dir_all(&directory).await.ok()?;
+        tokio::fs::write(&input, bytes).await.ok()?;
+        let output = tokio::process::Command::new("pdftoppm")
+            .args(pdf_render_arguments())
+            .arg(&input)
+            .arg(&output_prefix)
+            .output()
+            .await
+            .ok()?;
+        if !output.status.success() {
+            tracing::warn!(%filename, stderr = %String::from_utf8_lossy(&output.stderr), "Failed to render PDF attachment");
+            return None;
+        }
+
+        let mut pages = tokio::fs::read_dir(&directory).await.ok()?;
+        let mut paths = Vec::new();
+        while let Some(entry) = pages.next_entry().await.ok()? {
+            let path = entry.path();
+            if path.extension().is_some_and(|extension| extension == "png") {
+                paths.push(path);
+            }
+        }
+        paths.sort();
+
+        let mut media = Vec::with_capacity(paths.len());
+        for path in paths {
+            let page = tokio::fs::read(path).await.ok()?;
+            use base64::Engine;
+            media.push(MediaData {
+                media_type: "image/png".to_string(),
+                data: base64::engine::general_purpose::STANDARD.encode(page),
+            });
+        }
+        Some(media)
+    }
+    .await
+    .unwrap_or_default();
+    let _ = tokio::fs::remove_dir_all(&directory).await;
+    result
+}
+
+fn pdf_render_arguments() -> [String; 7] {
+    [
+        "-png".to_string(),
+        "-r".to_string(),
+        "144".to_string(),
+        "-f".to_string(),
+        "1".to_string(),
+        "-l".to_string(),
+        MAX_PDF_PAGES.to_string(),
+    ]
+}
+
+fn is_pdf(filename: &str) -> bool {
+    filename
+        .rsplit_once('.')
+        .is_some_and(|(_, extension)| extension.eq_ignore_ascii_case("pdf"))
 }
 
 fn media_type(filename: &str) -> Option<&'static str> {
@@ -3480,7 +3563,7 @@ fn media_type(filename: &str) -> Option<&'static str> {
 
 #[cfg(test)]
 mod media_tests {
-    use super::media_type;
+    use super::{attachment_context, is_pdf, media_type, pdf_render_arguments};
 
     #[test]
     fn recognizes_supported_media_extensions() {
@@ -3488,20 +3571,73 @@ mod media_tests {
         assert_eq!(media_type("recording.mp3"), Some("audio/mpeg"));
         assert_eq!(media_type("clip.mp4"), Some("video/mp4"));
         assert_eq!(media_type("document.pdf"), None);
+        assert!(is_pdf("document.pdf"));
+        assert!(is_pdf("DOCUMENT.PDF"));
+        assert!(!is_pdf("document.txt"));
+    }
+
+    #[test]
+    fn attachment_context_keeps_documents_available_to_the_agent() {
+        let context = attachment_context(
+            [(
+                "midterm.pdf",
+                "https://cdn.discordapp.com/files/midterm.pdf",
+            )]
+            .into_iter(),
+        )
+        .unwrap();
+
+        assert!(context.contains("already available"));
+        assert!(context.contains("midterm.pdf"));
+        assert!(context.contains("https://cdn.discordapp.com/files/midterm.pdf"));
+    }
+
+    #[test]
+    fn attachment_context_omits_empty_attachment_lists() {
+        assert!(attachment_context(std::iter::empty()).is_none());
+    }
+
+    #[test]
+    fn pdfs_are_rendered_as_png_pages_at_a_readable_resolution() {
+        assert_eq!(
+            pdf_render_arguments(),
+            ["-png", "-r", "144", "-f", "1", "-l", "10"]
+        );
     }
 }
 
-fn message_has_supported_media(msg: &Message) -> bool {
-    msg.attachments
-        .iter()
-        .any(|attachment| media_type(&attachment.filename).is_some())
+fn message_has_attachments(msg: &Message) -> bool {
+    !msg.attachments.is_empty()
+}
+
+fn message_attachment_context(msg: &Message) -> Option<String> {
+    attachment_context(
+        msg.attachments
+            .iter()
+            .map(|attachment| (attachment.filename.as_str(), attachment.url.as_str())),
+    )
+}
+
+fn attachment_context<'a>(attachments: impl Iterator<Item = (&'a str, &'a str)>) -> Option<String> {
+    let attachments: Vec<_> = attachments.collect();
+    if attachments.is_empty() {
+        return None;
+    }
+
+    let mut context = String::from(
+        "[Attachments in this message. These files are already available; do not ask the user to upload them again.]",
+    );
+    for (filename, url) in attachments {
+        context.push_str(&format!("\n- `{filename}`: {url}"));
+    }
+    Some(context)
 }
 
 fn referenced_message_context(msg: &Message) -> Option<String> {
     let text = msg.content.trim();
     let urls: Vec<&str> = URL.find_iter(text).map(|m| m.as_str()).collect();
-    let has_media = message_has_supported_media(msg);
-    if text.is_empty() && !has_media {
+    let attachment_context = message_attachment_context(msg);
+    if text.is_empty() && attachment_context.is_none() {
         return None;
     }
 
@@ -3515,8 +3651,9 @@ fn referenced_message_context(msg: &Message) -> Option<String> {
         );
         context.push_str(&urls.join(", "));
     }
-    if has_media {
-        context.push_str("\n\n[The message above also contains media attachment(s) for analysis.]");
+    if let Some(attachments) = attachment_context {
+        context.push_str("\n\n");
+        context.push_str(&attachments);
     }
     context.push_str("\n[End message being replied to]");
     Some(context)
