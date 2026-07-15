@@ -13,7 +13,7 @@ use serenity::all::{
     Context, CreateActionRow, CreateAllowedMentions, CreateAttachment, CreateButton, CreateCommand,
     CreateCommandOption, CreateEmbed, CreateInteractionResponse, CreateInteractionResponseMessage,
     CreateSelectMenu, CreateSelectMenuKind, CreateSelectMenuOption, EditInteractionResponse,
-    EditMessage, EventHandler, GatewayIntents, Interaction, Message, Ready, UserId,
+    EditMessage, EventHandler, GatewayIntents, GuildId, Interaction, Message, Ready, UserId,
 };
 use serenity::builder::CreateMessage;
 use serenity::Client;
@@ -41,7 +41,9 @@ use crate::profile::ProfileStore;
 use crate::rate_limit::RateLimiter;
 use crate::skills::Skills;
 
-pub use crate::bot_commands::{erase_data_command, note_command, skill_command, stats_command};
+pub use crate::bot_commands::{
+    erase_data_command, memory_command, note_command, skill_command, stats_command,
+};
 use crate::bot_formatting::append_tool_summary;
 pub use crate::bot_formatting::{extract_code_files, lang_ext, split_text, tool_hint};
 
@@ -846,6 +848,17 @@ async fn handle_privacy_interaction(
     }
 }
 
+fn truncate_memory_reply(header: &str, body: &str) -> String {
+    const LIMIT: usize = MAX_MESSAGE_LENGTH;
+    const ELLIPSIS: &str = "\n…(truncated)";
+    let full = format!("{header}{body}");
+    if full.chars().count() <= LIMIT {
+        return full;
+    }
+    let keep = LIMIT.saturating_sub(ELLIPSIS.chars().count());
+    format!("{}{ELLIPSIS}", full.chars().take(keep).collect::<String>())
+}
+
 /// Handle a `/memory` interaction: view or clear the bot's memory about the user.
 async fn handle_memory_interaction(
     memory: &Memory,
@@ -859,14 +872,47 @@ async fn handle_memory_interaction(
             if content.trim().is_empty() {
                 "No memories stored yet. Enable deep memory with `/privacy deep_memory enabled:true` and I will start remembering things about you across conversations.".into()
             } else {
-                format!("**What I remember about you:**\n{content}")
+                truncate_memory_reply("**What I remember about you:**\n", &content)
             }
         }
         Some("clear") => match memory.clear(author_id.to_string()).await {
             Ok(()) => "✅ Your memory has been cleared. I no longer remember anything about you from past sessions.".into(),
             Err(_) => "⚠️ Failed to clear memory. Please try again.".into(),
         },
-        other => format!("Unknown memory subcommand `{other:?}`. Use `/memory show` or `/memory clear`."),
+        Some("search") => {
+            let query = options
+                .first()
+                .and_then(|o| match &o.value {
+                    serenity::all::CommandDataOptionValue::SubCommand(opts) => opts
+                        .iter()
+                        .find(|opt| opt.name == "query")
+                        .and_then(|opt| match &opt.value {
+                            serenity::all::CommandDataOptionValue::String(s) => Some(s.as_str()),
+                            _ => None,
+                        }),
+                    _ => None,
+                })
+                .unwrap_or("");
+            if query.is_empty() {
+                return "Please provide a search query.".into();
+            }
+            let content = memory.load(author_id.to_string()).await;
+            if content.trim().is_empty() {
+                return "No memories stored yet.".into();
+            }
+            let query_lower = query.to_lowercase();
+            let matching: Vec<&str> = content
+                .lines()
+                .filter(|line| line.to_lowercase().contains(&query_lower))
+                .collect();
+            if matching.is_empty() {
+                truncate_memory_reply("", &format!("No memories matching `{query}`."))
+            } else {
+                let header = format!("**Memories matching `{query}`:**\n");
+                truncate_memory_reply(&header, &matching.join("\n"))
+            }
+        }
+        other => format!("Unknown memory subcommand `{other:?}`. Use `/memory show`, `/memory search`, or `/memory clear`."),
     }
 }
 
@@ -1085,8 +1131,38 @@ impl EventHandler for HouseBot {
                 )
                 .required(true),
             );
-        if let Err(e) = Command::create_global_command(&ctx.http, lua_cmd).await {
+        if let Err(e) = Command::create_global_command(&ctx.http, lua_cmd.clone()).await {
             tracing::error!("Failed to register /lua slash command: {e}");
+        }
+        let guild_id = match std::env::var("DEPLOYMENT_GUILD_ID") {
+            Ok(value) => match value.parse::<u64>() {
+                Ok(id) if id != 0 => Some(id),
+                Ok(_) => {
+                    tracing::warn!("DEPLOYMENT_GUILD_ID is set to 0, ignoring");
+                    None
+                }
+                Err(_) => {
+                    tracing::warn!(
+                        "DEPLOYMENT_GUILD_ID is set but invalid (must be a valid u64): {}",
+                        value
+                    );
+                    None
+                }
+            },
+            Err(_) => None,
+        };
+        if let Some(guild_id) = guild_id {
+            if let Err(e) = GuildId::new(guild_id)
+                .create_command(&ctx.http, lua_cmd)
+                .await
+            {
+                tracing::error!(
+                    guild_id,
+                    "Failed to register /lua slash command to guild: {e}"
+                );
+            } else {
+                tracing::info!(guild_id, "Registered /lua slash command to guild");
+            }
         }
         for command in [
             CreateCommand::new("help").description("Show all available commands"),
@@ -1094,15 +1170,16 @@ impl EventHandler for HouseBot {
             CreateCommand::new("model").description("Show information about the current model"),
             CreateCommand::new("session")
                 .description("Show context and token usage for this session"),
+            CreateCommand::new("token_leaderboard")
+                .description("Show global token usage by user and conversation"),
             CreateCommand::new("status")
                 .description("Show your current settings (effort level, follow-up, personality)"),
             CreateCommand::new("new").description("Start a new conversation and clear the old one"),
             CreateCommand::new("reset").description("Clear the conversation and start fresh"),
             CreateCommand::new("compact")
                 .description("Summarize the conversation and start a new session"),
-            CreateCommand::new("erase_my_data").description(
-                "Permanently delete all your stored data (messages, history, memory, notes)",
-            ),
+            CreateCommand::new("erase_my_data")
+                .description("Permanently delete all your stored data, including token statistics"),
             CreateCommand::new("profile")
                 .description("Show or clear your stored profile information")
                 .add_option(CreateCommandOption::new(
@@ -1165,12 +1242,27 @@ impl EventHandler for HouseBot {
                     ),
                 ),
             CreateCommand::new("memory")
-                .description("View or clear the bot's persistent memory about you")
+                .description("View, search, or clear the bot's persistent memory about you")
                 .add_option(CreateCommandOption::new(
                     CommandOptionType::SubCommand,
                     "show",
                     "Show what the bot currently remembers about you",
                 ))
+                .add_option(
+                    CreateCommandOption::new(
+                        CommandOptionType::SubCommand,
+                        "search",
+                        "Search your stored memories for a keyword or phrase",
+                    )
+                    .add_sub_option(
+                        CreateCommandOption::new(
+                            CommandOptionType::String,
+                            "query",
+                            "Keyword or phrase to search for",
+                        )
+                        .required(true),
+                    ),
+                )
                 .add_option(CreateCommandOption::new(
                     CommandOptionType::SubCommand,
                     "clear",
@@ -1267,6 +1359,7 @@ impl EventHandler for HouseBot {
             "help" => help_response(),
             "commit" => commit_hash_response(option_env!("HOUSEBOT_GIT_SHA")),
             "model" => self.agent.model_info(),
+            "token_leaderboard" => self.agent.token_leaderboard().await,
             "session" => {
                 let info = self.agent.session_info(&user_id.to_string()).await;
                 let percent =
@@ -1312,6 +1405,7 @@ impl EventHandler for HouseBot {
                 )
                 .await;
                 self.agent.reset_session(&user_id.to_string()).await;
+                self.agent.clear_token_data(&user_id.to_string()).await;
                 self.conversations
                     .lock()
                     .await
@@ -1346,6 +1440,8 @@ impl EventHandler for HouseBot {
             _ => return,
         };
 
+        let reply = self.redactor.redact(&reply);
+        let reply = truncate_memory_reply("", &reply);
         let response = CreateInteractionResponse::Message(
             CreateInteractionResponseMessage::new()
                 .content(reply)
@@ -1414,6 +1510,13 @@ impl EventHandler for HouseBot {
             tracing::info!(target: "housebot::commands", user_id, "!note command received");
             let (first, rest) = split_command(&msg.content);
             let reply = note_command(&self.notes, &first, &rest, user_id).await;
+            self.respond(&ctx, &msg, &reply).await;
+            return;
+        }
+        if msg.content.starts_with("!memory") {
+            tracing::info!(target: "housebot::commands", user_id, "!memory command received");
+            let (first, _rest) = split_command(&msg.content);
+            let reply = memory_command(&self.memory, &first, user_id).await;
             self.respond(&ctx, &msg, &reply).await;
             return;
         }
@@ -1829,6 +1932,27 @@ impl HouseBot {
 
         if let Some(reaction) = pending_reaction {
             let _ = reaction.delete(&ctx.http).await;
+        }
+        // Upload files returned by guarded agent tools.
+        for attachment in result.attachments {
+            if let Err(error) = msg
+                .channel_id
+                .send_message(
+                    &ctx.http,
+                    CreateMessage::new().add_file(CreateAttachment::bytes(
+                        attachment.bytes,
+                        attachment.filename.clone(),
+                    )),
+                )
+                .await
+            {
+                tracing::warn!(
+                    target: "housebot::files",
+                    filename = %attachment.filename,
+                    %error,
+                    "Failed to send downloaded attachment"
+                );
+            }
         }
         // Upload extracted code blocks.
         for (filename, content) in code_files {

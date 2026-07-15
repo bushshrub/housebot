@@ -22,8 +22,10 @@ use crate::profile::ProfileStore;
 use crate::rate_limit::RateLimiter;
 use crate::reminders::Reminders;
 use crate::skills::{Skill, Skills};
+use crate::token_monitor::{TokenLeaderboard, TokenMonitor};
 use crate::tools;
 use crate::tools::common_crawl::CommonCrawl;
+use crate::tools::file_download::FileDownloader;
 use crate::tools::searxng::SearxNg;
 use crate::tools::web_fetch::WebFetch;
 
@@ -97,12 +99,20 @@ pub enum AgentControlAction {
     OwnerApprovalRequired { job_id: uuid::Uuid },
 }
 
+/// A file produced by an agent tool for direct delivery to Discord.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AgentAttachment {
+    pub filename: String,
+    pub bytes: Vec<u8>,
+}
+
 /// The outcome of one `Agent::run`.
 #[derive(Debug, Clone, Default)]
 pub struct AgentResult {
     pub text: String,
     pub session_notice: Option<String>,
     pub tools_called: Vec<String>,
+    pub attachments: Vec<AgentAttachment>,
     /// Set when a `prepare_feature_development` tool call produces a structured outcome.
     pub control_action: Option<AgentControlAction>,
 }
@@ -145,6 +155,10 @@ impl TextSink for TextStreamAdapter<'_> {
 /// Result of dispatching a single tool call.
 enum ToolOutcome {
     Text(String),
+    Attachment {
+        text: String,
+        attachment: AgentAttachment,
+    },
     /// A development-flow tool call that also carries a control action.
     DevelopmentAction {
         text: String,
@@ -173,9 +187,12 @@ pub struct Agent {
     pending_jobs: Arc<PendingJobStore>,
     searxng: Arc<SearxNg>,
     web_fetch: WebFetch,
+    file_downloader: FileDownloader,
     common_crawl: CommonCrawl,
     mcp_servers: Arc<Vec<McpServer>>,
     session_stats: tokio::sync::Mutex<HashMap<String, SessionStats>>,
+    token_monitor: TokenMonitor,
+    active_conversations: tokio::sync::Mutex<HashMap<String, String>>,
     discord: Arc<DiscordBridge>,
     channel_log: ChannelLog,
 }
@@ -312,6 +329,13 @@ impl Agent {
                 Memory::default()
             }
         };
+        let token_monitor = match TokenMonitor::from_env().await {
+            Ok(monitor) => monitor,
+            Err(error) => {
+                tracing::warn!(%error, "PostgreSQL token monitor unavailable; token history will not survive this restart");
+                TokenMonitor::default()
+            }
+        };
         Self {
             client,
             model: config::env_or("LLM_MODEL", "gemma-4-12b-qat-q4kxl"),
@@ -329,9 +353,12 @@ impl Agent {
             pending_jobs: Arc::new(PendingJobStore::default()),
             searxng: Arc::new(SearxNg::from_env()),
             web_fetch: WebFetch::default(),
+            file_downloader: FileDownloader::default(),
             common_crawl: CommonCrawl::default(),
             mcp_servers,
             session_stats: tokio::sync::Mutex::new(HashMap::new()),
+            token_monitor,
+            active_conversations: tokio::sync::Mutex::new(HashMap::new()),
             discord,
             channel_log: ChannelLog::default(),
         }
@@ -387,6 +414,7 @@ impl Agent {
     pub async fn reset_session(&self, user_id: &str) {
         self.session_stats.lock().await.remove(user_id);
         let _ = self.history.clear(user_id).await;
+        self.finish_active_conversation(user_id).await;
     }
 
     /// Summarize the current conversation, then start a fresh session.
@@ -407,11 +435,14 @@ impl Agent {
         self.session_stats.lock().await.remove(user_id);
         let past = self.history.load(user_id).await;
         if past.is_empty() {
+            self.finish_active_conversation(user_id).await;
             hooks.on_progress("compact:100:Nothing to compact.").await;
             return;
         }
+        let conversation_id = self.current_conversation_id(user_id, user_id, 0).await;
         if !deep_memory_enabled {
             let _ = self.history.clear(user_id).await;
+            self.finish_active_conversation(user_id).await;
             hooks
                 .on_progress("compact:100:Conversation cleared without saving a memory summary.")
                 .await;
@@ -445,7 +476,8 @@ impl Agent {
             )
             .await
             .unwrap_or_default();
-        self.record_usage(user_id, completion.usage).await;
+        self.record_usage(user_id, &conversation_id, completion.usage)
+            .await;
         let summary = completion.content.unwrap_or_default();
 
         if !summary.trim().is_empty() {
@@ -460,6 +492,7 @@ impl Agent {
         }
         hooks.on_progress("compact:80").await;
         let _ = self.history.clear(user_id).await;
+        self.finish_active_conversation(user_id).await;
         hooks
             .on_progress("compact:100:Conversation compacted.")
             .await;
@@ -500,6 +533,24 @@ impl Agent {
         }
     }
 
+    /// Render the persistent global token leaderboard for Discord.
+    pub async fn token_leaderboard(&self) -> String {
+        match self.token_monitor.leaderboard(10).await {
+            Ok(leaderboard) => format_token_leaderboard(&leaderboard),
+            Err(error) => {
+                tracing::error!(%error, "failed to load token leaderboard");
+                "⚠️ Token usage statistics are temporarily unavailable.".into()
+            }
+        }
+    }
+
+    /// Remove a user's archived conversations and token statistics.
+    pub async fn clear_token_data(&self, user_id: &str) {
+        if let Err(error) = self.token_monitor.clear_user(user_id).await {
+            tracing::error!(%error, %user_id, "failed to erase token-monitor data");
+        }
+    }
+
     async fn last_context_tokens(&self, user_id: &str) -> u64 {
         self.session_stats
             .lock()
@@ -508,7 +559,45 @@ impl Agent {
             .map_or(0, |stats| stats.context_tokens)
     }
 
-    async fn record_usage(&self, user_id: &str, usage: TokenUsage) {
+    async fn current_conversation_id(
+        &self,
+        user_id: &str,
+        display_name: &str,
+        channel_id: u64,
+    ) -> String {
+        let mut active = self.active_conversations.lock().await;
+        if let Some(id) = active.get(user_id) {
+            return id.clone();
+        }
+        let id = uuid::Uuid::new_v4().to_string();
+        if let Err(error) = self
+            .token_monitor
+            .start_conversation(&id, user_id, display_name, channel_id)
+            .await
+        {
+            tracing::error!(%error, %user_id, conversation_id = %id, "failed to persist conversation");
+        }
+        active.insert(user_id.to_string(), id.clone());
+        id
+    }
+
+    async fn finish_active_conversation(&self, user_id: &str) {
+        let id = self.active_conversations.lock().await.remove(user_id);
+        if let Some(id) = id {
+            if let Err(error) = self.token_monitor.finish_conversation(&id).await {
+                tracing::error!(%error, %user_id, conversation_id = %id, "failed to close conversation");
+            }
+        }
+    }
+
+    async fn record_usage(&self, user_id: &str, conversation_id: &str, usage: TokenUsage) {
+        if let Err(error) = self
+            .token_monitor
+            .record_usage(conversation_id, usage)
+            .await
+        {
+            tracing::error!(%error, %user_id, %conversation_id, "failed to persist token usage");
+        }
         let mut all = self.session_stats.lock().await;
         let stats = all.entry(user_id.to_string()).or_default();
         stats.requests += 1;
@@ -577,6 +666,9 @@ impl Agent {
                     .into(),
             );
         }
+        let conversation_id = self
+            .current_conversation_id(user_id, display_name, channel_id)
+            .await;
 
         let all_skills = self.skills.load_all().await;
         let system = json!({
@@ -603,6 +695,7 @@ impl Agent {
         let tools = self.build_tools(deep_memory_enabled).await;
         let mut turn_messages: Vec<Value> = Vec::new();
         let mut tools_called = Vec::new();
+        let mut attachments = Vec::new();
 
         let mut control_action: Option<AgentControlAction> = None;
 
@@ -621,7 +714,8 @@ impl Agent {
             };
             let context_tokens =
                 completion.usage.prompt_tokens + completion.usage.completion_tokens;
-            self.record_usage(user_id, completion.usage).await;
+            self.record_usage(user_id, &conversation_id, completion.usage)
+                .await;
             let usage = context_tokens as f64 / self.context_window_tokens.max(1) as f64;
             if usage >= 0.7 {
                 session_notice = Some(if usage >= 0.8 {
@@ -668,6 +762,10 @@ impl Agent {
                     .await;
                 let content = match outcome {
                     ToolOutcome::Text(ref t) => t.clone(),
+                    ToolOutcome::Attachment { text, attachment } => {
+                        attachments.push(attachment);
+                        text
+                    }
                     ToolOutcome::DevelopmentAction {
                         ref text,
                         ref action,
@@ -694,6 +792,14 @@ impl Agent {
                 }
             }
         };
+
+        if let Err(error) = self
+            .token_monitor
+            .record_turn(&conversation_id, &history_user_message, &turn_messages)
+            .await
+        {
+            tracing::error!(%error, %user_id, %conversation_id, "failed to archive conversation turn");
+        }
 
         if let Err(e) = self
             .history
@@ -729,6 +835,7 @@ impl Agent {
             },
             session_notice,
             tools_called,
+            attachments,
             control_action,
         }
     }
@@ -748,6 +855,7 @@ impl Agent {
             tools::searxng::definition(),
             tools::searxng::deep_research_definition(),
             tools::web_fetch::definition(),
+            tools::file_download::definition(),
             tools::common_crawl::definition(),
             run_skill_tool(),
             tools::feature_request::definition(),
@@ -764,9 +872,10 @@ impl Agent {
             run_lua_tool(),
             get_lua_docs_tool(),
         ];
-        // Conditionally include update_memory based on user's privacy setting.
+        // Conditionally include memory tools based on user's privacy setting.
         if deep_memory_enabled {
-            defs.push(update_memory_tool());
+            defs.push(crate::memory::update_memory_tool());
+            defs.push(crate::memory::search_memory_tool());
         }
         for def in defs {
             let (name, desc, params) = flatten_tool(&def);
@@ -790,6 +899,7 @@ impl Agent {
             .await;
         let content = match &outcome {
             ToolOutcome::Text(t) => t.as_str(),
+            ToolOutcome::Attachment { text, .. } => text.as_str(),
             ToolOutcome::DevelopmentAction { text, .. } => text.as_str(),
         };
         tracing::info!(
@@ -854,6 +964,28 @@ impl Agent {
                     )
                     .await,
             ),
+            "download_file" => match self
+                .file_downloader
+                .download(str_arg(args, "url"), str_arg(args, "filename"))
+                .await
+            {
+                Ok(file) => ToolOutcome::Attachment {
+                    text: format!(
+                        "Attached `{}` ({} bytes{}) to the Discord response.",
+                        file.filename,
+                        file.bytes.len(),
+                        file.content_type
+                            .as_deref()
+                            .map(|content_type| format!(", {content_type}"))
+                            .unwrap_or_default()
+                    ),
+                    attachment: AgentAttachment {
+                        filename: file.filename,
+                        bytes: file.bytes,
+                    },
+                },
+                Err(error) => ToolOutcome::Text(error),
+            },
             "common_crawl__search" => ToolOutcome::Text(
                 self.common_crawl
                     .search(
@@ -870,6 +1002,28 @@ impl Agent {
                 let new_content = str_arg(args, "memory_content");
                 let _ = self.memory.save(user_id, new_content).await;
                 ToolOutcome::Text("Memory updated.".to_string())
+            }
+            "search_memory" => {
+                let query = str_arg(args, "query");
+                let query = query.trim();
+                if query.is_empty() {
+                    return ToolOutcome::Text("Error: search query cannot be blank.".to_string());
+                }
+                let content = self.memory.load(user_id).await;
+                if content.trim().is_empty() {
+                    ToolOutcome::Text("No memory stored for this user.".to_string())
+                } else {
+                    let query_lower = query.to_lowercase();
+                    let matching: Vec<&str> = content
+                        .lines()
+                        .filter(|line| line.to_lowercase().contains(&query_lower))
+                        .collect();
+                    if matching.is_empty() {
+                        ToolOutcome::Text(format!("No memory entries matching '{query}'."))
+                    } else {
+                        ToolOutcome::Text(matching.join("\n"))
+                    }
+                }
             }
             "create_feature_request" => ToolOutcome::Text(
                 tools::feature_request::create_feature_request(
@@ -1312,13 +1466,19 @@ fn build_system_prompt_with_profile(
         String::new()
     };
     let memory_guidance = if deep_memory_enabled {
-        "Use the saved memory to personalize this conversation naturally, and update it when you learn a durable preference, fact, ongoing project, or correction worth remembering. Never mention the memory store unless the user asks about it."
+        "Actively use memory: when the user says 'remember', 'don't forget', 'keep in mind', \
+         'note that', or expresses a preference, fact, or ongoing project, call update_memory \
+         immediately to persist it. Use search_memory when the user asks about something you \
+         might have remembered, or to check whether a topic is already in memory before asking \
+         them to repeat themselves. Use the saved memory to personalize responses naturally."
     } else {
-        "Deep memory is disabled for this user. Do NOT call update_memory and do NOT suggest \
-         persisting facts. Short-term conversation history within this session still works normally."
+        "Deep memory is disabled for this user. Do NOT call update_memory or search_memory and \
+         do NOT suggest persisting facts. Short-term conversation history within this session \
+         still works normally."
     };
     let memory_tool_line = if deep_memory_enabled {
-        "- update_memory — Persist important facts about the current user for future conversations. Write the full memory each time.\n"
+        "- update_memory — Persist important facts about the current user for future conversations. Write the full memory each time.\n\
+         - search_memory — Search stored memory for a keyword or phrase. Use when the user refers to something you may have remembered.\n"
     } else {
         ""
     };
@@ -1343,6 +1503,7 @@ search, general information, and software development questions.\n\nCurrent date
 - web_search — Search the web (SearXNG) for current information.\n\
 - deep_research — Run an overview plus 2-5 focused searches and return a deduplicated, cross-referenced source dossier.\n\
 - fetch_webpage — Fetch and read the text of a public webpage.\n\
+- download_file — Download a public HTTP(S) file up to 8 MiB and attach it to the Discord response.\n\
 - common_crawl__search — Search historical URL captures in the Common Crawl index.\n\
 - jellyfin__* — Query the household Jellyfin media server for movies, shows, music. \
 READ ONLY — only call get_* / search_* / list_* methods; never call mutating actions.\n\
@@ -1367,7 +1528,7 @@ discord.* bridge, limits). Call this before writing a Lua script if you are unsu
 algorithmic tasks. The script's print() output and return values are returned as the tool result. \
 Call get_lua_docs first if you need the API reference.{skills_section}\n\n\
 ## Guidelines\n- Be conversational and friendly.\n- Use Jellyfin tools for any media questions \
-before guessing.\n- Never infer sensitive traits, identity, or intent from a user's avatar.\n- Use web_search for simple factual or current-events questions. For complex questions requiring multiple perspectives, comparisons, or a comprehensive report, use deep_research and synthesize its dossier with source links. If either search tool returns a rate-limit \
+before guessing.\n- Never infer sensitive traits, identity, or intent from a user's avatar.\n- Use download_file only when the user asks to view, receive, or download a specific file; never fetch private-network URLs.\n- Use web_search for simple factual or current-events questions. For complex questions requiring multiple perspectives, comparisons, or a comprehensive report, use deep_research and synthesize its dossier with source links. If either search tool returns a rate-limit \
 error, stop using search tools for this request and do not retry repeatedly; use \
 common_crawl__search for historical URL evidence when appropriate, or explain that the search \
 service is temporarily unavailable.\n- For calculations, data processing, or algorithmic tasks \
@@ -1379,19 +1540,6 @@ clear title and description, then tell them the issue URL.\n- If a tool returns 
 message exceeds 500 characters, begin your reply with a **TL;DR:** line (one sentence) \
 summarizing what they asked.\n"
     )
-}
-
-fn update_memory_tool() -> Value {
-    json!({
-        "name": "update_memory",
-        "description": "Update your persistent memory about the current user. Write the complete \
-            updated memory content each time, not just the new piece.",
-        "input_schema": {
-            "type": "object",
-            "properties": {"memory_content": {"type": "string", "description": "Full updated memory in markdown format."}},
-            "required": ["memory_content"]
-        }
-    })
 }
 
 fn run_skill_tool() -> Value {
@@ -1622,9 +1770,12 @@ impl Agent {
             pending_jobs: Arc::new(PendingJobStore::default()),
             searxng: Arc::new(SearxNg::from_env()),
             web_fetch: WebFetch::default(),
+            file_downloader: FileDownloader::default(),
             common_crawl: CommonCrawl::default(),
             mcp_servers: Arc::new(vec![]),
             session_stats: tokio::sync::Mutex::new(HashMap::new()),
+            token_monitor: TokenMonitor::default(),
+            active_conversations: tokio::sync::Mutex::new(HashMap::new()),
             discord: Arc::new(DiscordBridge::default()),
             channel_log: ChannelLog::default(),
         }
@@ -1633,6 +1784,43 @@ impl Agent {
     pub fn set_max_context_tokens(&mut self, n: usize) {
         self.context_window_tokens = n;
     }
+}
+
+fn format_token_leaderboard(leaderboard: &TokenLeaderboard) -> String {
+    if leaderboard.users.is_empty() {
+        return "**Global token leaderboard**\nNo token usage has been recorded yet.".into();
+    }
+    let mut lines = vec![
+        "**Global token leaderboard**".to_string(),
+        "**Users**".to_string(),
+    ];
+    for (index, entry) in leaderboard.users.iter().enumerate() {
+        lines.push(format!(
+            "{}. **{}** — {} tokens across {} conversation{}",
+            index + 1,
+            entry.label,
+            entry.total_tokens(),
+            entry.conversations,
+            if entry.conversations == 1 { "" } else { "s" }
+        ));
+    }
+    lines.push("\n**Conversations**".to_string());
+    for (index, entry) in leaderboard.conversations.iter().enumerate() {
+        let id = entry
+            .conversation_id
+            .as_deref()
+            .unwrap_or("unknown")
+            .chars()
+            .take(8)
+            .collect::<String>();
+        lines.push(format!(
+            "{}. **{}** (`{id}`) — {} tokens",
+            index + 1,
+            entry.label,
+            entry.total_tokens()
+        ));
+    }
+    lines.join("\n")
 }
 
 #[cfg(test)]
@@ -1713,6 +1901,14 @@ mod tests {
         let p = build_system_prompt("Alice", "123", "Alice", "", "", &empty_skills(), None, true);
         assert!(p.contains("TL;DR"));
         assert!(p.contains("500"));
+    }
+
+    #[test]
+    fn system_prompt_explains_guarded_file_delivery() {
+        let prompt = build_system_prompt("Alice", "123", "", "", "", &empty_skills(), None, true);
+        assert!(prompt.contains("download_file"));
+        assert!(prompt.contains("specific file"));
+        assert!(prompt.contains("private-network URLs"));
     }
 
     #[test]
@@ -1822,7 +2018,7 @@ mod tests {
     #[test]
     fn system_prompt_allows_deep_memory_when_enabled() {
         let p = build_system_prompt("Alice", "123", "Alice", "", "", &empty_skills(), None, true);
-        assert!(p.contains("Use the saved memory to personalize this conversation naturally"));
+        assert!(p.contains("Actively use memory"));
     }
 
     #[test]
@@ -1937,6 +2133,41 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn run_persists_tokens_by_conversation() {
+        let client = Arc::new(MockChatClient::new());
+        client.push_text_with_usage(
+            "first reply",
+            TokenUsage {
+                prompt_tokens: 40,
+                completion_tokens: 10,
+                ..Default::default()
+            },
+        );
+        client.push_text_with_usage(
+            "second reply",
+            TokenUsage {
+                prompt_tokens: 20,
+                completion_tokens: 5,
+                ..Default::default()
+            },
+        );
+        let (_t, agent) = test_agent(client);
+        agent
+            .run(AgentRequest::text("u_tokens", "Alice", "first"), &NoHooks)
+            .await;
+        agent.reset_session("u_tokens").await;
+        agent
+            .run(AgentRequest::text("u_tokens", "Alice", "second"), &NoHooks)
+            .await;
+
+        let board = agent.token_monitor.leaderboard(10).await.unwrap();
+        assert_eq!(board.users[0].label, "Alice");
+        assert_eq!(board.users[0].conversations, 2);
+        assert_eq!(board.users[0].total_tokens(), 75);
+        assert_eq!(board.conversations.len(), 2);
+    }
+
+    #[tokio::test]
     async fn run_dispatches_translate_tool_then_answers() {
         let client = Arc::new(MockChatClient::new().with_once_reply("Bonjour"));
         // First completion asks for a translate tool call; second finishes with text.
@@ -1995,6 +2226,7 @@ mod tests {
             ToolOutcome::DevelopmentAction { text, .. } => {
                 panic!("unexpected development action: {text}")
             }
+            ToolOutcome::Attachment { text, .. } => panic!("unexpected attachment: {text}"),
         }
     }
 
@@ -2142,6 +2374,7 @@ mod tests {
         assert!(names.contains(&"common_crawl__search"));
         assert!(names.contains(&"find_discord_users"));
         assert!(names.contains(&"edit_feature_request"));
+        assert!(names.contains(&"download_file"));
         assert!(names.contains(&"deep_research"));
         assert!(names.contains(&"run_lua"));
         assert!(names.contains(&"get_lua_docs"));
