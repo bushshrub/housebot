@@ -1096,7 +1096,10 @@ impl EventHandler for HouseBot {
                     None
                 }
                 Err(_) => {
-                    tracing::warn!("DEPLOYMENT_GUILD_ID is set but invalid (must be a valid u64): {}", value);
+                    tracing::warn!(
+                        "DEPLOYMENT_GUILD_ID is set but invalid (must be a valid u64): {}",
+                        value
+                    );
                     None
                 }
             },
