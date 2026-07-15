@@ -51,6 +51,13 @@ struct IssueResponse {
     html_url: String,
 }
 
+/// The fields needed to authorize and edit an existing issue.
+#[derive(Debug, Clone, Deserialize)]
+pub struct ExistingIssue {
+    pub body: Option<String>,
+    pub html_url: String,
+}
+
 /// Files GitHub issues on behalf of the bot's GitHub App installation.
 pub struct GitHubIssueReporter {
     app_id: String,
@@ -197,6 +204,92 @@ impl GitHubIssueReporter {
             number: resp.number,
             html_url: resp.html_url,
         })
+    }
+
+    /// Fetch an issue from the configured repository.
+    pub async fn fetch_issue(&self, issue_number: u64) -> Option<ExistingIssue> {
+        if !self.is_configured() {
+            return None;
+        }
+        match self.try_fetch_issue(issue_number).await {
+            Ok(issue) => Some(issue),
+            Err(e) => {
+                tracing::error!(issue_number, "Failed to fetch GitHub issue: {e}");
+                None
+            }
+        }
+    }
+
+    async fn try_fetch_issue(&self, issue_number: u64) -> anyhow::Result<ExistingIssue> {
+        let token = self.installation_token().await?;
+        let url = format!(
+            "https://api.github.com/repos/{}/issues/{issue_number}",
+            self.repo
+        );
+        Ok(self
+            .http
+            .get(&url)
+            .header("Authorization", format!("Bearer {token}"))
+            .header("Accept", "application/vnd.github+json")
+            .header("X-GitHub-Api-Version", "2022-11-28")
+            .header("User-Agent", "house-chatbot")
+            .send()
+            .await?
+            .error_for_status()?
+            .json::<ExistingIssue>()
+            .await?)
+    }
+
+    /// Update the title and/or body of an issue in the configured repository.
+    pub async fn update_issue(
+        &self,
+        issue_number: u64,
+        title: Option<&str>,
+        body: Option<&str>,
+    ) -> Option<String> {
+        if !self.is_configured() {
+            return None;
+        }
+        match self.try_update_issue(issue_number, title, body).await {
+            Ok(issue) => Some(issue.html_url),
+            Err(e) => {
+                tracing::error!(issue_number, "Failed to update GitHub issue: {e}");
+                None
+            }
+        }
+    }
+
+    async fn try_update_issue(
+        &self,
+        issue_number: u64,
+        title: Option<&str>,
+        body: Option<&str>,
+    ) -> anyhow::Result<ExistingIssue> {
+        let token = self.installation_token().await?;
+        let url = format!(
+            "https://api.github.com/repos/{}/issues/{issue_number}",
+            self.repo
+        );
+        let mut payload = serde_json::Map::new();
+        if let Some(title) = title {
+            payload.insert("title".into(), json!(title));
+        }
+        if let Some(body) = body {
+            payload.insert("body".into(), json!(body));
+        }
+        Ok(self
+            .http
+            .patch(&url)
+            .header("Authorization", format!("Bearer {token}"))
+            .header("Accept", "application/vnd.github+json")
+            .header("X-GitHub-Api-Version", "2022-11-28")
+            .header("User-Agent", "house-chatbot")
+            .json(&payload)
+            .send()
+            .await?
+            .error_for_status()?
+            .json::<ExistingIssue>()
+            .await?)
     }
 
     /// Create an issue that references a Sentry event, with no sensitive data in the body.

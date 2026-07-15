@@ -678,37 +678,73 @@ async fn handle_history_interaction(
         }
         _ => {
             let hist = history.load(author_id.to_string()).await;
-            let turn_count = hist
-                .iter()
-                .filter(|m| m.get("role").and_then(|r| r.as_str()) == Some("user"))
-                .count();
-            if hist.is_empty() {
-                format!("**History for {name}**\nNo conversation history yet.")
-            } else {
-                let recent: Vec<&serde_json::Value> = hist
-                    .iter()
-                    .rev()
-                    .take(10)
-                    .filter(|m| m.get("content").and_then(|c| c.as_str()).is_some())
-                    .collect();
-                let mut lines = vec![
-                    format!("**History for {name}**"),
-                    format!("Total messages: {} ({} turns)", hist.len(), turn_count),
-                    "Recent interactions:".to_string(),
-                ];
-                for msg in recent {
-                    let role = msg["role"].as_str().unwrap_or("?");
-                    let content = msg["content"].as_str().unwrap_or("");
-                    let preview: String = content.chars().take(80).collect();
-                    lines.push(format!("[{role}] {preview}"));
-                }
-                if hist.len() > 10 {
-                    lines.push(format!("... and {} more messages", hist.len() - 10));
-                }
-                lines.join("\n")
-            }
+            render_history(&profile, &hist)
         }
     }
+}
+
+fn render_history(profile: &crate::profile::UserProfile, hist: &[serde_json::Value]) -> String {
+    let name = profile.best_name();
+    let mut lines = vec![
+        format!("**History for {name}**"),
+        "Scope: all servers and channels where you used housebot".to_string(),
+    ];
+
+    let profile_bits: Vec<String> = profile
+        .tags
+        .iter()
+        .map(|tag| tag.as_str().to_string())
+        .collect();
+    if !profile_bits.is_empty() {
+        lines.push(format!("Profile interests: {}", profile_bits.join(", ")));
+    }
+
+    if hist.is_empty() {
+        lines.push("No conversation history yet.".to_string());
+        return lines.join("\n");
+    }
+
+    let turn_count = hist
+        .iter()
+        .filter(|m| m.get("role").and_then(|r| r.as_str()) == Some("user"))
+        .count();
+    let mut recent: Vec<&serde_json::Value> = hist
+        .iter()
+        .rev()
+        .filter(|m| m.get("content").and_then(|c| c.as_str()).is_some())
+        .take(10)
+        .collect();
+    recent.reverse();
+
+    lines.push(format!(
+        "Total messages: {} ({} turns)",
+        hist.len(),
+        turn_count
+    ));
+    lines.push("Recent interactions:".to_string());
+    for msg in recent {
+        let role = msg["role"].as_str().unwrap_or("?");
+        let content = msg["content"].as_str().unwrap_or("");
+        let preview: String = content.chars().take(80).collect();
+        let location = msg
+            .get("discord_context")
+            .and_then(|ctx| ctx.get("channel_id"))
+            .and_then(|id| id.as_u64())
+            .map(|id| format!(" in <#{id}>"))
+            .unwrap_or_default();
+        let timestamp = msg
+            .get("discord_context")
+            .and_then(|ctx| ctx.get("timestamp"))
+            .and_then(|value| value.as_str())
+            .and_then(|value| value.get(..10))
+            .map(|date| format!(" on {date}"))
+            .unwrap_or_default();
+        lines.push(format!("[{role}{location}{timestamp}] {preview}"));
+    }
+    if hist.len() > 10 {
+        lines.push(format!("... and {} more messages", hist.len() - 10));
+    }
+    lines.join("\n")
 }
 
 /// Handle a `/privacy` interaction: view or change privacy settings.
@@ -3038,8 +3074,50 @@ pub async fn run() -> anyhow::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::profile::{ProfileTag, UserProfile};
     use serde_json::json;
     use tempfile::TempDir;
+
+    #[test]
+    fn global_history_combines_profile_and_channel_context() {
+        let profile = UserProfile {
+            nickname: "Ali".to_string(),
+            tags: vec![ProfileTag::WebResearch],
+            ..Default::default()
+        };
+        let history = vec![
+            json!({
+                "role": "user",
+                "content": "Find the release notes",
+                "discord_context": {
+                    "channel_id": 42,
+                    "timestamp": "2026-07-14T20:15:00Z"
+                }
+            }),
+            json!({"role": "assistant", "content": "Here they are"}),
+        ];
+
+        let rendered = render_history(&profile, &history);
+        assert!(rendered.contains("History for Ali"));
+        assert!(rendered.contains("all servers and channels"));
+        assert!(rendered.contains("Profile interests: web research"));
+        assert!(rendered.contains("[user in <#42> on 2026-07-14]"));
+        assert!(
+            rendered.find("Find the release notes").unwrap()
+                < rendered.find("Here they are").unwrap()
+        );
+    }
+
+    #[test]
+    fn global_history_empty_state_keeps_profile_identity() {
+        let profile = UserProfile {
+            display_name: "Alice".to_string(),
+            ..Default::default()
+        };
+        let rendered = render_history(&profile, &[]);
+        assert!(rendered.contains("History for Alice"));
+        assert!(rendered.contains("No conversation history yet."));
+    }
 
     // ── split_text ──
     #[test]
