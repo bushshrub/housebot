@@ -47,6 +47,8 @@ sentry = { version = "0.38.0", default-features = false, features = [
 bytes = "1"
 sha2 = "0.10"
 mlua = { version = "0.12", features = ["lua54", "vendored"] }
+# Newer pdf-extract releases depend on lopdf versions requiring Rust 1.85;
+# 0.9 keeps this crate compatible with the package's declared Rust 1.80 MSRV.
 pdf-extract = "0.9"
 common-crawl = { path = "crates/common-crawl" }
 

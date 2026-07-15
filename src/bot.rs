@@ -55,6 +55,7 @@ const MAX_ATTACHMENT_BYTES: u32 = 8 * 1024 * 1024;
 const MAX_ATTACHMENT_TEXT_CHARS: usize = 40_000;
 const RECENT_ATTACHMENT_MESSAGE_LIMIT: u8 = 25;
 const MAX_RECENT_ATTACHMENTS: usize = 3;
+const ATTACHMENT_PROCESSING_TIMEOUT: Duration = Duration::from_secs(30);
 const PAGINATION_PREFIX: &str = "housebot_labs_page:";
 const DEVELOP_PREFIX: &str = "develop:";
 
@@ -1764,10 +1765,9 @@ impl EventHandler for HouseBot {
             .as_ref()
             .map(|m| m.author.id == bot_id)
             .unwrap_or(false);
-        let is_reply_to_attachment = msg
-            .referenced_message
-            .as_deref()
-            .is_some_and(message_has_attachment);
+        let is_reply_to_attachment = msg.referenced_message.as_deref().is_some_and(|referenced| {
+            referenced.author.id == msg.author.id && message_has_attachment(referenced)
+        });
 
         // Follow-ups are on by default in DMs. In guild channels, users must
         // opt in and the channel must be explicitly configured by the server.
@@ -1983,8 +1983,35 @@ impl HouseBot {
                 .await;
         }
 
-        let (media, attachment_context) =
-            collect_attachment_context(ctx, msg, followup_timeout).await;
+        let known_attachment = message_has_attachment(msg)
+            || msg
+                .referenced_message
+                .as_deref()
+                .is_some_and(message_has_attachment);
+        let (media, attachment_context) = match tokio::time::timeout(
+            ATTACHMENT_PROCESSING_TIMEOUT,
+            collect_attachment_context(ctx, msg, followup_timeout),
+        )
+        .await
+        {
+            Ok(attachments) => attachments,
+            Err(_) => {
+                tracing::warn!(
+                    target: "housebot::attachments",
+                    message_id = msg.id.get(),
+                    "Attachment processing timed out"
+                );
+                (
+                    Vec::new(),
+                    if known_attachment {
+                        "[An attachment is present, but processing timed out. Do not ask the user to upload it again unless they want to retry.]".to_string()
+                    } else {
+                        String::new()
+                    },
+                )
+            }
+        };
+        let attachment_context = self.redactor.redact(&attachment_context);
 
         // Load per-user settings (personality, thinking effort, and privacy).
         let personality = user_config.personality.clone();
@@ -3603,10 +3630,32 @@ async fn process_attachments(
             }),
             AttachmentKind::Pdf | AttachmentKind::Text => {
                 let extracted = if kind == AttachmentKind::Pdf {
-                    tokio::task::spawn_blocking(move || pdf_extract::extract_text_from_mem(&bytes))
-                        .await
-                        .ok()
-                        .and_then(Result::ok)
+                    let filename = attachment.filename.clone();
+                    match tokio::task::spawn_blocking(move || {
+                        pdf_extract::extract_text_from_mem(&bytes)
+                    })
+                    .await
+                    {
+                        Ok(Ok(text)) => Some(text),
+                        Ok(Err(error)) => {
+                            tracing::warn!(
+                                target: "housebot::attachments",
+                                %filename,
+                                %error,
+                                "Failed to extract PDF text"
+                            );
+                            None
+                        }
+                        Err(error) => {
+                            tracing::warn!(
+                                target: "housebot::attachments",
+                                %filename,
+                                %error,
+                                "PDF extraction task failed"
+                            );
+                            None
+                        }
+                    }
                 } else {
                     Some(String::from_utf8_lossy(&bytes).into_owned())
                 };
