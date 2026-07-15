@@ -23,5 +23,10 @@ async fn main() -> anyhow::Result<()> {
         return housebot::database::migrate_from_env().await;
     }
 
+    // Apply the same append-only migrations used by the deployment command.
+    // This also covers direct compose starts and rollbacks, which otherwise
+    // can bring up a bot connected to a database with no token-monitor tables.
+    housebot::database::migrate_from_env().await?;
+
     housebot::bot::run().await
 }
