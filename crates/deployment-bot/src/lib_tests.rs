@@ -102,6 +102,24 @@ fn deployment_forwards_persistent_token_monitor_settings() {
 }
 
 #[test]
+fn deployment_passes_database_url_to_migration_and_bot_containers() {
+    let url = "postgres://housebot:secret@postgres/housebot";
+    std::env::set_var("DATABASE_URL", url);
+    let commands = deploy_commands(Some("abcdef123456"), "network").unwrap();
+    std::env::remove_var("DATABASE_URL");
+
+    let migration_args = &commands[1].args;
+    let bot_args = &commands[3].args;
+    let expected = format!("DATABASE_URL={url}");
+    let has_database_url = |args: &[String]| {
+        args.windows(2)
+            .any(|pair| pair[0] == "--env" && pair[1] == expected)
+    };
+    assert!(has_database_url(migration_args));
+    assert!(has_database_url(bot_args));
+}
+
+#[test]
 fn completed_deployment_message_includes_container_name_and_id() {
     let summary = DeploymentRunSummary {
         container_name: HOUSE_CHATBOT_CONTAINER.into(),
