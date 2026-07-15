@@ -13,6 +13,7 @@ mod bot_response;
 pub mod channel_log;
 pub mod coding_agent;
 pub mod config;
+mod database;
 pub mod discord_bridge;
 pub mod github_issues;
 /// Re-exported from the `graph-render` workspace crate; kept at this path so

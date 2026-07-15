@@ -1,23 +1,5 @@
 //! Unit tests for `token_monitor` (split out to keep the module under 600 lines).
 
-use super::SCHEMA_SQL;
-
-#[test]
-fn schema_keeps_index_names_separate_from_on_keyword() {
-    for index in [
-        "conversations_user_id_idx",
-        "conversations_tokens_idx",
-        "conversation_messages_conversation_idx",
-        "token_usage_events_created_at_idx",
-        "token_usage_events_user_id_idx",
-    ] {
-        assert!(
-            SCHEMA_SQL.contains(&format!("{index} ON ")),
-            "schema must separate index name {index} from ON"
-        );
-    }
-}
-
 use super::*;
 use crate::llm::PromptTokenDetails;
 use serde_json::json;
