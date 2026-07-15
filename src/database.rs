@@ -41,28 +41,36 @@ async fn migrate(client: &Client) -> anyhow::Result<()> {
         .first()
         .expect("database migration ledger bootstrap must exist");
     client
-        .batch_execute(ledger_sql)
-        .await
-        .with_context(|| format!("apply database migration {ledger_version}"))?;
-    client
-        .execute(
-            "INSERT INTO schema_migrations (version) VALUES ($1) ON CONFLICT DO NOTHING",
-            &[ledger_version],
-        )
-        .await
-        .with_context(|| format!("record database migration {ledger_version}"))?;
-    client
         .query_one("SELECT pg_advisory_lock($1)", &[&MIGRATION_LOCK_ID])
         .await
         .context("acquire database migration lock")?;
 
-    let result = apply_migrations(client).await;
+    let result = bootstrap_and_apply_migrations(client, ledger_version, ledger_sql).await;
     let unlock_result = client
         .query_one("SELECT pg_advisory_unlock($1)", &[&MIGRATION_LOCK_ID])
         .await;
     result?;
     unlock_result.context("release database migration lock")?;
     Ok(())
+}
+
+async fn bootstrap_and_apply_migrations(
+    client: &Client,
+    ledger_version: &str,
+    ledger_sql: &str,
+) -> anyhow::Result<()> {
+    client
+        .batch_execute(ledger_sql)
+        .await
+        .with_context(|| format!("apply database migration {ledger_version}"))?;
+    client
+        .execute(
+            "INSERT INTO schema_migrations (version) VALUES ($1) ON CONFLICT DO NOTHING",
+            &[&ledger_version],
+        )
+        .await
+        .with_context(|| format!("record database migration {ledger_version}"))?;
+    apply_migrations(client).await
 }
 
 async fn apply_migrations(client: &Client) -> anyhow::Result<()> {
