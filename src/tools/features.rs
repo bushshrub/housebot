@@ -25,6 +25,7 @@ pub fn features_text() -> &'static str {
 `/history show|clear` — inspect or clear your global conversation history
 `/privacy status|deep_memory|proactive` — view or change privacy and proactive-assistance settings
 `/erase_my_data` — permanently delete all your stored data (messages, history, memory, notes)
+`/lua <script>` — run a sandboxed Lua script with `discord.send_message`, `discord.web_search`, and `discord.jellyfin_search` (requires the Scripting role)
 
 **Prefix commands**
 `!skill list|add|delete|info <name>` — manage custom prompt skills shared across all users

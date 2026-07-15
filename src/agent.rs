@@ -238,6 +238,34 @@ impl Agent {
         &self.reporter
     }
 
+    /// Web search for the Lua scripting engine — same SearXNG instance and
+    /// rate limits as the agent's `web_search` tool.
+    pub async fn web_search(&self, query: &str, max_results: usize) -> String {
+        self.searxng
+            .search(query, max_results.clamp(1, 20), "")
+            .await
+    }
+
+    /// Search Jellyfin for the Lua scripting engine, via the MCP server's
+    /// search tool (matched by name, since the tool set is server-defined).
+    pub async fn jellyfin_search(&self, query: &str) -> String {
+        let Some(server) = self.mcp_servers.iter().find(|s| s.prefix == "jellyfin") else {
+            return "Error: Jellyfin is not available.".to_string();
+        };
+        let tools = server.list_tools().await;
+        let Some(tool) = tools
+            .iter()
+            .find(|t| t.name == "search")
+            .or_else(|| tools.iter().find(|t| t.name.contains("search")))
+        else {
+            return "Error: the Jellyfin server exposes no search tool.".to_string();
+        };
+        match server.call_tool(&tool.name, json!({"query": query})).await {
+            Ok(text) => text,
+            Err(e) => format!("Error: {e}"),
+        }
+    }
+
     // ── session lifecycle ────────────────────────────────────────────────────
 
     /// Clear conversation history and counters without preserving a summary.
