@@ -1877,7 +1877,12 @@ fn extract_lua_verdict(content: &str) -> Option<Value> {
     while let Some(rel_start) = content[search_from..].find('{') {
         let start = search_from + rel_start;
         let Some(len) = balanced_object_len(&content[start..]) else {
-            break;
+            // This '{' never closes (e.g. commentary mentioning Lua table
+            // syntax without finishing it) — skip past just this one brace
+            // and keep scanning, rather than abandoning the whole response;
+            // a complete, valid verdict may still follow later in the text.
+            search_from = start + 1;
+            continue;
         };
         let candidate = &content[start..start + len];
         if let Ok(value) = serde_json::from_str::<Value>(candidate) {
@@ -2354,6 +2359,18 @@ mod tests {
     async fn lua_analysis_tolerates_a_preamble_before_the_json() {
         let client = Arc::new(MockChatClient::new().with_once_reply(
             "Let me check this script for issues. It looks fine to me.\n\n\
+             {\"safe\":true,\"reason\":\"only uses documented APIs\"}",
+        ));
+        let (_t, agent) = test_agent(client);
+        let result = agent.analyze_lua_script("return 1").await;
+        assert!(result.allowed);
+        assert_eq!(result.reason, "only uses documented APIs");
+    }
+
+    #[tokio::test]
+    async fn lua_analysis_skips_an_unmatched_brace_in_commentary() {
+        let client = Arc::new(MockChatClient::new().with_once_reply(
+            "This script defines a table like { but that's not quite right, let me reconsider.\n\n\
              {\"safe\":true,\"reason\":\"only uses documented APIs\"}",
         ));
         let (_t, agent) = test_agent(client);
