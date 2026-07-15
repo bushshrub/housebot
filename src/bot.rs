@@ -900,7 +900,7 @@ async fn handle_memory_interaction(
                 .filter(|line| line.to_lowercase().contains(&query_lower))
                 .collect();
             if matching.is_empty() {
-                format!("No memories matching `{query}`.")
+                truncate_memory_reply("", &format!("No memories matching `{query}`."))
             } else {
                 let header = format!("**Memories matching `{query}`:**\n");
                 truncate_memory_reply(&header, &matching.join("\n"))
@@ -1360,6 +1360,7 @@ impl EventHandler for HouseBot {
         };
 
         let reply = self.redactor.redact(&reply);
+        let reply = truncate_memory_reply("", &reply);
         let response = CreateInteractionResponse::Message(
             CreateInteractionResponseMessage::new()
                 .content(reply)

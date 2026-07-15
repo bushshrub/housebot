@@ -264,7 +264,7 @@ pub async fn memory_command(memory: &Memory, first_line: &str, author_id: u64) -
                 .filter(|line| line.to_lowercase().contains(&query_lower))
                 .collect();
             if matching.is_empty() {
-                format!("No memories matching `{query}`.")
+                truncate_discord("", &format!("No memories matching `{query}`."))
             } else {
                 let header = format!("**Memories matching `{query}`:**\n");
                 truncate_discord(&header, &matching.join("\n"))

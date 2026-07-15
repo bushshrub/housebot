@@ -631,8 +631,8 @@ impl Agent {
         ];
         // Conditionally include memory tools based on user's privacy setting.
         if deep_memory_enabled {
-            defs.push(update_memory_tool());
-            defs.push(search_memory_tool());
+            defs.push(crate::memory::update_memory_tool());
+            defs.push(crate::memory::search_memory_tool());
         }
         for def in defs {
             let (name, desc, params) = flatten_tool(&def);
@@ -1215,33 +1215,6 @@ clear title and description, then tell them the issue URL.\n- If a tool returns 
 message exceeds 500 characters, begin your reply with a **TL;DR:** line (one sentence) \
 summarizing what they asked.\n"
     )
-}
-
-fn update_memory_tool() -> Value {
-    json!({
-        "name": "update_memory",
-        "description": "Update your persistent memory about the current user. Write the complete \
-            updated memory content each time, not just the new piece.",
-        "input_schema": {
-            "type": "object",
-            "properties": {"memory_content": {"type": "string", "description": "Full updated memory in markdown format."}},
-            "required": ["memory_content"]
-        }
-    })
-}
-
-fn search_memory_tool() -> Value {
-    json!({
-        "name": "search_memory",
-        "description": "Search the persistent memory for entries matching a keyword or phrase. \
-            Use this when the user asks about something specific you might have remembered, \
-            or when you want to check whether you already know something about a topic.",
-        "input_schema": {
-            "type": "object",
-            "properties": {"query": {"type": "string", "minLength": 1, "description": "Keyword or phrase to search for in memory."}},
-            "required": ["query"]
-        }
-    })
 }
 
 fn run_skill_tool() -> Value {
