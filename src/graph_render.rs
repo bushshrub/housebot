@@ -7,6 +7,8 @@
 //! for the small flowcharts/network diagrams scripts are expected to build.
 
 use std::collections::{HashMap, VecDeque};
+use std::path::{Path, PathBuf};
+use std::time::{Duration, SystemTime};
 
 use plotters::coord::Shift;
 use plotters::prelude::*;
@@ -25,6 +27,10 @@ const NODE_BORDER: RGBColor = RGBColor(41, 98, 155);
 const EDGE_COLOR: RGBColor = RGBColor(90, 90, 90);
 
 const FONT_BYTES: &[u8] = include_bytes!("../assets/fonts/LiberationSans-Regular.ttf");
+
+/// Naming prefix for `render_png`'s scratch files, shared with
+/// `sweep_stale_temp_files` so the sweep only ever touches files we made.
+const TEMP_FILE_PREFIX: &str = "housebot-lua-graph-";
 
 fn ensure_font_registered() {
     static REGISTER: std::sync::Once = std::sync::Once::new();
@@ -267,9 +273,21 @@ fn draw_node<DB: DrawingBackend>(
     .map_err(|e| e.to_string())
 }
 
+/// Deletes its wrapped path on drop, so the scratch PNG file used during
+/// rendering is removed on every exit path — including a panic unwinding
+/// out of `render_to_path` (e.g. a plotters-internal panic on pathological
+/// input) — not just the ordinary success/error returns.
+struct TempFileGuard(PathBuf);
+
+impl Drop for TempFileGuard {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.0);
+    }
+}
+
 /// Render the accumulated graph to PNG bytes. Renders through a scratch file
 /// (plotters' bitmap backend has no in-memory PNG target) that is always
-/// cleaned up, success or failure.
+/// cleaned up, success, error, or panic.
 pub fn render_png(graph: &GraphBuilder) -> Result<Vec<u8>, String> {
     if graph.is_empty() {
         return Err("graph has no nodes".to_string());
@@ -287,14 +305,43 @@ pub fn render_png(graph: &GraphBuilder) -> Result<Vec<u8>, String> {
     let width = content_w.max(NODE_WIDTH + MARGIN * 2) as u32;
     let height = (content_h + title_offset).max(NODE_HEIGHT + MARGIN * 2) as u32;
 
-    let path =
-        std::env::temp_dir().join(format!("housebot-lua-graph-{}.png", uuid::Uuid::new_v4()));
-    let result =
-        render_to_path(&path, width, height, graph, &positions, title_offset).and_then(|()| {
-            std::fs::read(&path).map_err(|e| format!("failed to read rendered image: {e}"))
-        });
-    let _ = std::fs::remove_file(&path);
-    result
+    let path = std::env::temp_dir().join(format!("{TEMP_FILE_PREFIX}{}.png", uuid::Uuid::new_v4()));
+    let _cleanup = TempFileGuard(path.clone());
+    render_to_path(&path, width, height, graph, &positions, title_offset).and_then(|()| {
+        std::fs::read(&path).map_err(|e| format!("failed to read rendered image: {e}"))
+    })
+}
+
+/// Removes stray scratch PNGs left under `dir` by `render_png` — normally
+/// nothing accumulates (see `TempFileGuard`), but a hard crash (OOM-kill,
+/// `SIGKILL`) skips `Drop`, and older builds could leak one on an internal
+/// panic. Only touches files matching our own naming prefix, and only those
+/// past `max_age`, so it won't collide with a render that's still in
+/// flight. Returns the number of files removed.
+pub fn sweep_stale_temp_files(dir: &Path, max_age: Duration) -> usize {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return 0;
+    };
+    let now = SystemTime::now();
+    let mut removed = 0;
+    for entry in entries.flatten() {
+        let is_ours = entry
+            .file_name()
+            .to_str()
+            .is_some_and(|name| name.starts_with(TEMP_FILE_PREFIX) && name.ends_with(".png"));
+        if !is_ours {
+            continue;
+        }
+        let age = entry
+            .metadata()
+            .and_then(|m| m.modified())
+            .ok()
+            .and_then(|modified| now.duration_since(modified).ok());
+        if age.is_some_and(|age| age >= max_age) && std::fs::remove_file(entry.path()).is_ok() {
+            removed += 1;
+        }
+    }
+    removed
 }
 
 fn render_to_path(
@@ -402,5 +449,46 @@ mod tests {
         let truncated = truncate_label(&long);
         assert_eq!(truncated.chars().count(), MAX_LABEL_CHARS);
         assert!(truncated.ends_with('…'));
+    }
+
+    #[test]
+    fn temp_file_guard_removes_file_on_drop() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("scratch.png");
+        std::fs::write(&path, b"x").unwrap();
+        {
+            let _guard = TempFileGuard(path.clone());
+            assert!(path.exists());
+        }
+        assert!(!path.exists());
+    }
+
+    #[test]
+    fn sweep_removes_only_stale_files_matching_our_prefix() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let ours = dir.path().join(format!("{TEMP_FILE_PREFIX}abc.png"));
+        let unrelated = dir.path().join("something-else.png");
+        std::fs::write(&ours, b"x").unwrap();
+        std::fs::write(&unrelated, b"x").unwrap();
+
+        // A generous max_age: nothing this fresh should be swept yet.
+        assert_eq!(
+            sweep_stale_temp_files(dir.path(), Duration::from_secs(3600)),
+            0
+        );
+        assert!(ours.exists());
+        assert!(unrelated.exists());
+
+        // max_age of zero treats both files as stale, but only the one
+        // matching our naming prefix should be removed.
+        assert_eq!(sweep_stale_temp_files(dir.path(), Duration::ZERO), 1);
+        assert!(!ours.exists());
+        assert!(unrelated.exists());
+    }
+
+    #[test]
+    fn sweep_on_missing_dir_returns_zero() {
+        let missing = std::path::Path::new("/nonexistent/housebot-graph-sweep-test");
+        assert_eq!(sweep_stale_temp_files(missing, Duration::ZERO), 0);
     }
 }

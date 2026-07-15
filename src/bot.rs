@@ -31,6 +31,7 @@ use crate::coding_agent::issue::{build_issue_body, dispatch_labels};
 use crate::coding_agent::pending::{DiscordMessageRef, DispatchStage, PendingJobStore};
 use crate::config;
 use crate::discord_bridge::DiscordBridge;
+use crate::graph_render;
 use crate::history::History;
 use crate::llm::ThinkingMode;
 use crate::lua_engine;
@@ -52,6 +53,12 @@ const MAX_MESSAGE_LENGTH: usize = 2000;
 const EMBED_DESCRIPTION_LIMIT: usize = 4096;
 const PAGINATION_PREFIX: &str = "housebot_labs_page:";
 const DEVELOP_PREFIX: &str = "develop:";
+/// How often, and past what age, stray `/lua` graph scratch files are swept
+/// from the temp dir. Normal renders clean up immediately (see
+/// `graph_render::TempFileGuard`); this only catches leaks from a hard
+/// crash or an older build.
+const GRAPH_SWEEP_INTERVAL: Duration = Duration::from_secs(600);
+const GRAPH_SWEEP_MAX_AGE: Duration = Duration::from_secs(600);
 
 struct PaginatedResponse {
     owner_id: u64,
@@ -217,6 +224,7 @@ pub struct HouseBot {
     proactive_cooldowns: Mutex<HashMap<(u64, u64), Instant>>,
     paginated: Mutex<HashMap<String, PaginatedResponse>>,
     reminder_started: AtomicBool,
+    graph_sweep_started: AtomicBool,
     chat_rate_limiter: RateLimiter,
     lua_rate_limiter: RateLimiter,
     /// Shared with `Agent` — holds pending coding-agent dispatch jobs.
@@ -255,6 +263,7 @@ impl HouseBot {
             proactive_cooldowns: Mutex::new(HashMap::new()),
             paginated: Mutex::new(HashMap::new()),
             reminder_started: AtomicBool::new(false),
+            graph_sweep_started: AtomicBool::new(false),
             chat_rate_limiter: RateLimiter::new(chat_rate_max, chat_rate_window),
             lua_rate_limiter: RateLimiter::new(
                 config::env_parse("LUA_RATE_LIMIT_MAX", 6),
@@ -1477,6 +1486,23 @@ impl EventHandler for HouseBot {
                                 .await;
                         }
                     }
+                }
+            }
+        });
+
+        if self.graph_sweep_started.swap(true, Ordering::SeqCst) {
+            return;
+        }
+        tokio::spawn(async move {
+            loop {
+                tokio::time::sleep(GRAPH_SWEEP_INTERVAL).await;
+                let removed = tokio::task::spawn_blocking(|| {
+                    graph_render::sweep_stale_temp_files(&std::env::temp_dir(), GRAPH_SWEEP_MAX_AGE)
+                })
+                .await
+                .unwrap_or(0);
+                if removed > 0 {
+                    tracing::info!(removed, "Swept stale /lua graph scratch files");
                 }
             }
         });
