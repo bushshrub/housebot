@@ -1122,7 +1122,9 @@ impl EventHandler for HouseBot {
             tracing::error!("Failed to register /effort slash command: {e}");
         }
         let lua_cmd = CreateCommand::new("lua")
-            .description("Run a sandboxed Lua script (requires the Scripting role)")
+            .description(
+                "Run a sandboxed Lua script; use graph.node/edge to render a diagram (requires the Scripting role)",
+            )
             .add_option(
                 CreateCommandOption::new(
                     CommandOptionType::String,
@@ -1671,11 +1673,14 @@ impl HouseBot {
         });
         let script = lua_engine::strip_code_fence(&script).to_string();
         let output = lua_engine::run_script(script, host, lua_engine::LuaLimits::from_env()).await;
-        let reply = format_lua_reply(&self.redactor.redact(&output));
-        if let Err(e) = cmd
-            .edit_response(&ctx.http, EditInteractionResponse::new().content(reply))
-            .await
-        {
+        let mut edit = EditInteractionResponse::new();
+        if !output.text.is_empty() {
+            edit = edit.content(format_lua_reply(&self.redactor.redact(&output.text)));
+        }
+        if let Some(image) = output.image {
+            edit = edit.new_attachment(CreateAttachment::bytes(image, "graph.png"));
+        }
+        if let Err(e) = cmd.edit_response(&ctx.http, edit).await {
             tracing::warn!("Failed to send /lua response: {e}");
         }
     }

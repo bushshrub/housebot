@@ -15,6 +15,7 @@ pub mod coding_agent;
 pub mod config;
 pub mod discord_bridge;
 pub mod github_issues;
+pub mod graph_render;
 pub mod history;
 pub mod llm;
 pub mod lua_engine;
