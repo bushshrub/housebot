@@ -268,15 +268,10 @@ pub async fn memory_command(memory: &Memory, first_line: &str, author_id: u64) -
             if matching.is_empty() {
                 format!("No memories matching `{query}`.")
             } else {
-                format!(
-                    "**Memories matching `{query}`:**\n{}",
-                    matching.join("\n")
-                )
+                format!("**Memories matching `{query}`:**\n{}", matching.join("\n"))
             }
         }
-        other => format!(
-            "Unknown subcommand `{other}`. Options: `show`, `clear`, `search`"
-        ),
+        other => format!("Unknown subcommand `{other}`. Options: `show`, `clear`, `search`"),
     }
 }
 
