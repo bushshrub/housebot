@@ -1,11 +1,13 @@
-//! Sandboxed Lua scripting engine backing the `/lua` slash command.
+//! Sandboxed Lua scripting engine backing the `/lua` slash command and the
+//! agent's `run_lua` tool.
 //!
 //! Scripts run in a restricted Lua 5.4 VM: only the `table`, `string`, and `math`
 //! standard libraries are loaded, file/OS/network access is unavailable, and
-//! `load`/`dofile`/`loadfile` are removed (loading untrusted bytecode is a known
-//! sandbox escape in Lua 5.4). Execution is bounded by a wall-clock time limit
-//! (enforced via an instruction-count hook) and a memory limit, and bridged bot
-//! capabilities are capped per script run.
+//! `load`/`dofile`/`loadfile`/`require`/`collectgarbage`/`warn`/`_G`/`string.dump`
+//! are removed. Execution is bounded by a wall-clock time limit (enforced via an
+//! instruction-count hook) and a memory limit, bridged bot capabilities are capped
+//! per script run, and bridge query arguments are length-capped to prevent large
+//! payloads to external services.
 
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
@@ -25,6 +27,8 @@ pub const MAX_OUTPUT_CHARS: usize = 4000;
 const MAX_API_CALLS: usize = 10;
 /// Maximum `discord.send_message` calls per script run.
 const MAX_MESSAGES_SENT: usize = 5;
+/// Maximum characters accepted for a bridge search query (web_search / jellyfin_search).
+const MAX_QUERY_CHARS: usize = 500;
 /// How often (in VM instructions) the time-limit hook fires.
 const HOOK_INSTRUCTION_INTERVAL: u32 = 4096;
 /// Marker embedded in the hook error so it can be recognized after Lua wraps it.
@@ -306,7 +310,27 @@ fn build_sandbox(
     let globals = lua.globals();
     // The base library is always loaded; remove the pieces that reach outside
     // the sandbox or load untrusted chunks.
-    for name in ["dofile", "loadfile", "load"] {
+    //
+    // `require` is included even though it cannot succeed without the `package`
+    // library (which is not loaded): belt-and-suspenders removal.
+    //
+    // `collectgarbage` is removed because pausing or manipulating the GC can
+    // confuse the per-allocation memory-limit callback and waste worker-thread
+    // time in tight GC-manipulation loops.
+    //
+    // `warn` (Lua 5.4) writes to stderr bypassing sandbox output capture.
+    //
+    // `_G` is the explicit reference to the global table; removing it prevents
+    // scripts from enumerating or bulk-modifying globals via table iteration.
+    for name in [
+        "dofile",
+        "loadfile",
+        "load",
+        "require",
+        "collectgarbage",
+        "warn",
+        "_G",
+    ] {
         globals.raw_set(name, LuaValue::Nil)?;
     }
 
@@ -317,8 +341,12 @@ fn build_sandbox(
     // Remove them; the remaining string functions are linear and memory-bounded.
     // Nil-ing them on the `string` table also disables the `("x"):find(…)` method
     // form, since the string metatable's `__index` is this table.
+    //
+    // `string.dump` serialises a Lua function to raw bytecode. It cannot be
+    // loaded back (since `load` is nil'd), but leaving it available would let a
+    // script extract and exfiltrate function bytecode. Remove it.
     let string_lib: mlua::Table = globals.get("string")?;
-    for name in ["find", "match", "gmatch", "gsub"] {
+    for name in ["find", "match", "gmatch", "gsub", "dump"] {
         string_lib.raw_set(name, LuaValue::Nil)?;
     }
 
@@ -364,6 +392,7 @@ fn build_sandbox(
         lua.create_function(move |_, (query, max_results): (String, Option<usize>)| {
             let remaining = search_state.take_api_slot()?;
             let max_results = max_results.unwrap_or(10).clamp(1, 20);
+            let query: String = query.chars().take(MAX_QUERY_CHARS).collect();
             bridge_call(
                 &search_handle,
                 remaining,
@@ -379,6 +408,7 @@ fn build_sandbox(
         "jellyfin_search",
         lua.create_function(move |_, query: String| {
             let remaining = jellyfin_state.take_api_slot()?;
+            let query: String = query.chars().take(MAX_QUERY_CHARS).collect();
             bridge_call(
                 &jellyfin_handle,
                 remaining,
@@ -441,6 +471,7 @@ mod tests {
     struct FakeHost {
         sent: Mutex<Vec<String>>,
         searches: AtomicUsize,
+        last_search: Mutex<Option<String>>,
     }
 
     #[async_trait]
@@ -452,6 +483,7 @@ mod tests {
 
         async fn web_search(&self, query: &str, _max_results: usize) -> String {
             self.searches.fetch_add(1, Ordering::SeqCst);
+            *self.last_search.lock().unwrap() = Some(query.to_string());
             format!("results for: {query}")
         }
 
@@ -509,6 +541,33 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn sandbox_removes_collectgarbage_warn_and_global_table_ref() {
+        let host = Arc::new(FakeHost::default());
+        let out = run(
+            "return type(collectgarbage), type(warn), type(_G)",
+            &host,
+            limits(),
+        )
+        .await;
+        assert_eq!(out, "nil\tnil\tnil");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn web_search_query_is_truncated_to_limit() {
+        let host = Arc::new(FakeHost::default());
+        let long_query = "x".repeat(MAX_QUERY_CHARS + 100);
+        let out = run(
+            &format!("return discord.web_search(\"{long_query}\")"),
+            &host,
+            limits(),
+        )
+        .await;
+        let searched = host.last_search.lock().unwrap().clone().unwrap_or_default();
+        assert_eq!(searched.chars().count(), MAX_QUERY_CHARS);
+        assert!(out.contains("results for:"));
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn pattern_matching_functions_are_removed() {
         let host = Arc::new(FakeHost::default());
         let out = run(
@@ -518,6 +577,13 @@ mod tests {
         )
         .await;
         assert_eq!(out, "nil\tnil\tnil\tnil");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn string_dump_is_removed() {
+        let host = Arc::new(FakeHost::default());
+        let out = run("return type(string.dump)", &host, limits()).await;
+        assert_eq!(out, "nil");
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
