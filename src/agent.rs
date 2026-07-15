@@ -23,6 +23,7 @@ use crate::rate_limit::RateLimiter;
 use crate::reminders::Reminders;
 use crate::skills::{Skill, Skills};
 use crate::token_monitor::{TokenLeaderboard, TokenMonitor};
+use crate::tool_permissions::ToolPermissions;
 use crate::tools;
 use crate::tools::common_crawl::CommonCrawl;
 use crate::tools::file_download::FileDownloader;
@@ -193,6 +194,7 @@ pub struct Agent {
     session_stats: tokio::sync::Mutex<HashMap<String, SessionStats>>,
     token_monitor: TokenMonitor,
     active_conversations: tokio::sync::Mutex<HashMap<String, String>>,
+    tool_permissions: ToolPermissions,
     discord: Arc<DiscordBridge>,
     channel_log: ChannelLog,
 }
@@ -359,6 +361,7 @@ impl Agent {
             session_stats: tokio::sync::Mutex::new(HashMap::new()),
             token_monitor,
             active_conversations: tokio::sync::Mutex::new(HashMap::new()),
+            tool_permissions: ToolPermissions::default(),
             discord,
             channel_log: ChannelLog::default(),
         }
@@ -372,6 +375,11 @@ impl Agent {
     /// Shared persistent memory store used by the Discord command surface.
     pub fn memory(&self) -> Memory {
         self.memory.clone()
+    }
+
+    /// Shared guild-scoped tool permission store used by Discord commands.
+    pub fn tool_permissions(&self) -> ToolPermissions {
+        self.tool_permissions.clone()
     }
 
     /// Shared pending-job store; also held by `HouseBot` to drive the Discord component UI.
@@ -758,7 +766,7 @@ impl Agent {
                 tools_called.push(tc.name.clone());
                 hooks.on_tool_called(&tc.name, &args).await;
                 let outcome = self
-                    .dispatch_tool(&tc.name, &args, user_id, username, channel_id, hooks)
+                    .dispatch_tool(&tc.name, &args, user_id, username, channel_id, guild_id)
                     .await;
                 let content = match outcome {
                     ToolOutcome::Text(ref t) => t.clone(),
@@ -891,12 +899,35 @@ impl Agent {
         user_id: &str,
         username: &str,
         channel_id: u64,
-        _hooks: &dyn AgentHooks,
+        guild_id: Option<u64>,
     ) -> ToolOutcome {
         let started = std::time::Instant::now();
-        let outcome = self
-            .dispatch_tool_inner(name, args, user_id, username, channel_id)
-            .await;
+        let requester_id = user_id.parse().unwrap_or(0);
+        let outcome = if let Some(guild_id) = guild_id {
+            match self
+                .tool_permissions
+                .is_banned(guild_id, requester_id, name)
+                .await
+            {
+                Ok(true) => ToolOutcome::Text(format!(
+                    "Error: permission denied — you are restricted from using `{name}` in this server."
+                )),
+                Ok(false) => {
+                    self.dispatch_tool_inner(name, args, user_id, username, channel_id, guild_id)
+                        .await
+                }
+                Err(error) => {
+                    tracing::error!(%error, %guild_id, "tool permission check failed");
+                    ToolOutcome::Text(
+                        "Error: tool permissions are temporarily unavailable; the tool call was blocked for safety."
+                            .into(),
+                    )
+                }
+            }
+        } else {
+            self.dispatch_tool_inner(name, args, user_id, username, channel_id, 0)
+                .await
+        };
         let content = match &outcome {
             ToolOutcome::Text(t) => t.as_str(),
             ToolOutcome::Attachment { text, .. } => text.as_str(),
@@ -921,6 +952,7 @@ impl Agent {
         user_id: &str,
         username: &str,
         channel_id: u64,
+        guild_id: u64,
     ) -> ToolOutcome {
         match name {
             "web_search" => ToolOutcome::Text(
@@ -1092,7 +1124,7 @@ impl Agent {
                     user_id: requester_user_id,
                     username: username.to_string(),
                     channel_id,
-                    guild_id: None,
+                    guild_id: (guild_id != 0).then_some(guild_id),
                     source_message_id: 0,
                 };
                 let source_message = DiscordMessageRef {
@@ -1776,6 +1808,7 @@ impl Agent {
             session_stats: tokio::sync::Mutex::new(HashMap::new()),
             token_monitor: TokenMonitor::default(),
             active_conversations: tokio::sync::Mutex::new(HashMap::new()),
+            tool_permissions: ToolPermissions::default(),
             discord: Arc::new(DiscordBridge::default()),
             channel_log: ChannelLog::default(),
         }
@@ -2218,7 +2251,7 @@ mod tests {
                 "u",
                 "testuser",
                 0,
-                &NoHooks,
+                None,
             )
             .await;
         match out {
@@ -2227,6 +2260,38 @@ mod tests {
                 panic!("unexpected development action: {text}")
             }
             ToolOutcome::Attachment { text, .. } => panic!("unexpected attachment: {text}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn dispatch_blocks_tool_banned_by_guild_vote() {
+        let client = Arc::new(MockChatClient::new());
+        let (temp, mut agent) = test_agent(client);
+        agent.tool_permissions = ToolPermissions::new(temp.path().join("tool_permissions.json"), 2);
+        let proposal = agent
+            .tool_permissions
+            .propose(77, 200, "translate", 100)
+            .await
+            .unwrap();
+        agent
+            .tool_permissions
+            .vote(77, &proposal.id, 101, true)
+            .await
+            .unwrap();
+
+        let outcome = agent
+            .dispatch_tool(
+                "translate",
+                &json!({"text":"hello","target_language":"French"}),
+                "200",
+                "restricted-user",
+                10,
+                Some(77),
+            )
+            .await;
+        match outcome {
+            ToolOutcome::Text(text) => assert!(text.contains("permission denied")),
+            _ => panic!("banned tool should return a text denial"),
         }
     }
 
@@ -2412,7 +2477,7 @@ mod tests {
         let client = Arc::new(MockChatClient::new());
         let (_t, agent) = test_agent(client);
         let out = agent
-            .dispatch_tool("get_lua_docs", &json!({}), "u", "testuser", 0, &NoHooks)
+            .dispatch_tool("get_lua_docs", &json!({}), "u", "testuser", 0, None)
             .await;
         let ToolOutcome::Text(t) = out else {
             panic!("expected Text outcome")
@@ -2432,7 +2497,7 @@ mod tests {
                 "u",
                 "testuser",
                 0,
-                &NoHooks,
+                None,
             )
             .await;
         let ToolOutcome::Text(t) = out else {
@@ -2452,7 +2517,7 @@ mod tests {
                 "u",
                 "testuser",
                 0,
-                &NoHooks,
+                None,
             )
             .await;
         let ToolOutcome::Text(t) = out else {
