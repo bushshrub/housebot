@@ -5,6 +5,7 @@ use super::*;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum DeploymentStage {
     PullHousebotImage,
+    RunDatabaseMigrations,
     RemovePreviousContainer,
     StartRequestedImage,
     CheckContainerState,
@@ -14,6 +15,7 @@ impl DeploymentStage {
     pub fn progress_message(self) -> &'static str {
         match self {
             Self::PullHousebotImage => "⬇️ Pulling housebot image…",
+            Self::RunDatabaseMigrations => "🗄️ Applying database migrations…",
             Self::RemovePreviousContainer => "🛑 Removing the previous housebot container…",
             Self::StartRequestedImage => "🚀 Starting the requested housebot image…",
             Self::CheckContainerState => "🩺 Checking container state…",
@@ -33,6 +35,7 @@ impl fmt::Display for DeploymentStage {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(match self {
             Self::PullHousebotImage => "pull_housebot_image",
+            Self::RunDatabaseMigrations => "run_database_migrations",
             Self::RemovePreviousContainer => "remove_previous_container",
             Self::StartRequestedImage => "start_requested_image",
             Self::CheckContainerState => "check_container_state",
@@ -145,16 +148,28 @@ pub(crate) fn container_commands_with_env(
         "--network".into(),
         docker_network.into(),
     ];
-    for (name, value) in environment {
+    for (name, value) in &environment {
         run.push("--env".into());
         run.push(format!("{name}={value}"));
     }
+    let mut migrate = vec![
+        "run".into(),
+        "--rm".into(),
+        "--network".into(),
+        docker_network.into(),
+    ];
+    for (name, value) in &environment {
+        migrate.push("--env".into());
+        migrate.push(format!("{name}={value}"));
+    }
+    migrate.extend([image.into(), "migrate".into()]);
     run.extend(["--env".into(), "DATA_DIR=/app/data".into(), image.into()]);
     Ok(vec![
         DeploymentCommand::new(
             DeploymentStage::PullHousebotImage,
             vec!["pull".into(), image.into()],
         ),
+        DeploymentCommand::new(DeploymentStage::RunDatabaseMigrations, migrate),
         DeploymentCommand::new(
             DeploymentStage::RemovePreviousContainer,
             vec![

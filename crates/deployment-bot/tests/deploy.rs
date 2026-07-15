@@ -23,6 +23,7 @@ fn deploy_plan_is_scoped_to_a_valid_sha() {
         stages,
         vec![
             DeploymentStage::PullHousebotImage,
+            DeploymentStage::RunDatabaseMigrations,
             DeploymentStage::RemovePreviousContainer,
             DeploymentStage::StartRequestedImage,
             DeploymentStage::CheckContainerState,

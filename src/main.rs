@@ -19,5 +19,9 @@ async fn main() -> anyhow::Result<()> {
         )
         .init();
 
+    if std::env::args().nth(1).as_deref() == Some("migrate") {
+        return housebot::database::migrate_from_env().await;
+    }
+
     housebot::bot::run().await
 }
