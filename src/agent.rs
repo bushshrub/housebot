@@ -683,6 +683,7 @@ impl Agent {
             tools::features::definition(),
             search_messages_tool(),
             get_recent_messages_tool(),
+            find_discord_users_tool(),
             get_discord_user_tool(),
         ];
         // Conditionally include update_memory based on user's privacy setting.
@@ -1029,6 +1030,38 @@ impl Agent {
                     },
                 )
             }
+            "find_discord_users" => {
+                let query = str_arg(args, "query");
+                let max_results = u64_arg(args, "max_results", 10).clamp(1, 20) as usize;
+                let target_channel = args
+                    .get("channel_id")
+                    .and_then(Value::as_str)
+                    .and_then(|value| value.parse::<u64>().ok())
+                    .unwrap_or(channel_id);
+                ToolOutcome::Text(
+                    match self
+                        .channel_log
+                        .find_authors(target_channel, query, max_results)
+                        .await
+                    {
+                        Err(error) => format!("Error: {error}"),
+                        Ok(authors) if authors.is_empty() => {
+                            "No matching Discord users found in this channel's history.".to_string()
+                        }
+                        Ok(authors) => authors
+                            .iter()
+                            .map(|author| {
+                                let nick = author.nick.as_deref().unwrap_or("(none)");
+                                format!(
+                                    "Username: {} | Nickname: {} | ID: {}",
+                                    author.username, nick, author.user_id
+                                )
+                            })
+                            .collect::<Vec<_>>()
+                            .join("\n"),
+                    },
+                )
+            }
             "get_discord_user" => {
                 let uid: u64 = str_arg(args, "user_id").parse().unwrap_or(0);
                 ToolOutcome::Text(if uid == 0 {
@@ -1260,6 +1293,7 @@ Call this when a user asks what you can do, what commands exist, or how to use a
 - search_messages — Search the current channel's message log by regex pattern. Only matching \
 messages are returned, keeping token usage low. Use this when a user asks what was said, who \
 mentioned something, or what was discussed. Prefer a targeted pattern over a broad one.\n\
+- find_discord_users — Resolve a username or nickname to users seen in the current channel.\n\
 - get_discord_user — Look up a Discord user's profile by their user ID (username, display name, \
 account creation date, bot status).{skills_section}\n\n\
 ## Guidelines\n- Be conversational and friendly.\n- Use Jellyfin tools for any media questions \
@@ -1412,6 +1446,31 @@ fn get_discord_user_tool() -> Value {
                 }
             },
             "required": ["user_id"]
+        }
+    })
+}
+
+fn find_discord_users_tool() -> Value {
+    json!({
+        "name": "find_discord_users",
+        "description": "Find Discord users previously seen in the current channel by username, nickname, or user ID. Use this before get_discord_user when a person is named but their numeric ID is unknown. Results are limited to the selected channel's message history.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "query": {
+                    "type": "string",
+                    "description": "Case-insensitive username, nickname, or user ID substring."
+                },
+                "max_results": {
+                    "type": "integer",
+                    "description": "Maximum number of users to return (1–20, default 10)."
+                },
+                "channel_id": {
+                    "type": "string",
+                    "description": "Discord channel ID to search. Omit to use the current channel."
+                }
+            },
+            "required": ["query"]
         }
     })
 }
@@ -1571,6 +1630,15 @@ mod tests {
     fn system_prompt_excludes_code_execution() {
         let p = build_system_prompt("Alice", "123", "Alice", "", "", &empty_skills(), None, true);
         assert!(!p.contains("code execution"));
+    }
+
+    #[test]
+    fn system_prompt_lists_discord_user_tools_once_and_in_order() {
+        let p = build_system_prompt("Alice", "123", "Alice", "", "", &empty_skills(), None, true);
+        let find = p.find("- find_discord_users —").unwrap();
+        let get = p.find("- get_discord_user —").unwrap();
+        assert!(find < get);
+        assert_eq!(p.matches("- get_discord_user —").count(), 1);
     }
 
     #[test]
@@ -1976,6 +2044,7 @@ mod tests {
         assert!(names.contains(&"translate"));
         assert!(names.contains(&"update_memory"));
         assert!(names.contains(&"common_crawl__search"));
+        assert!(names.contains(&"find_discord_users"));
         assert!(names.contains(&"edit_feature_request"));
         assert!(names.contains(&"download_file"));
         assert!(names.contains(&"deep_research"));
