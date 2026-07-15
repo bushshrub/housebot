@@ -38,6 +38,7 @@ pub fn features_text() -> &'static str {
 - Jellyfin media server queries (movies, shows, music) — read-only
 - URL summarisation and translation
 - Timed reminders delivered by DM
+- Create and edit your own GitHub feature requests
 - Custom skills (user-defined prompt templates) via `!skill`
 - Personal notes and persistent memory across sessions
 - Software development help: discuss, explain, review, and advise on code (cannot execute)
