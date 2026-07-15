@@ -38,9 +38,11 @@ impl ProfileTag {
 /// Map a tool name to the profile tag it contributes to.
 pub fn tool_to_tag(tool_name: &str) -> Option<ProfileTag> {
     match tool_name {
-        "web_search" | "fetch_webpage" | "common_crawl__search" | "summarize_url" => {
-            Some(ProfileTag::WebResearch)
-        }
+        "web_search"
+        | "deep_research"
+        | "fetch_webpage"
+        | "common_crawl__search"
+        | "summarize_url" => Some(ProfileTag::WebResearch),
         "update_memory" => Some(ProfileTag::Coding),
         "create_feature_request" | "edit_feature_request" | "prepare_feature_development" => {
             Some(ProfileTag::Coding)

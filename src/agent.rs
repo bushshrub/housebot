@@ -543,7 +543,9 @@ impl Agent {
                 // Search rate limits are not recoverable within this run. Stop the
                 // tool loop after the first limited response so the model cannot keep
                 // retrying the search and waiting for another rate-limit window.
-                if tc.name == "web_search" && search_rate_limited(&content) {
+                if matches!(tc.name.as_str(), "web_search" | "deep_research")
+                    && search_rate_limited(&content)
+                {
                     break 'agent_loop "Web search is temporarily rate-limited. Please try again in a few minutes.".to_string();
                 }
             }
@@ -600,6 +602,7 @@ impl Agent {
         }
         let mut defs: Vec<Value> = vec![
             tools::searxng::definition(),
+            tools::searxng::deep_research_definition(),
             tools::web_fetch::definition(),
             tools::common_crawl::definition(),
             run_skill_tool(),
@@ -672,6 +675,29 @@ impl Agent {
                     )
                     .await,
             ),
+            "deep_research" => {
+                let questions: Vec<String> = args
+                    .get("questions")
+                    .and_then(Value::as_array)
+                    .map(|questions| {
+                        questions
+                            .iter()
+                            .filter_map(Value::as_str)
+                            .map(str::to_string)
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                ToolOutcome::Text(
+                    self.searxng
+                        .deep_research(
+                            str_arg(args, "topic"),
+                            &questions,
+                            u64_arg(args, "max_results_per_query", 5) as usize,
+                            str_arg(args, "language"),
+                        )
+                        .await,
+                )
+            }
             "fetch_webpage" => ToolOutcome::Text(
                 self.web_fetch
                     .fetch_content(
@@ -1110,6 +1136,7 @@ fn build_system_prompt_with_profile(
 search, general information, and software development questions.\n\nCurrent date/time: {now}\nCurrent user: {username} \
 (ID: {user_id}){profile_section}{memory_section}{personality_section}\n\n## Tools\n\
 - web_search — Search the web (SearXNG) for current information.\n\
+- deep_research — Run an overview plus 2-5 focused searches and return a deduplicated, cross-referenced source dossier.\n\
 - fetch_webpage — Fetch and read the text of a public webpage.\n\
 - common_crawl__search — Search historical URL captures in the Common Crawl index.\n\
 - jellyfin__* — Query the household Jellyfin media server for movies, shows, music. \
@@ -1129,8 +1156,8 @@ mentioned something, or what was discussed. Prefer a targeted pattern over a bro
 - get_discord_user — Look up a Discord user's profile by their user ID (username, display name, \
 account creation date, bot status).{skills_section}\n\n\
 ## Guidelines\n- Be conversational and friendly.\n- Use Jellyfin tools for any media questions \
-before guessing.\n- Use web_search for factual or current-events questions. If web_search returns a rate-limit \
-error, stop using it for this request and do not retry it repeatedly; use \
+before guessing.\n- Use web_search for simple factual or current-events questions. For complex questions requiring multiple perspectives, comparisons, or a comprehensive report, use deep_research and synthesize its dossier with source links. If either search tool returns a rate-limit \
+error, stop using search tools for this request and do not retry repeatedly; use \
 common_crawl__search for historical URL evidence when appropriate, or explain that the search \
 service is temporarily unavailable.\n- You can discuss, explain, review, and advise on software \
 development, but you cannot execute code.\n- {memory_guidance}\n- Keep responses concise unless asked for detail.\n- If a user \
@@ -1414,6 +1441,14 @@ mod tests {
         let p = build_system_prompt("Alice", "123", "Alice", "", "", &empty_skills(), None, true);
         assert!(p.contains("TL;DR"));
         assert!(p.contains("500"));
+    }
+
+    #[test]
+    fn system_prompt_routes_complex_questions_to_deep_research() {
+        let p = build_system_prompt("Alice", "123", "", "", "", &empty_skills(), None, true);
+        assert!(p.contains("deep_research"));
+        assert!(p.contains("multiple perspectives"));
+        assert!(p.contains("source links"));
     }
 
     #[test]
@@ -1795,5 +1830,6 @@ mod tests {
         assert!(names.contains(&"update_memory"));
         assert!(names.contains(&"common_crawl__search"));
         assert!(names.contains(&"edit_feature_request"));
+        assert!(names.contains(&"deep_research"));
     }
 }
