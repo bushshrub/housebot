@@ -1503,7 +1503,9 @@ mod tests {
             "",
         );
         assert!(p.contains("Avatar URL: https://cdn.discordapp.com/avatars/123/avatar.png"));
-        assert!(p.contains("Never infer sensitive traits"));
+        assert!(
+            p.contains("Never infer sensitive traits, identity, or intent from a user's avatar.")
+        );
     }
 
     #[test]
