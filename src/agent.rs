@@ -2188,15 +2188,11 @@ mod tests {
         let out = agent
             .dispatch_tool("get_lua_docs", &json!({}), "u", "testuser", 0, &NoHooks)
             .await;
-        match out {
-            ToolOutcome::Text(t) => {
-                assert!(t.contains("discord.web_search"));
-                assert!(t.contains("math"));
-            }
-            ToolOutcome::DevelopmentAction { text, .. } => {
-                panic!("unexpected development action: {text}")
-            }
-        }
+        let ToolOutcome::Text(t) = out else {
+            panic!("expected Text outcome")
+        };
+        assert!(t.contains("discord.web_search"));
+        assert!(t.contains("math"));
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -2213,12 +2209,10 @@ mod tests {
                 &NoHooks,
             )
             .await;
-        match out {
-            ToolOutcome::Text(t) => assert_eq!(t, "42"),
-            ToolOutcome::DevelopmentAction { text, .. } => {
-                panic!("unexpected development action: {text}")
-            }
-        }
+        let ToolOutcome::Text(t) = out else {
+            panic!("expected Text outcome")
+        };
+        assert_eq!(t, "42");
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -2235,12 +2229,10 @@ mod tests {
                 &NoHooks,
             )
             .await;
-        match out {
-            ToolOutcome::Text(t) => assert_eq!(t, "2"),
-            ToolOutcome::DevelopmentAction { text, .. } => {
-                panic!("unexpected development action: {text}")
-            }
-        }
+        let ToolOutcome::Text(t) = out else {
+            panic!("expected Text outcome")
+        };
+        assert_eq!(t, "2");
     }
 
     #[test]
