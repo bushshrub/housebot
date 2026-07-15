@@ -1,0 +1,59 @@
+name: Notify Discord of new pull requests
+
+on:
+  pull_request:
+    types: [opened]
+
+permissions:
+  contents: read
+
+jobs:
+  notify:
+    if: github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    steps:
+      - name: Notify Discord
+        env:
+          WEBHOOK: ${{ secrets.DISCORD_DEPLOYMENT_WEBHOOK }}
+          REPOSITORY: ${{ github.repository }}
+          PR_TITLE: ${{ github.event.pull_request.title }}
+          PR_BODY: ${{ github.event.pull_request.body }}
+          PR_URL: ${{ github.event.pull_request.html_url }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          AUTHOR: ${{ github.event.pull_request.user.login }}
+          HEAD_REF: ${{ github.event.pull_request.head.label }}
+          BASE_REF: ${{ github.event.pull_request.base.label }}
+          DRAFT: ${{ github.event.pull_request.draft }}
+        run: |
+          if [ -z "$WEBHOOK" ]; then
+            echo "DISCORD_DEPLOYMENT_WEBHOOK is not configured; skipping notification."
+            exit 0
+          fi
+
+          jq -n \
+            --arg repository "$REPOSITORY" \
+            --arg title "$PR_TITLE" \
+            --arg body "${PR_BODY:-No description provided.}" \
+            --arg url "$PR_URL" \
+            --arg number "$PR_NUMBER" \
+            --arg author "$AUTHOR" \
+            --arg head "$HEAD_REF" \
+            --arg base "$BASE_REF" \
+            --arg draft "$DRAFT" \
+            '{
+              embeds: [{
+                title: ("New pull request: #" + $number + " " + $title),
+                url: $url,
+                description: ($body | .[0:3000] + (if length > 3000 then "…" else "" end)),
+                color: 5814783,
+                fields: [
+                  {name: "Repository", value: $repository, inline: true},
+                  {name: "Author", value: ("[" + $author + "](" + "https://github.com/" + $author + ")"), inline: true},
+                  {name: "Branches", value: ("`" + $head + "` → `" + $base + "`"), inline: false},
+                  {name: "Draft", value: $draft, inline: true}
+                ]
+              }]
+            }' \
+            | curl --fail --silent --show-error -X POST "$WEBHOOK" \
+                -H "Content-Type: application/json" \
+                --data-binary @-

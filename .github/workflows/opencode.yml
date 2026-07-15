@@ -15,9 +15,10 @@ jobs:
       startsWith(github.event.comment.body, '/opencode')
     runs-on: ubuntu-latest
     permissions:
-      contents: write
-      pull-requests: write
-      issues: write
+      id-token: write
+      contents: read
+      pull-requests: read
+      issues: read
     steps:
       - name: Checkout repository
         uses: actions/checkout@v6
@@ -28,8 +29,5 @@ jobs:
         uses: anomalyco/opencode/github@latest
         env:
           NVIDIA_API_KEY: ${{ secrets.NVIDIA_API_KEY }}
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
-          model: nvidia/glm-5.2
-          use_github_token: true
-          prompt: ${{ ((github.event_name == 'issue_comment' && github.event.issue.pull_request != null) || github.event_name == 'pull_request_review_comment') && 'Review this pull request for potential bugs, regressions, security issues, incorrect assumptions, and missing tests. Inspect the relevant repository code and the pull request diff. Report only actionable findings as review comments. Do not modify files, commit changes, or open a pull request.' || '' }}
+          model: nvidia/deepseek-ai/deepseek-v4-flash
