@@ -9,11 +9,12 @@ use std::time::{Duration, Instant};
 use async_trait::async_trait;
 use regex::Regex;
 use serenity::all::{
-    ButtonStyle, Command, CommandDataOptionValue, CommandOptionType, ComponentInteractionDataKind,
-    Context, CreateActionRow, CreateAllowedMentions, CreateAttachment, CreateButton, CreateCommand,
-    CreateCommandOption, CreateEmbed, CreateInteractionResponse, CreateInteractionResponseMessage,
-    CreateSelectMenu, CreateSelectMenuKind, CreateSelectMenuOption, EditInteractionResponse,
-    EditMessage, EventHandler, GatewayIntents, GuildId, Interaction, Message, Ready, UserId,
+    Attachment, ButtonStyle, Command, CommandDataOptionValue, CommandOptionType,
+    ComponentInteractionDataKind, Context, CreateActionRow, CreateAllowedMentions,
+    CreateAttachment, CreateButton, CreateCommand, CreateCommandOption, CreateEmbed,
+    CreateInteractionResponse, CreateInteractionResponseMessage, CreateSelectMenu,
+    CreateSelectMenuKind, CreateSelectMenuOption, EditInteractionResponse, EditMessage,
+    EventHandler, GatewayIntents, GetMessages, GuildId, Interaction, Message, Ready, UserId,
 };
 use serenity::builder::CreateMessage;
 use serenity::Client;
@@ -50,6 +51,10 @@ pub use crate::bot_formatting::{extract_code_files, lang_ext, split_text, tool_h
 
 const MAX_MESSAGE_LENGTH: usize = 2000;
 const EMBED_DESCRIPTION_LIMIT: usize = 4096;
+const MAX_ATTACHMENT_BYTES: u32 = 8 * 1024 * 1024;
+const MAX_ATTACHMENT_TEXT_CHARS: usize = 40_000;
+const RECENT_ATTACHMENT_MESSAGE_LIMIT: u8 = 25;
+const MAX_RECENT_ATTACHMENTS: usize = 3;
 const PAGINATION_PREFIX: &str = "housebot_labs_page:";
 const DEVELOP_PREFIX: &str = "develop:";
 
@@ -1759,10 +1764,10 @@ impl EventHandler for HouseBot {
             .as_ref()
             .map(|m| m.author.id == bot_id)
             .unwrap_or(false);
-        let is_reply_to_media = msg
+        let is_reply_to_attachment = msg
             .referenced_message
             .as_deref()
-            .is_some_and(message_has_supported_media);
+            .is_some_and(message_has_attachment);
 
         // Follow-ups are on by default in DMs. In guild channels, users must
         // opt in and the channel must be explicitly configured by the server.
@@ -1789,13 +1794,13 @@ impl EventHandler for HouseBot {
             && user_config.proactive_assistance_enabled
             && !is_mentioned
             && !is_reply_to_bot
-            && !is_reply_to_media
+            && !is_reply_to_attachment
             && is_proactive_candidate(&content)
             && self.proactive_cooldown_allows(channel_id, user_id).await;
         if !(is_dm
             || is_mentioned
             || is_reply_to_bot
-            || is_reply_to_media
+            || is_reply_to_attachment
             || is_active
             || proactive)
         {
@@ -1950,7 +1955,7 @@ impl HouseBot {
             Some(referenced) => format!("{text}\n\n{referenced}"),
             None => text,
         };
-        if text.is_empty() && !message_has_supported_media(msg) {
+        if text.is_empty() && !message_has_attachment(msg) {
             return;
         }
 
@@ -1978,10 +1983,8 @@ impl HouseBot {
                 .await;
         }
 
-        let mut media = extract_media(msg).await;
-        if let Some(referenced) = msg.referenced_message.as_deref() {
-            media.extend(extract_media(referenced).await);
-        }
+        let (media, attachment_context) =
+            collect_attachment_context(ctx, msg, followup_timeout).await;
 
         // Load per-user settings (personality, thinking effort, and privacy).
         let personality = user_config.personality.clone();
@@ -2037,11 +2040,15 @@ impl HouseBot {
             .as_ref()
             .map(|progress| ResponseProgressHooks::new(ctx, progress));
 
-        let user_text = if text.is_empty() {
+        let mut user_text = if text.is_empty() {
             "(no text)".to_string()
         } else {
             text
         };
+        if !attachment_context.is_empty() {
+            user_text.push_str("\n\n");
+            user_text.push_str(&attachment_context);
+        }
         self.message_log
             .append(msg.author.id.get().to_string(), &user_text)
             .await;
@@ -3436,72 +3443,281 @@ fn pagination_components(token: &str, page: usize, page_count: usize) -> Vec<Cre
     ])]
 }
 
-async fn extract_media(msg: &Message) -> Vec<MediaData> {
-    let mut media = Vec::new();
-    for att in &msg.attachments {
-        let Some(media_type) = media_type(&att.filename) else {
-            continue;
-        };
-        if let Ok(resp) = reqwest::get(&att.url).await {
-            if let Ok(bytes) = resp.bytes().await {
-                use base64::Engine;
-                media.push(MediaData {
-                    media_type: media_type.to_string(),
-                    data: base64::engine::general_purpose::STANDARD.encode(&bytes),
-                });
-            }
-        }
-    }
-    media
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AttachmentKind {
+    Media(&'static str),
+    Pdf,
+    Text,
+    Unsupported,
 }
 
-fn media_type(filename: &str) -> Option<&'static str> {
+fn attachment_kind(filename: &str) -> AttachmentKind {
     match filename
         .rsplit_once('.')
         .map(|(_, extension)| extension.to_ascii_lowercase())
         .as_deref()
     {
-        Some("png") => Some("image/png"),
-        Some("jpg") | Some("jpeg") => Some("image/jpeg"),
-        Some("gif") => Some("image/gif"),
-        Some("webp") => Some("image/webp"),
-        Some("mp3") => Some("audio/mpeg"),
-        Some("wav") => Some("audio/wav"),
-        Some("flac") => Some("audio/flac"),
-        Some("mp4") => Some("video/mp4"),
-        Some("mov") => Some("video/quicktime"),
-        Some("webm") => Some("video/webm"),
-        Some("mkv") => Some("video/x-matroska"),
-        Some("avi") => Some("video/x-msvideo"),
-        Some("m4v") => Some("video/x-m4v"),
-        _ => None,
+        Some("png") => AttachmentKind::Media("image/png"),
+        Some("jpg") | Some("jpeg") => AttachmentKind::Media("image/jpeg"),
+        Some("gif") => AttachmentKind::Media("image/gif"),
+        Some("webp") => AttachmentKind::Media("image/webp"),
+        Some("mp3") => AttachmentKind::Media("audio/mpeg"),
+        Some("wav") => AttachmentKind::Media("audio/wav"),
+        Some("flac") => AttachmentKind::Media("audio/flac"),
+        Some("mp4") => AttachmentKind::Media("video/mp4"),
+        Some("mov") => AttachmentKind::Media("video/quicktime"),
+        Some("webm") => AttachmentKind::Media("video/webm"),
+        Some("mkv") => AttachmentKind::Media("video/x-matroska"),
+        Some("avi") => AttachmentKind::Media("video/x-msvideo"),
+        Some("m4v") => AttachmentKind::Media("video/x-m4v"),
+        Some("pdf") => AttachmentKind::Pdf,
+        Some(
+            "txt" | "md" | "csv" | "json" | "jsonl" | "xml" | "html" | "css" | "toml" | "yaml"
+            | "yml" | "rs" | "py" | "js" | "jsx" | "ts" | "tsx" | "java" | "c" | "h" | "cpp"
+            | "hpp" | "go" | "rb" | "php" | "sh" | "sql" | "log",
+        ) => AttachmentKind::Text,
+        _ => AttachmentKind::Unsupported,
     }
+}
+
+async fn collect_attachment_context(
+    ctx: &Context,
+    msg: &Message,
+    lookback: Duration,
+) -> (Vec<MediaData>, String) {
+    let mut attachments: Vec<(Attachment, &'static str)> = Vec::new();
+    let mut seen = HashSet::new();
+
+    for attachment in &msg.attachments {
+        if seen.insert(attachment.id.get()) {
+            attachments.push((attachment.clone(), "current message"));
+        }
+    }
+    if let Some(referenced) = msg.referenced_message.as_deref() {
+        for attachment in &referenced.attachments {
+            if seen.insert(attachment.id.get()) {
+                attachments.push((attachment.clone(), "replied-to message"));
+            }
+        }
+    }
+
+    let oldest_timestamp = msg
+        .timestamp
+        .unix_timestamp()
+        .saturating_sub(i64::try_from(lookback.as_secs()).unwrap_or(i64::MAX));
+    match msg
+        .channel_id
+        .messages(
+            &ctx.http,
+            GetMessages::new()
+                .before(msg.id)
+                .limit(RECENT_ATTACHMENT_MESSAGE_LIMIT),
+        )
+        .await
+    {
+        Ok(messages) => {
+            let mut recent_count = 0;
+            for previous in messages {
+                if previous.author.id != msg.author.id
+                    || previous.timestamp.unix_timestamp() < oldest_timestamp
+                {
+                    continue;
+                }
+                for attachment in previous.attachments {
+                    if recent_count >= MAX_RECENT_ATTACHMENTS {
+                        break;
+                    }
+                    if seen.insert(attachment.id.get()) {
+                        attachments.push((attachment, "recent earlier message"));
+                        recent_count += 1;
+                    }
+                }
+                if recent_count >= MAX_RECENT_ATTACHMENTS {
+                    break;
+                }
+            }
+        }
+        Err(error) => tracing::warn!(
+            target: "housebot::attachments",
+            channel_id = msg.channel_id.get(),
+            %error,
+            "Failed to inspect recent messages for attachments"
+        ),
+    }
+
+    process_attachments(attachments).await
+}
+
+async fn process_attachments(
+    attachments: Vec<(Attachment, &'static str)>,
+) -> (Vec<MediaData>, String) {
+    use base64::Engine as _;
+
+    let mut media = Vec::new();
+    let mut context = String::new();
+    let mut text_chars_remaining = MAX_ATTACHMENT_TEXT_CHARS;
+    for (attachment, source) in attachments {
+        let kind = attachment_kind(&attachment.filename);
+        if attachment.size > MAX_ATTACHMENT_BYTES {
+            append_attachment_context(
+                &mut context,
+                &attachment.filename,
+                source,
+                "The attachment is present but exceeds the 8 MiB processing limit.",
+            );
+            continue;
+        }
+        if kind == AttachmentKind::Unsupported {
+            append_attachment_context(
+                &mut context,
+                &attachment.filename,
+                source,
+                "The attachment is present, but its file format is not supported for content extraction. Do not ask the user to upload it again.",
+            );
+            continue;
+        }
+
+        let bytes = match attachment.download().await {
+            Ok(bytes) => bytes,
+            Err(error) => {
+                tracing::warn!(
+                    target: "housebot::attachments",
+                    filename = %attachment.filename,
+                    %error,
+                    "Failed to download Discord attachment"
+                );
+                append_attachment_context(
+                    &mut context,
+                    &attachment.filename,
+                    source,
+                    "The attachment is present, but its contents could not be downloaded. Do not ask the user to upload it again unless they want to retry.",
+                );
+                continue;
+            }
+        };
+
+        match kind {
+            AttachmentKind::Media(media_type) => media.push(MediaData {
+                media_type: media_type.to_string(),
+                data: base64::engine::general_purpose::STANDARD.encode(bytes),
+            }),
+            AttachmentKind::Pdf | AttachmentKind::Text => {
+                let extracted = if kind == AttachmentKind::Pdf {
+                    tokio::task::spawn_blocking(move || pdf_extract::extract_text_from_mem(&bytes))
+                        .await
+                        .ok()
+                        .and_then(Result::ok)
+                } else {
+                    Some(String::from_utf8_lossy(&bytes).into_owned())
+                };
+                let Some(extracted) = extracted else {
+                    append_attachment_context(
+                        &mut context,
+                        &attachment.filename,
+                        source,
+                        "The attachment is present, but no text could be extracted from it. Do not ask the user to upload it again.",
+                    );
+                    continue;
+                };
+                let cleaned = extracted.replace('\0', "");
+                let available = cleaned.chars().count().min(text_chars_remaining);
+                let mut body: String = cleaned.chars().take(available).collect();
+                text_chars_remaining = text_chars_remaining.saturating_sub(available);
+                if available < cleaned.chars().count() {
+                    body.push_str("\n[Attachment text truncated to fit the context limit.]");
+                }
+                if body.trim().is_empty() {
+                    body = "The attachment is present, but it contains no extractable text.".into();
+                }
+                append_attachment_context(&mut context, &attachment.filename, source, &body);
+            }
+            AttachmentKind::Unsupported => unreachable!(),
+        }
+    }
+    (media, context)
+}
+
+fn append_attachment_context(context: &mut String, filename: &str, source: &str, body: &str) {
+    if !context.is_empty() {
+        context.push_str("\n\n");
+    }
+    context.push_str(&format!(
+        "[Attached file from {source}: {filename}]\n{body}\n[End attached file]"
+    ));
 }
 
 #[cfg(test)]
 mod media_tests {
-    use super::media_type;
+    use super::{attachment_kind, AttachmentKind};
 
     #[test]
     fn recognizes_supported_media_extensions() {
-        assert_eq!(media_type("PHOTO.PNG"), Some("image/png"));
-        assert_eq!(media_type("recording.mp3"), Some("audio/mpeg"));
-        assert_eq!(media_type("clip.mp4"), Some("video/mp4"));
-        assert_eq!(media_type("document.pdf"), None);
+        assert_eq!(
+            attachment_kind("PHOTO.PNG"),
+            AttachmentKind::Media("image/png")
+        );
+        assert_eq!(
+            attachment_kind("recording.mp3"),
+            AttachmentKind::Media("audio/mpeg")
+        );
+        assert_eq!(
+            attachment_kind("clip.mp4"),
+            AttachmentKind::Media("video/mp4")
+        );
+    }
+
+    #[test]
+    fn recognizes_extractable_document_extensions() {
+        assert_eq!(attachment_kind("midterm.PDF"), AttachmentKind::Pdf);
+        assert_eq!(attachment_kind("notes.md"), AttachmentKind::Text);
+        assert_eq!(attachment_kind("archive.zip"), AttachmentKind::Unsupported);
+    }
+
+    #[test]
+    fn extracts_text_from_pdf_attachments() {
+        let stream = "BT /F1 12 Tf 72 720 Td (Attached midterm) Tj ET";
+        let objects = [
+            "<< /Type /Catalog /Pages 2 0 R >>".to_string(),
+            "<< /Type /Pages /Kids [3 0 R] /Count 1 >>".to_string(),
+            "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 4 0 R >> >> /Contents 5 0 R >>".to_string(),
+            "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>".to_string(),
+            format!("<< /Length {} >>\nstream\n{stream}\nendstream", stream.len()),
+        ];
+        let mut pdf = b"%PDF-1.4\n".to_vec();
+        let mut offsets = Vec::new();
+        for (index, object) in objects.iter().enumerate() {
+            offsets.push(pdf.len());
+            pdf.extend_from_slice(format!("{} 0 obj\n{object}\nendobj\n", index + 1).as_bytes());
+        }
+        let xref = pdf.len();
+        pdf.extend_from_slice(
+            format!("xref\n0 {}\n0000000000 65535 f \n", objects.len() + 1).as_bytes(),
+        );
+        for offset in offsets {
+            pdf.extend_from_slice(format!("{offset:010} 00000 n \n").as_bytes());
+        }
+        pdf.extend_from_slice(
+            format!(
+                "trailer\n<< /Size {} /Root 1 0 R >>\nstartxref\n{xref}\n%%EOF\n",
+                objects.len() + 1
+            )
+            .as_bytes(),
+        );
+
+        let extracted = pdf_extract::extract_text_from_mem(&pdf).unwrap();
+        assert!(extracted.contains("Attached midterm"));
     }
 }
 
-fn message_has_supported_media(msg: &Message) -> bool {
-    msg.attachments
-        .iter()
-        .any(|attachment| media_type(&attachment.filename).is_some())
+fn message_has_attachment(msg: &Message) -> bool {
+    !msg.attachments.is_empty()
 }
 
 fn referenced_message_context(msg: &Message) -> Option<String> {
     let text = msg.content.trim();
     let urls: Vec<&str> = URL.find_iter(text).map(|m| m.as_str()).collect();
-    let has_media = message_has_supported_media(msg);
-    if text.is_empty() && !has_media {
+    let has_attachments = message_has_attachment(msg);
+    if text.is_empty() && !has_attachments {
         return None;
     }
 
@@ -3515,8 +3731,16 @@ fn referenced_message_context(msg: &Message) -> Option<String> {
         );
         context.push_str(&urls.join(", "));
     }
-    if has_media {
-        context.push_str("\n\n[The message above also contains media attachment(s) for analysis.]");
+    if has_attachments {
+        let filenames = msg
+            .attachments
+            .iter()
+            .map(|attachment| attachment.filename.as_str())
+            .collect::<Vec<_>>()
+            .join(", ");
+        context.push_str(&format!(
+            "\n\n[The message above also contains attachment(s) for analysis: {filenames}.]"
+        ));
     }
     context.push_str("\n[End message being replied to]");
     Some(context)
