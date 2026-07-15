@@ -119,13 +119,13 @@ pub async fn note_command(notes: &Notes, first_line: &str, rest: &str, author_id
         .filter(|s| !s.is_empty())
         .collect();
     if parts.len() < 2 {
-        return "Usage: `!note list` | `!note save <name>` | `!note get <name>` | `!note delete <name>`".into();
+        return "Usage: `!storage notes list` | `!storage notes save <name>` | `!storage notes get <name>` | `!storage notes delete <name>`".into();
     }
     match parts[1].to_lowercase().as_str() {
         "list" => {
             let all = notes.load_all(author_id).await;
             if all.is_empty() {
-                return "You have no saved notes. Use `!note save <name>` (with the content on the next line).".into();
+                return "You have no saved notes. Use `!storage notes save <name>` (with the content on the next line).".into();
             }
             let mut lines = vec!["**Your notes:**".to_string()];
             for (name, body) in &all {
@@ -139,7 +139,7 @@ pub async fn note_command(notes: &Notes, first_line: &str, rest: &str, author_id
         }
         "get" => {
             let Some(name) = parts.get(2).map(|s| s.to_lowercase()) else {
-                return "Usage: `!note get <name>`".into();
+                return "Usage: `!storage notes get <name>`".into();
             };
             match notes.get(author_id, &name).await {
                 None => format!("Note `{name}` not found."),
@@ -148,7 +148,7 @@ pub async fn note_command(notes: &Notes, first_line: &str, rest: &str, author_id
         }
         "save" => {
             let Some(name) = parts.get(2).map(|s| s.trim().to_lowercase()) else {
-                return "Usage: `!note save <name>` with the note content on the next line.".into();
+                return "Usage: `!storage notes save <name>` with the note content on the next line.".into();
             };
             if !valid_name(&name) {
                 return "Note name must be lowercase letters, numbers, and underscores only."
@@ -164,7 +164,7 @@ pub async fn note_command(notes: &Notes, first_line: &str, rest: &str, author_id
         }
         "delete" => {
             let Some(name) = parts.get(2).map(|s| s.to_lowercase()) else {
-                return "Usage: `!note delete <name>`".into();
+                return "Usage: `!storage notes delete <name>`".into();
             };
             match notes.delete(author_id, &name).await {
                 Ok(true) => format!("✅ Note **{name}** deleted."),
@@ -326,7 +326,7 @@ pub async fn erase_data_command(
 pub async fn memory_command(memory: &Memory, first_line: &str, author_id: u64) -> String {
     let parts: Vec<&str> = first_line.split_whitespace().collect();
     if parts.len() < 2 {
-        return "Usage: `!memory show` | `!memory clear` | `!memory search <query>`".into();
+        return "Usage: `!storage memory show` | `!storage memory clear` | `!storage memory search <query>`".into();
     }
     match parts[1].to_lowercase().as_str() {
         "show" => {
@@ -344,7 +344,7 @@ pub async fn memory_command(memory: &Memory, first_line: &str, author_id: u64) -
         "search" => {
             let query = parts[2..].join(" ");
             if query.is_empty() {
-                return "Usage: `!memory search <query>`".into();
+                return "Usage: `!storage memory search <query>`".into();
             }
             let content = memory.load(author_id.to_string()).await;
             if content.trim().is_empty() {

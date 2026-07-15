@@ -10,32 +10,33 @@ pub fn features_text() -> &'static str {
     "\
 **Slash commands**
 `/help` — show this reference
-`/new` / `/reset` — start a fresh conversation
-`/compact` — summarise the conversation into memory and start fresh (or clear it without saving when deep memory is disabled)
-`/session` — show token and context usage for the current session
-`/token_leaderboard` — show persistent global token usage by user and conversation
+`/session status|new|compact` — inspect the current session, start fresh, or summarise it into memory before starting fresh
+`/token_leaderboard [timeframe] [metric]` — rank token usage daily, weekly, monthly, or all-time by total tokens or cache efficiency; also shows your rank
 `/tool_ban propose|vote|status` — vote on server-specific user restrictions for individual tools
 `/status` — show your current settings at a glance (effort, follow-up, personality)
 `/effort [level]` — set thinking depth: `low` (2k tokens) · `medium` (4k, default) · `high` (8k) · `xhigh` (16k) · `max` (unlimited)
 `/config personality [text]` — set (or clear) a personal tone/personality override
 `/config followup enabled [timeout]` — toggle unpinged follow-up replies in a server channel
 `/config channel add|remove|list|clear` — restrict which channels the bot responds in
+`/config leaderboard visibility|role_add|role_remove|role_list` — administrators can make leaderboard responses public, private, or role-restricted
 `/labs pagination enabled` — toggle paginated responses (experimental)
 `/commit` — show the running commit hash
 `/model` — show the current model name and context size
-`/profile show|clear` — inspect your stored profile or clear learned profile data and memory
-`/history show|clear` — inspect or clear your global conversation history
+`/data profile show|clear` — inspect your stored profile or clear learned profile data and memory
+`/data history show|clear` — inspect or clear your global conversation history
+`/data erase confirm:true` — permanently delete all your stored data, including archived conversations and token statistics
 `/privacy status|deep_memory|proactive` — view or change privacy and proactive-assistance settings
-`/memory show|clear` — view or clear the bot's persistent memory about you (requires deep memory to be enabled)
-`/erase_my_data` — permanently delete all your stored data (including archived conversations and token statistics)
+`/storage memory show|search|clear` — inspect or clear persistent memory about you
+`/storage notes list|get|save|delete` — manage your named personal notes
 `/lua <script>` — run a sandboxed Lua script with `discord.send_message`, `discord.web_search`, `discord.jellyfin_search`, and `graph.node`/`graph.edge`/`graph.title` to render a flowchart or network diagram as an image (requires the Scripting role or higher, or guild administrator / bot owner)
 
 **Prefix commands**
 `!skill list|add|delete|info <name>` — manage custom prompt skills shared across all users
-`!note list|save|get|delete <name>` — manage your personal notes
+`!storage notes list|save|get|delete <name>` — manage your personal notes
+`!storage memory show|search|clear` — inspect or clear persistent memory
 `!grocery [list]` / `!grocery add <item>` / `!grocery remove <number or item>` / `!grocery flush` — manage your persistent personal grocery list
 `!stats` — show your conversation and memory stats
-`!new` / `!reset` / `!compact` — same as the slash variants
+`!session status|new|compact` — inspect or manage the current conversation; `!new`, `!reset`, and `!compact` remain compatibility aliases
 
 **Capabilities**
 - Web search, multi-step deep research with cross-referenced sources, webpage fetching, and public-file downloads delivered as Discord attachments

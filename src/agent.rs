@@ -23,7 +23,9 @@ use crate::profile::ProfileStore;
 use crate::rate_limit::RateLimiter;
 use crate::reminders::Reminders;
 use crate::skills::{Skill, Skills};
-use crate::token_monitor::{TokenLeaderboard, TokenMonitor};
+use crate::token_monitor::{
+    LeaderboardEntry, LeaderboardMetric, LeaderboardPeriod, TokenLeaderboard, TokenMonitor,
+};
 use crate::tool_permissions::ToolPermissions;
 use crate::tools;
 use crate::tools::common_crawl::CommonCrawl;
@@ -320,7 +322,7 @@ struct SessionStats {
 
 impl Agent {
     /// Build an agent from environment configuration and start MCP servers.
-    pub async fn from_env(discord: Arc<DiscordBridge>) -> Self {
+    pub async fn from_env(discord: Arc<DiscordBridge>) -> anyhow::Result<Self> {
         let raw_client: Arc<dyn ChatClient> = Arc::new(OpenAiClient::new(
             config::env_or("LLM_BASE_URL", "http://server-slop:8080/v1"),
             config::env_or("LLM_API_KEY", "not-required"),
@@ -343,14 +345,12 @@ impl Agent {
                 Memory::default()
             }
         };
-        let token_monitor = match TokenMonitor::from_env().await {
-            Ok(monitor) => monitor,
-            Err(error) => {
-                tracing::warn!(%error, "PostgreSQL token monitor unavailable; token history will not survive this restart");
-                TokenMonitor::default()
-            }
-        };
-        Self {
+        let token_monitor = TokenMonitor::from_env().await.map_err(|error| {
+            anyhow::anyhow!(
+                "persistent token monitor initialization failed; refusing volatile fallback: {error}"
+            )
+        })?;
+        Ok(Self {
             client,
             queued_client,
             model: config::env_or("LLM_MODEL", "gemma-4-12b-qat-q4kxl"),
@@ -377,7 +377,7 @@ impl Agent {
             tool_permissions: ToolPermissions::default(),
             discord,
             channel_log: ChannelLog::default(),
-        }
+        })
     }
 
     /// Access to the reminders store (the bot's delivery loop needs it).
@@ -431,17 +431,40 @@ impl Agent {
 
     /// Ask the LLM to classify a Lua script before it is executed.
     ///
-    /// Lua reviews use the low-priority lane so ordinary bot conversations are
-    /// admitted first when all four LLM slots are occupied. Invalid or failed
-    /// reviews are rejected rather than allowing an unreviewed script to run.
+    /// The model is forced to call `submit_lua_verdict` so the result is
+    /// always structured JSON rather than free-form text. Lua reviews use the
+    /// low-priority lane so ordinary bot conversations are admitted first when
+    /// all four LLM slots are occupied. Invalid or failed reviews are rejected
+    /// rather than allowing an unreviewed script to run.
     pub async fn analyze_lua_script(&self, script: &str) -> LuaAnalysis {
+        let verdict_tool = json!({
+            "type": "function",
+            "function": {
+                "name": "submit_lua_verdict",
+                "description": "Submit the security verdict for a Lua script after reviewing it.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "safe": {
+                            "type": "boolean",
+                            "description": "true if the script is safe to execute, false if it must be blocked"
+                        },
+                        "reason": {
+                            "type": "string",
+                            "description": "Brief explanation (one sentence) of why the script is safe or unsafe"
+                        }
+                    },
+                    "required": ["safe", "reason"]
+                }
+            }
+        });
         let prompt = format!(
             "Analyze the following untrusted Lua source for suspicious behavior. Do not execute it.\n\n\
              The script runs in a sandbox that intentionally exposes only table, string, math, and \
-             these discord functions: send_message, web_search, and jellyfin_search. Mark it unsafe \
-             if it attempts sandbox escape, filesystem/process/debug/package/io access, secret \
-             exfiltration, mass messaging, denial-of-service behavior, or other abuse.\n\n\
-             Return only JSON with this exact shape: {{\"safe\":true|false,\"reason\":\"short explanation\"}}.\n\n\
+             these discord functions: send_message, web_search, and jellyfin_search. Call \
+             submit_lua_verdict with safe=false if it attempts sandbox escape, \
+             filesystem/process/debug/package/io access, secret exfiltration, mass messaging, \
+             denial-of-service behavior, or other abuse. Otherwise call it with safe=true.\n\n\
              <lua_source>\n{script}\n</lua_source>"
         );
         let messages = vec![
@@ -453,7 +476,14 @@ impl Agent {
         ];
         let completion = self
             .queued_client
-            .chat_once_with_priority(LlmPriority::LuaAnalysis, &self.model, &messages, 256)
+            .chat_stream_with_priority(
+                LlmPriority::LuaAnalysis,
+                &self.model,
+                &messages,
+                &[verdict_tool],
+                Some(json!("required")),
+                ThinkingMode::Low,
+            )
             .await;
         let Ok(completion) = completion else {
             return LuaAnalysis {
@@ -461,25 +491,18 @@ impl Agent {
                 reason: "the safety review could not be completed".to_string(),
             };
         };
-        let Some(content) = completion.content.as_deref() else {
-            return LuaAnalysis {
-                allowed: false,
-                reason: "the safety review returned no verdict".to_string(),
-            };
-        };
-        let verdict = content.find('{').and_then(|start| {
-            content[start..]
-                .rfind('}')
-                .map(|end| &content[start..=start + end])
-        });
-        let Some(verdict) = verdict.and_then(|json| serde_json::from_str::<Value>(json).ok())
+        let Some(tc) = completion
+            .tool_calls
+            .into_iter()
+            .find(|tc| tc.name == "submit_lua_verdict")
         else {
             return LuaAnalysis {
                 allowed: false,
                 reason: "the safety review returned an invalid verdict".to_string(),
             };
         };
-        let Some(safe) = verdict.get("safe").and_then(Value::as_bool) else {
+        let args: Value = serde_json::from_str(&tc.arguments).unwrap_or(json!({}));
+        let Some(safe) = args.get("safe").and_then(Value::as_bool) else {
             return LuaAnalysis {
                 allowed: false,
                 reason: "the safety review returned an incomplete verdict".to_string(),
@@ -487,7 +510,7 @@ impl Agent {
         };
         LuaAnalysis {
             allowed: safe,
-            reason: verdict
+            reason: args
                 .get("reason")
                 .and_then(Value::as_str)
                 .filter(|reason| !reason.trim().is_empty())
@@ -626,8 +649,17 @@ impl Agent {
     }
 
     /// Render the persistent global token leaderboard for Discord.
-    pub async fn token_leaderboard(&self) -> String {
-        match self.token_monitor.leaderboard(10).await {
+    pub async fn token_leaderboard(
+        &self,
+        period: LeaderboardPeriod,
+        metric: LeaderboardMetric,
+        requester_id: &str,
+    ) -> String {
+        match self
+            .token_monitor
+            .leaderboard_for(period, metric, 10, Some(requester_id))
+            .await
+        {
             Ok(leaderboard) => format_token_leaderboard(&leaderboard),
             Err(error) => {
                 tracing::error!(%error, "failed to load token leaderboard");
@@ -660,6 +692,13 @@ impl Agent {
         let mut active = self.active_conversations.lock().await;
         if let Some(id) = active.get(user_id) {
             return id.clone();
+        }
+        // After a restart the in-memory map is empty. Try to recover the
+        // active conversation from the database so token counts continue
+        // accumulating on the same row and the leaderboard stays accurate.
+        if let Some(id) = self.token_monitor.get_active_conversation_id(user_id).await {
+            active.insert(user_id.to_string(), id.clone());
+            return id;
         }
         let id = uuid::Uuid::new_v4().to_string();
         if let Err(error) = self
@@ -795,7 +834,14 @@ impl Agent {
             let text_sink = TextStreamAdapter(hooks);
             let completion = match self
                 .client
-                .chat_stream(&self.model, &messages, &tools, thinking, Some(&text_sink))
+                .chat_stream(
+                    &self.model,
+                    &messages,
+                    &tools,
+                    None,
+                    thinking,
+                    Some(&text_sink),
+                )
                 .await
             {
                 Ok(c) => c,
@@ -1921,24 +1967,43 @@ impl Agent {
 
 fn format_token_leaderboard(leaderboard: &TokenLeaderboard) -> String {
     if leaderboard.users.is_empty() {
-        return "**Global token leaderboard**\nNo token usage has been recorded yet.".into();
+        return format!(
+            "🏆 **{} token leaderboard**\nNo token usage has been recorded for this timeframe.",
+            leaderboard.period.label()
+        );
     }
-    let mut lines = vec![
-        "**Global token leaderboard**".to_string(),
-        "**Users**".to_string(),
-    ];
+    let icon = match leaderboard.period {
+        LeaderboardPeriod::Daily => "☀️",
+        LeaderboardPeriod::Weekly => "📅",
+        LeaderboardPeriod::Monthly => "🗓️",
+        LeaderboardPeriod::AllTime => "🏆",
+    };
+    let mut lines = vec![format!(
+        "{icon} **{} token leaderboard**\n*Ranked by {}*",
+        leaderboard.period.label(),
+        leaderboard.metric.label().to_lowercase()
+    )];
     for (index, entry) in leaderboard.users.iter().enumerate() {
         lines.push(format!(
-            "{}. **{}** — {} tokens across {} conversation{}",
+            "`{:>2}.` **{}** — {} · {} conversation{}",
             index + 1,
-            entry.label,
-            entry.total_tokens(),
+            format_leaderboard_label(&entry.label),
+            format_leaderboard_metric(entry, leaderboard.metric),
             entry.conversations,
             if entry.conversations == 1 { "" } else { "s" }
         ));
     }
-    lines.push("\n**Conversations**".to_string());
-    for (index, entry) in leaderboard.conversations.iter().enumerate() {
+
+    if let Some(rank) = &leaderboard.requester_rank {
+        lines.push(format!(
+            "\n👤 **Your rank:** #{} — {}",
+            rank.position,
+            format_leaderboard_metric(&rank.entry, leaderboard.metric)
+        ));
+    }
+
+    lines.push("\n**Top conversations**".to_string());
+    for (index, entry) in leaderboard.conversations.iter().take(5).enumerate() {
         let id = entry
             .conversation_id
             .as_deref()
@@ -1947,20 +2012,67 @@ fn format_token_leaderboard(leaderboard: &TokenLeaderboard) -> String {
             .take(8)
             .collect::<String>();
         lines.push(format!(
-            "{}. **{}** (`{id}`) — {} tokens",
+            "`{:>2}.` **{}** (`{id}`) — {}",
             index + 1,
-            entry.label,
-            entry.total_tokens()
+            format_leaderboard_label(&entry.label),
+            format_leaderboard_metric(entry, leaderboard.metric)
         ));
     }
     lines.join("\n")
+}
+
+fn format_leaderboard_label(label: &str) -> String {
+    label
+        .replace('\\', "\\\\")
+        .replace('*', "\\*")
+        .replace('_', "\\_")
+        .replace('`', "\\`")
+        .replace('~', "\\~")
+        .replace('|', "\\|")
+}
+
+fn format_leaderboard_metric(entry: &LeaderboardEntry, metric: LeaderboardMetric) -> String {
+    match metric {
+        LeaderboardMetric::TotalTokens => format!("{} tokens", entry.total_tokens()),
+        LeaderboardMetric::CacheEfficiency => format!(
+            "{:.1}% cache efficiency ({} tokens)",
+            entry.cache_efficiency(),
+            entry.total_tokens()
+        ),
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::testing::MockChatClient;
+    use crate::token_monitor::LeaderboardRank;
     use tempfile::TempDir;
+
+    #[test]
+    fn token_leaderboard_format_shows_period_metric_and_requester_rank() {
+        let entry = LeaderboardEntry {
+            user_id: Some("u1".into()),
+            label: "Alice".into(),
+            conversation_id: None,
+            conversations: 2,
+            input_tokens: 100,
+            output_tokens: 25,
+            cached_tokens: 50,
+        };
+        let leaderboard = TokenLeaderboard {
+            users: vec![entry.clone()],
+            conversations: Vec::new(),
+            requester_rank: Some(LeaderboardRank { position: 1, entry }),
+            period: LeaderboardPeriod::Weekly,
+            metric: LeaderboardMetric::CacheEfficiency,
+        };
+
+        let output = format_token_leaderboard(&leaderboard);
+        assert!(output.contains("Weekly token leaderboard"));
+        assert!(output.contains("50.0% cache efficiency"));
+        assert!(output.contains("Your rank:** #1"));
+    }
 
     fn empty_skills() -> BTreeMap<String, Skill> {
         BTreeMap::new()
@@ -2253,10 +2365,12 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn lua_analysis_allows_explicit_safe_verdict() {
-        let client = Arc::new(
-            MockChatClient::new()
-                .with_once_reply(r#"{"safe":true,"reason":"uses only the documented APIs"}"#),
+    async fn lua_analysis_allows_safe_tool_call() {
+        let client = Arc::new(MockChatClient::new());
+        client.push_tool_call(
+            "call_1",
+            "submit_lua_verdict",
+            r#"{"safe":true,"reason":"uses only the documented APIs"}"#,
         );
         let (_t, agent) = test_agent(client);
         let result = agent.analyze_lua_script("return 1").await;
@@ -2270,10 +2384,12 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn lua_analysis_blocks_explicit_unsafe_verdict() {
-        let client = Arc::new(
-            MockChatClient::new()
-                .with_once_reply(r#"{"safe":false,"reason":"attempts to access the filesystem"}"#),
+    async fn lua_analysis_blocks_unsafe_tool_call() {
+        let client = Arc::new(MockChatClient::new());
+        client.push_tool_call(
+            "call_1",
+            "submit_lua_verdict",
+            r#"{"safe":false,"reason":"attempts to access the filesystem"}"#,
         );
         let (_t, agent) = test_agent(client);
         let result = agent
@@ -2284,12 +2400,48 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn lua_analysis_fails_closed_on_invalid_verdict() {
-        let client = Arc::new(MockChatClient::new().with_once_reply("I think it is safe"));
+    async fn lua_analysis_fails_closed_when_no_tool_call_returned() {
+        // Model responds with text only (no tool call) → blocked as invalid verdict.
+        let client = Arc::new(MockChatClient::new());
+        client.push_text("I think it is safe");
         let (_t, agent) = test_agent(client);
         let result = agent.analyze_lua_script("return 1").await;
         assert!(!result.allowed);
         assert!(result.reason.contains("invalid verdict"));
+    }
+
+    #[tokio::test]
+    async fn lua_analysis_fails_closed_when_tool_call_args_malformed() {
+        let client = Arc::new(MockChatClient::new());
+        client.push_tool_call("call_1", "submit_lua_verdict", "not json at all");
+        let (_t, agent) = test_agent(client);
+        let result = agent.analyze_lua_script("return 1").await;
+        assert!(!result.allowed);
+        assert!(result.reason.contains("incomplete verdict"));
+    }
+
+    #[tokio::test]
+    async fn lua_analysis_fails_closed_when_safe_field_missing() {
+        let client = Arc::new(MockChatClient::new());
+        client.push_tool_call("call_1", "submit_lua_verdict", r#"{"reason":"looks fine"}"#);
+        let (_t, agent) = test_agent(client);
+        let result = agent.analyze_lua_script("return 1").await;
+        assert!(!result.allowed);
+        assert!(result.reason.contains("incomplete verdict"));
+    }
+
+    #[tokio::test]
+    async fn lua_analysis_uses_default_reason_when_reason_empty() {
+        let client = Arc::new(MockChatClient::new());
+        client.push_tool_call(
+            "call_1",
+            "submit_lua_verdict",
+            r#"{"safe":true,"reason":""}"#,
+        );
+        let (_t, agent) = test_agent(client);
+        let result = agent.analyze_lua_script("return 1").await;
+        assert!(result.allowed);
+        assert_eq!(result.reason, "script passed review");
     }
 
     #[tokio::test]
@@ -2338,6 +2490,58 @@ mod tests {
         assert_eq!(board.users[0].conversations, 2);
         assert_eq!(board.users[0].total_tokens(), 75);
         assert_eq!(board.conversations.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn token_leaderboard_accumulates_across_simulated_restart() {
+        // After a restart the in-memory active_conversations map is empty.
+        // For the in-memory backend get_active_conversation_id returns None,
+        // so a new conversation is created. Verify that the leaderboard still
+        // sums tokens from BOTH conversations for the same user.
+        let client = Arc::new(MockChatClient::new());
+        client.push_text_with_usage(
+            "pre-restart reply",
+            TokenUsage {
+                prompt_tokens: 100,
+                completion_tokens: 50,
+                ..Default::default()
+            },
+        );
+        client.push_text_with_usage(
+            "post-restart reply",
+            TokenUsage {
+                prompt_tokens: 30,
+                completion_tokens: 10,
+                ..Default::default()
+            },
+        );
+        let (_t, agent) = test_agent(client);
+        agent
+            .run(AgentRequest::text("u_restart", "Carol", "first"), &NoHooks)
+            .await;
+
+        // Simulate a restart: clear the in-memory conversation map but keep the
+        // token_monitor data intact.
+        agent.active_conversations.lock().await.clear();
+
+        agent
+            .run(
+                AgentRequest::text("u_restart", "Carol", "after restart"),
+                &NoHooks,
+            )
+            .await;
+
+        let board = agent.token_monitor.leaderboard(10).await.unwrap();
+        let carol = board
+            .users
+            .iter()
+            .find(|e| e.label == "Carol")
+            .expect("Carol must appear in leaderboard");
+        assert_eq!(
+            carol.total_tokens(),
+            190,
+            "tokens must survive simulated restart"
+        );
     }
 
     #[tokio::test]

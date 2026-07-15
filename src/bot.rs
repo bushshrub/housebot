@@ -23,7 +23,7 @@ use uuid::Uuid;
 use crate::agent::{
     Agent, AgentControlAction, AgentHooks, AgentRequest, AgentResult, MediaData, NoHooks,
 };
-use crate::bot_config::{ServerConfigStore, UserConfigStore};
+use crate::bot_config::{LeaderboardVisibility, ServerConfig, ServerConfigStore, UserConfigStore};
 pub use crate::bot_response::SecretRedactor;
 use crate::channel_log::ChannelLog;
 use crate::coding_agent::catalog::{AgentCatalog, CodingAgent};
@@ -42,6 +42,7 @@ use crate::notes::Notes;
 use crate::profile::ProfileStore;
 use crate::rate_limit::RateLimiter;
 use crate::skills::Skills;
+use crate::token_monitor::{LeaderboardMetric, LeaderboardPeriod};
 use crate::tool_permissions::{ToolPermissions, VoteResult};
 
 pub use crate::bot_commands::{
@@ -310,7 +311,7 @@ impl HouseBot {
         responded.push_back(id);
     }
 
-    /// Handle `/new`, `/reset`, `!new`, and `!reset` — they are all aliases.
+    /// Start a fresh conversation for `/session new` and its prefix aliases.
     async fn handle_new(&self, channel_id: u64, user_id: u64) -> String {
         tracing::info!(target: "housebot::commands", user_id, "Session reset requested");
         self.agent.reset_session(&user_id.to_string()).await;
@@ -353,12 +354,105 @@ async fn handle_config_interaction(
     options: &[serenity::all::CommandDataOption],
     author_id: u64,
     guild_id: Option<u64>,
+    is_admin: bool,
 ) -> String {
     let Some(top) = options.first() else {
         return "No subcommand provided.".into();
     };
 
     match top.name.as_str() {
+        "leaderboard" => {
+            let Some(gid) = guild_id else {
+                return "Leaderboard configuration is only available in servers.".into();
+            };
+            if !is_admin {
+                return "Only server administrators can configure leaderboard visibility.".into();
+            }
+            let sub_opts = match &top.value {
+                CommandDataOptionValue::SubCommandGroup(options) => options,
+                _ => return "Unexpected option structure.".into(),
+            };
+            let Some(sub) = sub_opts.first() else {
+                return "No leaderboard subcommand provided.".into();
+            };
+            let mut cfg = server_cfg.load(gid).await;
+            match sub.name.as_str() {
+                "visibility" => {
+                    let options = match &sub.value {
+                        CommandDataOptionValue::SubCommand(options) => options,
+                        _ => return "Unexpected option structure.".into(),
+                    };
+                    let visibility = options.iter().find_map(|option| match &option.value {
+                        CommandDataOptionValue::String(value) if option.name == "mode" => {
+                            Some(value.as_str())
+                        }
+                        _ => None,
+                    });
+                    cfg.leaderboard_visibility = match visibility {
+                        Some("public") => LeaderboardVisibility::Public,
+                        Some("private") => LeaderboardVisibility::Private,
+                        Some("restricted") => LeaderboardVisibility::Restricted,
+                        _ => return "Please choose a valid visibility mode.".into(),
+                    };
+                    if server_cfg.save(gid, &cfg).await.is_err() {
+                        return "Error: failed to save config.".into();
+                    }
+                    format!(
+                        "✅ Token leaderboard visibility set to **{}**.",
+                        cfg.leaderboard_visibility.as_str()
+                    )
+                }
+                action @ ("role_add" | "role_remove") => {
+                    let options = match &sub.value {
+                        CommandDataOptionValue::SubCommand(options) => options,
+                        _ => return "Unexpected option structure.".into(),
+                    };
+                    let role_id = options.iter().find_map(|option| match option.value {
+                        CommandDataOptionValue::Role(role) if option.name == "role" => {
+                            Some(role.get())
+                        }
+                        _ => None,
+                    });
+                    let Some(role_id) = role_id else {
+                        return "Please provide a valid role.".into();
+                    };
+                    let changed = if action == "role_add" {
+                        cfg.leaderboard_role_ids.insert(role_id)
+                    } else {
+                        cfg.leaderboard_role_ids.remove(&role_id)
+                    };
+                    if server_cfg.save(gid, &cfg).await.is_err() {
+                        return "Error: failed to save config.".into();
+                    }
+                    match (action, changed) {
+                        ("role_add", true) => format!("✅ <@&{role_id}> can view the leaderboard."),
+                        ("role_remove", true) => {
+                            format!("✅ <@&{role_id}> removed from leaderboard access.")
+                        }
+                        ("role_add", false) => {
+                            format!("<@&{role_id}> already has leaderboard access.")
+                        }
+                        _ => format!("<@&{role_id}> did not have leaderboard access."),
+                    }
+                }
+                "role_list" => {
+                    if cfg.leaderboard_role_ids.is_empty() {
+                        "No roles are allowed in restricted mode. Administrators retain access."
+                            .into()
+                    } else {
+                        let roles = cfg
+                            .leaderboard_role_ids
+                            .iter()
+                            .map(|role| format!("<@&{role}>"))
+                            .collect::<Vec<_>>()
+                            .join(", ");
+                        format!("Leaderboard roles: {roles}")
+                    }
+                }
+                other => format!("Unknown leaderboard subcommand `{other}`."),
+            }
+        }
+
         "channel" => {
             let Some(gid) = guild_id else {
                 return "Channel configuration is only available in servers, not DMs.".into();
@@ -755,7 +849,7 @@ async fn handle_labs_interaction(
     }
 }
 
-/// Handle a `/profile` interaction: show or clear profile data.
+/// Handle `/data profile`: show or clear profile data.
 async fn handle_profile_interaction(
     profile_store: &ProfileStore,
     memory: &Memory,
@@ -816,7 +910,7 @@ async fn handle_profile_interaction(
     }
 }
 
-/// Handle a `/history` interaction: show or clear history.
+/// Handle `/data history`: show or clear history.
 async fn handle_history_interaction(
     history: &History,
     profile_store: &ProfileStore,
@@ -920,7 +1014,7 @@ async fn handle_privacy_interaction(
                     "enabled (no memories stored yet)".to_string()
                 } else {
                     format!(
-                        "enabled ({} bytes stored — use `/memory show` to view)",
+                        "enabled ({} bytes stored — use `/storage memory show` to view)",
                         mem_content.len()
                     )
                 }
@@ -958,7 +1052,7 @@ async fn handle_privacy_interaction(
                 return "Error: failed to save config.".into();
             }
             if enabled {
-                "✅ Deep memory enabled. I will now remember important facts about you across conversations. Use `/memory show` to see what I currently remember.".into()
+                "✅ Deep memory enabled. I will now remember important facts about you across conversations. Use `/storage memory show` to see what I currently remember.".into()
             } else {
                 "✅ Deep memory disabled. I will no longer save facts between sessions (your current memories are kept but won't be updated).".into()
             }
@@ -1006,60 +1100,92 @@ fn truncate_memory_reply(header: &str, body: &str) -> String {
     format!("{}{ELLIPSIS}", full.chars().take(keep).collect::<String>())
 }
 
-/// Handle a `/memory` interaction: view or clear the bot's memory about the user.
-async fn handle_memory_interaction(
+fn nested_options(
+    option: &serenity::all::CommandDataOption,
+) -> Option<&[serenity::all::CommandDataOption]> {
+    match &option.value {
+        serenity::all::CommandDataOptionValue::SubCommand(options)
+        | serenity::all::CommandDataOptionValue::SubCommandGroup(options) => Some(options),
+        _ => None,
+    }
+}
+
+fn string_option<'a>(
+    options: &'a [serenity::all::CommandDataOption],
+    name: &str,
+) -> Option<&'a str> {
+    options
+        .iter()
+        .find(|option| option.name == name)
+        .and_then(|option| match &option.value {
+            serenity::all::CommandDataOptionValue::String(value) => Some(value.as_str()),
+            _ => None,
+        })
+}
+
+fn bool_option(options: &[serenity::all::CommandDataOption], name: &str) -> Option<bool> {
+    options
+        .iter()
+        .find(|option| option.name == name)
+        .and_then(|option| match option.value {
+            serenity::all::CommandDataOptionValue::Boolean(value) => Some(value),
+            _ => None,
+        })
+}
+
+/// Handle `/storage memory ...` and `/storage notes ...` through the same
+/// store-backed handlers used by the prefix compatibility aliases.
+async fn handle_storage_interaction(
     memory: &Memory,
+    notes: &Notes,
     options: &[serenity::all::CommandDataOption],
     author_id: u64,
 ) -> String {
-    let subcommand = options.first().map(|o| o.name.as_str());
-    match subcommand {
-        None | Some("show") => {
-            let content = memory.load(author_id.to_string()).await;
-            if content.trim().is_empty() {
-                "No memories stored yet. Enable deep memory with `/privacy deep_memory enabled:true` and I will start remembering things about you across conversations.".into()
-            } else {
-                truncate_memory_reply("**What I remember about you:**\n", &content)
-            }
+    let Some(group) = options.first() else {
+        return "Use `/storage memory ...` or `/storage notes ...`.".into();
+    };
+    let Some(actions) = nested_options(group) else {
+        return "Unexpected storage command structure.".into();
+    };
+    let Some(action) = actions.first() else {
+        return "Choose a storage action.".into();
+    };
+    let action_options = nested_options(action).unwrap_or_default();
+
+    match (group.name.as_str(), action.name.as_str()) {
+        ("memory", "show" | "clear") => {
+            let command = format!("!memory {}", action.name);
+            memory_command(memory, &command, author_id).await
         }
-        Some("clear") => match memory.clear(author_id.to_string()).await {
-            Ok(()) => "✅ Your memory has been cleared. I no longer remember anything about you from past sessions.".into(),
-            Err(_) => "⚠️ Failed to clear memory. Please try again.".into(),
-        },
-        Some("search") => {
-            let query = options
-                .first()
-                .and_then(|o| match &o.value {
-                    serenity::all::CommandDataOptionValue::SubCommand(opts) => opts
-                        .iter()
-                        .find(|opt| opt.name == "query")
-                        .and_then(|opt| match &opt.value {
-                            serenity::all::CommandDataOptionValue::String(s) => Some(s.as_str()),
-                            _ => None,
-                        }),
-                    _ => None,
-                })
-                .unwrap_or("");
-            if query.is_empty() {
+        ("memory", "search") => {
+            let Some(query) = string_option(action_options, "query") else {
                 return "Please provide a search query.".into();
-            }
-            let content = memory.load(author_id.to_string()).await;
-            if content.trim().is_empty() {
-                return "No memories stored yet.".into();
-            }
-            let query_lower = query.to_lowercase();
-            let matching: Vec<&str> = content
-                .lines()
-                .filter(|line| line.to_lowercase().contains(&query_lower))
-                .collect();
-            if matching.is_empty() {
-                truncate_memory_reply("", &format!("No memories matching `{query}`."))
-            } else {
-                let header = format!("**Memories matching `{query}`:**\n");
-                truncate_memory_reply(&header, &matching.join("\n"))
-            }
+            };
+            memory_command(memory, &format!("!memory search {query}"), author_id).await
         }
-        other => format!("Unknown memory subcommand `{other:?}`. Use `/memory show`, `/memory search`, or `/memory clear`."),
+        ("notes", "list") => note_command(notes, "!note list", "", author_id).await,
+        ("notes", "get" | "delete") => {
+            let Some(name) = string_option(action_options, "name") else {
+                return "Please provide a note name.".into();
+            };
+            note_command(
+                notes,
+                &format!("!note {} {name}", action.name),
+                "",
+                author_id,
+            )
+            .await
+        }
+        ("notes", "save") => {
+            let Some(name) = string_option(action_options, "name") else {
+                return "Please provide a note name.".into();
+            };
+            let Some(content) = string_option(action_options, "content") else {
+                return "Please provide note content.".into();
+            };
+            note_command(notes, &format!("!note save {name}"), content, author_id).await
+        }
+        _ => "Unknown storage action.".into(),
     }
 }
 
@@ -1101,6 +1227,39 @@ fn compact_done_message(deep_memory_enabled: bool) -> &'static str {
     }
 }
 
+fn prefix_session_action(content: &str) -> Option<&'static str> {
+    match content {
+        "!session" | "!session status" => Some("status"),
+        "!new" | "!reset" | "!session new" | "!session reset" => Some("new"),
+        "!compact" | "!session compact" => Some("compact"),
+        _ => None,
+    }
+}
+
+fn command_suffix<'a>(first_line: &'a str, command: &str) -> Option<&'a str> {
+    if first_line == command {
+        Some("")
+    } else {
+        first_line
+            .strip_prefix(command)
+            .filter(|suffix| suffix.chars().next().is_some_and(char::is_whitespace))
+    }
+}
+
+fn normalize_storage_prefix(first_line: &str) -> Option<(&'static str, String)> {
+    if let Some(suffix) = command_suffix(first_line, "!storage notes") {
+        Some(("notes", format!("!note{suffix}")))
+    } else if let Some(suffix) = command_suffix(first_line, "!storage memory") {
+        Some(("memory", format!("!memory{suffix}")))
+    } else if command_suffix(first_line, "!note").is_some() {
+        Some(("notes", first_line.to_string()))
+    } else if command_suffix(first_line, "!memory").is_some() {
+        Some(("memory", first_line.to_string()))
+    } else {
+        None
+    }
+}
+
 fn commit_hash_response(sha: Option<&str>) -> String {
     match sha.filter(|sha| !sha.is_empty()) {
         Some(sha) => format!("Running commit: `{sha}`"),
@@ -1109,12 +1268,64 @@ fn commit_hash_response(sha: Option<&str>) -> String {
 }
 
 /// Whether a slash command response should only be visible to its requester.
-///
-/// The global token leaderboard is intentionally public so everyone in the
-/// channel can see the same rankings. Other command responses may contain
-/// user-specific configuration or history and remain private by default.
-fn command_response_is_ephemeral(command_name: &str) -> bool {
-    command_name != "token_leaderboard"
+fn command_response_is_ephemeral(_command_name: &str) -> bool {
+    true
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum LeaderboardAccess {
+    Public,
+    Private,
+    Denied,
+}
+
+fn leaderboard_access(
+    config: &ServerConfig,
+    in_guild: bool,
+    member_roles: &[u64],
+    is_admin: bool,
+) -> LeaderboardAccess {
+    if !in_guild {
+        return LeaderboardAccess::Private;
+    }
+    match config.leaderboard_visibility {
+        LeaderboardVisibility::Public => LeaderboardAccess::Public,
+        LeaderboardVisibility::Private => LeaderboardAccess::Private,
+        LeaderboardVisibility::Restricted
+            if is_admin
+                || member_roles
+                    .iter()
+                    .any(|role| config.leaderboard_role_ids.contains(role)) =>
+        {
+            LeaderboardAccess::Private
+        }
+        LeaderboardVisibility::Restricted => LeaderboardAccess::Denied,
+    }
+}
+
+fn leaderboard_options(
+    options: &[serenity::all::CommandDataOption],
+) -> (LeaderboardPeriod, LeaderboardMetric) {
+    let string_option = |name| {
+        options
+            .iter()
+            .find(|option| option.name == name)
+            .and_then(|option| match &option.value {
+                CommandDataOptionValue::String(value) => Some(value.as_str()),
+                _ => None,
+            })
+    };
+    let period = match string_option("timeframe") {
+        Some("daily") => LeaderboardPeriod::Daily,
+        Some("weekly") => LeaderboardPeriod::Weekly,
+        Some("monthly") => LeaderboardPeriod::Monthly,
+        _ => LeaderboardPeriod::AllTime,
+    };
+    let metric = match string_option("metric") {
+        Some("efficiency") => LeaderboardMetric::CacheEfficiency,
+        _ => LeaderboardMetric::TotalTokens,
+    };
+    (period, metric)
 }
 
 /// Wrap `/lua` output in a code fence sized to fit a single Discord message.
@@ -1140,6 +1351,172 @@ async fn respond_ephemeral(ctx: &Context, cmd: &serenity::all::CommandInteractio
     if let Err(e) = cmd.create_response(&ctx.http, response).await {
         tracing::warn!("Failed to send interaction response: {e}");
     }
+}
+
+const RETIRED_SLASH_COMMANDS: &[&str] = &[
+    "new",
+    "reset",
+    "compact",
+    "memory",
+    "history",
+    "profile",
+    "erase_my_data",
+];
+
+fn session_command_definition() -> CreateCommand {
+    CreateCommand::new("session")
+        .description("View or manage your current conversation session")
+        .add_option(CreateCommandOption::new(
+            CommandOptionType::SubCommand,
+            "status",
+            "Show context and token usage for this session",
+        ))
+        .add_option(CreateCommandOption::new(
+            CommandOptionType::SubCommand,
+            "new",
+            "Clear the current conversation and start fresh",
+        ))
+        .add_option(CreateCommandOption::new(
+            CommandOptionType::SubCommand,
+            "compact",
+            "Summarize the conversation into memory and start fresh",
+        ))
+}
+
+fn storage_command_definition() -> CreateCommand {
+    CreateCommand::new("storage")
+        .description("Manage persistent memories and personal notes")
+        .add_option(
+            CreateCommandOption::new(
+                CommandOptionType::SubCommandGroup,
+                "memory",
+                "Manage facts the bot remembers across conversations",
+            )
+            .add_sub_option(CreateCommandOption::new(
+                CommandOptionType::SubCommand,
+                "show",
+                "Show what the bot remembers about you",
+            ))
+            .add_sub_option(
+                CreateCommandOption::new(
+                    CommandOptionType::SubCommand,
+                    "search",
+                    "Search your persistent memories",
+                )
+                .add_sub_option(
+                    CreateCommandOption::new(
+                        CommandOptionType::String,
+                        "query",
+                        "Keyword or phrase to find",
+                    )
+                    .required(true),
+                ),
+            )
+            .add_sub_option(CreateCommandOption::new(
+                CommandOptionType::SubCommand,
+                "clear",
+                "Clear everything the bot remembers about you",
+            )),
+        )
+        .add_option(
+            CreateCommandOption::new(
+                CommandOptionType::SubCommandGroup,
+                "notes",
+                "Manage your named personal notes",
+            )
+            .add_sub_option(CreateCommandOption::new(
+                CommandOptionType::SubCommand,
+                "list",
+                "List your saved notes",
+            ))
+            .add_sub_option(
+                CreateCommandOption::new(CommandOptionType::SubCommand, "get", "Read a saved note")
+                    .add_sub_option(
+                        CreateCommandOption::new(CommandOptionType::String, "name", "Note name")
+                            .required(true),
+                    ),
+            )
+            .add_sub_option(
+                CreateCommandOption::new(
+                    CommandOptionType::SubCommand,
+                    "save",
+                    "Create or replace a saved note",
+                )
+                .add_sub_option(
+                    CreateCommandOption::new(CommandOptionType::String, "name", "Note name")
+                        .required(true),
+                )
+                .add_sub_option(
+                    CreateCommandOption::new(CommandOptionType::String, "content", "Text to save")
+                        .required(true),
+                ),
+            )
+            .add_sub_option(
+                CreateCommandOption::new(
+                    CommandOptionType::SubCommand,
+                    "delete",
+                    "Delete a saved note",
+                )
+                .add_sub_option(
+                    CreateCommandOption::new(CommandOptionType::String, "name", "Note name")
+                        .required(true),
+                ),
+            ),
+        )
+}
+
+fn data_command_definition() -> CreateCommand {
+    CreateCommand::new("data")
+        .description("Inspect or delete data associated with your account")
+        .add_option(
+            CreateCommandOption::new(
+                CommandOptionType::SubCommandGroup,
+                "profile",
+                "Inspect or clear learned profile data",
+            )
+            .add_sub_option(CreateCommandOption::new(
+                CommandOptionType::SubCommand,
+                "show",
+                "Show your stored profile information",
+            ))
+            .add_sub_option(CreateCommandOption::new(
+                CommandOptionType::SubCommand,
+                "clear",
+                "Clear learned profile data and memory",
+            )),
+        )
+        .add_option(
+            CreateCommandOption::new(
+                CommandOptionType::SubCommandGroup,
+                "history",
+                "Inspect or clear conversation history",
+            )
+            .add_sub_option(CreateCommandOption::new(
+                CommandOptionType::SubCommand,
+                "show",
+                "Show recent conversation history",
+            ))
+            .add_sub_option(CreateCommandOption::new(
+                CommandOptionType::SubCommand,
+                "clear",
+                "Clear your conversation history",
+            )),
+        )
+        .add_option(
+            CreateCommandOption::new(
+                CommandOptionType::SubCommand,
+                "erase",
+                "Permanently erase all stored data and token statistics",
+            )
+            .add_sub_option(
+                CreateCommandOption::new(
+                    CommandOptionType::Boolean,
+                    "confirm",
+                    "Confirm permanent deletion",
+                )
+                .required(true),
+            ),
+        )
 }
 
 #[serenity::async_trait]
@@ -1197,6 +1574,59 @@ impl EventHandler for HouseBot {
                     CommandOptionType::SubCommand,
                     "clear",
                     "Remove all channel restrictions (bot responds everywhere)",
+                )),
+            )
+            // ── leaderboard subcommand group ────────────────────────────────
+            .add_option(
+                CreateCommandOption::new(
+                    CommandOptionType::SubCommandGroup,
+                    "leaderboard",
+                    "Configure token leaderboard access (administrators only)",
+                )
+                .add_sub_option(
+                    CreateCommandOption::new(
+                        CommandOptionType::SubCommand,
+                        "visibility",
+                        "Set whether leaderboard responses are public, private, or restricted",
+                    )
+                    .add_sub_option(
+                        CreateCommandOption::new(
+                            CommandOptionType::String,
+                            "mode",
+                            "Leaderboard visibility mode",
+                        )
+                        .required(true)
+                        .add_string_choice("Public channel response", "public")
+                        .add_string_choice("Private response", "private")
+                        .add_string_choice("Restricted to roles", "restricted"),
+                    ),
+                )
+                .add_sub_option(
+                    CreateCommandOption::new(
+                        CommandOptionType::SubCommand,
+                        "role_add",
+                        "Allow a role to use the leaderboard in restricted mode",
+                    )
+                    .add_sub_option(
+                        CreateCommandOption::new(CommandOptionType::Role, "role", "Role to allow")
+                            .required(true),
+                    ),
+                )
+                .add_sub_option(
+                    CreateCommandOption::new(
+                        CommandOptionType::SubCommand,
+                        "role_remove",
+                        "Remove a role from restricted leaderboard access",
+                    )
+                    .add_sub_option(
+                        CreateCommandOption::new(CommandOptionType::Role, "role", "Role to remove")
+                            .required(true),
+                    ),
+                )
+                .add_sub_option(CreateCommandOption::new(
+                    CommandOptionType::SubCommand,
+                    "role_list",
+                    "List roles allowed to use the leaderboard",
                 )),
             )
             // ── personality subcommand ───────────────────────────────────────
@@ -1378,42 +1808,32 @@ impl EventHandler for HouseBot {
             CreateCommand::new("help").description("Show all available commands"),
             CreateCommand::new("commit").description("Show the bot's running commit hash"),
             CreateCommand::new("model").description("Show information about the current model"),
-            CreateCommand::new("session")
-                .description("Show context and token usage for this session"),
+            session_command_definition(),
             CreateCommand::new("token_leaderboard")
-                .description("Show global token usage by user and conversation"),
+                .description("Show token usage rankings")
+                .add_option(
+                    CreateCommandOption::new(
+                        CommandOptionType::String,
+                        "timeframe",
+                        "Ranking timeframe (default: all time)",
+                    )
+                    .add_string_choice("Daily", "daily")
+                    .add_string_choice("Weekly", "weekly")
+                    .add_string_choice("Monthly", "monthly")
+                    .add_string_choice("All time", "all_time"),
+                )
+                .add_option(
+                    CreateCommandOption::new(
+                        CommandOptionType::String,
+                        "metric",
+                        "Ranking metric (default: total tokens)",
+                    )
+                    .add_string_choice("Total tokens", "tokens")
+                    .add_string_choice("Cache efficiency", "efficiency"),
+                ),
             CreateCommand::new("status")
                 .description("Show your current settings (effort level, follow-up, personality)"),
-            CreateCommand::new("new").description("Start a new conversation and clear the old one"),
-            CreateCommand::new("reset").description("Clear the conversation and start fresh"),
-            CreateCommand::new("compact")
-                .description("Summarize the conversation and start a new session"),
-            CreateCommand::new("erase_my_data")
-                .description("Permanently delete all your stored data, including token statistics"),
-            CreateCommand::new("profile")
-                .description("Show or clear your stored profile information")
-                .add_option(CreateCommandOption::new(
-                    CommandOptionType::SubCommand,
-                    "show",
-                    "Show your stored profile information",
-                ))
-                .add_option(CreateCommandOption::new(
-                    CommandOptionType::SubCommand,
-                    "clear",
-                    "Clear learned profile data and memory",
-                )),
-            CreateCommand::new("history")
-                .description("Show or clear your recent conversation history")
-                .add_option(CreateCommandOption::new(
-                    CommandOptionType::SubCommand,
-                    "show",
-                    "Show recent conversation history",
-                ))
-                .add_option(CreateCommandOption::new(
-                    CommandOptionType::SubCommand,
-                    "clear",
-                    "Clear your conversation history",
-                )),
+            data_command_definition(),
             CreateCommand::new("privacy")
                 .description("View or change your privacy settings")
                 .add_option(CreateCommandOption::new(
@@ -1451,37 +1871,30 @@ impl EventHandler for HouseBot {
                         .required(true),
                     ),
                 ),
-            CreateCommand::new("memory")
-                .description("View, search, or clear the bot's persistent memory about you")
-                .add_option(CreateCommandOption::new(
-                    CommandOptionType::SubCommand,
-                    "show",
-                    "Show what the bot currently remembers about you",
-                ))
-                .add_option(
-                    CreateCommandOption::new(
-                        CommandOptionType::SubCommand,
-                        "search",
-                        "Search your stored memories for a keyword or phrase",
-                    )
-                    .add_sub_option(
-                        CreateCommandOption::new(
-                            CommandOptionType::String,
-                            "query",
-                            "Keyword or phrase to search for",
-                        )
-                        .required(true),
-                    ),
-                )
-                .add_option(CreateCommandOption::new(
-                    CommandOptionType::SubCommand,
-                    "clear",
-                    "Clear the bot's memory about you",
-                )),
+            storage_command_definition(),
         ] {
             if let Err(e) = Command::create_global_command(&ctx.http, command).await {
                 tracing::error!("Failed to register slash command: {e}");
             }
+        }
+
+        match Command::get_global_commands(&ctx.http).await {
+            Ok(commands) => {
+                for command in commands {
+                    if RETIRED_SLASH_COMMANDS.contains(&command.name.as_str()) {
+                        if let Err(error) =
+                            Command::delete_global_command(&ctx.http, command.id).await
+                        {
+                            tracing::warn!(
+                                command = %command.name,
+                                %error,
+                                "Failed to remove retired slash command"
+                            );
+                        }
+                    }
+                }
+            }
+            Err(error) => tracing::warn!(%error, "Failed to inspect retired slash commands"),
         }
 
         if self.reminder_started.swap(true, Ordering::SeqCst) {
@@ -1543,13 +1956,14 @@ impl EventHandler for HouseBot {
             command = %cmd.data.name,
             "Slash command received"
         );
-        if cmd.data.name == "compact" {
+        let session_action = cmd.data.options.first().map(|option| option.name.as_str());
+        if cmd.data.name == "session" && session_action == Some("compact") {
             let deep_memory_enabled = self.user_cfg.load(user_id).await.deep_memory_enabled;
             let response = CreateInteractionResponse::Defer(
                 CreateInteractionResponseMessage::new().ephemeral(true),
             );
             if let Err(e) = cmd.create_response(&ctx.http, response).await {
-                tracing::warn!("Failed to defer /compact response: {e}");
+                tracing::warn!("Failed to defer /session compact response: {e}");
                 return;
             }
             let hooks = CompactProgressHooks(CompactProgressTarget::Interaction {
@@ -1569,14 +1983,25 @@ impl EventHandler for HouseBot {
             self.handle_lua_command(&ctx, &cmd).await;
             return;
         }
+        if cmd.data.name == "token_leaderboard" {
+            self.handle_token_leaderboard_command(&ctx, &cmd).await;
+            return;
+        }
         let reply = match cmd.data.name.as_str() {
             "config" => {
+                let is_admin = (config::owner_id() != 0 && config::owner_id() == user_id)
+                    || cmd
+                        .member
+                        .as_deref()
+                        .and_then(|member| member.permissions)
+                        .is_some_and(|permissions| permissions.administrator());
                 handle_config_interaction(
                     &self.server_cfg,
                     &self.user_cfg,
                     &cmd.data.options,
                     user_id,
                     guild_id,
+                    is_admin,
                 )
                 .await
             }
@@ -1595,85 +2020,110 @@ impl EventHandler for HouseBot {
             "help" => help_response(),
             "commit" => commit_hash_response(option_env!("HOUSEBOT_GIT_SHA")),
             "model" => self.agent.model_info(),
-            "token_leaderboard" => self.agent.token_leaderboard().await,
             "session" => {
-                let info = self.agent.session_info(&user_id.to_string()).await;
-                let percent =
-                    info.context_tokens as f64 / info.context_window_tokens.max(1) as f64 * 100.0;
-                let response = CreateInteractionResponse::Message(
-                    CreateInteractionResponseMessage::new()
-                        .embed(
-                            CreateEmbed::new()
-                                .title("Session")
-                                .field(
-                                    "Context",
-                                    format!(
-                                        "{} / {} tokens ({percent:.1}%)",
-                                        info.context_tokens, info.context_window_tokens
-                                    ),
-                                    true,
-                                )
-                                .field("Messages", info.messages.to_string(), true)
-                                .field("Model requests", info.requests.to_string(), true)
-                                .field("Input tokens", info.input_tokens.to_string(), true)
-                                .field("Output tokens", info.output_tokens.to_string(), true)
-                                .field("Cached tokens", info.cached_tokens.to_string(), true),
-                        )
-                        .ephemeral(true),
-                );
-                if let Err(e) = cmd.create_response(&ctx.http, response).await {
-                    tracing::warn!("Failed to send /session response: {e}");
+                if session_action == Some("new") {
+                    self.handle_new(cmd.channel_id.get(), user_id).await
+                } else {
+                    let info = self.agent.session_info(&user_id.to_string()).await;
+                    let percent = info.context_tokens as f64
+                        / info.context_window_tokens.max(1) as f64
+                        * 100.0;
+                    let response = CreateInteractionResponse::Message(
+                        CreateInteractionResponseMessage::new()
+                            .embed(
+                                CreateEmbed::new()
+                                    .title("Session")
+                                    .field(
+                                        "Context",
+                                        format!(
+                                            "{} / {} tokens ({percent:.1}%)",
+                                            info.context_tokens, info.context_window_tokens
+                                        ),
+                                        true,
+                                    )
+                                    .field("Messages", info.messages.to_string(), true)
+                                    .field("Model requests", info.requests.to_string(), true)
+                                    .field("Input tokens", info.input_tokens.to_string(), true)
+                                    .field("Output tokens", info.output_tokens.to_string(), true)
+                                    .field("Cached tokens", info.cached_tokens.to_string(), true),
+                            )
+                            .ephemeral(true),
+                    );
+                    if let Err(e) = cmd.create_response(&ctx.http, response).await {
+                        tracing::warn!("Failed to send /session response: {e}");
+                    }
+                    return;
                 }
-                return;
             }
-            "new" | "reset" => self.handle_new(cmd.channel_id.get(), user_id).await,
-            "erase_my_data" => {
-                let reply = erase_data_command(
-                    &self.message_log,
-                    &self.history,
-                    &self.memory,
-                    &self.notes,
-                    &self.grocery_lists,
-                    &self.profile_store,
-                    &self.user_cfg,
-                    &self.agent.reminders().clone(),
-                    &self.channel_log,
-                    user_id,
-                )
-                .await;
-                self.agent.reset_session(&user_id.to_string()).await;
-                self.agent.clear_token_data(&user_id.to_string()).await;
-                self.conversations
-                    .lock()
-                    .await
-                    .remove(cmd.channel_id.get(), user_id);
-                reply
-            }
-            "profile" => {
-                handle_profile_interaction(
-                    &self.profile_store,
-                    &self.memory,
-                    &cmd.data.options,
-                    user_id,
-                    guild_id,
-                )
-                .await
-            }
-            "history" => {
-                handle_history_interaction(
-                    &self.history,
-                    &self.profile_store,
-                    &cmd.data.options,
-                    user_id,
-                    guild_id,
-                )
-                .await
+            "data" => {
+                let Some(section) = cmd.data.options.first() else {
+                    return;
+                };
+                match section.name.as_str() {
+                    "profile" => {
+                        let Some(actions) = nested_options(section) else {
+                            return;
+                        };
+                        handle_profile_interaction(
+                            &self.profile_store,
+                            &self.memory,
+                            actions,
+                            user_id,
+                            guild_id,
+                        )
+                        .await
+                    }
+                    "history" => {
+                        let Some(actions) = nested_options(section) else {
+                            return;
+                        };
+                        handle_history_interaction(
+                            &self.history,
+                            &self.profile_store,
+                            actions,
+                            user_id,
+                            guild_id,
+                        )
+                        .await
+                    }
+                    "erase" => {
+                        let options = nested_options(section).unwrap_or_default();
+                        if bool_option(options, "confirm") != Some(true) {
+                            "Nothing was erased. Set `confirm:true` only when you want to permanently delete all stored data.".into()
+                        } else {
+                            let reply = erase_data_command(
+                                &self.message_log,
+                                &self.history,
+                                &self.memory,
+                                &self.notes,
+                                &self.grocery_lists,
+                                &self.profile_store,
+                                &self.user_cfg,
+                                &self.agent.reminders().clone(),
+                                &self.channel_log,
+                                user_id,
+                            )
+                            .await;
+                            self.agent.reset_session(&user_id.to_string()).await;
+                            self.agent.clear_token_data(&user_id.to_string()).await;
+                            self.conversations
+                                .lock()
+                                .await
+                                .remove(cmd.channel_id.get(), user_id);
+                            reply
+                        }
+                    }
+                    _ => return,
+                }
             }
             "privacy" => {
                 handle_privacy_interaction(&self.user_cfg, &self.memory, &cmd.data.options, user_id)
                     .await
             }
-            "memory" => handle_memory_interaction(&self.memory, &cmd.data.options, user_id).await,
+            "storage" => {
+                handle_storage_interaction(&self.memory, &self.notes, &cmd.data.options, user_id)
+                    .await
+            }
             _ => return,
         };
 
@@ -1698,12 +2148,13 @@ impl EventHandler for HouseBot {
         let user_id = msg.author.id.get();
 
         // ── commands ──
-        if content == "!reset" || content == "!new" {
+        let session_action = prefix_session_action(&content);
+        if session_action == Some("new") {
             let reply = self.handle_new(channel_id, user_id).await;
             self.respond(&ctx, &msg, &reply).await;
             return;
         }
-        if content == "!compact" {
+        if session_action == Some("compact") {
             let deep_memory_enabled = self.user_cfg.load(user_id).await.deep_memory_enabled;
             let progress = reply_no_ping(&ctx, &msg, &compact_progress(0, None))
                 .await
@@ -1736,6 +2187,32 @@ impl EventHandler for HouseBot {
             }
             return;
         }
+        if session_action == Some("status") {
+            let info = self.agent.session_info(&user_id.to_string()).await;
+            let percent =
+                info.context_tokens as f64 / info.context_window_tokens.max(1) as f64 * 100.0;
+            let reply = format!(
+                "**Session**\nContext: {} / {} tokens ({percent:.1}%)\nMessages: {}\nModel requests: {}\nInput tokens: {}\nOutput tokens: {}\nCached tokens: {}",
+                info.context_tokens,
+                info.context_window_tokens,
+                info.messages,
+                info.requests,
+                info.input_tokens,
+                info.output_tokens,
+                info.cached_tokens
+            );
+            self.respond(&ctx, &msg, &reply).await;
+            return;
+        }
+        if command_suffix(&content, "!session").is_some() {
+            self.respond(
+                &ctx,
+                &msg,
+                "Usage: `!session new` | `!session compact` (`!new`, `!reset`, and `!compact` remain compatibility aliases)",
+            )
+            .await;
+            return;
+        }
         if msg.content.starts_with("!skill") {
             tracing::info!(target: "housebot::commands", user_id, "!skill command received");
             let (first, rest) = split_command(&msg.content);
@@ -1743,10 +2220,14 @@ impl EventHandler for HouseBot {
             self.respond(&ctx, &msg, &reply).await;
             return;
         }
-        if msg.content.starts_with("!note") {
-            tracing::info!(target: "housebot::commands", user_id, "!note command received");
-            let (first, rest) = split_command(&msg.content);
-            let reply = note_command(&self.notes, &first, &rest, user_id).await;
+        let (first, rest) = split_command(&msg.content);
+        if let Some((area, command)) = normalize_storage_prefix(&first) {
+            tracing::info!(target: "housebot::commands", user_id, area, "Storage command received");
+            let reply = if area == "notes" {
+                note_command(&self.notes, &command, &rest, user_id).await
+            } else {
+                memory_command(&self.memory, &command, user_id).await
+            };
             self.respond(&ctx, &msg, &reply).await;
             return;
         }
@@ -1757,11 +2238,13 @@ impl EventHandler for HouseBot {
             self.respond(&ctx, &msg, &reply).await;
             return;
         }
-        if msg.content.starts_with("!memory") {
-            tracing::info!(target: "housebot::commands", user_id, "!memory command received");
-            let (first, _rest) = split_command(&msg.content);
-            let reply = memory_command(&self.memory, &first, user_id).await;
-            self.respond(&ctx, &msg, &reply).await;
+        if command_suffix(&first, "!storage").is_some() {
+            self.respond(
+                &ctx,
+                &msg,
+                "Usage: `!storage memory show|search|clear` or `!storage notes list|get|save|delete`",
+            )
+            .await;
             return;
         }
         if content == "!stats" {
@@ -1989,6 +2472,60 @@ impl HouseBot {
             &guild_roles,
             &lua_engine::scripting_role_name(),
         )
+    }
+
+    async fn handle_token_leaderboard_command(
+        &self,
+        ctx: &Context,
+        cmd: &serenity::all::CommandInteraction,
+    ) {
+        let user_id = cmd.user.id.get();
+        let member_roles = cmd
+            .member
+            .as_deref()
+            .map(|member| {
+                member
+                    .roles
+                    .iter()
+                    .map(|role| role.get())
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+        let is_admin = (config::owner_id() != 0 && config::owner_id() == user_id)
+            || cmd
+                .member
+                .as_deref()
+                .and_then(|member| member.permissions)
+                .is_some_and(|permissions| permissions.administrator());
+        let server_config = match cmd.guild_id {
+            Some(guild_id) => self.server_cfg.load(guild_id.get()).await,
+            None => ServerConfig::default(),
+        };
+        let access = leaderboard_access(
+            &server_config,
+            cmd.guild_id.is_some(),
+            &member_roles,
+            is_admin,
+        );
+        let reply = if access == LeaderboardAccess::Denied {
+            "This server restricts the token leaderboard to configured roles.".into()
+        } else {
+            let (period, metric) = leaderboard_options(&cmd.data.options);
+            self.agent
+                .token_leaderboard(period, metric, &user_id.to_string())
+                .await
+        };
+        let reply = self.redactor.redact(&reply);
+        let reply = truncate_memory_reply("", &reply);
+        let response = CreateInteractionResponse::Message(
+            CreateInteractionResponseMessage::new()
+                .content(reply)
+                .ephemeral(access != LeaderboardAccess::Public)
+                .allowed_mentions(CreateAllowedMentions::new()),
+        );
+        if let Err(error) = cmd.create_response(&ctx.http, response).await {
+            tracing::warn!(%error, "Failed to send /token_leaderboard response");
+        }
     }
 
     async fn handle_message(
@@ -3743,7 +4280,7 @@ pub async fn run() -> anyhow::Result<()> {
     let token = std::env::var("DISCORD_BOT_TOKEN")
         .map_err(|_| anyhow::anyhow!("DISCORD_BOT_TOKEN is not set"))?;
     let discord = Arc::new(DiscordBridge::default());
-    let agent = Arc::new(Agent::from_env(discord.clone()).await);
+    let agent = Arc::new(Agent::from_env(discord.clone()).await?);
     let bot = HouseBot::new(agent, discord);
 
     let intents = GatewayIntents::non_privileged() | GatewayIntents::MESSAGE_CONTENT;
@@ -3761,10 +4298,130 @@ mod tests {
     use tempfile::TempDir;
 
     #[test]
-    fn token_leaderboard_response_is_public() {
-        assert!(!command_response_is_ephemeral("token_leaderboard"));
+    fn ordinary_command_responses_are_private() {
+        assert!(command_response_is_ephemeral("token_leaderboard"));
         assert!(command_response_is_ephemeral("config"));
-        assert!(command_response_is_ephemeral("history"));
+        assert!(command_response_is_ephemeral("data"));
+    }
+
+    #[test]
+    fn session_prefix_aliases_share_canonical_actions() {
+        for command in ["!session", "!session status"] {
+            assert_eq!(prefix_session_action(command), Some("status"));
+        }
+        for command in ["!new", "!reset", "!session new", "!session reset"] {
+            assert_eq!(prefix_session_action(command), Some("new"));
+        }
+        for command in ["!compact", "!session compact"] {
+            assert_eq!(prefix_session_action(command), Some("compact"));
+        }
+    }
+
+    #[test]
+    fn storage_prefix_aliases_share_store_backed_handlers() {
+        assert_eq!(
+            normalize_storage_prefix("!storage notes save shopping"),
+            Some(("notes", "!note save shopping".into()))
+        );
+        assert_eq!(
+            normalize_storage_prefix("!storage memory search tea"),
+            Some(("memory", "!memory search tea".into()))
+        );
+        assert_eq!(
+            normalize_storage_prefix("!note list"),
+            Some(("notes", "!note list".into()))
+        );
+    }
+
+    #[test]
+    fn consolidated_slash_commands_replace_retired_top_level_commands() {
+        let definitions = [
+            session_command_definition(),
+            storage_command_definition(),
+            data_command_definition(),
+        ];
+        let values: Vec<serde_json::Value> = definitions
+            .into_iter()
+            .map(|definition| serde_json::to_value(definition).unwrap())
+            .collect();
+        let names: Vec<&str> = values
+            .iter()
+            .map(|definition| definition["name"].as_str().unwrap())
+            .collect();
+        assert_eq!(names, ["session", "storage", "data"]);
+        let option_names = |definition: &serde_json::Value| {
+            definition["options"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|option| option["name"].as_str().unwrap().to_string())
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(option_names(&values[0]), ["status", "new", "compact"]);
+        assert_eq!(option_names(&values[1]), ["memory", "notes"]);
+        assert_eq!(option_names(&values[2]), ["profile", "history", "erase"]);
+        assert!(RETIRED_SLASH_COMMANDS.contains(&"reset"));
+        assert!(RETIRED_SLASH_COMMANDS.contains(&"erase_my_data"));
+        assert!(!RETIRED_SLASH_COMMANDS.contains(&"session"));
+    }
+
+    #[tokio::test]
+    async fn storage_slash_notes_use_the_prefix_store_handler() {
+        let (_temp, _skills, notes, memory, _history) = stores();
+        let options: Vec<serenity::all::CommandDataOption> = serde_json::from_value(json!([{
+            "name": "notes",
+            "type": 2,
+            "options": [{
+                "name": "save",
+                "type": 1,
+                "options": [
+                    {"name": "name", "type": 3, "value": "shopping"},
+                    {"name": "content", "type": 3, "value": "milk and eggs"}
+                ]
+            }]
+        }]))
+        .unwrap();
+
+        let reply = handle_storage_interaction(&memory, &notes, &options, 42).await;
+        assert!(reply.contains("saved"));
+        assert_eq!(
+            notes.get(42, "shopping").await.as_deref(),
+            Some("milk and eggs")
+        );
+    }
+
+    #[test]
+    fn leaderboard_visibility_controls_access_and_response_scope() {
+        let mut config = ServerConfig::default();
+        assert_eq!(
+            leaderboard_access(&config, true, &[], false),
+            LeaderboardAccess::Public
+        );
+
+        config.leaderboard_visibility = LeaderboardVisibility::Private;
+        assert_eq!(
+            leaderboard_access(&config, true, &[], false),
+            LeaderboardAccess::Private
+        );
+
+        config.leaderboard_visibility = LeaderboardVisibility::Restricted;
+        config.leaderboard_role_ids.insert(42);
+        assert_eq!(
+            leaderboard_access(&config, true, &[], false),
+            LeaderboardAccess::Denied
+        );
+        assert_eq!(
+            leaderboard_access(&config, true, &[42], false),
+            LeaderboardAccess::Private
+        );
+        assert_eq!(
+            leaderboard_access(&config, true, &[], true),
+            LeaderboardAccess::Private
+        );
+        assert_eq!(
+            leaderboard_access(&config, false, &[], false),
+            LeaderboardAccess::Private
+        );
     }
 
     // ── format_lua_reply ──

@@ -17,6 +17,31 @@ pub struct ServerConfig {
     /// Channel IDs the bot is allowed to respond in. Empty means all channels.
     #[serde(default)]
     pub allowed_channel_ids: HashSet<u64>,
+    /// Who can view the server token leaderboard and whether the response is public.
+    #[serde(default)]
+    pub leaderboard_visibility: LeaderboardVisibility,
+    /// Roles allowed to view the leaderboard when visibility is restricted.
+    #[serde(default)]
+    pub leaderboard_role_ids: HashSet<u64>,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LeaderboardVisibility {
+    #[default]
+    Public,
+    Private,
+    Restricted,
+}
+
+impl LeaderboardVisibility {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Public => "public",
+            Self::Private => "private",
+            Self::Restricted => "restricted",
+        }
+    }
 }
 
 pub struct ServerConfigStore {
@@ -175,6 +200,14 @@ mod tests {
     #[test]
     fn labs_pagination_is_off_by_default() {
         assert!(!UserConfig::default().labs_pagination_enabled);
+    }
+
+    #[test]
+    fn old_server_config_defaults_to_public_leaderboard() {
+        let config: ServerConfig =
+            serde_json::from_str(r#"{"allowed_channel_ids":[123]}"#).unwrap();
+        assert_eq!(config.leaderboard_visibility, LeaderboardVisibility::Public);
+        assert!(config.leaderboard_role_ids.is_empty());
     }
 
     #[test]

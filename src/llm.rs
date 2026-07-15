@@ -149,11 +149,16 @@ pub trait ChatClient: Send + Sync {
 
     /// Stream a completion, forwarding each cumulative text snapshot to `sink`.
     /// `thinking` sets the reasoning budget and the overall token ceiling.
+    /// `tool_choice` overrides the default `"auto"` tool selection; pass
+    /// `Some(json!("required"))` to force a tool call or
+    /// `Some(json!({"type":"function","function":{"name":"…"}}))` to force a
+    /// specific function. `None` keeps the default `"auto"` behavior.
     async fn chat_stream(
         &self,
         model: &str,
         messages: &[Value],
         tools: &[Value],
+        tool_choice: Option<Value>,
         thinking: ThinkingMode,
         sink: Option<&dyn TextSink>,
     ) -> anyhow::Result<ChatCompletion>;
@@ -366,6 +371,7 @@ impl ChatClient for OpenAiClient {
         model: &str,
         messages: &[Value],
         tools: &[Value],
+        tool_choice: Option<Value>,
         thinking: ThinkingMode,
         sink: Option<&dyn TextSink>,
     ) -> anyhow::Result<ChatCompletion> {
@@ -379,7 +385,7 @@ impl ChatClient for OpenAiClient {
         });
         if !tools.is_empty() {
             body["tools"] = Value::Array(tools.to_vec());
-            body["tool_choice"] = Value::String("auto".into());
+            body["tool_choice"] = tool_choice.unwrap_or_else(|| Value::String("auto".into()));
         }
         tracing::debug!(
             target: "housebot::llm",
