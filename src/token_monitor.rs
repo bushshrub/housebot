@@ -400,6 +400,28 @@ impl TokenMonitor {
         Ok(())
     }
 
+    /// Return the most recent conversation ID that has not yet been ended for
+    /// `user_id`, or `None` if no active conversation exists.
+    ///
+    /// Called on startup to resume the previous conversation across bot
+    /// restarts so token counts accumulate on the same row and the leaderboard
+    /// shows correct persistent totals.
+    pub async fn get_active_conversation_id(&self, user_id: &str) -> Option<String> {
+        match &self.backend {
+            Backend::Memory(_) => None,
+            Backend::Postgres(client) => client
+                .query_opt(
+                    "SELECT conversation_id FROM conversations \
+                     WHERE user_id = $1 AND ended_at IS NULL \
+                     ORDER BY started_at DESC LIMIT 1",
+                    &[&user_id],
+                )
+                .await
+                .ok()?
+                .map(|row| row.get(0)),
+        }
+    }
+
     pub async fn leaderboard(&self, limit: usize) -> anyhow::Result<TokenLeaderboard> {
         self.leaderboard_for(
             LeaderboardPeriod::AllTime,
@@ -803,6 +825,50 @@ mod tests {
         assert_eq!(
             board.requester_rank.as_ref().unwrap().entry.label,
             "Requester"
+        );
+    }
+
+    #[tokio::test]
+    async fn get_active_conversation_id_returns_none_for_memory_backend() {
+        // The in-memory backend has no recovery mechanism; None tells callers
+        // to start a fresh conversation (which still accumulates correctly in
+        // the leaderboard across the session).
+        let monitor = TokenMonitor::default();
+        monitor
+            .start_conversation("conv1", "u1", "Alice", 10)
+            .await
+            .unwrap();
+        assert_eq!(monitor.get_active_conversation_id("u1").await, None);
+        assert_eq!(monitor.get_active_conversation_id("unknown").await, None);
+    }
+
+    #[tokio::test]
+    async fn leaderboard_accumulates_across_multiple_conversations() {
+        // Verify that even when a new conversation is created (simulating a
+        // restart with the in-memory backend), the leaderboard sums tokens
+        // from all conversations for the same user.
+        let monitor = TokenMonitor::default();
+        monitor
+            .start_conversation("c1", "u1", "Alice", 10)
+            .await
+            .unwrap();
+        monitor.record_usage("c1", usage(100, 40, 0)).await.unwrap();
+        monitor.finish_conversation("c1").await.unwrap();
+        // Simulate restart: new conversation created for the same user.
+        monitor
+            .start_conversation("c2", "u1", "Alice", 10)
+            .await
+            .unwrap();
+        monitor.record_usage("c2", usage(60, 20, 0)).await.unwrap();
+
+        let board = monitor.leaderboard(10).await.unwrap();
+        assert_eq!(board.users.len(), 1);
+        assert_eq!(board.users[0].label, "Alice");
+        assert_eq!(board.users[0].conversations, 2);
+        assert_eq!(
+            board.users[0].total_tokens(),
+            220,
+            "tokens must sum across conversations"
         );
     }
 }
