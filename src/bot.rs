@@ -1088,10 +1088,20 @@ impl EventHandler for HouseBot {
         if let Err(e) = Command::create_global_command(&ctx.http, lua_cmd.clone()).await {
             tracing::error!("Failed to register /lua slash command: {e}");
         }
-        let guild_id = std::env::var("DEPLOYMENT_GUILD_ID")
-            .ok()
-            .and_then(|value| value.parse::<u64>().ok())
-            .filter(|guild_id| *guild_id != 0);
+        let guild_id = match std::env::var("DEPLOYMENT_GUILD_ID") {
+            Ok(value) => match value.parse::<u64>() {
+                Ok(id) if id != 0 => Some(id),
+                Ok(_) => {
+                    tracing::warn!("DEPLOYMENT_GUILD_ID is set to 0, ignoring");
+                    None
+                }
+                Err(_) => {
+                    tracing::warn!("DEPLOYMENT_GUILD_ID is set but invalid (must be a valid u64): {}", value);
+                    None
+                }
+            },
+            Err(_) => None,
+        };
         if let Some(guild_id) = guild_id {
             if let Err(e) = GuildId::new(guild_id)
                 .create_command(&ctx.http, lua_cmd)
