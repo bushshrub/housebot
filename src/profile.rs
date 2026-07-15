@@ -42,7 +42,9 @@ pub fn tool_to_tag(tool_name: &str) -> Option<ProfileTag> {
             Some(ProfileTag::WebResearch)
         }
         "update_memory" => Some(ProfileTag::Coding),
-        "create_feature_request" | "prepare_feature_development" => Some(ProfileTag::Coding),
+        "create_feature_request" | "edit_feature_request" | "prepare_feature_development" => {
+            Some(ProfileTag::Coding)
+        }
         "set_reminder" => Some(ProfileTag::Reminders),
         "translate" => Some(ProfileTag::Translation),
         name if name.starts_with("jellyfin__") => Some(ProfileTag::Media),
@@ -336,6 +338,10 @@ mod tests {
         assert_eq!(tool_to_tag("jellyfin__get_movies"), Some(ProfileTag::Media));
         assert_eq!(
             tool_to_tag("create_feature_request"),
+            Some(ProfileTag::Coding)
+        );
+        assert_eq!(
+            tool_to_tag("edit_feature_request"),
             Some(ProfileTag::Coding)
         );
         assert_eq!(tool_to_tag("random_tool"), None);
