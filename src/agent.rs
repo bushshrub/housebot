@@ -433,18 +433,40 @@ impl Agent {
 
     /// Ask the LLM to classify a Lua script before it is executed.
     ///
-    /// Lua reviews use the low-priority lane so ordinary bot conversations are
-    /// admitted first when all four LLM slots are occupied. Invalid or failed
-    /// reviews are rejected rather than allowing an unreviewed script to run.
+    /// The model is forced to call `submit_lua_verdict` so the result is
+    /// always structured JSON rather than free-form text. Lua reviews use the
+    /// low-priority lane so ordinary bot conversations are admitted first when
+    /// all four LLM slots are occupied. Invalid or failed reviews are rejected
+    /// rather than allowing an unreviewed script to run.
     pub async fn analyze_lua_script(&self, script: &str) -> LuaAnalysis {
+        let verdict_tool = json!({
+            "type": "function",
+            "function": {
+                "name": "submit_lua_verdict",
+                "description": "Submit the security verdict for a Lua script after reviewing it.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "safe": {
+                            "type": "boolean",
+                            "description": "true if the script is safe to execute, false if it must be blocked"
+                        },
+                        "reason": {
+                            "type": "string",
+                            "description": "Brief explanation (one sentence) of why the script is safe or unsafe"
+                        }
+                    },
+                    "required": ["safe", "reason"]
+                }
+            }
+        });
         let prompt = format!(
             "Analyze the following untrusted Lua source for suspicious behavior. Do not execute it.\n\n\
              The script runs in a sandbox that intentionally exposes only table, string, math, and \
-             these discord functions: send_message, web_search, and jellyfin_search. Mark it unsafe \
-             if it attempts sandbox escape, filesystem/process/debug/package/io access, secret \
-             exfiltration, mass messaging, denial-of-service behavior, or other abuse.\n\n\
-             Respond with ONLY a JSON object of this exact shape, no other text, no markdown code \
-             fences, no explanation before or after it: {{\"safe\":true|false,\"reason\":\"short explanation\"}}.\n\n\
+             these discord functions: send_message, web_search, and jellyfin_search. Call \
+             submit_lua_verdict with safe=false if it attempts sandbox escape, \
+             filesystem/process/debug/package/io access, secret exfiltration, mass messaging, \
+             denial-of-service behavior, or other abuse. Otherwise call it with safe=true.\n\n\
              <lua_source>\n{script}\n</lua_source>"
         );
         let messages = vec![
@@ -456,7 +478,14 @@ impl Agent {
         ];
         let completion = self
             .queued_client
-            .chat_once_with_priority(LlmPriority::LuaAnalysis, &self.model, &messages, 400)
+            .chat_stream_with_priority(
+                LlmPriority::LuaAnalysis,
+                &self.model,
+                &messages,
+                &[verdict_tool],
+                Some(json!("required")),
+                ThinkingMode::Low,
+            )
             .await;
         let Ok(completion) = completion else {
             return LuaAnalysis {
@@ -464,19 +493,18 @@ impl Agent {
                 reason: "the safety review could not be completed".to_string(),
             };
         };
-        let Some(content) = completion.content.as_deref() else {
-            return LuaAnalysis {
-                allowed: false,
-                reason: "the safety review returned no verdict".to_string(),
-            };
-        };
-        let Some(verdict) = extract_lua_verdict(content) else {
+        let Some(tc) = completion
+            .tool_calls
+            .into_iter()
+            .find(|tc| tc.name == "submit_lua_verdict")
+        else {
             return LuaAnalysis {
                 allowed: false,
                 reason: "the safety review returned an invalid verdict".to_string(),
             };
         };
-        let Some(safe) = verdict.get("safe").and_then(Value::as_bool) else {
+        let args: Value = serde_json::from_str(&tc.arguments).unwrap_or(json!({}));
+        let Some(safe) = args.get("safe").and_then(Value::as_bool) else {
             return LuaAnalysis {
                 allowed: false,
                 reason: "the safety review returned an incomplete verdict".to_string(),
@@ -484,7 +512,7 @@ impl Agent {
         };
         LuaAnalysis {
             allowed: safe,
-            reason: verdict
+            reason: args
                 .get("reason")
                 .and_then(Value::as_str)
                 .filter(|reason| !reason.trim().is_empty())
@@ -667,6 +695,13 @@ impl Agent {
         if let Some(id) = active.get(user_id) {
             return id.clone();
         }
+        // After a restart the in-memory map is empty. Try to recover the
+        // active conversation from the database so token counts continue
+        // accumulating on the same row and the leaderboard stays accurate.
+        if let Some(id) = self.token_monitor.get_active_conversation_id(user_id).await {
+            active.insert(user_id.to_string(), id.clone());
+            return id;
+        }
         let id = uuid::Uuid::new_v4().to_string();
         if let Err(error) = self
             .token_monitor
@@ -801,7 +836,14 @@ impl Agent {
             let text_sink = TextStreamAdapter(hooks);
             let completion = match self
                 .client
-                .chat_stream(&self.model, &messages, &tools, thinking, Some(&text_sink))
+                .chat_stream(
+                    &self.model,
+                    &messages,
+                    &tools,
+                    None,
+                    thinking,
+                    Some(&text_sink),
+                )
                 .await
             {
                 Ok(c) => c,
@@ -1872,74 +1914,6 @@ fn search_rate_limited(content: &str) -> bool {
         || content.contains("temporarily blocked")
 }
 
-/// Extracts the Lua safety review's verdict from the model's raw response.
-///
-/// The prompt asks for a bare `{"safe":...,"reason":...}` object, but models
-/// don't reliably comply — they may add a preamble, wrap it in a markdown
-/// code fence, or explain themselves afterward. Scans for every balanced
-/// top-level `{...}` object in `content` (tracking string literals so
-/// braces inside a `"reason"` value don't throw off the brace depth) and
-/// returns the *last* one that both parses as JSON and has a boolean `safe`
-/// field, since a model that reasons before answering tends to put its
-/// real answer last. Returns `None` if no such object is found.
-fn extract_lua_verdict(content: &str) -> Option<Value> {
-    let mut last_valid = None;
-    let mut search_from = 0;
-    while let Some(rel_start) = content[search_from..].find('{') {
-        let start = search_from + rel_start;
-        let Some(len) = balanced_object_len(&content[start..]) else {
-            // This '{' never closes (e.g. commentary mentioning Lua table
-            // syntax without finishing it) — skip past just this one brace
-            // and keep scanning, rather than abandoning the whole response;
-            // a complete, valid verdict may still follow later in the text.
-            search_from = start + 1;
-            continue;
-        };
-        let candidate = &content[start..start + len];
-        if let Ok(value) = serde_json::from_str::<Value>(candidate) {
-            if value.get("safe").and_then(Value::as_bool).is_some() {
-                last_valid = Some(value);
-            }
-        }
-        search_from = start + len;
-    }
-    last_valid
-}
-
-/// Byte length of the balanced `{...}` object starting at byte 0 of `s`
-/// (which must start with `{`), or `None` if it's never closed. Tracks
-/// whether the scan is inside a JSON string so a brace in a string value
-/// isn't mistaken for structure.
-fn balanced_object_len(s: &str) -> Option<usize> {
-    let mut depth = 0i32;
-    let mut in_string = false;
-    let mut escaped = false;
-    for (i, b) in s.bytes().enumerate() {
-        if in_string {
-            if escaped {
-                escaped = false;
-            } else if b == b'\\' {
-                escaped = true;
-            } else if b == b'"' {
-                in_string = false;
-            }
-            continue;
-        }
-        match b {
-            b'"' => in_string = true,
-            b'{' => depth += 1,
-            b'}' => {
-                depth -= 1;
-                if depth == 0 {
-                    return Some(i + 1);
-                }
-            }
-            _ => {}
-        }
-    }
-    None
-}
-
 #[cfg(test)]
 impl Agent {
     /// Construct an agent wired to a test client and temp-backed stores.
@@ -2393,10 +2367,12 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn lua_analysis_allows_explicit_safe_verdict() {
-        let client = Arc::new(
-            MockChatClient::new()
-                .with_once_reply(r#"{"safe":true,"reason":"uses only the documented APIs"}"#),
+    async fn lua_analysis_allows_safe_tool_call() {
+        let client = Arc::new(MockChatClient::new());
+        client.push_tool_call(
+            "call_1",
+            "submit_lua_verdict",
+            r#"{"safe":true,"reason":"uses only the documented APIs"}"#,
         );
         let (_t, agent) = test_agent(client);
         let result = agent.analyze_lua_script("return 1").await;
@@ -2410,10 +2386,12 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn lua_analysis_blocks_explicit_unsafe_verdict() {
-        let client = Arc::new(
-            MockChatClient::new()
-                .with_once_reply(r#"{"safe":false,"reason":"attempts to access the filesystem"}"#),
+    async fn lua_analysis_blocks_unsafe_tool_call() {
+        let client = Arc::new(MockChatClient::new());
+        client.push_tool_call(
+            "call_1",
+            "submit_lua_verdict",
+            r#"{"safe":false,"reason":"attempts to access the filesystem"}"#,
         );
         let (_t, agent) = test_agent(client);
         let result = agent
@@ -2424,8 +2402,10 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn lua_analysis_fails_closed_on_invalid_verdict() {
-        let client = Arc::new(MockChatClient::new().with_once_reply("I think it is safe"));
+    async fn lua_analysis_fails_closed_when_no_tool_call_returned() {
+        // Model responds with text only (no tool call) → blocked as invalid verdict.
+        let client = Arc::new(MockChatClient::new());
+        client.push_text("I think it is safe");
         let (_t, agent) = test_agent(client);
         let result = agent.analyze_lua_script("return 1").await;
         assert!(!result.allowed);
@@ -2433,71 +2413,37 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn lua_analysis_tolerates_a_preamble_before_the_json() {
-        let client = Arc::new(MockChatClient::new().with_once_reply(
-            "Let me check this script for issues. It looks fine to me.\n\n\
-             {\"safe\":true,\"reason\":\"only uses documented APIs\"}",
-        ));
-        let (_t, agent) = test_agent(client);
-        let result = agent.analyze_lua_script("return 1").await;
-        assert!(result.allowed);
-        assert_eq!(result.reason, "only uses documented APIs");
-    }
-
-    #[tokio::test]
-    async fn lua_analysis_skips_an_unmatched_brace_in_commentary() {
-        let client = Arc::new(MockChatClient::new().with_once_reply(
-            "This script defines a table like { but that's not quite right, let me reconsider.\n\n\
-             {\"safe\":true,\"reason\":\"only uses documented APIs\"}",
-        ));
-        let (_t, agent) = test_agent(client);
-        let result = agent.analyze_lua_script("return 1").await;
-        assert!(result.allowed);
-        assert_eq!(result.reason, "only uses documented APIs");
-    }
-
-    #[tokio::test]
-    async fn lua_analysis_tolerates_a_markdown_code_fence() {
-        let client = Arc::new(MockChatClient::new().with_once_reply(
-            "```json\n{\"safe\":false,\"reason\":\"attempts sandbox escape\"}\n```",
-        ));
-        let (_t, agent) = test_agent(client);
-        let result = agent.analyze_lua_script("return io").await;
-        assert!(!result.allowed);
-        assert_eq!(result.reason, "attempts sandbox escape");
-    }
-
-    #[tokio::test]
-    async fn lua_analysis_tolerates_braces_inside_the_reason_string() {
-        let client = Arc::new(MockChatClient::new().with_once_reply(
-            r#"{"safe":false,"reason":"calls string.format(\"{}\", x) unsafely"}"#,
-        ));
+    async fn lua_analysis_fails_closed_when_tool_call_args_malformed() {
+        let client = Arc::new(MockChatClient::new());
+        client.push_tool_call("call_1", "submit_lua_verdict", "not json at all");
         let (_t, agent) = test_agent(client);
         let result = agent.analyze_lua_script("return 1").await;
         assert!(!result.allowed);
-        assert_eq!(result.reason, "calls string.format(\"{}\", x) unsafely");
+        assert!(result.reason.contains("incomplete verdict"));
     }
 
     #[tokio::test]
-    async fn lua_analysis_tolerates_trailing_commentary_after_the_json() {
-        let client = Arc::new(MockChatClient::new().with_once_reply(
-            "{\"safe\":true,\"reason\":\"safe\"}\n\nLet me know if you'd like more detail on this.",
-        ));
-        let (_t, agent) = test_agent(client);
-        let result = agent.analyze_lua_script("return 1").await;
-        assert!(result.allowed);
-    }
-
-    #[tokio::test]
-    async fn lua_analysis_prefers_the_last_valid_verdict_when_the_model_self_corrects() {
-        let client = Arc::new(MockChatClient::new().with_once_reply(
-            "First pass: {\"safe\":true,\"reason\":\"looks fine\"} \
-             Actually, on closer look: {\"safe\":false,\"reason\":\"uses os.execute\"}",
-        ));
+    async fn lua_analysis_fails_closed_when_safe_field_missing() {
+        let client = Arc::new(MockChatClient::new());
+        client.push_tool_call("call_1", "submit_lua_verdict", r#"{"reason":"looks fine"}"#);
         let (_t, agent) = test_agent(client);
         let result = agent.analyze_lua_script("return 1").await;
         assert!(!result.allowed);
-        assert_eq!(result.reason, "uses os.execute");
+        assert!(result.reason.contains("incomplete verdict"));
+    }
+
+    #[tokio::test]
+    async fn lua_analysis_uses_default_reason_when_reason_empty() {
+        let client = Arc::new(MockChatClient::new());
+        client.push_tool_call(
+            "call_1",
+            "submit_lua_verdict",
+            r#"{"safe":true,"reason":""}"#,
+        );
+        let (_t, agent) = test_agent(client);
+        let result = agent.analyze_lua_script("return 1").await;
+        assert!(result.allowed);
+        assert_eq!(result.reason, "script passed review");
     }
 
     #[tokio::test]
@@ -2546,6 +2492,58 @@ mod tests {
         assert_eq!(board.users[0].conversations, 2);
         assert_eq!(board.users[0].total_tokens(), 75);
         assert_eq!(board.conversations.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn token_leaderboard_accumulates_across_simulated_restart() {
+        // After a restart the in-memory active_conversations map is empty.
+        // For the in-memory backend get_active_conversation_id returns None,
+        // so a new conversation is created. Verify that the leaderboard still
+        // sums tokens from BOTH conversations for the same user.
+        let client = Arc::new(MockChatClient::new());
+        client.push_text_with_usage(
+            "pre-restart reply",
+            TokenUsage {
+                prompt_tokens: 100,
+                completion_tokens: 50,
+                ..Default::default()
+            },
+        );
+        client.push_text_with_usage(
+            "post-restart reply",
+            TokenUsage {
+                prompt_tokens: 30,
+                completion_tokens: 10,
+                ..Default::default()
+            },
+        );
+        let (_t, agent) = test_agent(client);
+        agent
+            .run(AgentRequest::text("u_restart", "Carol", "first"), &NoHooks)
+            .await;
+
+        // Simulate a restart: clear the in-memory conversation map but keep the
+        // token_monitor data intact.
+        agent.active_conversations.lock().await.clear();
+
+        agent
+            .run(
+                AgentRequest::text("u_restart", "Carol", "after restart"),
+                &NoHooks,
+            )
+            .await;
+
+        let board = agent.token_monitor.leaderboard(10).await.unwrap();
+        let carol = board
+            .users
+            .iter()
+            .find(|e| e.label == "Carol")
+            .expect("Carol must appear in leaderboard");
+        assert_eq!(
+            carol.total_tokens(),
+            190,
+            "tokens must survive simulated restart"
+        );
     }
 
     #[tokio::test]

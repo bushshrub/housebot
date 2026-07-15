@@ -92,6 +92,7 @@ impl ChatClient for MockChatClient {
         _model: &str,
         messages: &[Value],
         _tools: &[Value],
+        _tool_choice: Option<Value>,
         _thinking: ThinkingMode,
         sink: Option<&dyn TextSink>,
     ) -> anyhow::Result<ChatCompletion> {

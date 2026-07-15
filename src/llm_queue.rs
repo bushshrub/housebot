@@ -164,6 +164,32 @@ impl QueuedChatClient {
             })
             .await
     }
+
+    /// Stream a completion through the priority queue, using a specific
+    /// `tool_choice` value. Pass `Some(json!("required"))` to force a tool
+    /// call. Unlike `chat_stream`, this method accepts an explicit priority so
+    /// lower-priority tasks (e.g. Lua safety reviews) yield to normal traffic.
+    pub async fn chat_stream_with_priority(
+        &self,
+        priority: LlmPriority,
+        model: &str,
+        messages: &[Value],
+        tools: &[Value],
+        tool_choice: Option<Value>,
+        thinking: ThinkingMode,
+    ) -> anyhow::Result<ChatCompletion> {
+        let inner = Arc::clone(&self.inner);
+        let model = model.to_string();
+        let messages = messages.to_vec();
+        let tools = tools.to_vec();
+        self.queue
+            .execute(priority, move || async move {
+                inner
+                    .chat_stream(&model, &messages, &tools, tool_choice, thinking, None)
+                    .await
+            })
+            .await
+    }
 }
 
 #[async_trait]
@@ -177,6 +203,7 @@ impl ChatClient for QueuedChatClient {
         model: &str,
         messages: &[Value],
         tools: &[Value],
+        tool_choice: Option<Value>,
         thinking: ThinkingMode,
         sink: Option<&dyn TextSink>,
     ) -> anyhow::Result<ChatCompletion> {
@@ -187,7 +214,7 @@ impl ChatClient for QueuedChatClient {
         self.queue
             .execute(LlmPriority::Normal, move || async move {
                 inner
-                    .chat_stream(&model, &messages, &tools, thinking, sink)
+                    .chat_stream(&model, &messages, &tools, tool_choice, thinking, sink)
                     .await
             })
             .await
