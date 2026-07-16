@@ -24,8 +24,10 @@ if [[ ! -f "$PROMPT_FILE" ]]; then
     exit 1
 fi
 
-if [[ -z "${NVIDIA_API_KEY:-}" ]]; then
-    log "ERROR: NVIDIA_API_KEY is not set. Configure it as a repository secret."
+# NVIDIA NIM models require an API key; free-tier models (opencode/* prefix) do not.
+if [[ "$MODEL" == nvidia/* ]] && [[ -z "${NVIDIA_API_KEY:-}" ]]; then
+    log "ERROR: NVIDIA_API_KEY is required for NVIDIA NIM models but is not set."
+    log "  Configure it as a repository secret, or choose a free-tier model."
     exit 1
 fi
 
