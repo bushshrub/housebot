@@ -1,13 +1,9 @@
 # The bot binary is built OUTSIDE this Dockerfile as a statically linked
 # musl executable, so CI can cache cargo artifacts between runs instead of
 # recompiling every dependency inside Docker. Build it with
-# scripts/build-image.sh, or manually:
-#
-#   rustup target add x86_64-unknown-linux-musl
-#   cargo build --release --locked --target x86_64-unknown-linux-musl --package housebot
-#   mkdir -p dist && cp target/x86_64-unknown-linux-musl/release/housebot dist/housebot
-#
-# and then docker build as usual.
+# scripts/build-image.sh (or scripts/build-binary.sh followed by
+# docker build --platform linux/amd64, since the staged binary is amd64).
+# For the dev compose stack use scripts/dev-up.sh.
 
 # Build the Jellyfin MCP server as a static Go binary for the runtime image.
 # Keep this pinned so image rebuilds do not silently change the MCP tool set.

@@ -6,14 +6,7 @@ set -eu
 
 cd "$(dirname "$0")/.."
 
-TARGET=x86_64-unknown-linux-musl
 IMAGE_TAG="${IMAGE_TAG:-housebot:local}"
 
-rustup target add "$TARGET"
-HOUSEBOT_GIT_SHA="$(git rev-parse HEAD)" \
-    cargo build --release --locked --target "$TARGET" --package housebot
-mkdir -p dist
-cp "target/$TARGET/release/housebot" dist/housebot
-strip dist/housebot || true
-
-docker build -t "$IMAGE_TAG" .
+scripts/build-binary.sh
+docker build --platform linux/amd64 -t "$IMAGE_TAG" .
