@@ -43,6 +43,15 @@ jobs:
           fetch-depth: 1
           persist-credentials: false
 
+      - name: Auto-approve permissions
+        shell: bash
+        run: |
+          cat > opencode.json << 'EOF'
+          {
+            "permission": "allow"
+          }
+          EOF
+
       - name: Run opencode
         # Pinned to github-v1.2.19 — update after reviewing the release diff.
         uses: anomalyco/opencode/github@77fc88c8ade8e5a620ebbe1197f3a572d29ae91a
