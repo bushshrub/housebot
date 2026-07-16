@@ -4,6 +4,8 @@ use std::sync::Mutex;
 
 use super::*;
 
+const DISCORD_CONTENT_LIMIT: usize = 2000;
+
 pub(crate) fn compact_progress(stage: usize, detail: Option<&str>) -> String {
     let filled = (stage / 10).min(10);
     let bar = format!("{}{}", "█".repeat(filled), "░".repeat(10 - filled));
@@ -83,14 +85,25 @@ impl AgentHooks for ResponseProgressHooks {
         if self.generating.swap(true, Ordering::AcqRel) {
             return;
         }
-        let _ = self
+        let content = {
+            let calls = self.tool_calls.lock().unwrap();
+            if calls.is_empty() {
+                "⚙️ **Generating...**".to_string()
+            } else {
+                format!("{calls}\n⚙️ **Generating...**")
+            }
+        };
+        if let Err(e) = self
             .channel_id
             .edit_message(
                 &self.ctx.http,
                 self.message_id,
-                EditMessage::new().content("⚙️ **Generating...**"),
+                EditMessage::new().content(content),
             )
-            .await;
+            .await
+        {
+            tracing::warn!(%e, "Failed to update text-stream progress message");
+        }
     }
 
     async fn on_tool_called(&self, tool: &str, _args: &serde_json::Value) {
@@ -101,15 +114,25 @@ impl AgentHooks for ResponseProgressHooks {
                 calls.push('\n');
             }
             calls.push_str(tool_status(tool));
+            while calls.chars().count() > DISCORD_CONTENT_LIMIT {
+                if let Some(pos) = calls.find('\n') {
+                    calls.drain(..pos + 1);
+                } else {
+                    break;
+                }
+            }
             calls.clone()
         };
-        let _ = self
+        if let Err(e) = self
             .channel_id
             .edit_message(
                 &self.ctx.http,
                 self.message_id,
                 EditMessage::new().content(content),
             )
-            .await;
+            .await
+        {
+            tracing::warn!(%e, "Failed to update tool-call progress message");
+        }
     }
 }
