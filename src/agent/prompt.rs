@@ -175,6 +175,9 @@ For ordinary feature suggestions use create_feature_request instead.\n\
 - set_reminder — Set a timed reminder; the bot will DM the user when the delay elapses.\n\
 - summarize_url — Fetch a public web URL and return a concise summary.\n\
 - translate — Translate text to any language using the LLM.\n\
+- token_metrics — Fetch token usage metrics and statistics: global totals, per-user \
+   breakdowns, leaderboard rankings, and top conversations. Supports daily/weekly/monthly/all-time \
+   periods and sorting by total tokens or cache efficiency.\n\
 - get_bot_features — Return the full list of this bot's commands and capabilities. \
 Call this when a user asks what you can do, what commands exist, or how to use any feature.\n\
 - search_messages — Search the current channel's message log by regex pattern. Only matching \

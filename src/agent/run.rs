@@ -282,6 +282,7 @@ impl Agent {
             tools::remind::definition(),
             tools::summarize_url::definition(),
             tools::translate::definition(),
+            tools::token_metrics::definition(),
             tools::features::definition(),
             search_messages_tool(),
             get_recent_messages_tool(),

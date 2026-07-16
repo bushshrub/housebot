@@ -277,6 +277,27 @@ impl Agent {
                 )
                 .await,
             ),
+            "token_metrics" => {
+                let scope = str_arg(args, "scope");
+                let user_id = args.get("user_id").and_then(Value::as_str);
+                let period = str_arg(args, "period");
+                let metric = str_arg(args, "metric");
+                let limit = match args.get("limit").and_then(Value::as_u64) {
+                    Some(l) => l as usize,
+                    None => 10,
+                };
+                ToolOutcome::Text(
+                    tools::token_metrics::get_token_metrics(
+                        &self.token_monitor,
+                        scope,
+                        user_id,
+                        period,
+                        metric,
+                        limit,
+                    )
+                    .await,
+                )
+            }
             "run_skill" => {
                 let skill_name = str_arg(args, "name");
                 let input = str_arg(args, "input");
