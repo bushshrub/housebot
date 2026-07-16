@@ -9,7 +9,10 @@ on:
     types: [opened, synchronize, reopened]
 
 jobs:
-  opencode-comment:
+  # Gate for comment-triggered runs: only proceed if the commenter has at
+  # least one merged PR in this repo.  Keeps write-capable runs restricted
+  # to trusted contributors.
+  check-comment-trusted:
     if: |
       (github.event_name == 'issue_comment' || github.event_name == 'pull_request_review_comment') &&
       (contains(github.event.comment.body, ' /oc') ||
@@ -18,7 +21,30 @@ jobs:
        startsWith(github.event.comment.body, '/opencode'))
     runs-on: ubuntu-latest
     permissions:
-      id-token: write
+      pull-requests: read
+      contents: read
+    outputs:
+      trusted: ${{ steps.check.outputs.trusted }}
+    steps:
+      - name: Check if commenter is trusted
+        id: check
+        uses: actions/github-script@v8
+        with:
+          script: |
+            const actor = context.actor;
+            const { data: result } = await github.rest.search.issuesAndPullRequests({
+              q: `repo:${context.repo.owner}/${context.repo.repo} is:pr is:merged author:${actor}`,
+              per_page: 1,
+            });
+            const trusted = result.total_count > 0;
+            core.info(`Commenter ${actor} trusted: ${trusted} (${result.total_count} merged PRs)`);
+            core.setOutput('trusted', trusted ? 'true' : 'false');
+
+  opencode-comment:
+    needs: check-comment-trusted
+    if: needs.check-comment-trusted.outputs.trusted == 'true'
+    runs-on: ubuntu-latest
+    permissions:
       contents: write
       pull-requests: write
       issues: write
@@ -64,7 +90,6 @@ jobs:
     if: needs.check-trusted.outputs.trusted == 'true'
     runs-on: ubuntu-latest
     permissions:
-      id-token: write
       contents: write
       pull-requests: write
       issues: write
