@@ -85,16 +85,13 @@ jobs:
     if: |
       github.event_name == 'issue_comment' && github.event.issue.pull_request != null &&
       !endsWith(github.actor, '[bot]') &&
-      contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.comment.author_association) &&
-      (contains(github.event.comment.body, '/oc') || contains(github.event.comment.body, '/opencode')) ||
+      contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.comment.author_association) ||
       github.event_name == 'pull_request_review_comment' &&
       !endsWith(github.actor, '[bot]') &&
-      contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.comment.author_association) &&
-      (contains(github.event.comment.body, '/oc') || contains(github.event.comment.body, '/opencode')) ||
+      contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.comment.author_association) ||
       github.event_name == 'pull_request_review' &&
       !endsWith(github.actor, '[bot]') &&
-      contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.review.author_association) &&
-      (contains(github.event.review.body, '/oc') || contains(github.event.review.body, '/opencode'))
+      contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.review.author_association)
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -106,6 +103,14 @@ jobs:
         uses: actions/github-script@v8
         with:
           script: |
+            const body = context.payload.comment?.body ?? context.payload.review?.body ?? '';
+            // Standalone /oc or /opencode command, not e.g. "/octopus".
+            if (!/(^|\s)\/(opencode|oc)(?=\s|$)/i.test(body)) {
+              core.info('No standalone /oc or /opencode command found; skipping.');
+              core.setOutput('skip', 'true');
+              return;
+            }
+
             const prNumber = context.payload.pull_request?.number || context.payload.issue?.number;
             const { data: pr } = await github.rest.pulls.get({
               owner: context.repo.owner,
@@ -120,17 +125,20 @@ jobs:
             core.setOutput('number', String(pr.number));
 
       - name: Checkout PR branch
+        if: steps.pr.outputs.skip != 'true'
         uses: actions/checkout@v6
         with:
           ref: ${{ steps.pr.outputs.ref }}
           persist-credentials: false
 
       - name: Configure git identity
+        if: steps.pr.outputs.skip != 'true'
         run: |
           git config user.name "opencode"
           git config user.email "noreply@opencode.ai"
 
       - name: Run opencode
+        if: steps.pr.outputs.skip != 'true'
         uses: anomalyco/opencode/github@77fc88c8ade8e5a620ebbe1197f3a572d29ae91a
         with:
           model: opencode/deepseek-v4-flash-free
