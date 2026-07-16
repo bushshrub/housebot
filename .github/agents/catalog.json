@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "catalog_revision": "2026-07-15-1",
+  "catalog_revision": "2026-07-15-2",
   "cli_versions": {
     "codex": "0.1.0",
     "claude": "1.0.0",
@@ -90,9 +90,87 @@
           ]
         },
         {
-          "id": "opencode/qwen3-32b-free",
-          "display_name": "Qwen3 32B (free)",
-          "description": "Qwen3 32B via OpenCode free tier. No API key required.",
+          "id": "opencode/big-pickle",
+          "display_name": "Big Pickle (free)",
+          "description": "Big Pickle via OpenCode zen free tier. No API key required.",
+          "default_effort": "medium",
+          "efforts": [
+            {
+              "id": "low",
+              "display_name": "Low",
+              "description": "15-minute timeout, focused implementation.",
+              "mechanism": "execution_budget"
+            },
+            {
+              "id": "medium",
+              "display_name": "Medium",
+              "description": "30-minute timeout with standard verification.",
+              "mechanism": "execution_budget"
+            },
+            {
+              "id": "high",
+              "display_name": "High",
+              "description": "60-minute timeout with thorough inspection.",
+              "mechanism": "execution_budget"
+            }
+          ]
+        },
+        {
+          "id": "opencode/nemotron-3-ultra-free",
+          "display_name": "Nemotron 3 Ultra (free)",
+          "description": "Nemotron 3 Ultra via OpenCode zen free tier. No API key required.",
+          "default_effort": "medium",
+          "efforts": [
+            {
+              "id": "low",
+              "display_name": "Low",
+              "description": "15-minute timeout, focused implementation.",
+              "mechanism": "execution_budget"
+            },
+            {
+              "id": "medium",
+              "display_name": "Medium",
+              "description": "30-minute timeout with standard verification.",
+              "mechanism": "execution_budget"
+            },
+            {
+              "id": "high",
+              "display_name": "High",
+              "description": "60-minute timeout with thorough inspection.",
+              "mechanism": "execution_budget"
+            }
+          ]
+        },
+        {
+          "id": "opencode/north-mini-code-free",
+          "display_name": "North Mini Code (free)",
+          "description": "North Mini Code via OpenCode zen free tier. Optimised for coding tasks. No API key required.",
+          "default_effort": "medium",
+          "efforts": [
+            {
+              "id": "low",
+              "display_name": "Low",
+              "description": "15-minute timeout, focused implementation.",
+              "mechanism": "execution_budget"
+            },
+            {
+              "id": "medium",
+              "display_name": "Medium",
+              "description": "30-minute timeout with standard verification.",
+              "mechanism": "execution_budget"
+            },
+            {
+              "id": "high",
+              "display_name": "High",
+              "description": "60-minute timeout with thorough inspection.",
+              "mechanism": "execution_budget"
+            }
+          ]
+        },
+        {
+          "id": "opencode/mimo-v2.5-free",
+          "display_name": "MiMo V2.5 (free)",
+          "description": "MiMo V2.5 via OpenCode zen free tier. No API key required.",
           "default_effort": "medium",
           "efforts": [
             {

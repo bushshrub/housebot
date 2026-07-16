@@ -199,8 +199,10 @@ impl Agent {
                     use crate::coding_agent::catalog::CodingAgent;
                     use std::str::FromStr;
                     let agent_str = config::env_or("DEVELOPMENT_DEFAULT_AGENT", "opencode");
-                    let model =
-                        config::env_or("DEVELOPMENT_DEFAULT_MODEL", "opencode/deepseek-v4-flash-free");
+                    let model = config::env_or(
+                        "DEVELOPMENT_DEFAULT_MODEL",
+                        "opencode/deepseek-v4-flash-free",
+                    );
                     let effort = config::env_or("DEVELOPMENT_DEFAULT_EFFORT", "medium");
                     PartialAgentSelection {
                         agent: CodingAgent::from_str(&agent_str).ok(),
