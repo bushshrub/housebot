@@ -193,6 +193,36 @@ async fn get_active_conversation_id_returns_none_for_memory_backend() {
 }
 
 #[tokio::test]
+async fn global_stats_returns_zeros_for_empty_data() {
+    let monitor = TokenMonitor::default();
+    let stats = monitor
+        .get_global_stats(LeaderboardPeriod::AllTime)
+        .await
+        .unwrap();
+    assert_eq!(stats.total_users, 0);
+    assert_eq!(stats.total_conversations, 0);
+    assert_eq!(stats.total_input_tokens, 0);
+    assert_eq!(stats.total_output_tokens, 0);
+    assert_eq!(stats.total_cached_tokens, 0);
+    assert_eq!(stats.period, LeaderboardPeriod::AllTime);
+}
+
+#[tokio::test]
+async fn global_stats_returns_zeros_for_empty_daily_period() {
+    let monitor = TokenMonitor::default();
+    let stats = monitor
+        .get_global_stats(LeaderboardPeriod::Daily)
+        .await
+        .unwrap();
+    assert_eq!(stats.total_users, 0);
+    assert_eq!(stats.total_conversations, 0);
+    assert_eq!(stats.total_input_tokens, 0);
+    assert_eq!(stats.total_output_tokens, 0);
+    assert_eq!(stats.total_cached_tokens, 0);
+    assert_eq!(stats.period, LeaderboardPeriod::Daily);
+}
+
+#[tokio::test]
 async fn leaderboard_accumulates_across_multiple_conversations() {
     // Verify that even when a new conversation is created (simulating a
     // restart with the in-memory backend), the leaderboard sums tokens

@@ -506,7 +506,9 @@ impl TokenMonitor {
                     .query_one(
                         &format!(
                             "SELECT COUNT(DISTINCT user_id), {count_query}, \
-                             SUM(input_tokens)::BIGINT, SUM(output_tokens)::BIGINT, SUM(cached_tokens)::BIGINT \
+                             COALESCE(SUM(input_tokens), 0)::BIGINT, \
+                             COALESCE(SUM(output_tokens), 0)::BIGINT, \
+                             COALESCE(SUM(cached_tokens), 0)::BIGINT \
                              FROM {source}{filter}"
                         ),
                         &[],
