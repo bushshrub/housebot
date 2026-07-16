@@ -31,7 +31,8 @@ concurrency:
   cancel-in-progress: false
 
 # Minimal default — jobs declare only what they need.
-permissions: {}
+permissions:
+  pull-requests: write
 
 jobs:
   check-permission:
