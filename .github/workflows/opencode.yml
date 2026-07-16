@@ -32,9 +32,7 @@ jobs:
         uses: anomalyco/opencode/github@latest
         with:
           model: opencode/deepseek-v4-flash-free
-          use_github_token: "true"
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          use_github_token: "false"
 
   check-trusted:
     if: github.event_name == 'pull_request'
@@ -78,6 +76,4 @@ jobs:
         uses: anomalyco/opencode/github@latest
         with:
           model: opencode/deepseek-v4-flash-free
-          use_github_token: "true"
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          use_github_token: "false"
