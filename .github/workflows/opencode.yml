@@ -30,10 +30,8 @@ jobs:
 
       - name: Run opencode
         uses: anomalyco/opencode/github@latest
-        env:
-          NVIDIA_API_KEY: ${{ secrets.NVIDIA_API_KEY }}
         with:
-          model: nvidia/deepseek-ai/deepseek-v4-flash
+          model: opencode/deepseek-v4-flash-free
 
   check-trusted:
     if: github.event_name == 'pull_request'
@@ -75,7 +73,5 @@ jobs:
 
       - name: Run opencode
         uses: anomalyco/opencode/github@latest
-        env:
-          NVIDIA_API_KEY: ${{ secrets.NVIDIA_API_KEY }}
         with:
-          model: nvidia/deepseek-ai/deepseek-v4-flash
+          model: opencode/deepseek-v4-flash-free
