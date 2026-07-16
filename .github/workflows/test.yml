@@ -44,6 +44,33 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Install Rust toolchain (musl)
+        if: matrix.name == 'main'
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-unknown-linux-musl
+
+      - name: Install musl-tools
+        if: matrix.name == 'main'
+        run: sudo apt-get update && sudo apt-get install -y musl-tools
+
+      - name: Cache cargo artifacts
+        if: matrix.name == 'main'
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: musl-release
+
+      - name: Build bot binary (musl)
+        if: matrix.name == 'main'
+        env:
+          HOUSEBOT_GIT_SHA: ${{ github.event.pull_request.head.sha }}
+          CC_x86_64_unknown_linux_musl: musl-gcc
+        run: |
+          cargo build --release --locked --target x86_64-unknown-linux-musl --package housebot
+          mkdir -p dist
+          cp target/x86_64-unknown-linux-musl/release/housebot dist/housebot
+          strip dist/housebot
+
       - name: Set up Docker Buildx
         id: buildx
         uses: docker/setup-buildx-action@v3
