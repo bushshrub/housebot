@@ -74,3 +74,4 @@ jobs:
             Review this pull request and leave feedback as a PR comment.
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          CONTEXT7_API_KEY: ${{ secrets.CONTEXT7_API_KEY }}
