@@ -14,6 +14,7 @@ pub mod file_download;
 pub mod remind;
 pub mod searxng;
 pub mod summarize_url;
+pub mod token_metrics;
 pub mod translate;
 pub mod web_fetch;
 

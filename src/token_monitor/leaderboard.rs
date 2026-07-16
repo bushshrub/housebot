@@ -43,7 +43,7 @@ pub enum LeaderboardPeriod {
 }
 
 impl LeaderboardPeriod {
-    fn cutoff(self, now: SystemTime) -> Option<SystemTime> {
+    pub(super) fn cutoff(self, now: SystemTime) -> Option<SystemTime> {
         let days = match self {
             Self::Daily => 1,
             Self::Weekly => 7,
@@ -92,6 +92,16 @@ impl LeaderboardMetric {
 pub struct LeaderboardRank {
     pub position: usize,
     pub entry: LeaderboardEntry,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct GlobalTokenStats {
+    pub total_users: u64,
+    pub total_conversations: u64,
+    pub total_input_tokens: u64,
+    pub total_output_tokens: u64,
+    pub total_cached_tokens: u64,
+    pub period: LeaderboardPeriod,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]

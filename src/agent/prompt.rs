@@ -177,6 +177,10 @@ For ordinary feature suggestions use create_feature_request instead.\n\
 - translate — Translate text to any language using the LLM.\n\
 - get_bot_features — Return the full list of this bot's commands and capabilities. \
 Call this when a user asks what you can do, what commands exist, or how to use any feature.\n\
+- get_token_metrics — Fetch token usage metrics. Use this for structured token-usage \
+data: global totals (all users, conversations, token breakdown) or per-user details. \
+Supports period filtering (daily, weekly, monthly, all-time). More versatile than the \
+/token_leaderboard command.\n\
 - search_messages — Search the current channel's message log by regex pattern. Only matching \
 messages are returned, keeping token usage low. Use this when a user asks what was said, who \
 mentioned something, or what was discussed. Prefer a targeted pattern over a broad one.\n\

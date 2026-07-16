@@ -281,6 +281,7 @@ impl Agent {
             tools::feature_development::definition(),
             tools::remind::definition(),
             tools::summarize_url::definition(),
+            tools::token_metrics::definition(),
             tools::translate::definition(),
             tools::features::definition(),
             search_messages_tool(),
