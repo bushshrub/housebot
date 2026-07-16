@@ -1,0 +1,60 @@
+name: opencode (PR)
+
+on:
+  pull_request:
+    types: [opened, reopened]
+
+concurrency:
+  group: opencode-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  check-trusted:
+    if: "!endsWith(github.actor, '[bot]')"
+    runs-on: ubuntu-latest
+    permissions:
+      pull-requests: read
+      contents: read
+    outputs:
+      trusted: ${{ steps.check.outputs.trusted }}
+    steps:
+      - name: Check if contributor is trusted
+        id: check
+        uses: actions/github-script@v8
+        with:
+          script: |
+            const author = context.payload.pull_request.user.login;
+            const { data: result } = await github.rest.search.issuesAndPullRequests({
+              q: `repo:${context.repo.owner}/${context.repo.repo} is:pr is:merged author:${author}`,
+              per_page: 1,
+            });
+            const trusted = result.total_count > 0;
+            core.info(`Author ${author} trusted: ${trusted} (${result.total_count} merged PRs)`);
+            core.setOutput('trusted', trusted ? 'true' : 'false');
+
+  run:
+    needs: check-trusted
+    if: needs.check-trusted.outputs.trusted == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+      issues: write
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+
+      - name: Configure git identity
+        run: |
+          git config --global user.email "opencode[bot]@users.noreply.github.com"
+          git config --global user.name "opencode[bot]"
+
+      - name: Run opencode
+        uses: anomalyco/opencode/github@latest
+        with:
+          model: opencode/deepseek-v4-flash-free
+          use_github_token: "true"
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
