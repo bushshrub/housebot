@@ -284,6 +284,7 @@ impl Agent {
             tools::token_metrics::definition(),
             tools::translate::definition(),
             tools::features::definition(),
+            tools::ping_user::definition(),
             search_messages_tool(),
             get_recent_messages_tool(),
             find_discord_users_tool(),

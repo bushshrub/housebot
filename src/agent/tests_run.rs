@@ -597,3 +597,36 @@ async fn dispatch_run_lua_strips_code_fence() {
     };
     assert_eq!(t, "2");
 }
+
+#[tokio::test]
+async fn build_tools_includes_ping_user() {
+    let client = Arc::new(MockChatClient::new());
+    let (_t, agent) = test_agent(client);
+    let tools = agent.build_tools(true).await;
+    let names: Vec<&str> = tools
+        .iter()
+        .filter_map(|t| t["function"]["name"].as_str())
+        .collect();
+    assert!(names.contains(&"ping_user"));
+}
+
+#[tokio::test]
+async fn dispatch_ping_user_bridge_unavailable_returns_error() {
+    let client = Arc::new(MockChatClient::new());
+    let (_t, agent) = test_agent(client);
+    let out = agent
+        .dispatch_tool(
+            "ping_user",
+            &json!({"user_id": "12345", "message": "hello"}),
+            "u",
+            "testuser",
+            0,
+            None,
+        )
+        .await;
+    let ToolOutcome::Text(t) = out else {
+        panic!("expected Text outcome")
+    };
+    assert!(t.starts_with("Error:"));
+    assert!(t.contains("Discord bridge not available"));
+}

@@ -48,6 +48,40 @@ impl DiscordBridge {
             .map_err(|e| format!("Failed to send message: {e}"))
     }
 
+    /// Send a message that pings a specific user. Other mentions are suppressed.
+    pub async fn send_user_mention(
+        &self,
+        channel_id: u64,
+        target_user_id: u64,
+        content: &str,
+    ) -> Result<(), String> {
+        let guard = self.http.read().await;
+        let Some(http) = guard.as_ref() else {
+            return Err("Discord bridge not available.".to_string());
+        };
+        let builder = CreateMessage::new()
+            .content(content)
+            .allowed_mentions(CreateAllowedMentions::new().users([UserId::new(target_user_id)]));
+        ChannelId::new(channel_id)
+            .send_message(http.as_ref(), builder)
+            .await
+            .map(|_| ())
+            .map_err(|e| format!("Failed to send message: {e}"))
+    }
+
+    /// Return the numeric ID of the bot's own Discord user account.
+    pub async fn current_user_id(&self) -> Result<u64, String> {
+        let guard = self.http.read().await;
+        let Some(http) = guard.as_ref() else {
+            return Err("Discord bridge not available.".to_string());
+        };
+        let user = http
+            .get_current_user()
+            .await
+            .map_err(|e| format!("Failed to get current user: {e}"))?;
+        Ok(user.id.get())
+    }
+
     pub async fn fetch_user(&self, user_id: u64) -> Result<UserInfo, String> {
         let guard = self.http.read().await;
         let Some(http) = guard.as_ref() else {

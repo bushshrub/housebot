@@ -306,6 +306,19 @@ impl Agent {
                 )
                 .await,
             ),
+            "ping_user" => {
+                let bot_user_id = self.discord.current_user_id().await.unwrap_or(0);
+                ToolOutcome::Text(
+                    tools::ping_user::ping_user(
+                        &self.discord,
+                        channel_id,
+                        str_arg(args, "user_id"),
+                        str_arg(args, "message"),
+                        bot_user_id,
+                    )
+                    .await,
+                )
+            }
             "search_messages" => {
                 let query = str_arg(args, "query");
                 let max_results = u64_arg(args, "max_results", 10).clamp(1, 20) as usize;

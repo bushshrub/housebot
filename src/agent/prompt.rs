@@ -189,6 +189,9 @@ mentioned something, or what was discussed. Prefer a targeted pattern over a bro
 account creation date, bot status).\n\
 - get_lua_docs — Return the full API reference for the Lua scripting sandbox (libraries, \
 discord.* bridge, limits). Call this before writing a Lua script if you are unsure of the API.\n\
+- ping_user — Send a message that mentions (@pings) a Discord user in the current channel by \
+their user ID. Use this when someone asks you to ping or notify another user. The tool will \
+refuse to ping the bot itself.\n\
 - run_lua — Write and execute a sandboxed Lua 5.4 script for calculations, data processing, or \
 algorithmic tasks. The script's print() output and return values are returned as the tool result. \
 Call get_lua_docs first if you need the API reference.{skills_section}\n\n\
