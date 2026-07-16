@@ -20,8 +20,6 @@ RUN mkdir -p src \
     && echo "fn lib() {}" > src/lib.rs \
     && mkdir -p crates/common-crawl/src \
     && echo "" > crates/common-crawl/src/lib.rs \
-    && mkdir -p crates/deployment-bot/src \
-    && echo "fn main() {}" > crates/deployment-bot/src/main.rs \
     && mkdir -p crates/graph-render/src \
     && echo "" > crates/graph-render/src/lib.rs \
     && mkdir -p crates/llm/src \
