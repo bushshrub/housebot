@@ -8,12 +8,18 @@ on:
   pull_request:
     types: [opened, synchronize, reopened]
 
+# Cancel any in-progress run for the same PR/issue when a new one starts.
+concurrency:
+  group: opencode-${{ github.event.pull_request.number || github.event.issue.number || github.ref }}
+  cancel-in-progress: true
+
 jobs:
   # Gate for comment-triggered runs: only proceed if the commenter has at
   # least one merged PR in this repo.  Keeps write-capable runs restricted
   # to trusted contributors.
   check-comment-trusted:
     if: |
+      github.actor != 'github-actions[bot]' &&
       (github.event_name == 'issue_comment' || github.event_name == 'pull_request_review_comment') &&
       (contains(github.event.comment.body, ' /oc') ||
        startsWith(github.event.comment.body, '/oc') ||
