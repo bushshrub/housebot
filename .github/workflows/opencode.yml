@@ -19,7 +19,7 @@ jobs:
   # to trusted contributors.
   check-comment-trusted:
     if: |
-      github.actor != 'github-actions[bot]' &&
+      !endsWith(github.actor, '[bot]') &&
       (github.event_name == 'issue_comment' || github.event_name == 'pull_request_review_comment') &&
       (contains(github.event.comment.body, ' /oc') ||
        startsWith(github.event.comment.body, '/oc') ||
