@@ -348,7 +348,7 @@ impl TokenMonitor {
                     .query(
                         &format!(
                             "SELECT user_id, COALESCE(NULLIF(MAX(display_name), ''), user_id), \
-                                    {conversation_count}, SUM(input_tokens), SUM(output_tokens), SUM(cached_tokens) \
+                                    {conversation_count}, SUM(input_tokens)::BIGINT, SUM(output_tokens)::BIGINT, SUM(cached_tokens)::BIGINT \
                              FROM {user_source}{filter} GROUP BY user_id"
                         ),
                         &[],
@@ -377,12 +377,12 @@ impl TokenMonitor {
                         "cached_tokens::double precision / GREATEST(input_tokens, 1) DESC, input_tokens + output_tokens DESC",
                     ),
                     (_, LeaderboardMetric::TotalTokens) => (
-                        "SELECT MAX(display_name), conversation_id, SUM(input_tokens), SUM(output_tokens), SUM(cached_tokens) FROM token_usage_events",
+                        "SELECT MAX(display_name), conversation_id, SUM(input_tokens)::BIGINT, SUM(output_tokens)::BIGINT, SUM(cached_tokens)::BIGINT FROM token_usage_events",
                         filter,
                         "SUM(input_tokens + output_tokens) DESC",
                     ),
                     (_, LeaderboardMetric::CacheEfficiency) => (
-                        "SELECT MAX(display_name), conversation_id, SUM(input_tokens), SUM(output_tokens), SUM(cached_tokens) FROM token_usage_events",
+                        "SELECT MAX(display_name), conversation_id, SUM(input_tokens)::BIGINT, SUM(output_tokens)::BIGINT, SUM(cached_tokens)::BIGINT FROM token_usage_events",
                         filter,
                         "SUM(cached_tokens)::double precision / GREATEST(SUM(input_tokens), 1) DESC, SUM(input_tokens + output_tokens) DESC",
                     ),
