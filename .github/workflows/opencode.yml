@@ -58,3 +58,5 @@ jobs:
         with:
           model: opencode/deepseek-v4-flash-free
           variant: high
+        env:
+          CONTEXT7_API_KEY: ${{ secrets.CONTEXT7_API_KEY }}
