@@ -15,10 +15,6 @@ on:
   pull_request_review:
     types: [submitted]
 
-concurrency:
-  group: opencode-pr-${{ github.event.pull_request.number || github.event.issue.number || github.run_id }}
-  cancel-in-progress: true
-
 jobs:
   # Initial review when a PR is opened/reopened.
   check-trusted:
@@ -50,6 +46,11 @@ jobs:
   review:
     needs: check-trusted
     if: needs.check-trusted.outputs.trusted == 'true'
+    # Job-level (not workflow-level) so an unrelated event can't cancel this
+    # job before its own `if` has even been evaluated.
+    concurrency:
+      group: opencode-review-${{ github.event.pull_request.number }}
+      cancel-in-progress: true
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -95,6 +96,11 @@ jobs:
       github.event_name == 'pull_request_review' &&
       !endsWith(github.actor, '[bot]') &&
       contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.review.author_association)
+    # Job-level (not workflow-level) so an unrelated/untrusted comment can't
+    # cancel this job before its own `if` has even been evaluated.
+    concurrency:
+      group: opencode-mention-${{ github.event.issue.number || github.event.pull_request.number }}
+      cancel-in-progress: true
     runs-on: ubuntu-latest
     permissions:
       contents: write
