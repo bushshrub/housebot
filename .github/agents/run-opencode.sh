@@ -37,7 +37,7 @@ log "Starting OpenCode (model=$MODEL, effort=$EFFORT, timeout=${TIMEOUT_SECS}s)"
 # Write an opencode.json config in the current working directory (the repo root).
 # Cleaned up after the run regardless of outcome.
 CONFIG_FILE="opencode.json"
-printf '{"model":"%s"}\n' "$MODEL" > "$CONFIG_FILE"
+printf '{"model":"%s","permission":"allow"}\n' "$MODEL" > "$CONFIG_FILE"
 trap 'rm -f "$CONFIG_FILE"' EXIT
 
 # Run opencode under a wall-clock timeout.  The prompt is passed as a
