@@ -302,7 +302,8 @@ impl HouseBot {
                                 format!(
                                     "✅ <@{req_id}> The bot owner approved your development request. \
                                      Development has started using {agent_name}, `{model}`, `{effort}`.\n\
-                                     Issue: {url}",
+                                     Issue: {url}\n\
+                                     {status}",
                                     agent_name = agent.display_name(),
                                     url = issue.html_url,
                                 ),
