@@ -1,0 +1,36 @@
+name: opencode
+
+# Standard opencode workflow per https://opencode.ai/docs/github/.
+# Triggered by a comment containing /oc or /opencode on an issue or PR —
+# including comments posted by the Housebot GitHub App when dispatching a
+# development job. The opencode-agent GitHub App (github.com/apps/opencode-agent)
+# must be installed on this repository; it creates branches and pull requests
+# itself, so this workflow needs no contents/pull-requests permissions and is
+# unaffected by the "Actions cannot create pull requests" repository setting.
+on:
+  issue_comment:
+    types: [created]
+  pull_request_review_comment:
+    types: [created]
+
+jobs:
+  opencode:
+    if: |
+      contains(github.event.comment.body, '/oc') ||
+      contains(github.event.comment.body, '/opencode')
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Run opencode
+        # Pinned to github-v1.2.19 — update after reviewing the release diff.
+        uses: anomalyco/opencode/github@77fc88c8ade8e5a620ebbe1197f3a572d29ae91a
+        with:
+          model: opencode/deepseek-v4-flash-free
+          variant: high

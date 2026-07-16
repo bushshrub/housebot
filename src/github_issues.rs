@@ -292,6 +292,39 @@ impl GitHubIssueReporter {
             .await?)
     }
 
+    /// Post a comment on an issue. Returns `false` on any failure / when unconfigured.
+    pub async fn post_issue_comment(&self, issue_number: u64, body: &str) -> bool {
+        if !self.is_configured() {
+            return false;
+        }
+        match self.try_post_issue_comment(issue_number, body).await {
+            Ok(()) => true,
+            Err(e) => {
+                tracing::error!(issue_number, "Failed to post GitHub issue comment: {e}");
+                false
+            }
+        }
+    }
+
+    async fn try_post_issue_comment(&self, issue_number: u64, body: &str) -> anyhow::Result<()> {
+        let token = self.installation_token().await?;
+        let url = format!(
+            "https://api.github.com/repos/{}/issues/{issue_number}/comments",
+            self.repo
+        );
+        self.http
+            .post(&url)
+            .header("Authorization", format!("Bearer {token}"))
+            .header("Accept", "application/vnd.github+json")
+            .header("X-GitHub-Api-Version", "2022-11-28")
+            .header("User-Agent", "house-chatbot")
+            .json(&json!({ "body": body }))
+            .send()
+            .await?
+            .error_for_status()?;
+        Ok(())
+    }
+
     /// Create an issue that references a Sentry event, with no sensitive data in the body.
     pub async fn create_error_issue(&self, sentry_event_id: &str) -> Option<String> {
         if !self.is_configured() {
