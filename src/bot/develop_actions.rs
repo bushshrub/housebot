@@ -120,6 +120,14 @@ impl HouseBot {
                     agent = agent.id_str(),
                     "Development job dispatched"
                 );
+                let triggered = reporter
+                    .post_issue_comment(issue.number, DISPATCH_TRIGGER_COMMENT)
+                    .await;
+                let status = if triggered {
+                    "The opencode workflow will pick this up and open a pull request."
+                } else {
+                    "⚠️ Failed to post the `/oc` trigger comment — comment `/oc` on the issue manually to start the agent."
+                };
                 let _ = component
                             .edit_response(
                                 &ctx.http,
@@ -127,7 +135,7 @@ impl HouseBot {
                                     "✅ **Dispatched!**\n\
                                      Issue #{num} created: {url}\n\
                                      Agent: **{agent_name}** | Model: `{model}` | Effort: `{effort}`\n\
-                                     The GitHub Actions workflow will pick this up and open a draft PR.",
+                                     {status}",
                                     num = issue.number,
                                     url = issue.html_url,
                                     agent_name = agent.display_name(),
@@ -263,11 +271,19 @@ impl HouseBot {
                     agent = agent.id_str(),
                     "Non-owner development job approved and dispatched"
                 );
+                let triggered = reporter
+                    .post_issue_comment(issue.number, DISPATCH_TRIGGER_COMMENT)
+                    .await;
+                let status = if triggered {
+                    "The opencode workflow will pick this up and open a pull request."
+                } else {
+                    "⚠️ Failed to post the `/oc` trigger comment — comment `/oc` on the issue manually to start the agent."
+                };
                 let success_msg = format!(
                     "✅ **Dispatched!**\n\
                              Issue #{num} created: {url}\n\
                              Agent: **{agent_name}** | Model: `{model}` | Effort: `{effort}`\n\
-                             The GitHub Actions workflow will pick this up and open a draft PR.",
+                             {status}",
                     num = issue.number,
                     url = issue.html_url,
                     agent_name = agent.display_name(),
@@ -286,7 +302,8 @@ impl HouseBot {
                                 format!(
                                     "✅ <@{req_id}> The bot owner approved your development request. \
                                      Development has started using {agent_name}, `{model}`, `{effort}`.\n\
-                                     Issue: {url}",
+                                     Issue: {url}\n\
+                                     {status}",
                                     agent_name = agent.display_name(),
                                     url = issue.html_url,
                                 ),

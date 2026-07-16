@@ -106,6 +106,14 @@ impl HouseBot {
                     agent = agent.id_str(),
                     "Owner-immediate development job dispatched"
                 );
+                let triggered = reporter
+                    .post_issue_comment(issue.number, DISPATCH_TRIGGER_COMMENT)
+                    .await;
+                let status = if triggered {
+                    "The opencode workflow will pick this up and open a pull request."
+                } else {
+                    "⚠️ Failed to post the `/oc` trigger comment — comment `/oc` on the issue manually to start the agent."
+                };
                 let _ = reply_no_ping(
                     ctx,
                     msg,
@@ -113,7 +121,7 @@ impl HouseBot {
                         "✅ **Dispatched!**\n\
                          Issue #{num} created: {url}\n\
                          Agent: **{agent_name}** | Model: `{model}` | Effort: `{effort}`\n\
-                         The GitHub Actions workflow will pick this up and open a draft PR.",
+                         {status}",
                         num = issue.number,
                         url = issue.html_url,
                         agent_name = agent.display_name(),

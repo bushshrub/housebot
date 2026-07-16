@@ -112,6 +112,12 @@ pub fn build_issue_body(
     Ok(body)
 }
 
+/// The issue comment that triggers the standard opencode GitHub workflow
+/// (`.github/workflows/opencode.yml`) after the issue is created.
+pub const DISPATCH_TRIGGER_COMMENT: &str = "/oc Implement the feature described in this issue. \
+     Follow the repository conventions, commit your changes, and open a pull request that \
+     closes this issue.";
+
 /// The labels to apply when dispatching (enhancement + queue + agent + source).
 pub fn dispatch_labels(agent: CodingAgent) -> Vec<String> {
     vec![
