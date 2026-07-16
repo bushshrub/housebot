@@ -1,49 +1,13 @@
-# Build a musl-linked Rust binary for the Alpine runtime.
-FROM rust:1-alpine AS rust-builder
-ARG GIT_COMMIT
-RUN apk add --no-cache musl-dev
-WORKDIR /app
-
-# Layer 1: Cargo manifests — changes infrequently, so this layer is cached.
-COPY Cargo.toml Cargo.lock ./
-COPY crates/common-crawl/Cargo.toml crates/common-crawl/Cargo.toml
-COPY crates/deployment-bot/Cargo.toml crates/deployment-bot/Cargo.toml
-COPY crates/graph-render/Cargo.toml crates/graph-render/Cargo.toml
-COPY crates/llm/Cargo.toml crates/llm/Cargo.toml
-
-# Layer 2: build dependencies only (dummy source, no real code).
-# This layer is cached by Docker as long as Cargo.toml/lock stay the same,
-# keeping compiled dependency artifacts even across CI runs where
-# BuildKit cache mounts might not persist.
-RUN mkdir -p src \
-    && echo "fn main() {}" > src/main.rs \
-    && echo "fn lib() {}" > src/lib.rs \
-    && mkdir -p crates/common-crawl/src \
-    && echo "" > crates/common-crawl/src/lib.rs \
-    && mkdir -p crates/deployment-bot/src \
-    && echo "fn main() {}" > crates/deployment-bot/src/main.rs \
-    && mkdir -p crates/graph-render/src \
-    && echo "" > crates/graph-render/src/lib.rs \
-    && mkdir -p crates/llm/src \
-    && echo "" > crates/llm/src/lib.rs
-RUN --mount=type=cache,id=housebot-cargo-registry,target=/usr/local/cargo/registry \
-    --mount=type=cache,id=housebot-cargo-git,target=/usr/local/cargo/git \
-    cargo build --release --locked --package housebot
-
-# Layer 3: real source files.
-COPY src/ src/
-COPY db/ db/
-COPY crates/ crates/
-COPY assets/ assets/
-COPY .github/agents/catalog.json .github/agents/catalog.json
-
-# Layer 4: build the real binary.  The cache mount reuses artifacts from
-# Layer 2, so only changed source files are recompiled.
-RUN --mount=type=cache,id=housebot-cargo-registry,target=/usr/local/cargo/registry \
-    --mount=type=cache,id=housebot-cargo-git,target=/usr/local/cargo/git \
-    HOUSEBOT_GIT_SHA="$GIT_COMMIT" cargo build --release --locked --package housebot \
-    && cp /app/target/release/housebot /app/housebot \
-    && strip /app/housebot
+# The bot binary is built OUTSIDE this Dockerfile as a statically linked
+# musl executable, so CI can cache cargo artifacts between runs instead of
+# recompiling every dependency inside Docker. Build it with
+# scripts/build-image.sh, or manually:
+#
+#   rustup target add x86_64-unknown-linux-musl
+#   cargo build --release --locked --target x86_64-unknown-linux-musl --package housebot
+#   mkdir -p dist && cp target/x86_64-unknown-linux-musl/release/housebot dist/housebot
+#
+# and then docker build as usual.
 
 # Build the Jellyfin MCP server as a static Go binary for the runtime image.
 # Keep this pinned so image rebuilds do not silently change the MCP tool set.
@@ -59,10 +23,10 @@ RUN CGO_ENABLED=0 go build -o /go/bin/jellyfin-mcp .
 # Minimal runtime image: Alpine plus the statically linked bot binary.
 FROM alpine:3.22
 WORKDIR /app
-COPY --from=rust-builder /app/housebot /usr/local/bin/housebot
-COPY --from=jellyfin-mcp-builder /go/bin/jellyfin-mcp /usr/local/bin/jellyfin-mcp
 RUN apk add --no-cache poppler-utils
-RUN test -x /usr/local/bin/jellyfin-mcp
 RUN mkdir -p data/history data/memories
+COPY --from=jellyfin-mcp-builder /go/bin/jellyfin-mcp /usr/local/bin/jellyfin-mcp
+RUN test -x /usr/local/bin/jellyfin-mcp
+COPY dist/housebot /usr/local/bin/housebot
 
 CMD ["housebot"]

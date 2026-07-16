@@ -1,5 +1,6 @@
 # Rust build artifacts
 /target
+/dist
 
 # Local environment and runtime data
 .env
