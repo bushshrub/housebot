@@ -5,18 +5,31 @@ FROM docker:27-cli AS docker-cli
 FROM rust:1-alpine AS rust-builder
 RUN apk add --no-cache musl-dev
 WORKDIR /app
+
+# Layer 1: Cargo manifests — changes infrequently, so this layer is cached.
 COPY Cargo.toml Cargo.lock ./
 COPY crates/common-crawl/Cargo.toml crates/common-crawl/Cargo.toml
-COPY crates/common-crawl/src/ crates/common-crawl/src/
 COPY crates/graph-render/Cargo.toml crates/graph-render/Cargo.toml
-COPY crates/graph-render/src/ crates/graph-render/src/
 COPY crates/llm/Cargo.toml crates/llm/Cargo.toml
-COPY crates/llm/src/ crates/llm/src/
 COPY crates/deployment-bot/Cargo.toml crates/deployment-bot/Cargo.toml
-COPY crates/deployment-bot/src/ crates/deployment-bot/src/
+
+# Layer 2: build dependencies only (dummy source, no real code).
+RUN mkdir -p crates/deployment-bot/src \
+    && echo "fn main() {}" > crates/deployment-bot/src/main.rs
 RUN --mount=type=cache,id=deployment-bot-cargo-registry,target=/usr/local/cargo/registry \
     --mount=type=cache,id=deployment-bot-cargo-git,target=/usr/local/cargo/git \
-    --mount=type=cache,id=deployment-bot-cargo-target,target=/app/target \
+    cargo build --release --locked --package deployment-bot
+
+# Layer 3: real source files.
+COPY crates/common-crawl/src/ crates/common-crawl/src/
+COPY crates/graph-render/src/ crates/graph-render/src/
+COPY crates/llm/src/ crates/llm/src/
+COPY crates/deployment-bot/src/ crates/deployment-bot/src/
+
+# Layer 4: build the real binary.  The cache mount reuses artifacts from
+# Layer 2, so only changed source files are recompiled.
+RUN --mount=type=cache,id=deployment-bot-cargo-registry,target=/usr/local/cargo/registry \
+    --mount=type=cache,id=deployment-bot-cargo-git,target=/usr/local/cargo/git \
     cargo build --release --locked --package deployment-bot \
     && cp /app/target/release/deployment-bot /app/deployment-bot \
     && strip /app/deployment-bot
