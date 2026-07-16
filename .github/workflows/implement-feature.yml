@@ -1,6 +1,12 @@
-name: Implement Issue with OpenCode
+name: Implement Feature
 
+# Triggered by:
+#   - The Discord bot labelling an issue agent:queued (primary dispatch path)
+#   - An owner comment containing /implement on a plain issue
+#   - Manual workflow_dispatch for testing
 on:
+  issues:
+    types: [labeled]
   issue_comment:
     types: [created]
   workflow_dispatch:
@@ -10,7 +16,7 @@ on:
         required: true
         type: number
       model:
-        description: Model name for opencode.json
+        description: Model name for opencode
         required: false
         default: opencode/deepseek-v4-flash
       model_config:
@@ -19,7 +25,7 @@ on:
         type: string
 
 concurrency:
-  group: opencode-issue-${{ github.event.issue.number || github.event.inputs.issue_number }}
+  group: implement-feature-${{ github.event.issue.number || github.event.inputs.issue_number }}
   cancel-in-progress: true
 
 jobs:
@@ -27,16 +33,21 @@ jobs:
     runs-on: ubuntu-latest
     if: |
       github.event_name == 'workflow_dispatch' ||
-      (github.event.issue.pull_request == null &&
+      (github.event_name == 'issues' && github.event.label.name == 'agent:queued') ||
+      (github.event_name == 'issue_comment' &&
+       github.event.issue.pull_request == null &&
        contains(github.event.comment.body, '/implement'))
     outputs:
       allowed: ${{ steps.check.outputs.allowed }}
       issue_number: ${{ steps.resolve.outputs.issue_number }}
     steps:
-      - name: Check owner
+      - name: Check permission
         id: check
         run: |
           if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "allowed=true" >> "$GITHUB_OUTPUT"
+          elif [ "${{ github.event_name }}" = "issues" ]; then
+            # Label was applied by the bot — always allowed
             echo "allowed=true" >> "$GITHUB_OUTPUT"
           elif [ "${{ github.event.comment.author_association }}" = "OWNER" ]; then
             echo "allowed=true" >> "$GITHUB_OUTPUT"
@@ -44,7 +55,7 @@ jobs:
             echo "allowed=false" >> "$GITHUB_OUTPUT"
           fi
 
-      - name: Reject non-owner
+      - name: Reject non-owner comment
         if: steps.check.outputs.allowed == 'false'
         uses: actions/github-script@v8
         with:
@@ -78,12 +89,39 @@ jobs:
         with:
           fetch-depth: 1
 
+      - name: Configure git identity
+        run: |
+          git config user.name "opencode"
+          git config user.email "noreply@opencode.ai"
+
       - uses: actions/setup-node@v5
         with:
           node-version: '22'
 
       - name: Install opencode
         run: npm install -g opencode-ai
+
+      - name: Mark running
+        if: github.event_name == 'issues'
+        uses: actions/github-script@v8
+        with:
+          script: |
+            const issue = parseInt('${{ needs.check-permission.outputs.issue_number }}');
+            try {
+              await github.rest.issues.removeLabel({
+                owner: context.repo.owner, repo: context.repo.repo,
+                issue_number: issue, name: 'agent:queued',
+              });
+            } catch {}
+            await github.rest.issues.addLabels({
+              owner: context.repo.owner, repo: context.repo.repo,
+              issue_number: issue, labels: ['agent:running'],
+            });
+            await github.rest.issues.createComment({
+              owner: context.repo.owner, repo: context.repo.repo,
+              issue_number: issue,
+              body: '🤖 **Agent started.** Running opencode.',
+            });
 
       - name: Fetch issue and write config
         uses: actions/github-script@v8
@@ -98,25 +136,25 @@ jobs:
 
             const fs = require('fs');
 
-            // Resolve model config
-            const model =
-              process.env.DISPATCH_MODEL ||
-              process.env.REPO_MODEL ||
-              'opencode/deepseek-v4-flash';
+            // Model priority: dispatch input → repo var → housebot metadata in issue body → default
+            let model = process.env.DISPATCH_MODEL || process.env.REPO_MODEL;
+            if (!model) {
+              const match = (issue.body || '').match(/<!--\s*housebot-development-job\s*([\s\S]*?)\s*-->/);
+              if (match) {
+                try { model = JSON.parse(match[1]).model; } catch {}
+              }
+            }
+            model = model || 'opencode/deepseek-v4-flash';
 
             let extra = {};
             const dispatchExtra = process.env.DISPATCH_EXTRA || '';
             if (dispatchExtra) { try { extra = JSON.parse(dispatchExtra); } catch {} }
 
-            const config = {
-              model,
-              ...extra,
-            };
+            fs.writeFileSync('opencode.json', JSON.stringify({ model, ...extra }, null, 2));
+            console.log('Config:', JSON.stringify({ model, ...extra }));
 
-            fs.writeFileSync('opencode.json', JSON.stringify(config, null, 2));
-            console.log('Config:', JSON.stringify(config));
-
-            // Write prompt file
+            // For comment triggers, the text after /implement is the extra prompt.
+            // For Discord-dispatched issues, use the full structured issue body.
             const trigger = process.env.COMMENT_BODY || '';
             const commentText = trigger.replace(/^\/implement\s*/, '').trim();
 
@@ -146,7 +184,7 @@ jobs:
           import subprocess, sys
           with open('${{ runner.temp }}/opencode_prompt.txt') as f:
               prompt = f.read()
-          subprocess.run(['opencode', 'run', prompt], check=True)
+          subprocess.run(['opencode', 'run', '--variant', 'high', prompt], check=True)
           "
         env:
           OPENAI_BASE_URL: ${{ secrets.OPENAI_BASE_URL }}
@@ -157,6 +195,7 @@ jobs:
         run: rm -f opencode.json
 
       - name: Create Pull Request
+        id: pr
         uses: peter-evans/create-pull-request@v7
         with:
           commit-message: |
@@ -175,3 +214,44 @@ jobs:
           branch: opencode/issue-${{ needs.check-permission.outputs.issue_number }}
           base: ${{ github.default_branch || 'main' }}
           delete-branch: true
+
+      - name: Mark completed
+        if: github.event_name == 'issues' && success()
+        uses: actions/github-script@v8
+        with:
+          script: |
+            const issue = parseInt('${{ needs.check-permission.outputs.issue_number }}');
+            try {
+              await github.rest.issues.removeLabel({
+                owner: context.repo.owner, repo: context.repo.repo,
+                issue_number: issue, name: 'agent:running',
+              });
+            } catch {}
+            await github.rest.issues.addLabels({
+              owner: context.repo.owner, repo: context.repo.repo,
+              issue_number: issue, labels: ['agent:completed'],
+            });
+
+      - name: Mark failed
+        if: github.event_name == 'issues' && failure()
+        uses: actions/github-script@v8
+        with:
+          script: |
+            const issue = parseInt('${{ needs.check-permission.outputs.issue_number }}');
+            for (const label of ['agent:running', 'agent:queued']) {
+              try {
+                await github.rest.issues.removeLabel({
+                  owner: context.repo.owner, repo: context.repo.repo,
+                  issue_number: issue, name: label,
+                });
+              } catch {}
+            }
+            await github.rest.issues.addLabels({
+              owner: context.repo.owner, repo: context.repo.repo,
+              issue_number: issue, labels: ['agent:failed'],
+            });
+            await github.rest.issues.createComment({
+              owner: context.repo.owner, repo: context.repo.repo,
+              issue_number: issue,
+              body: `❌ **Agent run failed.** See [workflow logs](${process.env.GITHUB_SERVER_URL}/${process.env.GITHUB_REPOSITORY}/actions/runs/${process.env.GITHUB_RUN_ID}) for details.`,
+            });
