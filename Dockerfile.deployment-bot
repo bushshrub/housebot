@@ -26,11 +26,13 @@ COPY crates/graph-render/src/ crates/graph-render/src/
 COPY crates/llm/src/ crates/llm/src/
 COPY crates/deployment-bot/src/ crates/deployment-bot/src/
 
-# Layer 4: build the real binary.  The cache mount reuses artifacts from
-# Layer 2, so only changed source files are recompiled.
+# Layer 4: build the real binary. The touch is load-bearing: COPY preserves
+# the build context's mtimes, which predate Layer 2's dummy build, so without
+# it cargo considers the dummy artifacts fresh and ships the dummy binary.
 RUN --mount=type=cache,id=deployment-bot-cargo-registry,target=/usr/local/cargo/registry \
     --mount=type=cache,id=deployment-bot-cargo-git,target=/usr/local/cargo/git \
-    cargo build --release --locked --package deployment-bot \
+    find crates -name '*.rs' -exec touch {} + \
+    && cargo build --release --locked --package deployment-bot \
     && cp /app/target/release/deployment-bot /app/deployment-bot \
     && strip /app/deployment-bot
 

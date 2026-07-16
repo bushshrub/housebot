@@ -2,9 +2,13 @@ name: house-chatbot
 
 services:
   house-chatbot:
+    # The image copies a prebuilt dist/housebot (amd64 musl binary), so
+    # start the stack with scripts/dev-up.sh instead of a bare
+    # `docker compose up --build`.
     build:
       context: .
       dockerfile: Dockerfile
+    platform: linux/amd64
     restart: unless-stopped
     env_file: .env
     volumes:
