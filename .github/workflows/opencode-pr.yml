@@ -107,8 +107,9 @@ jobs:
         with:
           script: |
             const body = context.payload.comment?.body ?? context.payload.review?.body ?? '';
-            // Standalone /oc or /opencode command, not e.g. "/octopus".
-            if (!/(^|\s)\/(opencode|oc)(?=\s|$)/i.test(body)) {
+            // Leading /oc or /opencode command, not e.g. "/octopus" or a
+            // mention buried mid-sentence.
+            if (!/^\s*\/(opencode|oc)(?=\s|$)/i.test(body)) {
               core.info('No standalone /oc or /opencode command found; skipping.');
               core.setOutput('skip', 'true');
               return;
