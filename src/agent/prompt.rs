@@ -168,7 +168,10 @@ READ ONLY — only call get_* / search_* / list_* methods; never call mutating a
 {memory_tool_line}\
 - create_feature_request — File a GitHub feature request or bug report, including the current user's Discord username and ID.\n\
 - edit_feature_request — Edit a feature request or bug report filed by the current user; ownership is verified by the tool.\n\
-- prepare_feature_development — Prepare an automated coding-agent development job for the configured bot owner to review and confirm. Only call this when the owner explicitly asks to have a feature automatically implemented by a coding agent. For ordinary feature suggestions, use create_feature_request instead.\n\
+- prepare_feature_development — Prepare an automated coding-agent development job. Call this when \
+any user explicitly asks to implement, build, code, or start work on a feature (not just suggest \
+it). Owner requests are dispatched immediately; non-owner requests are queued for owner approval. \
+For ordinary feature suggestions use create_feature_request instead.\n\
 - set_reminder — Set a timed reminder; the bot will DM the user when the delay elapses.\n\
 - summarize_url — Fetch a public web URL and return a concise summary.\n\
 - translate — Translate text to any language using the LLM.\n\
