@@ -297,6 +297,15 @@ impl Agent {
                 }
             }
             "get_bot_features" => ToolOutcome::Text(tools::features::features_text().to_string()),
+            "get_token_metrics" => ToolOutcome::Text(
+                tools::token_metrics::get_token_metrics(
+                    &self.token_monitor,
+                    args.get("user_id").and_then(Value::as_str),
+                    args.get("period").and_then(Value::as_str),
+                    args.get("metric").and_then(Value::as_str),
+                )
+                .await,
+            ),
             "search_messages" => {
                 let query = str_arg(args, "query");
                 let max_results = u64_arg(args, "max_results", 10).clamp(1, 20) as usize;
