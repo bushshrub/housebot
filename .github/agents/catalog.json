@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "catalog_revision": "2026-07-14-1",
+  "catalog_revision": "2026-07-15-1",
   "cli_versions": {
     "codex": "0.1.0",
     "claude": "1.0.0",
@@ -61,12 +61,64 @@
     },
     "opencode": {
       "display_name": "OpenCode",
-      "default_model": "nvidia/qwen3-235b-a22b",
+      "default_model": "opencode/deepseek-v4-flash-free",
       "models": [
         {
+          "id": "opencode/deepseek-v4-flash-free",
+          "display_name": "DeepSeek V4 Flash (free)",
+          "description": "DeepSeek V4 Flash via OpenCode free tier. No API key required.",
+          "default_effort": "medium",
+          "efforts": [
+            {
+              "id": "low",
+              "display_name": "Low",
+              "description": "15-minute timeout, focused implementation.",
+              "mechanism": "execution_budget"
+            },
+            {
+              "id": "medium",
+              "display_name": "Medium",
+              "description": "30-minute timeout with standard verification.",
+              "mechanism": "execution_budget"
+            },
+            {
+              "id": "high",
+              "display_name": "High",
+              "description": "60-minute timeout with thorough inspection.",
+              "mechanism": "execution_budget"
+            }
+          ]
+        },
+        {
+          "id": "opencode/qwen3-32b-free",
+          "display_name": "Qwen3 32B (free)",
+          "description": "Qwen3 32B via OpenCode free tier. No API key required.",
+          "default_effort": "medium",
+          "efforts": [
+            {
+              "id": "low",
+              "display_name": "Low",
+              "description": "15-minute timeout, focused implementation.",
+              "mechanism": "execution_budget"
+            },
+            {
+              "id": "medium",
+              "display_name": "Medium",
+              "description": "30-minute timeout with standard verification.",
+              "mechanism": "execution_budget"
+            },
+            {
+              "id": "high",
+              "display_name": "High",
+              "description": "60-minute timeout with thorough inspection.",
+              "mechanism": "execution_budget"
+            }
+          ]
+        },
+        {
           "id": "nvidia/qwen3-235b-a22b",
-          "display_name": "Qwen3 235B (NVIDIA)",
-          "description": "Qwen3 235B via NVIDIA NIM API.",
+          "display_name": "Qwen3 235B (NVIDIA NIM)",
+          "description": "Qwen3 235B via NVIDIA NIM API. Requires NVIDIA_API_KEY secret.",
           "default_effort": "high",
           "efforts": [
             {

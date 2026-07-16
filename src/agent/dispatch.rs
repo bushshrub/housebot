@@ -192,7 +192,22 @@ impl Agent {
                     message_id: 0,
                 };
 
-                let defaults = PartialAgentSelection::default();
+                // Pre-fill defaults so the owner can dispatch immediately without
+                // going through the interactive picker. Read from env vars so the
+                // operator can override them; fall back to the opencode free tier.
+                let defaults = {
+                    use crate::coding_agent::catalog::CodingAgent;
+                    use std::str::FromStr;
+                    let agent_str = config::env_or("DEVELOPMENT_DEFAULT_AGENT", "opencode");
+                    let model =
+                        config::env_or("DEVELOPMENT_DEFAULT_MODEL", "opencode/deepseek-v4-flash-free");
+                    let effort = config::env_or("DEVELOPMENT_DEFAULT_EFFORT", "medium");
+                    PartialAgentSelection {
+                        agent: CodingAgent::from_str(&agent_str).ok(),
+                        model: Some(model),
+                        effort: Some(effort),
+                    }
+                };
 
                 let outcome = tools::feature_development::prepare_feature_development(
                     &self.pending_jobs,

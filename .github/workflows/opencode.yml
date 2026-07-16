@@ -19,9 +19,9 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       id-token: write
-      contents: read
-      pull-requests: read
-      issues: read
+      contents: write
+      pull-requests: write
+      issues: write
     steps:
       - name: Checkout repository
         uses: actions/checkout@v6
@@ -32,6 +32,7 @@ jobs:
         uses: anomalyco/opencode/github@latest
         with:
           model: opencode/deepseek-v4-flash-free
+          use_github_token: "true"
 
   check-trusted:
     if: github.event_name == 'pull_request'
@@ -62,9 +63,9 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       id-token: write
-      contents: read
-      pull-requests: read
-      issues: read
+      contents: write
+      pull-requests: write
+      issues: write
     steps:
       - name: Checkout repository
         uses: actions/checkout@v6
@@ -75,3 +76,4 @@ jobs:
         uses: anomalyco/opencode/github@latest
         with:
           model: opencode/deepseek-v4-flash-free
+          use_github_token: "true"
