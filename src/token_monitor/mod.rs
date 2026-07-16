@@ -433,43 +433,68 @@ impl TokenMonitor {
                 let now = SystemTime::now();
                 let cutoff = period.cutoff(now);
 
-                let user_ids: std::collections::HashSet<_> = data
-                    .conversations
-                    .values()
-                    .map(|c| c.user_id.clone())
-                    .collect();
-                let total_conversations = if period == LeaderboardPeriod::AllTime {
-                    data.conversations.len() as u64
+                if period == LeaderboardPeriod::AllTime {
+                    let user_ids: std::collections::HashSet<_> = data
+                        .conversations
+                        .values()
+                        .map(|c| c.user_id.clone())
+                        .collect();
+                    let total_conversations = data.conversations.len() as u64;
+
+                    let mut total_input = 0u64;
+                    let mut total_output = 0u64;
+                    let mut total_cached = 0u64;
+                    for event in &data.usage_events {
+                        total_input = total_input.saturating_add(event.input_tokens);
+                        total_output = total_output.saturating_add(event.output_tokens);
+                        total_cached = total_cached.saturating_add(event.cached_tokens);
+                    }
+
+                    Ok(GlobalTokenStats {
+                        total_users: user_ids.len() as u64,
+                        total_conversations,
+                        total_input_tokens: total_input,
+                        total_output_tokens: total_output,
+                        total_cached_tokens: total_cached,
+                        period,
+                    })
                 } else {
                     let cutoff = cutoff.expect("non-all-time periods have a cutoff");
-                    data.usage_events
+                    let user_ids: std::collections::HashSet<_> = data
+                        .usage_events
+                        .iter()
+                        .filter(|e| e.created_at >= cutoff)
+                        .map(|e| e.user_id.clone())
+                        .collect();
+                    let total_conversations = data
+                        .usage_events
                         .iter()
                         .filter(|e| e.created_at >= cutoff)
                         .map(|e| &e.conversation_id[..])
                         .collect::<std::collections::HashSet<_>>()
-                        .len() as u64
-                };
+                        .len() as u64;
 
-                let mut total_input = 0u64;
-                let mut total_output = 0u64;
-                let mut total_cached = 0u64;
-                for event in &data.usage_events {
-                    if cutoff.is_some_and(|cutoff| event.created_at < cutoff) {
-                        continue;
+                    let mut total_input = 0u64;
+                    let mut total_output = 0u64;
+                    let mut total_cached = 0u64;
+                    for event in &data.usage_events {
+                        if event.created_at < cutoff {
+                            continue;
+                        }
+                        total_input = total_input.saturating_add(event.input_tokens);
+                        total_output = total_output.saturating_add(event.output_tokens);
+                        total_cached = total_cached.saturating_add(event.cached_tokens);
                     }
-                    total_input = total_input.saturating_add(event.input_tokens);
-                    total_output = total_output.saturating_add(event.output_tokens);
-                    total_cached = total_cached.saturating_add(event.cached_tokens);
-                }
 
-                Ok(GlobalTokenStats {
-                    total_users: user_ids.len() as u64,
-                    total_conversations,
-                    total_input_tokens: total_input,
-                    total_output_tokens: total_output,
-                    total_cached_tokens: total_cached,
-                    period,
-                })
+                    Ok(GlobalTokenStats {
+                        total_users: user_ids.len() as u64,
+                        total_conversations,
+                        total_input_tokens: total_input,
+                        total_output_tokens: total_output,
+                        total_cached_tokens: total_cached,
+                        period,
+                    })
+                }
             }
             Backend::Postgres(client) => {
                 let filter = period.sql_filter();
