@@ -1,4 +1,5 @@
 name: Implement Feature
+run-name: "Implement issue ${{ github.event.inputs.issue_number || github.event.issue.number }}"
 
 # Triggered by:
 #   - The Discord bot labelling an issue agent:queued (primary dispatch path)
@@ -61,8 +62,10 @@ jobs:
           if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
             echo "allowed=true" >> "$GITHUB_OUTPUT"
           elif [ "${{ github.event_name }}" = "issues" ]; then
+            # Allow any GitHub App bot, or a specific bot actor if configured.
+            SENDER_TYPE="${{ github.event.sender.type }}"
             BOT_ACTOR="${{ vars.BOT_ACTOR }}"
-            if [ -n "$BOT_ACTOR" ] && [ "${{ github.actor }}" = "$BOT_ACTOR" ]; then
+            if [ "$SENDER_TYPE" = "Bot" ] || { [ -n "$BOT_ACTOR" ] && [ "${{ github.actor }}" = "$BOT_ACTOR" ]; }; then
               echo "allowed=true" >> "$GITHUB_OUTPUT"
             else
               echo "allowed=false" >> "$GITHUB_OUTPUT"
@@ -133,10 +136,6 @@ jobs:
             } catch (e) {
               if (e.status !== 404) throw e;
             }
-            await github.rest.issues.addLabels({
-              owner: context.repo.owner, repo: context.repo.repo,
-              issue_number: issue, labels: ['agent:running'],
-            });
             await github.rest.issues.createComment({
               owner: context.repo.owner, repo: context.repo.repo,
               issue_number: issue,
@@ -235,74 +234,18 @@ jobs:
             | Triggered by | @${{ github.event.comment.user.login || github.actor }} |
             | Issue | #${{ needs.check-permission.outputs.issue_number }} |
           branch: opencode/issue-${{ needs.check-permission.outputs.issue_number }}
-          base: ${{ github.default_branch || 'main' }}
+          base: master
           delete-branch: true
 
-      - name: Mark completed
-        if: github.event_name == 'issues' && success() && steps.pr.outputs.pull-request-operation != 'none'
-        uses: actions/github-script@v8
-        with:
-          script: |
-            const issue = parseInt('${{ needs.check-permission.outputs.issue_number }}');
-            try {
-              await github.rest.issues.removeLabel({
-                owner: context.repo.owner, repo: context.repo.repo,
-                issue_number: issue, name: 'agent:running',
-              });
-            } catch (e) {
-              if (e.status !== 404) throw e;
-            }
-            await github.rest.issues.addLabels({
-              owner: context.repo.owner, repo: context.repo.repo,
-              issue_number: issue, labels: ['agent:completed'],
-            });
+      - name: Write outcome
+        if: always()
+        run: |
+          echo "${{ steps.pr.outputs.pull-request-operation }}" > "${{ runner.temp }}/pr_operation.txt"
 
-      - name: Mark no-changes
-        if: github.event_name == 'issues' && success() && steps.pr.outputs.pull-request-operation == 'none'
-        uses: actions/github-script@v8
+      - name: Upload outcome
+        if: always()
+        uses: actions/upload-artifact@v4
         with:
-          script: |
-            const issue = parseInt('${{ needs.check-permission.outputs.issue_number }}');
-            try {
-              await github.rest.issues.removeLabel({
-                owner: context.repo.owner, repo: context.repo.repo,
-                issue_number: issue, name: 'agent:running',
-              });
-            } catch (e) {
-              if (e.status !== 404) throw e;
-            }
-            await github.rest.issues.addLabels({
-              owner: context.repo.owner, repo: context.repo.repo,
-              issue_number: issue, labels: ['agent:no-changes'],
-            });
-            await github.rest.issues.createComment({
-              owner: context.repo.owner, repo: context.repo.repo,
-              issue_number: issue,
-              body: '🤖 Agent finished but produced no changes.',
-            });
-
-      - name: Mark failed
-        if: github.event_name == 'issues' && failure()
-        uses: actions/github-script@v8
-        with:
-          script: |
-            const issue = parseInt('${{ needs.check-permission.outputs.issue_number }}');
-            for (const label of ['agent:running', 'agent:queued']) {
-              try {
-                await github.rest.issues.removeLabel({
-                  owner: context.repo.owner, repo: context.repo.repo,
-                  issue_number: issue, name: label,
-                });
-              } catch (e) {
-                if (e.status !== 404) throw e;
-              }
-            }
-            await github.rest.issues.addLabels({
-              owner: context.repo.owner, repo: context.repo.repo,
-              issue_number: issue, labels: ['agent:failed'],
-            });
-            await github.rest.issues.createComment({
-              owner: context.repo.owner, repo: context.repo.repo,
-              issue_number: issue,
-              body: `❌ **Agent run failed.** See [workflow logs](${process.env.GITHUB_SERVER_URL}/${process.env.GITHUB_REPOSITORY}/actions/runs/${process.env.GITHUB_RUN_ID}) for details.`,
-            });
+          name: agent-outcome
+          path: ${{ runner.temp }}/pr_operation.txt
+          retention-days: 1
