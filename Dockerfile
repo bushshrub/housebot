@@ -28,7 +28,6 @@ RUN mkdir -p src \
     && echo "" > crates/llm/src/lib.rs
 RUN --mount=type=cache,id=housebot-cargo-registry,target=/usr/local/cargo/registry \
     --mount=type=cache,id=housebot-cargo-git,target=/usr/local/cargo/git \
-    --mount=type=cache,id=housebot-cargo-target,target=/app/target \
     cargo build --release --locked --package housebot
 
 # Layer 3: real source files.
@@ -42,7 +41,6 @@ COPY .github/agents/catalog.json .github/agents/catalog.json
 # Layer 2, so only changed source files are recompiled.
 RUN --mount=type=cache,id=housebot-cargo-registry,target=/usr/local/cargo/registry \
     --mount=type=cache,id=housebot-cargo-git,target=/usr/local/cargo/git \
-    --mount=type=cache,id=housebot-cargo-target,target=/app/target \
     HOUSEBOT_GIT_SHA="$GIT_COMMIT" cargo build --release --locked --package housebot \
     && cp /app/target/release/housebot /app/housebot \
     && strip /app/housebot

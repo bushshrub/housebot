@@ -18,7 +18,6 @@ RUN mkdir -p crates/deployment-bot/src \
     && echo "fn main() {}" > crates/deployment-bot/src/main.rs
 RUN --mount=type=cache,id=deployment-bot-cargo-registry,target=/usr/local/cargo/registry \
     --mount=type=cache,id=deployment-bot-cargo-git,target=/usr/local/cargo/git \
-    --mount=type=cache,id=deployment-bot-cargo-target,target=/app/target \
     cargo build --release --locked --package deployment-bot
 
 # Layer 3: real source files.
@@ -31,7 +30,6 @@ COPY crates/deployment-bot/src/ crates/deployment-bot/src/
 # Layer 2, so only changed source files are recompiled.
 RUN --mount=type=cache,id=deployment-bot-cargo-registry,target=/usr/local/cargo/registry \
     --mount=type=cache,id=deployment-bot-cargo-git,target=/usr/local/cargo/git \
-    --mount=type=cache,id=deployment-bot-cargo-target,target=/app/target \
     cargo build --release --locked --package deployment-bot \
     && cp /app/target/release/deployment-bot /app/deployment-bot \
     && strip /app/deployment-bot
