@@ -91,8 +91,10 @@ pub(crate) fn get_recent_messages_tool() -> Value {
     json!({
         "name": "get_recent_messages",
         "description": "Return all messages from the current channel posted in the last N minutes, \
-            in chronological order. Use this to summarize a recent conversation, catch up on what \
-            was discussed, or answer questions like 'what happened in the last 30 minutes'.",
+            in chronological order. Call this proactively whenever the user's message references \
+            a topic, person, link, or event that isn't in your conversation history with them — \
+            the missing context may be in recent channel messages. Also use for explicit questions \
+            like 'what happened in the last 30 minutes' or 'catch me up'.",
         "input_schema": {
             "type": "object",
             "properties": {

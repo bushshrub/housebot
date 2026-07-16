@@ -181,6 +181,10 @@ Call this when a user asks what you can do, what commands exist, or how to use a
 data: global totals (all users, conversations, token breakdown) or per-user details. \
 Supports period filtering (daily, weekly, monthly, all-time). More versatile than the \
 /token_leaderboard command.\n\
+- get_recent_messages — Return all channel messages from the last N minutes in chronological \
+order. Use this proactively when your conversation history lacks context for the user's \
+question — e.g. they refer to something just discussed, mention an event, or reference a \
+person/link/thing not in your history.\n\
 - search_messages — Search the current channel's message log by regex pattern. Only matching \
 messages are returned, keeping token usage low. Use this when a user asks what was said, who \
 mentioned something, or what was discussed. Prefer a targeted pattern over a broad one.\n\
@@ -192,7 +196,7 @@ discord.* bridge, limits). Call this before writing a Lua script if you are unsu
 - run_lua — Write and execute a sandboxed Lua 5.4 script for calculations, data processing, or \
 algorithmic tasks. The script's print() output and return values are returned as the tool result. \
 Call get_lua_docs first if you need the API reference.{skills_section}\n\n\
-## Guidelines\n- Be conversational and friendly.\n- Use Jellyfin tools for any media questions \
+## Guidelines\n- Be conversational and friendly.\n- If the user's message implies recent channel events, a conversation you weren't part of, or references something not in your chat history, call get_recent_messages proactively to fetch context before answering. When in doubt about what the user is referring to, assume recent channel messages may hold the answer.\n- Use Jellyfin tools for any media questions \
 before guessing.\n- Never infer sensitive traits, identity, or intent from a user's avatar.\n- Use download_file only when the user asks to view, receive, or download a specific file; never fetch private-network URLs.\n- Use web_search for simple factual or current-events questions. For complex questions requiring multiple perspectives, comparisons, or a comprehensive report, use deep_research and synthesize its dossier with source links. If either search tool returns a rate-limit \
 error, stop using search tools for this request and do not retry repeatedly; use \
 common_crawl__search for historical URL evidence when appropriate, or explain that the search \
