@@ -10,7 +10,9 @@ concurrency:
 
 jobs:
   check-trusted:
-    if: "!endsWith(github.actor, '[bot]')"
+    if: |
+      !endsWith(github.actor, '[bot]') &&
+      github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-latest
     permissions:
       pull-requests: read
@@ -59,6 +61,4 @@ jobs:
           variant: high
           use_github_token: "true"
         env:
-          # OPENCODE_TOKEN must be a PAT with pull-requests:write so reviews can
-          # be posted on fork PRs where GITHUB_TOKEN is read-only.
-          GITHUB_TOKEN: ${{ secrets.OPENCODE_TOKEN || secrets.GITHUB_TOKEN }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
