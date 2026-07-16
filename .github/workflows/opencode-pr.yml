@@ -52,10 +52,13 @@ jobs:
           git config user.email "noreply@opencode.ai"
 
       - name: Run opencode
-        uses: anomalyco/opencode/github@latest
+        # Pinned to github-v1.2.19 — update after reviewing the release diff.
+        uses: anomalyco/opencode/github@77fc88c8ade8e5a620ebbe1197f3a572d29ae91a
         with:
           model: opencode/deepseek-v4-flash-free
           variant: high
           use_github_token: "true"
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # OPENCODE_TOKEN must be a PAT with pull-requests:write so reviews can
+          # be posted on fork PRs where GITHUB_TOKEN is read-only.
+          GITHUB_TOKEN: ${{ secrets.OPENCODE_TOKEN || secrets.GITHUB_TOKEN }}

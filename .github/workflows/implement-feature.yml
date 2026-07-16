@@ -18,15 +18,19 @@ on:
       model:
         description: Model name for opencode
         required: false
-        default: opencode/deepseek-v4-flash
+        default: opencode/deepseek-v4-flash-free
       model_config:
         description: Extra config fields (JSON object merged into opencode.json)
         required: false
         type: string
 
+# Never cancel an in-progress implementation run; queue the new trigger instead.
 concurrency:
   group: implement-feature-${{ github.event.issue.number || github.event.inputs.issue_number }}
-  cancel-in-progress: true
+  cancel-in-progress: false
+
+# Minimal default — jobs declare only what they need.
+permissions: {}
 
 jobs:
   check-permission:
@@ -36,7 +40,17 @@ jobs:
       (github.event_name == 'issues' && github.event.label.name == 'agent:queued') ||
       (github.event_name == 'issue_comment' &&
        github.event.issue.pull_request == null &&
-       contains(github.event.comment.body, '/implement'))
+       (github.event.comment.body == '/implement' ||
+        startsWith(github.event.comment.body, '/implement ') ||
+        startsWith(github.event.comment.body, '/implement\n') ||
+        contains(github.event.comment.body, ' /implement ') ||
+        contains(github.event.comment.body, ' /implement\n') ||
+        endsWith(github.event.comment.body, ' /implement') ||
+        contains(github.event.comment.body, '\n/implement ') ||
+        contains(github.event.comment.body, '\n/implement\n') ||
+        endsWith(github.event.comment.body, '\n/implement')))
+    permissions:
+      issues: write
     outputs:
       allowed: ${{ steps.check.outputs.allowed }}
       issue_number: ${{ steps.resolve.outputs.issue_number }}
@@ -47,8 +61,12 @@ jobs:
           if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
             echo "allowed=true" >> "$GITHUB_OUTPUT"
           elif [ "${{ github.event_name }}" = "issues" ]; then
-            # Label was applied by the bot — always allowed
-            echo "allowed=true" >> "$GITHUB_OUTPUT"
+            BOT_ACTOR="${{ vars.BOT_ACTOR }}"
+            if [ -n "$BOT_ACTOR" ] && [ "${{ github.actor }}" = "$BOT_ACTOR" ]; then
+              echo "allowed=true" >> "$GITHUB_OUTPUT"
+            else
+              echo "allowed=false" >> "$GITHUB_OUTPUT"
+            fi
           elif [ "${{ github.event.comment.author_association }}" = "OWNER" ]; then
             echo "allowed=true" >> "$GITHUB_OUTPUT"
           else
@@ -99,7 +117,7 @@ jobs:
           node-version: '22'
 
       - name: Install opencode
-        run: npm install -g opencode-ai
+        run: npm install -g opencode-ai@1.18.2
 
       - name: Mark running
         if: github.event_name == 'issues'
@@ -112,7 +130,9 @@ jobs:
                 owner: context.repo.owner, repo: context.repo.repo,
                 issue_number: issue, name: 'agent:queued',
               });
-            } catch {}
+            } catch (e) {
+              if (e.status !== 404) throw e;
+            }
             await github.rest.issues.addLabels({
               owner: context.repo.owner, repo: context.repo.repo,
               issue_number: issue, labels: ['agent:running'],
@@ -144,19 +164,22 @@ jobs:
                 try { model = JSON.parse(match[1]).model; } catch {}
               }
             }
-            model = model || 'opencode/deepseek-v4-flash';
+            model = model || 'opencode/deepseek-v4-flash-free';
 
             let extra = {};
             const dispatchExtra = process.env.DISPATCH_EXTRA || '';
             if (dispatchExtra) { try { extra = JSON.parse(dispatchExtra); } catch {} }
 
-            fs.writeFileSync('opencode.json', JSON.stringify({ model, ...extra }, null, 2));
-            console.log('Config:', JSON.stringify({ model, ...extra }));
+            // Spread extra first so it cannot overwrite the resolved model.
+            const config = { ...extra, model };
+            fs.writeFileSync('opencode.json', JSON.stringify(config, null, 2));
+            console.log('Config:', JSON.stringify(config));
 
-            // For comment triggers, the text after /implement is the extra prompt.
+            // For comment triggers, extract the text after the /implement token.
             // For Discord-dispatched issues, use the full structured issue body.
             const trigger = process.env.COMMENT_BODY || '';
-            const commentText = trigger.replace(/^\/implement\s*/, '').trim();
+            const tokenMatch = trigger.match(/(?:^|\s)\/implement(?=\s|$)([\s\S]*)/);
+            const commentText = tokenMatch ? tokenMatch[1].trim() : '';
 
             const prompt = commentText || [
               `Implement the feature described in GitHub issue #${issueNumber}.`,
@@ -216,7 +239,7 @@ jobs:
           delete-branch: true
 
       - name: Mark completed
-        if: github.event_name == 'issues' && success()
+        if: github.event_name == 'issues' && success() && steps.pr.outputs.pull-request-operation != 'none'
         uses: actions/github-script@v8
         with:
           script: |
@@ -226,10 +249,36 @@ jobs:
                 owner: context.repo.owner, repo: context.repo.repo,
                 issue_number: issue, name: 'agent:running',
               });
-            } catch {}
+            } catch (e) {
+              if (e.status !== 404) throw e;
+            }
             await github.rest.issues.addLabels({
               owner: context.repo.owner, repo: context.repo.repo,
               issue_number: issue, labels: ['agent:completed'],
+            });
+
+      - name: Mark no-changes
+        if: github.event_name == 'issues' && success() && steps.pr.outputs.pull-request-operation == 'none'
+        uses: actions/github-script@v8
+        with:
+          script: |
+            const issue = parseInt('${{ needs.check-permission.outputs.issue_number }}');
+            try {
+              await github.rest.issues.removeLabel({
+                owner: context.repo.owner, repo: context.repo.repo,
+                issue_number: issue, name: 'agent:running',
+              });
+            } catch (e) {
+              if (e.status !== 404) throw e;
+            }
+            await github.rest.issues.addLabels({
+              owner: context.repo.owner, repo: context.repo.repo,
+              issue_number: issue, labels: ['agent:no-changes'],
+            });
+            await github.rest.issues.createComment({
+              owner: context.repo.owner, repo: context.repo.repo,
+              issue_number: issue,
+              body: '🤖 Agent finished but produced no changes.',
             });
 
       - name: Mark failed
@@ -244,7 +293,9 @@ jobs:
                   owner: context.repo.owner, repo: context.repo.repo,
                   issue_number: issue, name: label,
                 });
-              } catch {}
+              } catch (e) {
+                if (e.status !== 404) throw e;
+              }
             }
             await github.rest.issues.addLabels({
               owner: context.repo.owner, repo: context.repo.repo,
