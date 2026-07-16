@@ -1,5 +1,7 @@
 //! Discord progress hooks and compaction progress rendering.
 
+use std::sync::Mutex;
+
 use super::*;
 
 pub(crate) fn compact_progress(stage: usize, detail: Option<&str>) -> String {
@@ -60,6 +62,7 @@ pub(crate) struct ResponseProgressHooks {
     channel_id: serenity::all::ChannelId,
     message_id: serenity::all::MessageId,
     generating: AtomicBool,
+    tool_calls: Mutex<String>,
 }
 
 impl ResponseProgressHooks {
@@ -69,6 +72,7 @@ impl ResponseProgressHooks {
             channel_id: progress.channel_id,
             message_id: progress.id,
             generating: AtomicBool::new(false),
+            tool_calls: Mutex::new(String::new()),
         }
     }
 }
@@ -91,12 +95,20 @@ impl AgentHooks for ResponseProgressHooks {
 
     async fn on_tool_called(&self, tool: &str, _args: &serde_json::Value) {
         self.generating.store(false, Ordering::Release);
+        let content = {
+            let mut calls = self.tool_calls.lock().unwrap();
+            if !calls.is_empty() {
+                calls.push('\n');
+            }
+            calls.push_str(tool_status(tool));
+            calls.clone()
+        };
         let _ = self
             .channel_id
             .edit_message(
                 &self.ctx.http,
                 self.message_id,
-                EditMessage::new().content(tool_status(tool)),
+                EditMessage::new().content(content),
             )
             .await;
     }
