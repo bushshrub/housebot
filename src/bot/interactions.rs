@@ -1,4 +1,4 @@
-//! Slash-command interaction handlers (effort, tool bans, status, data, privacy).
+//! Slash-command interaction handlers (effort, tool bans, status, data, privacy, skill, stats).
 
 use super::*;
 
@@ -485,4 +485,74 @@ pub(crate) async fn handle_privacy_interaction(
             format!("Unknown privacy option `{other:?}`. Use `/privacy` to see available options.")
         }
     }
+}
+
+pub(crate) async fn handle_skill_interaction(
+    skills: &Skills,
+    options: &[serenity::all::CommandDataOption],
+    author_id: u64,
+) -> String {
+    let Some(command) = options.first() else {
+        return "Usage: `/skill list` | `/skill info <name>` | `/skill add <name>` | `/skill delete <name>`".into();
+    };
+    let sub_opts = match &command.value {
+        CommandDataOptionValue::SubCommand(opts) => opts,
+        _ => return "Unexpected option structure.".into(),
+    };
+    match command.name.as_str() {
+        "list" => skill_command(skills, "!skill list", "", author_id).await,
+        "info" => {
+            let name = sub_opts
+                .iter()
+                .find(|o| o.name == "name")
+                .and_then(|o| match &o.value {
+                    CommandDataOptionValue::String(s) => Some(s.clone()),
+                    _ => None,
+                })
+                .unwrap_or_default();
+            skill_command(skills, &format!("!skill info {name}"), "", author_id).await
+        }
+        "add" => {
+            let name = sub_opts
+                .iter()
+                .find(|o| o.name == "name")
+                .and_then(|o| match &o.value {
+                    CommandDataOptionValue::String(s) => Some(s.clone()),
+                    _ => None,
+                })
+                .unwrap_or_default();
+            let prompt = sub_opts
+                .iter()
+                .find(|o| o.name == "prompt")
+                .and_then(|o| match &o.value {
+                    CommandDataOptionValue::String(s) => Some(s.clone()),
+                    _ => None,
+                })
+                .unwrap_or_default();
+            skill_command(skills, &format!("!skill add {name}"), &prompt, author_id).await
+        }
+        "delete" => {
+            let name = sub_opts
+                .iter()
+                .find(|o| o.name == "name")
+                .and_then(|o| match &o.value {
+                    CommandDataOptionValue::String(s) => Some(s.clone()),
+                    _ => None,
+                })
+                .unwrap_or_default();
+            skill_command(skills, &format!("!skill delete {name}"), "", author_id).await
+        }
+        other => format!("Unknown subcommand `{other}`. Options: list, info, add, delete"),
+    }
+}
+
+pub(crate) async fn handle_stats_interaction(
+    history: &History,
+    memory: &Memory,
+    notes: &Notes,
+    skills: &Skills,
+    author_id: u64,
+    display_name: &str,
+) -> String {
+    stats_command(history, memory, notes, skills, author_id, display_name).await
 }

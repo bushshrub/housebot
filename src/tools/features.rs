@@ -29,13 +29,8 @@ pub fn features_text() -> &'static str {
 `/storage memory show|search|clear` — inspect or clear persistent memory about you
 `/storage notes list|get|save|delete` — manage your named personal notes
 `/lua <script>` — run a sandboxed Lua script with `discord.send_message`, `discord.web_search`, `discord.jellyfin_search`, and `graph.node`/`graph.edge`/`graph.title` to render a flowchart or network diagram as an image (requires the Scripting role or higher, or guild administrator / bot owner)
-
-**Prefix commands**
-`!skill list|add|delete|info <name>` — manage custom prompt skills shared across all users
-`!storage notes list|save|get|delete <name>` — manage your personal notes
-`!storage memory show|search|clear` — inspect or clear persistent memory
-`!stats` — show your conversation and memory stats
-`!session status|new|compact` — inspect or manage the current conversation; `!new`, `!reset`, and `!compact` remain compatibility aliases
+`/skill list|info|add|delete` — manage custom prompt skills shared across all users
+`/stats` — show your conversation and memory statistics
 
 **Capabilities**
 - Web search, multi-step deep research with cross-referenced sources, webpage fetching, and public-file downloads delivered as Discord attachments

@@ -16,11 +16,6 @@ pub(crate) fn compact_progress(stage: usize, detail: Option<&str>) -> String {
 }
 
 pub(crate) enum CompactProgressTarget {
-    Message {
-        ctx: Context,
-        channel_id: serenity::all::ChannelId,
-        message_id: serenity::all::MessageId,
-    },
     Interaction {
         ctx: Context,
         command: Box<serenity::all::CommandInteraction>,
@@ -41,15 +36,6 @@ impl AgentHooks for CompactProgressHooks {
         };
         let content = compact_progress(stage, (!detail.is_empty()).then_some(detail));
         match &self.0 {
-            CompactProgressTarget::Message {
-                ctx,
-                channel_id,
-                message_id,
-            } => {
-                let _ = channel_id
-                    .edit_message(&ctx.http, *message_id, EditMessage::new().content(content))
-                    .await;
-            }
             CompactProgressTarget::Interaction { ctx, command } => {
                 let _ = command
                     .edit_response(&ctx.http, EditInteractionResponse::new().content(content))

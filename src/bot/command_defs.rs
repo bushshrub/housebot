@@ -104,6 +104,57 @@ pub(crate) fn storage_command_definition() -> CreateCommand {
         )
 }
 
+pub(crate) fn skill_command_definition() -> CreateCommand {
+    CreateCommand::new("skill")
+        .description("Manage custom prompt skills shared across all users")
+        .add_option(CreateCommandOption::new(
+            CommandOptionType::SubCommand,
+            "list",
+            "List all available skills",
+        ))
+        .add_option(
+            CreateCommandOption::new(
+                CommandOptionType::SubCommand,
+                "info",
+                "Show a skill's prompt",
+            )
+            .add_sub_option(
+                CreateCommandOption::new(CommandOptionType::String, "name", "Skill name")
+                    .required(true),
+            ),
+        )
+        .add_option(
+            CreateCommandOption::new(
+                CommandOptionType::SubCommand,
+                "add",
+                "Create or replace a skill",
+            )
+            .add_sub_option(
+                CreateCommandOption::new(
+                    CommandOptionType::String,
+                    "name",
+                    "Skill name (lowercase, numbers, underscores)",
+                )
+                .required(true),
+            )
+            .add_sub_option(
+                CreateCommandOption::new(
+                    CommandOptionType::String,
+                    "prompt",
+                    "The skill prompt / instructions",
+                )
+                .required(true),
+            ),
+        )
+        .add_option(
+            CreateCommandOption::new(CommandOptionType::SubCommand, "delete", "Delete a skill")
+                .add_sub_option(
+                    CreateCommandOption::new(CommandOptionType::String, "name", "Skill name")
+                        .required(true),
+                ),
+        )
+}
+
 pub(crate) fn data_command_definition() -> CreateCommand {
     CreateCommand::new("data")
         .description("Inspect or delete data associated with your account")
@@ -467,6 +518,8 @@ pub(crate) async fn register_slash_commands(ctx: &Context) {
             ),
         CreateCommand::new("status")
             .description("Show your current settings (effort level, follow-up, personality)"),
+        skill_command_definition(),
+        CreateCommand::new("stats").description("Show your conversation and memory statistics"),
         data_command_definition(),
         CreateCommand::new("privacy")
             .description("View or change your privacy settings")
