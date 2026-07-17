@@ -166,8 +166,16 @@ impl HouseBot {
             }
         }
 
-        // Keep the progress message in the thinking state until the model starts its final reply.
-        let progress = reply_no_ping(ctx, msg, "🧠 **Thinking...**").await.ok();
+        // Check LLM queue utilization so we can show the user their position
+        // when the system is saturated (all 4 LLM slots occupied).
+        let queue_info = self.agent.llm_queue_info();
+        let progress_msg = if queue_info.is_saturated() {
+            let position = queue_info.pending + 1;
+            format!("⏳ **You are #{position} in line. Waiting for an LLM slot to open up...**")
+        } else {
+            "🧠 **Thinking...**".to_string()
+        };
+        let progress = reply_no_ping(ctx, msg, &progress_msg).await.ok();
         let pending_reaction = msg.react(&ctx.http, '⏳').await.ok();
 
         let response_hooks = progress

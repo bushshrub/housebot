@@ -28,6 +28,24 @@ struct PendingRequest {
     priority: LlmPriority,
 }
 
+/// Snapshot of the queue's current utilization.
+#[derive(Debug, Clone, Copy)]
+pub struct LlmQueueInfo {
+    /// How many requests are executing right now.
+    pub active: usize,
+    /// How many requests are waiting for a slot.
+    pub pending: usize,
+    /// Maximum concurrent requests (the capacity set at construction).
+    pub max_parallel: usize,
+}
+
+impl LlmQueueInfo {
+    /// `true` when every slot is occupied and new arrivals must wait.
+    pub fn is_saturated(&self) -> bool {
+        self.active >= self.max_parallel
+    }
+}
+
 /// A shared scheduler allowing at most four LLM requests to execute at once.
 ///
 /// Requests are FIFO within a priority and normal bot requests are selected
@@ -103,9 +121,29 @@ impl LlmRequestQueue {
         operation().await
     }
 
+    /// Number of requests currently executing.
+    pub fn active_count(&self) -> usize {
+        self.state.lock().unwrap().active
+    }
+
+    /// Number of requests waiting for a slot.
+    pub fn pending_count(&self) -> usize {
+        self.state.lock().unwrap().pending.len()
+    }
+
+    /// Snapshot of queue utilization: active, pending, and capacity.
+    pub fn info(&self) -> LlmQueueInfo {
+        let state = self.state.lock().unwrap();
+        LlmQueueInfo {
+            active: state.active,
+            pending: state.pending.len(),
+            max_parallel: self.max_parallel,
+        }
+    }
+
     #[cfg(test)]
     fn active(&self) -> usize {
-        self.state.lock().unwrap().active
+        self.active_count()
     }
 }
 
@@ -146,6 +184,11 @@ pub struct QueuedChatClient {
 impl QueuedChatClient {
     pub fn new(inner: Arc<dyn ChatClient>, queue: Arc<LlmRequestQueue>) -> Self {
         Self { inner, queue }
+    }
+
+    /// Current queue utilization snapshot.
+    pub fn queue_info(&self) -> LlmQueueInfo {
+        self.queue.info()
     }
 
     pub async fn chat_once_with_priority(
@@ -315,5 +358,87 @@ mod tests {
         normal.await.unwrap();
         lua.await.unwrap();
         assert_eq!(*order.lock().unwrap(), vec!["normal", "lua"]);
+    }
+
+    #[tokio::test]
+    async fn reports_active_and_pending_counts() {
+        let queue = Arc::new(LlmRequestQueue::new(2));
+        assert_eq!(queue.active_count(), 0);
+        assert_eq!(queue.pending_count(), 0);
+        assert!(!queue.info().is_saturated());
+
+        let started = Arc::new(Barrier::new(3));
+        let hold = Arc::new(Notify::new());
+
+        let q1 = Arc::clone(&queue);
+        let s1 = Arc::clone(&started);
+        let h1 = Arc::clone(&hold);
+        let t1 = tokio::spawn(async move {
+            q1.execute(LlmPriority::Normal, move || async move {
+                s1.wait().await;
+                h1.notified().await;
+            })
+            .await;
+        });
+
+        let q2 = Arc::clone(&queue);
+        let s2 = Arc::clone(&started);
+        let h2 = Arc::clone(&hold);
+        let t2 = tokio::spawn(async move {
+            q2.execute(LlmPriority::Normal, move || async move {
+                s2.wait().await;
+                h2.notified().await;
+            })
+            .await;
+        });
+
+        started.wait().await;
+        // Both slots are now active — the queue is saturated.
+        assert_eq!(queue.active_count(), 2);
+        assert_eq!(queue.pending_count(), 0);
+        assert!(queue.info().is_saturated());
+
+        // A third request must wait.
+        let q3 = Arc::clone(&queue);
+        let t3 = tokio::spawn(async move {
+            q3.execute(LlmPriority::Normal, move || async {}).await;
+        });
+        tokio::task::yield_now().await;
+        assert_eq!(queue.active_count(), 2);
+        assert_eq!(queue.pending_count(), 1);
+
+        // Let one active slot finish — the pending request should drain.
+        hold.notify_one();
+        t3.await.unwrap();
+        assert_eq!(queue.active_count(), 1);
+
+        // Let the remaining active slot finish.
+        hold.notify_one();
+        t1.await.unwrap();
+        t2.await.unwrap();
+        assert_eq!(queue.active_count(), 0);
+        assert_eq!(queue.pending_count(), 0);
+    }
+
+    #[test]
+    fn is_saturated_reflects_capacity() {
+        let info = LlmQueueInfo {
+            active: 3,
+            pending: 5,
+            max_parallel: 4,
+        };
+        assert!(!info.is_saturated());
+        let info = LlmQueueInfo {
+            active: 4,
+            pending: 5,
+            max_parallel: 4,
+        };
+        assert!(info.is_saturated());
+        let info = LlmQueueInfo {
+            active: 5,
+            pending: 0,
+            max_parallel: 4,
+        };
+        assert!(info.is_saturated());
     }
 }
