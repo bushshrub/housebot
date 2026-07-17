@@ -32,10 +32,7 @@ pub fn features_text() -> &'static str {
 
 **Prefix commands**
 `!skill list|add|delete|info <name>` — manage custom prompt skills shared across all users
-`!storage notes list|save|get|delete <name>` — manage your personal notes
-`!storage memory show|search|clear` — inspect or clear persistent memory
 `!stats` — show your conversation and memory stats
-`!session status|new|compact` — inspect or manage the current conversation; `!new`, `!reset`, and `!compact` remain compatibility aliases
 
 **Capabilities**
 - Web search, multi-step deep research with cross-referenced sources, webpage fetching, and public-file downloads delivered as Discord attachments

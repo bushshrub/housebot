@@ -79,10 +79,7 @@ impl EventHandler for HouseBot {
                 tracing::warn!("Failed to defer /session compact response: {e}");
                 return;
             }
-            let hooks = CompactProgressHooks(CompactProgressTarget::Interaction {
-                ctx: ctx.clone(),
-                command: Box::new(cmd.clone()),
-            });
+            let hooks = CompactProgressHooks::new(ctx.clone(), Box::new(cmd.clone()));
             self.agent
                 .compact_session_with_hooks(&user_id.to_string(), deep_memory_enabled, &hooks)
                 .await;
@@ -260,96 +257,11 @@ impl EventHandler for HouseBot {
         let user_id = msg.author.id.get();
 
         // ── commands ──
-        let session_action = prefix_session_action(&content);
-        if session_action == Some("new") {
-            let reply = self.handle_new(channel_id, user_id).await;
-            self.respond(&ctx, &msg, &reply).await;
-            return;
-        }
-        if session_action == Some("compact") {
-            let deep_memory_enabled = self.user_cfg.load(user_id).await.deep_memory_enabled;
-            let progress = reply_no_ping(&ctx, &msg, &compact_progress(0, None))
-                .await
-                .ok();
-            if let Some(progress) = &progress {
-                let hooks = CompactProgressHooks(CompactProgressTarget::Message {
-                    ctx: ctx.clone(),
-                    channel_id: msg.channel_id,
-                    message_id: progress.id,
-                });
-                self.agent
-                    .compact_session_with_hooks(&user_id.to_string(), deep_memory_enabled, &hooks)
-                    .await;
-            } else {
-                self.agent
-                    .compact_session(&user_id.to_string(), deep_memory_enabled)
-                    .await;
-            }
-            self.conversations.lock().await.remove(channel_id, user_id);
-            if let Some(mut progress) = progress {
-                let _ = progress
-                    .edit(
-                        &ctx.http,
-                        EditMessage::new().content(compact_done_message(deep_memory_enabled)),
-                    )
-                    .await;
-            } else {
-                self.respond(&ctx, &msg, compact_done_message(deep_memory_enabled))
-                    .await;
-            }
-            return;
-        }
-        if session_action == Some("status") {
-            let info = self.agent.session_info(&user_id.to_string()).await;
-            let percent =
-                info.context_tokens as f64 / info.context_window_tokens.max(1) as f64 * 100.0;
-            let reply = format!(
-                "**Session**\nContext: {} / {} tokens ({percent:.1}%)\nMessages: {}\nModel requests: {}\nInput tokens: {}\nOutput tokens: {}\nCached tokens: {}",
-                info.context_tokens,
-                info.context_window_tokens,
-                info.messages,
-                info.requests,
-                info.input_tokens,
-                info.output_tokens,
-                info.cached_tokens
-            );
-            self.respond(&ctx, &msg, &reply).await;
-            return;
-        }
-        if command_suffix(&content, "!session").is_some() {
-            self.respond(
-                &ctx,
-                &msg,
-                "Usage: `!session new` | `!session compact` (`!new`, `!reset`, and `!compact` remain compatibility aliases)",
-            )
-            .await;
-            return;
-        }
         if msg.content.starts_with("!skill") {
             tracing::info!(target: "housebot::commands", user_id, "!skill command received");
             let (first, rest) = split_command(&msg.content);
             let reply = skill_command(&self.skills, &first, &rest, user_id).await;
             self.respond(&ctx, &msg, &reply).await;
-            return;
-        }
-        let (first, rest) = split_command(&msg.content);
-        if let Some((area, command)) = normalize_storage_prefix(&first) {
-            tracing::info!(target: "housebot::commands", user_id, area, "Storage command received");
-            let reply = if area == "notes" {
-                note_command(&self.notes, &command, &rest, user_id).await
-            } else {
-                memory_command(&self.memory, &command, user_id).await
-            };
-            self.respond(&ctx, &msg, &reply).await;
-            return;
-        }
-        if command_suffix(&first, "!storage").is_some() {
-            self.respond(
-                &ctx,
-                &msg,
-                "Usage: `!storage memory show|search|clear` or `!storage notes list|get|save|delete`",
-            )
-            .await;
             return;
         }
         if content == "!stats" {
