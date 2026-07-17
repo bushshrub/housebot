@@ -17,7 +17,6 @@ RUN adduser -D -s /bin/bash sandbox \
     && mkdir -p /workspace /home/sandbox \
     && chown -R sandbox:sandbox /workspace /home/sandbox
 
-USER sandbox
 USER root
 
 COPY crates/sandbox/docker/entrypoint.sh /entrypoint.sh

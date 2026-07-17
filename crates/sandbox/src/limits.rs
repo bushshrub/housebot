@@ -20,3 +20,6 @@ pub const MAX_COMMAND_LENGTH: usize = 4096;
 pub const MAX_PATH_DEPTH: usize = 64;
 pub const MAX_GLOB_LENGTH: usize = 256;
 pub const MAX_QUERY_LENGTH: usize = 512;
+
+pub const MAX_REQUEST_FRAME_BYTES: usize = 1024 * 1024; // 1 MiB
+pub const SOCKET_TIMEOUT_SECS: u64 = 30;

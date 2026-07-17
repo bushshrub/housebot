@@ -1,5 +1,8 @@
+use std::time::Duration;
+
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::UnixStream;
+use tokio::time::timeout;
 
 use crate::limits;
 use crate::protocol::*;
@@ -32,8 +35,11 @@ impl SandboxClient {
     }
 
     async fn send_request(&self, request: SandboxRequest) -> Result<SandboxResponse, String> {
-        let stream = UnixStream::connect(&self.socket_path)
+        let timeout_dur = Duration::from_secs(limits::SOCKET_TIMEOUT_SECS);
+
+        let stream = timeout(timeout_dur, UnixStream::connect(&self.socket_path))
             .await
+            .map_err(|_| format!("timed out connecting to sandboxd after {}s", limits::SOCKET_TIMEOUT_SECS))?
             .map_err(|e| format!("failed to connect to sandboxd: {e}"))?;
 
         let (reader, mut writer) = stream.into_split();
@@ -43,21 +49,29 @@ impl SandboxClient {
         let mut line_bytes = line.into_bytes();
         line_bytes.push(b'\n');
 
-        writer
-            .write_all(&line_bytes)
+        timeout(timeout_dur, writer.write_all(&line_bytes))
             .await
+            .map_err(|_| format!("timed out writing request after {}s", limits::SOCKET_TIMEOUT_SECS))?
             .map_err(|e| format!("failed to write request: {e}"))?;
         writer.shutdown().await.ok();
 
         let mut buf_reader = BufReader::new(reader);
-        let mut response_line = String::new();
-        buf_reader
-            .read_line(&mut response_line)
+        let mut response_line = String::with_capacity(4096);
+        timeout(timeout_dur, buf_reader.read_line(&mut response_line))
             .await
+            .map_err(|_| format!("timed out reading response after {}s", limits::SOCKET_TIMEOUT_SECS))?
             .map_err(|e| format!("failed to read response: {e}"))?;
 
         if response_line.is_empty() {
             return Err("empty response from sandboxd".to_string());
+        }
+
+        if response_line.len() > limits::MAX_REQUEST_FRAME_BYTES {
+            return Err(format!(
+                "response frame too large ({} bytes, max {})",
+                response_line.len(),
+                limits::MAX_REQUEST_FRAME_BYTES
+            ));
         }
 
         let response: SandboxResponse = serde_json::from_str(response_line.trim())

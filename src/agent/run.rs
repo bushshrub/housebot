@@ -305,11 +305,7 @@ impl Agent {
         ];
         // Include sandbox tools only for the owner.
         if sandbox_allowed {
-            defs.push(tools::sandbox::sandbox_clone_repository_definition());
-            defs.push(tools::sandbox::sandbox_list_files_definition());
-            defs.push(tools::sandbox::sandbox_search_code_definition());
-            defs.push(tools::sandbox::sandbox_read_file_definition());
-            defs.push(tools::sandbox::sandbox_run_definition());
+            defs.extend(tools::sandbox::all_definitions());
         }
         // Conditionally include memory tools based on user's privacy setting.
         if deep_memory_enabled {

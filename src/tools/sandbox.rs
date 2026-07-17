@@ -19,6 +19,7 @@ use housebot_sandbox::{NetworkAccess, Sandbox, SandboxClient};
 pub struct LazySandbox {
     client: SandboxClient,
     inner: Arc<Mutex<Option<Sandbox>>>,
+    network: Arc<Mutex<NetworkAccess>>,
     /// Track whether any sandbox tool has been called (to provide better errors).
     started: Arc<Mutex<bool>>,
 }
@@ -28,6 +29,7 @@ impl LazySandbox {
         Self {
             client,
             inner: Arc::new(Mutex::new(None)),
+            network: Arc::new(Mutex::new(NetworkAccess::None)),
             started: Arc::new(Mutex::new(false)),
         }
     }
@@ -36,10 +38,19 @@ impl LazySandbox {
     async fn get_or_start(&self, network: NetworkAccess) -> Result<Sandbox, String> {
         let mut guard = self.inner.lock().await;
         if let Some(ref sandbox) = *guard {
+            let current = *self.network.lock().await;
+            if network == NetworkAccess::PublicInternet && current == NetworkAccess::None {
+                return Err(
+                    "Sandbox is already running without network access. \
+                     Clone the repository before using other sandbox tools."
+                        .to_string(),
+                );
+            }
             return Ok(sandbox.clone());
         }
 
         let sandbox = self.client.start(network).await?;
+        *self.network.lock().await = network;
         *self.started.lock().await = true;
         let result = sandbox.clone();
         *guard = Some(sandbox);
@@ -156,12 +167,26 @@ impl LazySandbox {
 fn truncate_output(s: &str) -> String {
     const MAX: usize = 64_000;
     if s.len() > MAX {
-        let mut t = s[..MAX].to_string();
+        let mut end = MAX;
+        while !s.is_char_boundary(end) {
+            end -= 1;
+        }
+        let mut t = s[..end].to_string();
         t.push_str("\n... (truncated)");
         t
     } else {
         s.to_string()
     }
+}
+
+pub fn all_definitions() -> Vec<Value> {
+    vec![
+        sandbox_clone_repository_definition(),
+        sandbox_list_files_definition(),
+        sandbox_search_code_definition(),
+        sandbox_read_file_definition(),
+        sandbox_run_definition(),
+    ]
 }
 
 // ── Tool definitions ────────────────────────────────────────────────────────
