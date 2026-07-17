@@ -243,7 +243,7 @@ impl HouseBot {
         responded.push_back(id);
     }
 
-    /// Start a fresh conversation for `/session new` and its prefix aliases.
+    /// Start a fresh conversation for `/session new`.
     pub(crate) async fn handle_new(&self, channel_id: u64, user_id: u64) -> String {
         tracing::info!(target: "housebot::commands", user_id, "Session reset requested");
         self.agent.reset_session(&user_id.to_string()).await;

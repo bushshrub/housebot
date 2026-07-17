@@ -156,47 +156,6 @@ pub(crate) fn is_proactive_candidate(content: &str) -> bool {
         || normalized.starts_with("what can you do")
 }
 
-pub(crate) fn compact_done_message(deep_memory_enabled: bool) -> &'static str {
-    if deep_memory_enabled {
-        "✅ Conversation compacted into memory. A new session has started."
-    } else {
-        "✅ Conversation cleared without saving a memory summary. A new session has started."
-    }
-}
-
-pub(crate) fn prefix_session_action(content: &str) -> Option<&'static str> {
-    match content {
-        "!session" | "!session status" => Some("status"),
-        "!new" | "!reset" | "!session new" | "!session reset" => Some("new"),
-        "!compact" | "!session compact" => Some("compact"),
-        _ => None,
-    }
-}
-
-pub(crate) fn command_suffix<'a>(first_line: &'a str, command: &str) -> Option<&'a str> {
-    if first_line == command {
-        Some("")
-    } else {
-        first_line
-            .strip_prefix(command)
-            .filter(|suffix| suffix.chars().next().is_some_and(char::is_whitespace))
-    }
-}
-
-pub(crate) fn normalize_storage_prefix(first_line: &str) -> Option<(&'static str, String)> {
-    if let Some(suffix) = command_suffix(first_line, "!storage notes") {
-        Some(("notes", format!("!note{suffix}")))
-    } else if let Some(suffix) = command_suffix(first_line, "!storage memory") {
-        Some(("memory", format!("!memory{suffix}")))
-    } else if command_suffix(first_line, "!note").is_some() {
-        Some(("notes", first_line.to_string()))
-    } else if command_suffix(first_line, "!memory").is_some() {
-        Some(("memory", first_line.to_string()))
-    } else {
-        None
-    }
-}
-
 pub(crate) fn commit_hash_response(sha: Option<&str>) -> String {
     match sha.filter(|sha| !sha.is_empty()) {
         Some(sha) => format!("Running commit: `{sha}`"),

@@ -13,35 +13,6 @@ fn ordinary_command_responses_are_private() {
 }
 
 #[test]
-fn session_prefix_aliases_share_canonical_actions() {
-    for command in ["!session", "!session status"] {
-        assert_eq!(prefix_session_action(command), Some("status"));
-    }
-    for command in ["!new", "!reset", "!session new", "!session reset"] {
-        assert_eq!(prefix_session_action(command), Some("new"));
-    }
-    for command in ["!compact", "!session compact"] {
-        assert_eq!(prefix_session_action(command), Some("compact"));
-    }
-}
-
-#[test]
-fn storage_prefix_aliases_share_store_backed_handlers() {
-    assert_eq!(
-        normalize_storage_prefix("!storage notes save shopping"),
-        Some(("notes", "!note save shopping".into()))
-    );
-    assert_eq!(
-        normalize_storage_prefix("!storage memory search tea"),
-        Some(("memory", "!memory search tea".into()))
-    );
-    assert_eq!(
-        normalize_storage_prefix("!note list"),
-        Some(("notes", "!note list".into()))
-    );
-}
-
-#[test]
 fn consolidated_slash_commands_replace_retired_top_level_commands() {
     let definitions = [
         session_command_definition(),
