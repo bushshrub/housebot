@@ -70,7 +70,10 @@ pub fn build_run_args(id: &str, network: NetworkAccess) -> Vec<String> {
     // VM-level isolation via Kata Containers (2.x shim registered as "kata"
     // in /etc/docker/daemon.json).  Prevents container-escape from reaching
     // the Docker host even if the in-container command is malicious.
-    args.push("--runtime=kata".to_string());
+    // Override with HOUSEBOT_SANDBOX_RUNTIME=runc for CI or dev environments
+    // that don't have Kata installed.
+    let runtime = std::env::var("HOUSEBOT_SANDBOX_RUNTIME").unwrap_or_else(|_| "kata".to_string());
+    args.push(format!("--runtime={runtime}"));
 
     // Container identity
     args.push(format!("--name={}", cfg.container_name));
@@ -294,11 +297,23 @@ mod tests {
     }
 
     #[test]
-    fn run_args_use_kata_runtime() {
+    fn run_args_contain_runtime_flag() {
+        let args = build_run_args("test-1", NetworkAccess::None);
+        assert!(
+            args.iter().any(|a| a.starts_with("--runtime=")),
+            "must always include a --runtime= flag"
+        );
+    }
+
+    #[test]
+    fn run_args_default_runtime_is_kata() {
+        if std::env::var("HOUSEBOT_SANDBOX_RUNTIME").is_ok() {
+            return; // env override active; default assertion skipped
+        }
         let args = build_run_args("test-1", NetworkAccess::None);
         assert!(
             args.contains(&"--runtime=kata".to_string()),
-            "must use kata for VM-level isolation"
+            "default runtime must be kata (Kata Containers 2.x)"
         );
     }
 

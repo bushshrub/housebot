@@ -24,7 +24,7 @@ Logs: `docker compose logs -f house-chatbot`
 Pushes both Docker images to GHCR on push to `main`/`master` or on tags (`v*`):
 
 - `ghcr.io/bushshrub/housebot:latest` (main bot — Rust binary)
-- `ghcr.io/bushshrub/housebot/sandbox:latest` (coding sandbox — Node + opencode)
+- `ghcr.io/bushshrub/housebot/sandbox:latest` (code-inspection sandbox — Alpine, bash, git, python3, node, rust, ripgrep)
 
 ---
 
@@ -34,6 +34,23 @@ Pushes both Docker images to GHCR on push to `main`/`master` or on tags (`v*`):
 Cargo.toml
 crates/
   deployment-bot/     # independent deployment controller crate and binary
+  sandbox/            # housebot-sandbox crate + sandboxd binary
+    src/
+      lib.rs          # public re-exports (SandboxClient, Sandbox, NetworkAccess)
+      client.rs       # SandboxClient / Sandbox — connects to sandboxd over Unix socket
+      server.rs       # sandboxd daemon — Unix socket listener, Docker subprocess execution
+      docker.rs       # builds all Docker CLI args (never derived from user input)
+      protocol.rs     # typed JSON-newline request/response messages
+      validation.rs   # URL, path, query, command, branch validation
+      limits.rs       # compile-time constants (timeouts, output sizes, limits)
+      bin/sandboxd.rs # sandboxd entry point
+    docker/
+      Dockerfile      # sandbox execution image (inert sleep process)
+      entrypoint.sh
+    tests/
+      docker_tests.rs      # Docker arg construction tests
+      integration_tests.rs # validation, arg, limits, and Docker lifecycle tests (#[ignore])
+      protocol_tests.rs    # serialization/deserialization tests
 src/
   main.rs            # entry point — inits tracing, calls bot::run()
   lib.rs             # module declarations
@@ -58,6 +75,7 @@ src/
     translate.rs     # translate
     feature_request.rs # create_feature_request + per-user RateLimiter
     feature_development.rs # prepare_feature_development + owner auth + rate limit
+    sandbox.rs         # LazySandbox + five tool definitions (owner-only)
   coding_agent/
     catalog.rs       # versioned agent/model/effort catalog (loaded from .github/agents/catalog.json)
     pending.rs       # PendingDevelopmentJob state machine (15-min expiry, atomic dispatch guard)
@@ -75,7 +93,7 @@ src/
 CLAUDE.md            # instructions for Claude Code when running as the automated agent
 docs/
   automated-development.md # full dispatch flow documentation
-sandbox/             # standalone coding-sandbox image (built/published by CI; not used by the bot at runtime)
+sandbox/             # legacy coding-sandbox image (migrated to crates/sandbox/docker/; kept for reference)
 data/                # runtime — gitignored
 ```
 
@@ -105,6 +123,8 @@ data/                # runtime — gitignored
 | `JELLYFIN_URL` + `JELLYFIN_API_KEY` | no | — | Enables Jellyfin MCP server |
 | `GITHUB_APP_ID` / `GITHUB_APP_PRIVATE_KEY` / `GITHUB_INSTALLATION_ID` / `GITHUB_REPO` | no | — | GitHub App creds for feature-request issue filing (all four required) |
 | `OWNER_DISCORD_ID` | no | `0` | Discord user ID allowed to dispatch coding jobs; `0` disables dispatch |
+| `SANDBOX_SOCKET_PATH` | no | `/run/housebot-sandbox/sandbox.sock` | Unix socket path for sandboxd |
+| `HOUSEBOT_SANDBOX_RUNTIME` | no | `kata` | Container runtime for sandboxd; set to `runc` in dev/CI |
 
 (`DOCKER_NETWORK` is read only by the independent `deployment-bot` crate, not the chatbot.)
 
@@ -168,6 +188,62 @@ of the reply, infers an extension from the language tag, and uploads them as fil
 `mcp::McpServer` speaks newline-delimited JSON-RPC 2.0 over stdio: it performs the `initialize`
 handshake, lists tools, and calls them. Tool names are namespaced `{server}__{tool}` (e.g.
 `jellyfin__get_movies`). A failed MCP startup is logged and skipped.
+
+---
+
+## Code inspection sandbox
+
+Five owner-only tools (`sandbox_clone_repository`, `sandbox_list_files`,
+`sandbox_search_code`, `sandbox_read_file`, `sandbox_run`) let the bot inspect
+and run short commands in a temporary isolated container.
+
+### Security boundary
+
+```
+Housebot  →  Unix socket  →  sandboxd  →  docker run --runtime=kata  →  Kata VM
+```
+
+- **Housebot never holds the Docker socket.**  Only `sandboxd` does.
+- **Kata Containers 2.x** runs each container inside a lightweight VM so a
+  container escape cannot reach the Docker host.
+- Container is `--read-only`, `--cap-drop=ALL`, `--no-new-privileges`,
+  `--user=sandbox`, with tmpfs mounts only on `/workspace`, `/tmp`,
+  `/home/sandbox`.
+- One sandbox per `Agent::run`; destroyed unconditionally when the response ends.
+
+### sandboxd
+
+`sandboxd` (from `crates/sandbox/src/bin/sandboxd.rs`) must run beside the
+bot.  It listens on `SANDBOX_SOCKET_PATH` and accepts typed JSON requests.
+The Docker socket is mounted only into `sandboxd`, not into Housebot.
+
+If `sandboxd` is unreachable the bot starts normally; sandbox tools return an
+error message rather than crashing.
+
+### Sandbox tool checklist
+
+When adding or changing a sandbox tool:
+
+1. Define it in `src/tools/sandbox.rs` (`all_definitions()` + the `LazySandbox` method).
+2. Add a dispatch arm in `src/agent/dispatch.rs` under the `name if name.starts_with("sandbox_")` block.
+3. Keep the operation in `crates/sandbox/src/client.rs` / `server.rs`.
+4. Update validation in `crates/sandbox/src/validation.rs` if new input types are introduced.
+5. Add unit tests in `crates/sandbox/src/docker.rs` or `tests/` for argument construction.
+6. Add a Docker lifecycle test (marked `#[ignore]`) in `tests/integration_tests.rs`.
+
+### Running the Docker integration tests locally
+
+```bash
+# Build the sandbox image
+docker build -t ghcr.io/bushshrub/housebot/sandbox:latest crates/sandbox/docker
+
+# With Kata (production-equivalent)
+cargo test --package housebot-sandbox -- --include-ignored --test-threads=1
+
+# Without Kata (dev / CI)
+HOUSEBOT_SANDBOX_RUNTIME=runc \
+  cargo test --package housebot-sandbox -- --include-ignored --test-threads=1
+```
 
 ---
 

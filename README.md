@@ -12,6 +12,7 @@ A Discord-based house assistant bot powered by a local LLM (llama.cpp) with MCP 
 - **Jellyfin media server** — browse and query your media library via MCP
 - **Built-in tools** — reminders, URL summarization, translation, and GitHub feature-request filing
 - **Automated feature development** — owner-approved jobs can dispatch Codex, Claude Code, or OpenCode to open reviewable pull requests
+- **Code inspection sandbox** — owner-only tools for cloning public repos, browsing files, searching code, reading files, and running short commands inside an isolated Kata Container
 
 ## Quick start
 
@@ -42,6 +43,8 @@ See `.env.example` for all available options. Key variables:
 | `JELLYFIN_URL` + `JELLYFIN_API_KEY` | Enables Jellyfin MCP |
 | `GITHUB_*` | GitHub App credentials for issue filing and coding-agent dispatch |
 | `SENTRY_DSN` / `SENTRY_ENVIRONMENT` | Optional Sentry error reporting for the chatbot |
+| `SANDBOX_SOCKET_PATH` | Unix socket path for sandboxd (default `/run/housebot-sandbox/sandbox.sock`) |
+| `HOUSEBOT_SANDBOX_RUNTIME` | Override container runtime (default `kata`; set to `runc` for dev/CI) |
 
 ## Architecture
 
@@ -51,9 +54,38 @@ Discord message → HouseBot::message() → Agent::run()
   │   ├── update_memory → user memory (markdown)
   │   ├── set_reminder / summarize_url / translate / create_feature_request
   │   ├── web_search / fetch_webpage → SearXNG + guarded HTTP fetch
+  │   ├── sandbox_* → sandboxd (Unix socket) → Kata Container
   │   └── MCP tools → jellyfin__* (stdio JSON-RPC)
   └── streamed response back to Discord
 ```
+
+## Code inspection sandbox
+
+The five `sandbox_*` tools (owner-only) let the bot clone a public repository,
+browse its files, and run short commands for diagnostic purposes.  Each agent
+response gets one disposable container; it is destroyed when the response ends.
+
+### Security model
+
+```
+Housebot  →  typed request  →  sandboxd  →  docker run --runtime=kata  →  VM
+```
+
+- **Housebot never holds the Docker socket** — only `sandboxd` does.
+- **Kata Containers** runs each sandbox inside a lightweight VM (QEMU/KVM),
+  so a container-escape cannot reach the Docker host.
+- The container is read-only, non-root, cap-dropped, network-isolated by
+  default, and destroyed after every response.
+
+### Host requirements for the sandbox
+
+- Kata Containers 2.x installed and registered as the `kata` Docker runtime
+  in `/etc/docker/daemon.json`
+- KVM hardware virtualisation enabled on the host
+- The `sandboxd` binary running beside Housebot with Docker socket access
+
+The bot starts and operates normally when `sandboxd` is unavailable; only the
+sandbox tools return an error.
 
 The crate is split into small, individually unit-tested modules:
 

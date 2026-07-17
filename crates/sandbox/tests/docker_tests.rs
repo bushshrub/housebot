@@ -22,9 +22,15 @@ fn run_args_have_all_required_security_features() {
         "must not have network by default"
     );
     assert!(
-        arg_str.contains("--runtime=kata"),
-        "must use kata for VM-level isolation"
+        arg_str.contains("--runtime="),
+        "must always include a --runtime= flag"
     );
+    if std::env::var("HOUSEBOT_SANDBOX_RUNTIME").is_err() {
+        assert!(
+            arg_str.contains("--runtime=kata"),
+            "default runtime must be kata (Kata Containers 2.x)"
+        );
+    }
 }
 
 #[test]
