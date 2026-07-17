@@ -527,6 +527,23 @@ async fn build_tools_excludes_code_execution() {
     assert!(names.contains(&"get_lua_docs"));
 }
 
+#[tokio::test]
+async fn build_tools_includes_sandbox_tools_for_owner() {
+    let client = Arc::new(MockChatClient::new());
+    let (_t, agent) = test_agent(client);
+    let tools = agent.build_tools(true, true).await;
+    let names: Vec<&str> = tools
+        .iter()
+        .filter_map(|t| t["function"]["name"].as_str())
+        .collect();
+    assert!(names.contains(&"sandbox_clone_repository"));
+    assert!(names.contains(&"sandbox_list_files"));
+    assert!(names.contains(&"sandbox_search_code"));
+    assert!(names.contains(&"sandbox_read_file"));
+    assert!(names.contains(&"sandbox_run"));
+    assert!(names.contains(&"translate"));
+}
+
 #[test]
 fn get_lua_docs_tool_definition_is_valid() {
     let def = get_lua_docs_tool();

@@ -9,6 +9,7 @@
 //!   - Removes stale containers on startup.
 
 use std::collections::HashMap;
+use std::os::unix::fs::FileTypeExt;
 use std::path::Path;
 use std::process::Stdio;
 use std::sync::Arc;
@@ -21,6 +22,7 @@ use tokio::sync::Mutex;
 use crate::docker;
 use crate::limits;
 use crate::protocol::*;
+use crate::validation;
 
 type ContainerMap = Arc<Mutex<HashMap<String, ContainerState>>>;
 
@@ -36,8 +38,14 @@ struct ContainerState {
 /// Blocks forever, listening on `socket_path`. Call with `tokio::spawn` or as
 /// a `tokio::main` entrypoint.
 pub async fn run_daemon(socket_path: &str) -> anyhow::Result<()> {
-    // Remove stale socket
+    // Remove stale socket (refuse to delete non-socket paths)
     if Path::new(socket_path).exists() {
+        let meta = std::fs::symlink_metadata(socket_path)?;
+        if !meta.file_type().is_socket() {
+            anyhow::bail!(
+                "socket path exists and is not a Unix socket: {socket_path}"
+            );
+        }
         std::fs::remove_file(socket_path)?;
     }
 
@@ -70,10 +78,25 @@ async fn handle_connection(mut stream: UnixStream, containers: ContainerMap) -> 
 
     let mut buf_reader = BufReader::new(reader);
     let mut line = String::new();
-    buf_reader.read_line(&mut line).await?;
+
+    tokio::time::timeout(
+        std::time::Duration::from_secs(limits::SOCKET_TIMEOUT_SECS),
+        buf_reader.read_line(&mut line),
+    )
+    .await
+    .map_err(|_| anyhow::anyhow!("request read timed out after {}s", limits::SOCKET_TIMEOUT_SECS))?
+    .map_err(|e| anyhow::anyhow!("failed to read request: {e}"))?;
 
     if line.trim().is_empty() {
         return Ok(());
+    }
+
+    if line.len() > limits::MAX_REQUEST_FRAME_BYTES {
+        anyhow::bail!(
+            "request frame too large ({} bytes, max {})",
+            line.len(),
+            limits::MAX_REQUEST_FRAME_BYTES
+        );
     }
 
     let request: SandboxRequest = serde_json::from_str(line.trim())?;
@@ -192,6 +215,15 @@ async fn handle_clone_repository(
         Err(e) => return SandboxResponse::err(id.to_string(), format!("invalid params: {e}")),
     };
 
+    if let Err(e) = validation::validate_repository_url(&clone_params.url) {
+        return SandboxResponse::err(id.to_string(), format!("invalid URL: {e}"));
+    }
+    if let Some(ref branch) = clone_params.branch {
+        if let Err(e) = validation::validate_branch(branch) {
+            return SandboxResponse::err(id.to_string(), format!("invalid branch: {e}"));
+        }
+    }
+
     let sandbox_id = clone_params.sandbox_id.clone();
     let container_name = {
         let guard = match require_sandbox(containers, &sandbox_id).await {
@@ -236,6 +268,10 @@ async fn handle_list_files(
         Ok(p) => p,
         Err(e) => return SandboxResponse::err(id.to_string(), format!("invalid params: {e}")),
     };
+
+    if let Err(e) = validation::validate_workspace_path(&list_params.path) {
+        return SandboxResponse::err(id.to_string(), format!("invalid path: {e}"));
+    }
 
     let sandbox_id = list_params.sandbox_id.clone();
     let container_name = {
@@ -297,6 +333,20 @@ async fn handle_search_code(
         Ok(p) => p,
         Err(e) => return SandboxResponse::err(id.to_string(), format!("invalid params: {e}")),
     };
+
+    if let Err(e) = validation::validate_query(&search_params.query) {
+        return SandboxResponse::err(id.to_string(), format!("invalid query: {e}"));
+    }
+    if let Some(ref glob) = search_params.glob {
+        if let Err(e) = validation::validate_glob(glob) {
+            return SandboxResponse::err(id.to_string(), format!("invalid glob: {e}"));
+        }
+    }
+    if let Some(ref path) = search_params.path {
+        if let Err(e) = validation::validate_workspace_path(path) {
+            return SandboxResponse::err(id.to_string(), format!("invalid path: {e}"));
+        }
+    }
 
     let sandbox_id = search_params.sandbox_id.clone();
     let container_name = {
@@ -371,6 +421,10 @@ async fn handle_read_file(
         Err(e) => return SandboxResponse::err(id.to_string(), format!("invalid params: {e}")),
     };
 
+    if let Err(e) = validation::validate_workspace_path(&read_params.path) {
+        return SandboxResponse::err(id.to_string(), format!("invalid path: {e}"));
+    }
+
     let sandbox_id = read_params.sandbox_id.clone();
     let container_name = {
         let guard = match require_sandbox(containers, &sandbox_id).await {
@@ -383,33 +437,19 @@ async fn handle_read_file(
             .unwrap_or_default()
     };
 
-    // Guard against symlink escape and directories
-    let check_cmd = format!(
-        "cd /workspace && test -L {} && echo SYMLINK || (test -f {} && echo FILE || echo NOT_FILE)",
-        shell_escape_path(&read_params.path),
-        shell_escape_path(&read_params.path),
-    );
+    // Canonicalize path to prevent symlink escape, then verify it's under /workspace
+    let resolve_cmd = format!("realpath -q /workspace/{} 2>/dev/null || true", shell_escape_path(&read_params.path));
+    let resolve_args = docker::build_exec_args(&container_name, &resolve_cmd, None);
+    let resolved = match run_docker_with_timeout(&resolve_args, 10).await {
+        Ok(out) => out.trim().to_string(),
+        Err(_) => return SandboxResponse::err(id.to_string(), "failed to resolve path".to_string()),
+    };
 
-    let check_args = docker::build_exec_args(&container_name, &check_cmd, None);
-    match run_docker_with_timeout(&check_args, 10).await {
-        Ok(check_out) => {
-            let check = check_out.trim();
-            if check == "SYMLINK" {
-                return SandboxResponse::err(
-                    id.to_string(),
-                    "refusing to read symlink: path escapes".to_string(),
-                );
-            }
-            if check != "FILE" {
-                return SandboxResponse::err(
-                    id.to_string(),
-                    "path is not a regular file".to_string(),
-                );
-            }
-        }
-        Err(e) => {
-            return SandboxResponse::err(id.to_string(), format!("path check failed: {e}"));
-        }
+    if resolved.is_empty() || !resolved.starts_with("/workspace/") {
+        return SandboxResponse::err(
+            id.to_string(),
+            "path escapes workspace via symlink".to_string(),
+        );
     }
 
     let cmd = if let (Some(start), Some(end)) = (read_params.start_line, read_params.end_line) {
@@ -417,17 +457,17 @@ async fn handle_read_file(
             return SandboxResponse::err(id.to_string(), "line range exceeds maximum".to_string());
         }
         format!(
-            r#"sed -n '{};{}p' "/workspace/{}" 2>/dev/null | head -c {}"#,
-            start,
+            "head -n {} {} 2>/dev/null | tail -n +{} 2>/dev/null | head -c {}",
             end,
-            read_params.path.replace('"', "\\\""),
+            shell_escape_path(&resolved),
+            start,
             limits::MAX_FILE_READ_BYTES
         )
     } else {
         format!(
-            r#"head -c {} "/workspace/{}" 2>/dev/null"#,
+            "head -c {} {} 2>/dev/null",
             limits::MAX_FILE_READ_BYTES,
-            read_params.path.replace('"', "\\\"")
+            shell_escape_path(&resolved)
         )
     };
 
@@ -462,6 +502,15 @@ async fn handle_run(
         Ok(p) => p,
         Err(e) => return SandboxResponse::err(id.to_string(), format!("invalid params: {e}")),
     };
+
+    if let Err(e) = validation::validate_command(&run_params.command) {
+        return SandboxResponse::err(id.to_string(), format!("invalid command: {e}"));
+    }
+    if let Some(ref dir) = run_params.working_dir {
+        if let Err(e) = validation::validate_workspace_path(dir) {
+            return SandboxResponse::err(id.to_string(), format!("invalid working dir: {e}"));
+        }
+    }
 
     let sandbox_id = run_params.sandbox_id.clone();
     let timeout = run_params
@@ -502,11 +551,10 @@ async fn handle_run(
             )
         }
         Err(e) => {
-            // Check if it was a timeout
             if e.contains("timed out") {
-                // Destroy the container on timeout
+                // Destroy the container on timeout (lock is already released
+                // since container_name was extracted earlier)
                 let _ = destroy_container(&container_name).await;
-                // Remove from our map
                 let mut map = containers.lock().await;
                 map.remove(&sandbox_id);
                 SandboxResponse::err(
@@ -530,10 +578,13 @@ async fn handle_close(
         Err(e) => return SandboxResponse::err(id.to_string(), e),
     };
 
-    let mut map = containers.lock().await;
-    match map.remove(&sandbox_id) {
-        Some(state) => {
-            let _ = destroy_container(&state.container_name).await;
+    let state = {
+        let mut map = containers.lock().await;
+        map.remove(&sandbox_id)
+    };
+    match state {
+        Some(s) => {
+            let _ = destroy_container(&s.container_name).await;
             SandboxResponse::ok(id.to_string(), serde_json::json!({"closed": true}))
         }
         None => SandboxResponse::err(id.to_string(), format!("unknown sandbox: {sandbox_id}")),
@@ -550,6 +601,7 @@ async fn run_docker(args: &[String], timeout_secs: u64) -> Result<String, String
             .args(args)
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
+            .kill_on_drop(true)
             .output(),
     )
     .await
@@ -561,7 +613,7 @@ async fn run_docker(args: &[String], timeout_secs: u64) -> Result<String, String
         return Err(format!("docker command failed: {stderr}"));
     }
 
-    Ok(String::from_utf8_lossy(&output.stdout).to_string())
+    Ok(utf8_safe_string(&output.stdout))
 }
 
 /// Run a docker command and return (stdout, stderr, exit_code) with timeout.
@@ -575,14 +627,15 @@ async fn run_docker_with_timeout_raw(
             .args(args)
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
+            .kill_on_drop(true)
             .output(),
     )
     .await
     .map_err(|_| format!("command timed out after {timeout_secs}s"))?
     .map_err(|e| format!("failed to execute docker: {e}"))?;
 
-    let stdout = String::from_utf8_lossy(&output.stdout).to_string();
-    let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+    let stdout = utf8_safe_string(&output.stdout);
+    let stderr = utf8_safe_string(&output.stderr);
     let exit_code = output.status.code().unwrap_or(-1);
 
     Ok((stdout, stderr, exit_code))
@@ -597,11 +650,16 @@ async fn run_docker_with_timeout(args: &[String], timeout_secs: u64) -> Result<S
     Ok(stdout)
 }
 
+/// Truncate a String at a UTF-8 boundary if it exceeds MAX_OUTPUT_BYTES.
 fn truncate_output(output: String) -> (String, bool) {
     if output.len() > limits::MAX_OUTPUT_BYTES {
-        let mut truncated = output;
-        truncated.truncate(limits::MAX_OUTPUT_BYTES);
-        (truncated, true)
+        let mut end = limits::MAX_OUTPUT_BYTES;
+        while !output.is_char_boundary(end) {
+            end -= 1;
+        }
+        let mut t = output[..end].to_string();
+        t.push_str("\n... (truncated)");
+        (t, true)
     } else {
         (output, false)
     }
@@ -609,6 +667,11 @@ fn truncate_output(output: String) -> (String, bool) {
 
 fn truncate_output_raw(output: String) -> (String, bool) {
     truncate_output(output)
+}
+
+/// Lossy UTF-8 decode without truncation.
+fn utf8_safe_string(bytes: &[u8]) -> String {
+    String::from_utf8_lossy(bytes).to_string()
 }
 
 async fn destroy_container(container_name: &str) -> Result<(), String> {

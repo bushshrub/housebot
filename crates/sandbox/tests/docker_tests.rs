@@ -126,14 +126,14 @@ fn run_args_contain_tmpfs_mounts() {
 #[test]
 fn git_clone_args_use_depth_1() {
     let args = build_git_clone_args("c", "https://github.com/u/r", "/workspace/r", None);
-    let cmd = args.last().unwrap();
-    assert!(cmd.contains("--depth=1"));
-    assert!(cmd.contains("git clone"));
+    assert!(args.contains(&"--depth=1".to_string()));
+    assert!(args.contains(&"git".to_string()));
+    assert!(args.contains(&"clone".to_string()));
 }
 
 #[test]
 fn git_clone_args_with_branch() {
     let args = build_git_clone_args("c", "https://github.com/u/r", "/workspace/r", Some("main"));
-    let cmd = args.last().unwrap();
-    assert!(cmd.contains("--branch main"));
+    assert!(args.contains(&"--branch".to_string()));
+    assert!(args.contains(&"main".to_string()));
 }

@@ -44,7 +44,7 @@ impl ContainerConfig {
             cpus: 1.0,
             ulimit: vec![("nofile".to_string(), "512:512".to_string())],
             tmpfs: vec![
-                "/workspace:size=256m,noexec,nosuid,nodeuid=sandbox".to_string(),
+                "/workspace:size=256m,noexec,nosuid,uid=1000,gid=1000".to_string(),
                 "/tmp:size=64m,noexec,nosuid".to_string(),
                 "/home/sandbox:size=32m,noexec,nosuid".to_string(),
             ],
@@ -153,23 +153,30 @@ pub fn build_exec_args(
     args
 }
 
-/// Build a `docker cp` command to clone a repository into the container.
+/// Build a `docker exec git clone` command using separate argv elements.
 ///
-/// Instead of running git clone inside the container (which requires network
-/// access even for already-cloned repos), this is handled by docker exec
-/// git clone when network is available.
+/// Every argument is passed individually to avoid shell interpretation of
+/// branch names, URLs, or destination paths.
 pub fn build_git_clone_args(
     container_name: &str,
     url: &str,
     dest: &str,
     branch: Option<&str>,
 ) -> Vec<String> {
-    let mut cmd = "git clone --depth=1".to_string();
+    let mut args = vec![
+        "exec".to_string(),
+        container_name.to_string(),
+        "git".to_string(),
+        "clone".to_string(),
+        "--depth=1".to_string(),
+    ];
     if let Some(b) = branch {
-        cmd.push_str(&format!(" --branch {b}"));
+        args.push("--branch".to_string());
+        args.push(b.to_string());
     }
-    cmd.push_str(&format!(" {url} {dest}"));
-    build_exec_args(container_name, &cmd, None)
+    args.push(url.to_string());
+    args.push(dest.to_string());
+    args
 }
 
 /// Build a `docker inspect` command to verify a container exists and is managed by us.
@@ -352,7 +359,7 @@ mod tests {
     }
 
     #[test]
-    fn git_clone_args_build_correctly() {
+    fn git_clone_args_use_argv_instead_of_shell_string() {
         let args = build_git_clone_args(
             "c",
             "https://github.com/user/repo",
@@ -364,9 +371,13 @@ mod tests {
             vec![
                 "exec",
                 "c",
-                "/bin/bash",
-                "-c",
-                "git clone --depth=1 --branch main https://github.com/user/repo /workspace/repo"
+                "git",
+                "clone",
+                "--depth=1",
+                "--branch",
+                "main",
+                "https://github.com/user/repo",
+                "/workspace/repo"
             ]
         );
     }
@@ -380,9 +391,11 @@ mod tests {
             vec![
                 "exec",
                 "c",
-                "/bin/bash",
-                "-c",
-                "git clone --depth=1 https://github.com/user/repo /workspace/repo"
+                "git",
+                "clone",
+                "--depth=1",
+                "https://github.com/user/repo",
+                "/workspace/repo"
             ]
         );
     }
