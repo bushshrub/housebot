@@ -47,7 +47,7 @@ jobs:
           - name: main
             context: .
           - name: sandbox
-            context: ./sandbox
+            context: ./crates/sandbox/docker
     steps:
       - uses: actions/checkout@v4
 

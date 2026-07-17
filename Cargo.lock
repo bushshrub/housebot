@@ -882,6 +882,7 @@ dependencies = [
  "futures-util",
  "graph-render",
  "housebot-llm",
+ "housebot-sandbox",
  "jsonwebtoken",
  "mlua",
  "regex",
@@ -910,6 +911,20 @@ dependencies = [
  "serde",
  "serde_json",
  "tracing",
+]
+
+[[package]]
+name = "housebot-sandbox"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+ "url",
+ "uuid",
 ]
 
 [[package]]

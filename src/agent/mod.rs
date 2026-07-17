@@ -30,6 +30,7 @@ use crate::tool_permissions::ToolPermissions;
 use crate::tools;
 use crate::tools::common_crawl::CommonCrawl;
 use crate::tools::file_download::FileDownloader;
+use crate::tools::sandbox::LazySandbox;
 use crate::tools::searxng::SearxNg;
 use crate::tools::web_fetch::WebFetch;
 
@@ -209,6 +210,7 @@ pub struct Agent {
     tool_permissions: ToolPermissions,
     discord: Arc<DiscordBridge>,
     channel_log: ChannelLog,
+    sandbox_client: housebot_sandbox::SandboxClient,
 }
 
 mod dispatch;
@@ -304,6 +306,7 @@ impl Agent {
             tool_permissions: ToolPermissions::default(),
             discord,
             channel_log: ChannelLog::default(),
+            sandbox_client: housebot_sandbox::SandboxClient::from_env(),
         })
     }
 
@@ -430,6 +433,7 @@ impl Agent {
             tool_permissions: ToolPermissions::default(),
             discord: Arc::new(DiscordBridge::default()),
             channel_log: ChannelLog::default(),
+            sandbox_client: housebot_sandbox::SandboxClient::new("/dev/null"),
         }
     }
 

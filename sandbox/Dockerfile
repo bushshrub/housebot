@@ -1,34 +1,26 @@
-FROM node:22-alpine
+# Legacy sandbox image — the code-inspection sandbox image has moved to
+# crates/sandbox/docker/Dockerfile.  CI now builds from that path.
+FROM alpine:3.20
 
 RUN apk add --no-cache \
     bash \
     python3 \
+    py3-pip \
     git \
     curl \
     ca-certificates \
-    build-base
-
-RUN npm install -g --no-fund --no-audit opencode-ai \
-    && npm cache clean --force
+    build-base \
+    ripgrep \
+    sudo nodejs npm
 
 RUN adduser -D -s /bin/bash sandbox \
-    && mkdir -p /workspace \
-    && chown -R sandbox:sandbox /workspace
+    && mkdir -p /workspace /home/sandbox \
+    && chown -R sandbox:sandbox /workspace /home/sandbox
 
-# Install Rust toolchain for the sandbox user
 USER sandbox
-# The default rustup profile includes documentation and other components that
-# are not needed to compile projects. The minimal profile cuts hundreds of MB.
-RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- \
-    -y --default-toolchain stable --profile minimal \
-    && rm -rf /home/sandbox/.rustup/downloads \
-        /home/sandbox/.rustup/tmp \
-        /home/sandbox/.cargo/registry \
-        /home/sandbox/.cargo/git
-ENV PATH="/home/sandbox/.cargo/bin:${PATH}"
 USER root
 
-COPY entrypoint.sh /entrypoint.sh
+COPY crates/sandbox/docker/entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh
 
 USER sandbox

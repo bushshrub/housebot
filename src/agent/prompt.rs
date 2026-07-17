@@ -105,7 +105,13 @@ account creation date, bot status).\n\
 discord.* bridge, limits). Call this before writing a Lua script if you are unsure of the API.\n\
 - run_lua — Write and execute a sandboxed Lua 5.4 script for calculations, data processing, or \
 algorithmic tasks. The script's print() output and return values are returned as the tool result. \
-Call get_lua_docs first if you need the API reference.";
+Call get_lua_docs first if you need the API reference.\n\
+- sandbox_clone_repository, sandbox_list_files, sandbox_search_code, sandbox_read_file, \
+sandbox_run — Limited tools for inspecting and executing code in a temporary sandbox. \
+Use them only when code inspection or a short execution would materially improve the answer. \
+This is not a full software-development environment. Do not use it for autonomous feature \
+implementation, commits, pushes, pull requests, or deployment. Prefer conversational explanation \
+when execution is unnecessary. Report command and test results accurately.";
 
 /// Configuration-dependent additions that sit after all stable guideline
 /// bullets and before the memory-guidance bullet and dynamic content
