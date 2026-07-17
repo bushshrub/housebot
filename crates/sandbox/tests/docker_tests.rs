@@ -21,6 +21,10 @@ fn run_args_have_all_required_security_features() {
         arg_str.contains("--network=none"),
         "must not have network by default"
     );
+    assert!(
+        arg_str.contains("--runtime=kata-runtime"),
+        "must use kata-runtime for VM-level isolation"
+    );
 }
 
 #[test]

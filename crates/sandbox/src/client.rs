@@ -39,7 +39,12 @@ impl SandboxClient {
 
         let stream = timeout(timeout_dur, UnixStream::connect(&self.socket_path))
             .await
-            .map_err(|_| format!("timed out connecting to sandboxd after {}s", limits::SOCKET_TIMEOUT_SECS))?
+            .map_err(|_| {
+                format!(
+                    "timed out connecting to sandboxd after {}s",
+                    limits::SOCKET_TIMEOUT_SECS
+                )
+            })?
             .map_err(|e| format!("failed to connect to sandboxd: {e}"))?;
 
         let (reader, mut writer) = stream.into_split();
@@ -51,7 +56,12 @@ impl SandboxClient {
 
         timeout(timeout_dur, writer.write_all(&line_bytes))
             .await
-            .map_err(|_| format!("timed out writing request after {}s", limits::SOCKET_TIMEOUT_SECS))?
+            .map_err(|_| {
+                format!(
+                    "timed out writing request after {}s",
+                    limits::SOCKET_TIMEOUT_SECS
+                )
+            })?
             .map_err(|e| format!("failed to write request: {e}"))?;
         writer.shutdown().await.ok();
 
@@ -59,7 +69,12 @@ impl SandboxClient {
         let mut response_line = String::with_capacity(4096);
         timeout(timeout_dur, buf_reader.read_line(&mut response_line))
             .await
-            .map_err(|_| format!("timed out reading response after {}s", limits::SOCKET_TIMEOUT_SECS))?
+            .map_err(|_| {
+                format!(
+                    "timed out reading response after {}s",
+                    limits::SOCKET_TIMEOUT_SECS
+                )
+            })?
             .map_err(|e| format!("failed to read response: {e}"))?;
 
         if response_line.is_empty() {
