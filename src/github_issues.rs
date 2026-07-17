@@ -325,6 +325,239 @@ impl GitHubIssueReporter {
         Ok(())
     }
 
+    /// Perform an authenticated GET request to the GitHub API.
+    async fn authed_get(&self, path: &str) -> anyhow::Result<String> {
+        let token = self.installation_token().await?;
+        let url = format!("https://api.github.com/repos/{}{}", self.repo, path);
+        let resp = self
+            .http
+            .get(&url)
+            .header("Authorization", format!("Bearer {token}"))
+            .header("Accept", "application/vnd.github+json")
+            .header("X-GitHub-Api-Version", "2022-11-28")
+            .header("User-Agent", "house-chatbot")
+            .send()
+            .await?
+            .error_for_status()?;
+        Ok(resp.text().await?)
+    }
+
+    /// List issues with optional state and label filters.
+    pub async fn list_issues(&self, state: &str, labels: &str) -> String {
+        let path = format!("/issues?state={state}&per_page=20");
+        let path = if labels.is_empty() {
+            path
+        } else {
+            format!("{path}&labels={labels}")
+        };
+        match self.authed_get(&path).await {
+            Ok(body) => format_issue_list(&body),
+            Err(e) => format!("Error: {e}"),
+        }
+    }
+
+    /// Search issues in the repository.
+    pub async fn search_issues(&self, query: &str) -> String {
+        let q = urlencoding(query);
+        let path = format!("/issues?per_page=20&q={q}");
+        match self.authed_get(&path).await {
+            Ok(body) => format_issue_list(&body),
+            Err(e) => format!("Error: {e}"),
+        }
+    }
+
+    /// Get basic repository metadata (stars, forks, description, etc.).
+    pub async fn get_repo(&self) -> String {
+        match self.authed_get("").await {
+            Ok(body) => match serde_json::from_str::<serde_json::Value>(&body) {
+                Ok(repo) => json!({
+                    "full_name": repo["full_name"],
+                    "description": repo["description"],
+                    "default_branch": repo["default_branch"],
+                    "stars": repo["stargazers_count"],
+                    "forks": repo["forks_count"],
+                    "open_issues": repo["open_issues_count"],
+                    "language": repo["language"],
+                    "topics": repo["topics"],
+                    "visibility": repo["visibility"],
+                    "html_url": repo["html_url"],
+                    "created_at": repo["created_at"],
+                    "updated_at": repo["updated_at"],
+                })
+                .to_string(),
+                Err(e) => format!("Error: failed to parse repo info — {e}"),
+            },
+            Err(e) => format!("Error: {e}"),
+        }
+    }
+
+    /// List all workflows in the repository.
+    pub async fn list_workflows(&self) -> String {
+        match self.authed_get("/actions/workflows?per_page=50").await {
+            Ok(body) => match serde_json::from_str::<serde_json::Value>(&body) {
+                Ok(val) => {
+                    let workflows = val["workflows"]
+                        .as_array()
+                        .map(|arr| {
+                            arr.iter()
+                                .map(|w| {
+                                    json!({
+                                        "id": w["id"],
+                                        "name": w["name"],
+                                        "state": w["state"],
+                                        "path": w["path"],
+                                        "html_url": w["html_url"],
+                                    })
+                                })
+                                .collect::<Vec<_>>()
+                        })
+                        .unwrap_or_default();
+                    serde_json::to_string_pretty(&json!({"workflows": workflows}))
+                        .unwrap_or_default()
+                }
+                Err(e) => format!("Error: failed to parse workflows — {e}"),
+            },
+            Err(e) => format!("Error: {e}"),
+        }
+    }
+
+    /// List workflow runs with optional filters.
+    pub async fn list_workflow_runs(
+        &self,
+        workflow_name: &str,
+        branch: &str,
+        status: &str,
+        event: &str,
+    ) -> String {
+        let mut params = vec![format!("per_page=20")];
+        if !workflow_name.is_empty() {
+            params.push(format!("workflow={}", urlencoding(workflow_name)));
+        }
+        if !branch.is_empty() {
+            params.push(format!("branch={}", urlencoding(branch)));
+        }
+        if !status.is_empty() {
+            params.push(format!("status={}", urlencoding(status)));
+        }
+        if !event.is_empty() {
+            params.push(format!("event={}", urlencoding(event)));
+        }
+        let qs = params.join("&");
+        let path = format!("/actions/runs?{qs}");
+        match self.authed_get(&path).await {
+            Ok(body) => match serde_json::from_str::<serde_json::Value>(&body) {
+                Ok(val) => {
+                    let runs = val["workflow_runs"]
+                        .as_array()
+                        .map(|arr| {
+                            arr.iter()
+                                .map(|r| {
+                                    json!({
+                                        "id": r["id"],
+                                        "name": r["name"],
+                                        "workflow_id": r["workflow_id"],
+                                        "head_branch": r["head_branch"],
+                                        "head_sha": r["head_sha"],
+                                        "status": r["status"],
+                                        "conclusion": r["conclusion"],
+                                        "event": r["event"],
+                                        "display_title": r["display_title"],
+                                        "html_url": r["html_url"],
+                                        "created_at": r["created_at"],
+                                        "updated_at": r["updated_at"],
+                                        "run_started_at": r["run_started_at"],
+                                    })
+                                })
+                                .collect::<Vec<_>>()
+                        })
+                        .unwrap_or_default();
+                    let total = &val["total_count"];
+                    serde_json::to_string_pretty(
+                        &json!({"total_count": total, "workflow_runs": runs}),
+                    )
+                    .unwrap_or_default()
+                }
+                Err(e) => format!("Error: failed to parse workflow runs — {e}"),
+            },
+            Err(e) => format!("Error: {e}"),
+        }
+    }
+
+    /// Get details for a specific workflow run.
+    pub async fn get_workflow_run(&self, run_id: u64) -> String {
+        match self.authed_get(&format!("/actions/runs/{run_id}")).await {
+            Ok(body) => match serde_json::from_str::<serde_json::Value>(&body) {
+                Ok(val) => {
+                    let run = json!({
+                        "id": val["id"],
+                        "name": val["name"],
+                        "head_branch": val["head_branch"],
+                        "head_sha": val["head_sha"],
+                        "status": val["status"],
+                        "conclusion": val["conclusion"],
+                        "event": val["event"],
+                        "display_title": val["display_title"],
+                        "html_url": val["html_url"],
+                        "created_at": val["created_at"],
+                        "updated_at": val["updated_at"],
+                        "run_started_at": val["run_started_at"],
+                        "run_attempt": val["run_attempt"],
+                        "actor": val["actor"]["login"],
+                    });
+                    serde_json::to_string_pretty(&run).unwrap_or_default()
+                }
+                Err(e) => format!("Error: failed to parse workflow run — {e}"),
+            },
+            Err(e) => format!("Error: {e}"),
+        }
+    }
+
+    /// List jobs for a specific workflow run.
+    pub async fn get_workflow_run_jobs(&self, run_id: u64) -> String {
+        match self
+            .authed_get(&format!("/actions/runs/{run_id}/jobs?per_page=50"))
+            .await
+        {
+            Ok(body) => match serde_json::from_str::<serde_json::Value>(&body) {
+                Ok(val) => {
+                    let jobs = val["jobs"]
+                        .as_array()
+                        .map(|arr| {
+                            arr.iter()
+                                .map(|j| {
+                                    json!({
+                                        "id": j["id"],
+                                        "name": j["name"],
+                                        "status": j["status"],
+                                        "conclusion": j["conclusion"],
+                                        "started_at": j["started_at"],
+                                        "completed_at": j["completed_at"],
+                                        "runner_name": j["runner_name"],
+                                        "steps": j["steps"].as_array().map(|steps| {
+                                            steps.iter().map(|s| {
+                                                json!({
+                                                    "name": s["name"],
+                                                    "status": s["status"],
+                                                    "conclusion": s["conclusion"],
+                                                    "number": s["number"],
+                                                })
+                                            }).collect::<Vec<_>>()
+                                        }),
+                                    })
+                                })
+                                .collect::<Vec<_>>()
+                        })
+                        .unwrap_or_default();
+                    let total = &val["total_count"];
+                    serde_json::to_string_pretty(&json!({"total_count": total, "jobs": jobs}))
+                        .unwrap_or_default()
+                }
+                Err(e) => format!("Error: failed to parse workflow jobs — {e}"),
+            },
+            Err(e) => format!("Error: {e}"),
+        }
+    }
+
     /// Create an issue that references a Sentry event, with no sensitive data in the body.
     pub async fn create_error_issue(&self, sentry_event_id: &str) -> Option<String> {
         if !self.is_configured() {
@@ -337,6 +570,66 @@ impl GitHubIssueReporter {
         );
         self.create_issue(&title, &body, &["bug"]).await
     }
+}
+
+/// Format a GitHub issues API response as a compact text list.
+fn format_issue_list(body: &str) -> String {
+    match serde_json::from_str::<serde_json::Value>(body) {
+        Ok(val) => {
+            let issues: Vec<&serde_json::Value> = if let Some(arr) = val.as_array() {
+                arr.iter().collect()
+            } else if let Some(items) = val.get("items").and_then(|v| v.as_array()) {
+                items.iter().collect()
+            } else {
+                return "Error: unexpected API response format.".to_string();
+            };
+            if issues.is_empty() {
+                return "No issues found.".to_string();
+            }
+            let lines: Vec<String> = issues
+                .iter()
+                .map(|i| {
+                    let number = i["number"].as_u64().unwrap_or(0);
+                    let title = i["title"].as_str().unwrap_or("(untitled)");
+                    let state = i["state"].as_str().unwrap_or("unknown");
+                    let labels: Vec<String> = i["labels"]
+                        .as_array()
+                        .map(|labels| {
+                            labels
+                                .iter()
+                                .filter_map(|l| l["name"].as_str().map(|n| n.to_string()))
+                                .collect()
+                        })
+                        .unwrap_or_default();
+                    let label_str = if labels.is_empty() {
+                        String::new()
+                    } else {
+                        format!(" [{}]", labels.join(", "))
+                    };
+                    format!("#{number} ({state}){label_str} — {title}")
+                })
+                .collect();
+            lines.join("\n")
+        }
+        Err(e) => format!("Error: failed to parse response — {e}"),
+    }
+}
+
+/// Percent-encode a string for URL query parameters.
+fn urlencoding(s: &str) -> String {
+    let mut result = String::with_capacity(s.len());
+    for byte in s.bytes() {
+        match byte {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                result.push(byte as char);
+            }
+            b' ' => result.push_str("%20"),
+            _ => {
+                result.push_str(&format!("%{byte:02X}"));
+            }
+        }
+    }
+    result
 }
 
 #[cfg(test)]

@@ -75,6 +75,8 @@ search, general information, and software development questions.
 - deep_research — Run an overview plus 2-5 focused searches and return a deduplicated, cross-referenced source dossier.\n\
 - fetch_webpage — Fetch and read the text of a public webpage.\n\
 - download_file — Download a public HTTP(S) file up to 8 MiB and attach it to the Discord response.\n\
+- github_api — Query the GitHub API for issues, workflow runs, and repository metadata \
+instead of scraping the web UI.\n\
 - common_crawl__search — Search historical URL captures in the Common Crawl index.\n\
 - jellyfin__* — Query the household Jellyfin media server for movies, shows, music. \
 READ ONLY — only call get_* / search_* / list_* methods; never call mutating actions.\n\
@@ -269,7 +271,7 @@ pub(crate) fn build_system_prompt_with_profile(
     format!(
         "{STATIC_BASE}\n\n\
 ## Guidelines\n- Be conversational and friendly.\n- Use Jellyfin tools for any media questions \
-before guessing.\n- Never infer sensitive traits, identity, or intent from a user's avatar.\n- Use download_file only when the user asks to view, receive, or download a specific file; never fetch private-network URLs.\n- Use web_search for simple factual or current-events questions. For complex questions requiring multiple perspectives, comparisons, or a comprehensive report, use deep_research and synthesize its dossier with source links. If either search tool returns a rate-limit \
+before guessing.\n- Never infer sensitive traits, identity, or intent from a user's avatar.\n- Use download_file only when the user asks to view, receive, or download a specific file; never fetch private-network URLs.\n- Use github_api for any GitHub-related queries (issues, workflow runs, repo info) instead of fetch_webpage, since the API provides accurate structured data.\n- Use web_search for simple factual or current-events questions. For complex questions requiring multiple perspectives, comparisons, or a comprehensive report, use deep_research and synthesize its dossier with source links. If either search tool returns a rate-limit \
 error, stop using search tools for this request and do not retry repeatedly; use \
 common_crawl__search for historical URL evidence when appropriate, or explain that the search \
 service is temporarily unavailable.\n- For calculations, data processing, or algorithmic tasks \
