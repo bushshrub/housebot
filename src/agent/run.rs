@@ -24,7 +24,6 @@ impl Agent {
             guild_id,
             proactive,
             record_profile_usage,
-            bot_id,
         } = request;
         let run_started = std::time::Instant::now();
         tracing::info!(
@@ -97,8 +96,6 @@ impl Agent {
         let mut attachments = Vec::new();
 
         let mut control_action: Option<AgentControlAction> = None;
-        let mut allowed_pings_set: std::collections::HashSet<u64> =
-            std::collections::HashSet::new();
 
         // Bound the tool loop so a model that keeps requesting tools cannot
         // spin forever (each iteration is a full LLM round trip).
@@ -180,9 +177,7 @@ impl Agent {
                 tools_called.push(tc.name.clone());
                 hooks.on_tool_called(&tc.name, &args).await;
                 let outcome = self
-                    .dispatch_tool(
-                        &tc.name, &args, user_id, username, channel_id, guild_id, bot_id,
-                    )
+                    .dispatch_tool(&tc.name, &args, user_id, username, channel_id, guild_id)
                     .await;
                 let content = match outcome {
                     ToolOutcome::Text(ref t) => t.clone(),
@@ -196,10 +191,6 @@ impl Agent {
                     } => {
                         control_action = Some(action.clone());
                         text.clone()
-                    }
-                    ToolOutcome::PingUsers { text, user_ids } => {
-                        allowed_pings_set.extend(user_ids);
-                        text
                     }
                 };
                 let tool_msg = json!({
@@ -266,7 +257,6 @@ impl Agent {
             tools_called,
             attachments,
             control_action,
-            allowed_pings: allowed_pings_set.into_iter().collect(),
         }
     }
 
@@ -296,7 +286,6 @@ impl Agent {
             tools::token_metrics::definition(),
             tools::translate::definition(),
             tools::features::definition(),
-            tools::ping_users::definition(),
             search_messages_tool(),
             get_recent_messages_tool(),
             find_discord_users_tool(),
@@ -325,7 +314,6 @@ impl Agent {
         username: &str,
         channel_id: u64,
         guild_id: Option<u64>,
-        bot_id: u64,
     ) -> ToolOutcome {
         let started = std::time::Instant::now();
         let requester_id = user_id.parse().unwrap_or(0);
@@ -339,7 +327,7 @@ impl Agent {
                     "Error: permission denied — you are restricted from using `{name}` in this server."
                 )),
                 Ok(false) => {
-                    self.dispatch_tool_inner(name, args, user_id, username, channel_id, guild_id, bot_id)
+                    self.dispatch_tool_inner(name, args, user_id, username, channel_id, guild_id)
                         .await
                 }
                 Err(error) => {
@@ -351,14 +339,13 @@ impl Agent {
                 }
             }
         } else {
-            self.dispatch_tool_inner(name, args, user_id, username, channel_id, 0, bot_id)
+            self.dispatch_tool_inner(name, args, user_id, username, channel_id, 0)
                 .await
         };
         let content = match &outcome {
             ToolOutcome::Text(t) => t.as_str(),
             ToolOutcome::Attachment { text, .. } => text.as_str(),
             ToolOutcome::DevelopmentAction { text, .. } => text.as_str(),
-            ToolOutcome::PingUsers { text, .. } => text.as_str(),
         };
         tracing::info!(
             target: "housebot::agent",

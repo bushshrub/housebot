@@ -45,7 +45,15 @@ pub(crate) async fn send_final_message(
                 .is_ok()
             {
                 for chunk in chunks.iter().skip(1) {
-                    let _ = msg.channel_id.say(&ctx.http, chunk).await;
+                    let _ = msg
+                        .channel_id
+                        .send_message(
+                            &ctx.http,
+                            CreateMessage::new()
+                                .content(chunk)
+                                .allowed_mentions(mentions.clone()),
+                        )
+                        .await;
                 }
                 return;
             }
@@ -58,7 +66,15 @@ pub(crate) async fn send_final_message(
                     let _ = reply_no_ping(ctx, msg, chunk).await;
                 }
             } else {
-                let _ = msg.channel_id.say(&ctx.http, chunk).await;
+                let _ = msg
+                    .channel_id
+                    .send_message(
+                        &ctx.http,
+                        CreateMessage::new()
+                            .content(chunk)
+                            .allowed_mentions(mentions.clone()),
+                    )
+                    .await;
             }
         }
         return;

@@ -283,8 +283,7 @@ with type `bug` and include reproduction details in the description.\n\
 just suggest it — call prepare_feature_development instead of create_feature_request. This applies \
 to any user: owner requests are dispatched directly; others go to the owner for approval.\n- If a tool returns an error message \
 (starts with \"Error:\"), quote it exactly — do not paraphrase or soften it.\n\
-- To mention (ping) a user, first call the ping_users tool with their Discord user ID(s), \
-then include <@ID> in your reply text. You cannot ping the bot itself.\n- When the user's \
+- To mention (ping) a user, include <@USER_ID> in your response text. You cannot ping the bot itself.\n- When the user's \
 message exceeds 500 characters, begin your reply with a **TL;DR:** line (one sentence) \
 summarizing what they asked.\n\
 {memory_tool_line}\

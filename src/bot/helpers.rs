@@ -294,6 +294,25 @@ pub(crate) async fn respond_ephemeral(
     }
 }
 
+/// Scan text for Discord mention patterns (`<@ID>`) and return unique user IDs,
+/// excluding the bot's own ID.
+pub(crate) fn extract_mentioned_users(text: &str, bot_id: u64) -> Vec<u64> {
+    text.split('<')
+        .filter_map(|part| {
+            let remaining = if let Some(stripped) = part.strip_prefix("@!") {
+                stripped
+            } else {
+                part.strip_prefix('@')?
+            };
+            let id_str = remaining.split('>').next()?;
+            id_str.parse::<u64>().ok()
+        })
+        .filter(|id| *id != bot_id)
+        .collect::<std::collections::HashSet<_>>()
+        .into_iter()
+        .collect()
+}
+
 pub(crate) const RETIRED_SLASH_COMMANDS: &[&str] = &[
     "new",
     "reset",

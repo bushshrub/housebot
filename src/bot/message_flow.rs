@@ -215,7 +215,6 @@ impl HouseBot {
                     guild_id: msg.guild_id.map(|guild| guild.get()),
                     proactive,
                     record_profile_usage: !proactive,
-                    bot_id: bot_id.get(),
                 },
                 response_hooks
                     .as_ref()
@@ -269,6 +268,7 @@ impl HouseBot {
         if let Some(notice) = &result.session_notice {
             let _ = reply_no_ping(ctx, msg, notice).await;
         }
+        let allowed_pings = extract_mentioned_users(&safe, bot_id.get());
         let with_tool_summary = append_tool_summary(&safe, &result.tools_called);
         let (display, code_files) = extract_code_files(&with_tool_summary);
         send_final_message(
@@ -279,7 +279,7 @@ impl HouseBot {
             msg.author.id.get(),
             &self.paginated,
             progress.as_ref(),
-            &result.allowed_pings,
+            &allowed_pings,
         )
         .await;
 

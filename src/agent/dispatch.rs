@@ -12,7 +12,6 @@ impl Agent {
         username: &str,
         channel_id: u64,
         guild_id: u64,
-        bot_id: u64,
     ) -> ToolOutcome {
         match name {
             "web_search" => ToolOutcome::Text(
@@ -428,35 +427,6 @@ impl Agent {
                 )
             }
             "get_lua_docs" => ToolOutcome::Text(LUA_DOCS.to_string()),
-            "ping_users" => {
-                let ids: Vec<String> = args
-                    .get("user_ids")
-                    .and_then(Value::as_array)
-                    .map(|arr| {
-                        arr.iter()
-                            .filter_map(Value::as_str)
-                            .map(str::to_string)
-                            .collect()
-                    })
-                    .unwrap_or_default();
-                match tools::ping_users::execute(&ids, bot_id) {
-                    Ok(user_ids) => {
-                        let reason = str_arg(args, "reason");
-                        let mention_list = user_ids
-                            .iter()
-                            .map(|id| format!("<@{id}>"))
-                            .collect::<Vec<_>>()
-                            .join(", ");
-                        let text = if reason.is_empty() {
-                            format!("✅ Pinging: {mention_list}")
-                        } else {
-                            format!("✅ Pinging {mention_list} — {reason}")
-                        };
-                        ToolOutcome::PingUsers { text, user_ids }
-                    }
-                    Err(e) => ToolOutcome::Text(e),
-                }
-            }
             _ if name.contains("__") => {
                 let (prefix, tool_name) = name.split_once("__").unwrap();
                 for server in self.mcp_servers.iter() {
