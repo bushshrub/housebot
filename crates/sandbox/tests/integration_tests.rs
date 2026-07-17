@@ -150,8 +150,8 @@ fn docker_args_all_security_options_present() {
     assert!(joined.contains("--cpus=1"), "cpus limit required");
     assert!(joined.contains("--ulimit"), "ulimit required");
     assert!(
-        joined.contains("--runtime=kata-runtime"),
-        "kata-runtime required for VM-level isolation"
+        joined.contains("--runtime=kata"),
+        "kata required for VM-level isolation"
     );
 }
 
