@@ -116,6 +116,7 @@ impl Agent {
                     &tools,
                     None,
                     thinking,
+                    self.max_response_tokens,
                     Some(&text_sink),
                 )
                 .await
