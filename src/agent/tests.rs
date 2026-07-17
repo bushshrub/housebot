@@ -169,6 +169,7 @@ fn system_prompt_includes_usage_profile() {
         true,
         "media, reminders",
         "media (4), reminders (2)",
+        "2026-07-17 12:00",
     );
     assert!(p.contains("Relevant usage tags: media, reminders"));
     assert!(p.contains("Frequently used actions: media (4), reminders (2)"));
@@ -191,6 +192,7 @@ fn system_prompt_includes_profile_avatar_with_safety_guidance() {
         true,
         "",
         "",
+        "2026-07-17 12:00",
     );
     assert!(p.contains("Avatar URL: https://cdn.discordapp.com/avatars/123/avatar.png"));
     assert!(p.contains("Never infer sensitive traits, identity, or intent from a user's avatar."));
@@ -297,4 +299,128 @@ fn system_prompt_mentions_run_lua() {
     let p = build_system_prompt("Alice", "123", "Alice", "", "", &empty_skills(), None, true);
     assert!(p.contains("run_lua"));
     assert!(p.contains("get_lua_docs"));
+}
+
+// ── stable-prefix / ordering tests ─────────────────────────────────────────
+
+/// Returns the byte index of the first user/turn-specific marker.
+fn dynamic_suffix_start(prompt: &str) -> usize {
+    let markers = [
+        "\n\n## User profile",
+        "\n\n## Your memory about",
+        "\n\n## Personality / tone",
+        "\n\nCurrent date/time:",
+    ];
+    let mut earliest = prompt.len();
+    for m in &markers {
+        if let Some(pos) = prompt.find(m) {
+            earliest = earliest.min(pos);
+        }
+    }
+    earliest
+}
+
+#[test]
+fn prompt_stable_prefix_unchanged_by_dynamic_content() {
+    let skills = empty_skills();
+
+    let cases: Vec<(&str, String)> = vec![
+        ("baseline",
+         build_system_prompt_with_profile("Alice", "1", "Alice", "", "", "", &skills, None, true, "", "", "2026-07-17 12:00")),
+        ("different timestamp",
+         build_system_prompt_with_profile("Alice", "1", "Alice", "", "", "", &skills, None, true, "", "", "2026-07-18 08:30")),
+        ("different username+id",
+         build_system_prompt_with_profile("Bob", "999", "Bob", "", "", "", &skills, None, true, "", "", "2026-07-17 12:00")),
+        ("profile fields and avatar",
+         build_system_prompt_with_profile("Alice", "1", "Alice", "Ali", "https://ex/av.png", "", &skills, None, true, "tags", "actions", "2026-07-17 12:00")),
+        ("user memory",
+         build_system_prompt_with_profile("Alice", "1", "Alice", "", "", "Likes cats", &skills, None, true, "", "", "2026-07-17 12:00")),
+        ("personality",
+         build_system_prompt_with_profile("Alice", "1", "Alice", "", "", "", &skills, Some("Friendly"), true, "", "", "2026-07-17 12:00")),
+        ("usage tags and quick actions",
+         build_system_prompt_with_profile("Alice", "1", "Alice", "", "", "", &skills, None, true, "media", "search", "2026-07-17 12:00")),
+    ];
+
+    let prefix_end = dynamic_suffix_start(&cases[0].1);
+    let baseline_prefix = &cases[0].1[..prefix_end];
+    for (label, prompt) in &cases {
+        let end = dynamic_suffix_start(prompt);
+        assert_eq!(
+            &prompt[..end], baseline_prefix,
+            "stable prefix differs for: {label}"
+        );
+    }
+}
+
+#[test]
+fn prompt_static_base_present_regardless_of_deep_memory_or_skills() {
+    let skills = empty_skills();
+    let mut skill_map = BTreeMap::new();
+    skill_map.insert("greet".into(), Skill {
+        name: "greet".into(), description: Some("Say hello".into()), prompt: "..".into(), created_by: None,
+    });
+
+    let prompts: Vec<String> = vec![
+        // deep_memory enabled, no skills
+        build_system_prompt_with_profile("Alice", "1", "Alice", "", "", "", &skills, None, true, "", "", "2026-07-17 12:00"),
+        // deep_memory disabled, no skills
+        build_system_prompt_with_profile("Alice", "1", "Alice", "", "", "", &skills, None, false, "", "", "2026-07-17 12:00"),
+        // deep_memory enabled, with skills
+        build_system_prompt_with_profile("Alice", "1", "Alice", "", "", "", &skill_map, None, true, "", "", "2026-07-17 12:00"),
+        // deep_memory disabled, with skills
+        build_system_prompt_with_profile("Alice", "1", "Alice", "", "", "", &skill_map, None, false, "", "", "2026-07-17 12:00"),
+    ];
+
+    let static_base = crate::agent::prompt::STATIC_BASE;
+    let static_len = static_base.len();
+    for (i, p) in prompts.iter().enumerate() {
+        assert_eq!(
+            &p[..static_len], static_base,
+            "STATIC_BASE differs for prompt {i}"
+        );
+    }
+}
+
+#[test]
+fn prompt_regression_dynamic_markers_after_guidelines_minimal() {
+    let p = build_system_prompt_with_profile(
+        "Alice", "1", "Alice", "", "", "", &empty_skills(), None, false, "", "", "2026-07-17 12:00",
+    );
+    let guidelines_pos = p.find("## Guidelines").expect("## Guidelines section present");
+    // In minimal form, only these markers appear
+    assert!(
+        p.find("Current date/time:").unwrap() > guidelines_pos,
+        "Current date/time: must appear after ## Guidelines"
+    );
+    assert!(
+        p.find("Current user:").unwrap() > guidelines_pos,
+        "Current user: must appear after ## Guidelines"
+    );
+}
+
+#[test]
+fn prompt_regression_dynamic_markers_after_guidelines_maximal() {
+    let mut skills = BTreeMap::new();
+    skills.insert("greet".into(), Skill {
+        name: "greet".into(), description: Some("Say hello".into()), prompt: "..".into(), created_by: None,
+    });
+    let p = build_system_prompt_with_profile(
+        "Alice", "1", "Alice", "Ali", "https://ex/av.png", "Likes cats", &skills,
+        Some("Friendly"), true, "tags", "actions", "2026-07-17 12:00",
+    );
+    let guidelines_pos = p.find("## Guidelines").expect("## Guidelines section present");
+    let markers = [
+        "Current date/time:",
+        "Current user:",
+        "## User profile",
+        "## Your memory about",
+        "## Personality / tone",
+    ];
+    for marker in &markers {
+        let pos = p.find(marker).unwrap_or_else(|| panic!("marker {marker:?} not found"));
+        assert!(
+            pos > guidelines_pos,
+            "marker {marker:?} (pos {pos}) appears before ## Guidelines (pos {guidelines_pos})"
+        );
+    }
 }

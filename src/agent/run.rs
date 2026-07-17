@@ -67,6 +67,7 @@ impl Agent {
             .await;
 
         let all_skills = self.skills.load_all().await;
+        let now = Local::now().format("%Y-%m-%d %H:%M").to_string();
         let system = json!({
             "role": "system",
             "content": build_system_prompt_with_profile(
@@ -81,6 +82,7 @@ impl Agent {
                 deep_memory_enabled,
                 profile_tags,
                 quick_actions,
+                &now,
             ),
         });
         let mut messages: Vec<Value> = Vec::with_capacity(past.len() + 2);
