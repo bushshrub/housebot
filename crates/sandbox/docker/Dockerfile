@@ -37,7 +37,7 @@ ENV PATH="/home/sandbox/.cargo/bin:${PATH}"
 USER root
 
 # Create the entrypoint
-COPY docker/entrypoint.sh /entrypoint.sh
+COPY entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh
 
 USER sandbox
