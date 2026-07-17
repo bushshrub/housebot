@@ -12,6 +12,7 @@ pub mod feature_request;
 pub mod features;
 pub mod file_download;
 pub mod remind;
+pub mod sandbox;
 pub mod searxng;
 pub mod summarize_url;
 pub mod token_metrics;

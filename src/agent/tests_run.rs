@@ -1,5 +1,7 @@
 use super::*;
 use crate::testing::MockChatClient;
+use crate::tools::sandbox::LazySandbox;
+use housebot_sandbox::SandboxClient;
 use serde_json::json;
 use tempfile::TempDir;
 
@@ -14,6 +16,10 @@ fn test_agent(client: Arc<dyn ChatClient>) -> (TempDir, Agent) {
         Reminders::new(tmp.path().join("reminders.json")),
     );
     (tmp, agent)
+}
+
+fn noop_sandbox() -> LazySandbox {
+    LazySandbox::new(SandboxClient::new("/dev/null"))
 }
 
 #[tokio::test]
@@ -316,6 +322,7 @@ async fn run_update_memory_tool_persists() {
 async fn dispatch_unknown_tool_returns_error() {
     let client = Arc::new(MockChatClient::new());
     let (_t, agent) = test_agent(client);
+    let sb = noop_sandbox();
     let out = agent
         .dispatch_tool(
             "run_unknown_code_agent",
@@ -324,6 +331,7 @@ async fn dispatch_unknown_tool_returns_error() {
             "testuser",
             0,
             None,
+            &sb,
         )
         .await;
     match out {
@@ -351,6 +359,7 @@ async fn dispatch_blocks_tool_banned_by_guild_vote() {
         .await
         .unwrap();
 
+    let sb = noop_sandbox();
     let outcome = agent
         .dispatch_tool(
             "translate",
@@ -359,6 +368,7 @@ async fn dispatch_blocks_tool_banned_by_guild_vote() {
             "restricted-user",
             10,
             Some(77),
+            &sb,
         )
         .await;
     match outcome {
@@ -500,7 +510,7 @@ async fn history_turn_contains_discord_context_metadata() {
 async fn build_tools_excludes_code_execution() {
     let client = Arc::new(MockChatClient::new());
     let (_t, agent) = test_agent(client);
-    let tools = agent.build_tools(true).await;
+    let tools = agent.build_tools(true, false).await;
     let names: Vec<&str> = tools
         .iter()
         .filter_map(|t| t["function"]["name"].as_str())
@@ -548,8 +558,9 @@ fn lua_docs_constant_covers_key_apis() {
 async fn dispatch_get_lua_docs_returns_docs() {
     let client = Arc::new(MockChatClient::new());
     let (_t, agent) = test_agent(client);
+    let sb = noop_sandbox();
     let out = agent
-        .dispatch_tool("get_lua_docs", &json!({}), "u", "testuser", 0, None)
+        .dispatch_tool("get_lua_docs", &json!({}), "u", "testuser", 0, None, &sb)
         .await;
     let ToolOutcome::Text(t) = out else {
         panic!("expected Text outcome")
@@ -562,6 +573,7 @@ async fn dispatch_get_lua_docs_returns_docs() {
 async fn dispatch_run_lua_executes_script() {
     let client = Arc::new(MockChatClient::new());
     let (_t, agent) = test_agent(client);
+    let sb = noop_sandbox();
     let out = agent
         .dispatch_tool(
             "run_lua",
@@ -570,6 +582,7 @@ async fn dispatch_run_lua_executes_script() {
             "testuser",
             0,
             None,
+            &sb,
         )
         .await;
     let ToolOutcome::Text(t) = out else {
@@ -582,6 +595,7 @@ async fn dispatch_run_lua_executes_script() {
 async fn dispatch_run_lua_strips_code_fence() {
     let client = Arc::new(MockChatClient::new());
     let (_t, agent) = test_agent(client);
+    let sb = noop_sandbox();
     let out = agent
         .dispatch_tool(
             "run_lua",
@@ -590,6 +604,7 @@ async fn dispatch_run_lua_strips_code_fence() {
             "testuser",
             0,
             None,
+            &sb,
         )
         .await;
     let ToolOutcome::Text(t) = out else {

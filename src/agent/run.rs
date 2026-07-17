@@ -90,7 +90,9 @@ impl Agent {
         messages.extend(past);
         messages.push(new_user_message.clone());
 
-        let tools = self.build_tools(deep_memory_enabled).await;
+        let is_owner = user_id.parse::<u64>().unwrap_or(0) == config::owner_id();
+        let tools = self.build_tools(deep_memory_enabled, is_owner).await;
+        let sandbox = LazySandbox::new(self.sandbox_client.clone());
         let mut turn_messages: Vec<Value> = Vec::new();
         let mut tools_called = Vec::new();
         let mut attachments = Vec::new();
@@ -177,7 +179,9 @@ impl Agent {
                 tools_called.push(tc.name.clone());
                 hooks.on_tool_called(&tc.name, &args).await;
                 let outcome = self
-                    .dispatch_tool(&tc.name, &args, user_id, username, channel_id, guild_id)
+                    .dispatch_tool(
+                        &tc.name, &args, user_id, username, channel_id, guild_id, &sandbox,
+                    )
                     .await;
                 let content = match outcome {
                     ToolOutcome::Text(ref t) => t.clone(),
@@ -212,6 +216,8 @@ impl Agent {
                     .to_string();
             }
         };
+
+        sandbox.close().await;
 
         if let Err(error) = self
             .token_monitor
@@ -260,7 +266,11 @@ impl Agent {
         }
     }
 
-    pub(crate) async fn build_tools(&self, deep_memory_enabled: bool) -> Vec<Value> {
+    pub(crate) async fn build_tools(
+        &self,
+        deep_memory_enabled: bool,
+        sandbox_allowed: bool,
+    ) -> Vec<Value> {
         let mut tools = Vec::new();
         for server in self.mcp_servers.iter() {
             for tool in server.list_tools().await {
@@ -293,6 +303,14 @@ impl Agent {
             run_lua_tool(),
             get_lua_docs_tool(),
         ];
+        // Include sandbox tools only for the owner.
+        if sandbox_allowed {
+            defs.push(tools::sandbox::sandbox_clone_repository_definition());
+            defs.push(tools::sandbox::sandbox_list_files_definition());
+            defs.push(tools::sandbox::sandbox_search_code_definition());
+            defs.push(tools::sandbox::sandbox_read_file_definition());
+            defs.push(tools::sandbox::sandbox_run_definition());
+        }
         // Conditionally include memory tools based on user's privacy setting.
         if deep_memory_enabled {
             defs.push(crate::memory::update_memory_tool());
@@ -305,6 +323,7 @@ impl Agent {
         tools
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub(crate) async fn dispatch_tool(
         &self,
         name: &str,
@@ -313,6 +332,7 @@ impl Agent {
         username: &str,
         channel_id: u64,
         guild_id: Option<u64>,
+        sandbox: &LazySandbox,
     ) -> ToolOutcome {
         let started = std::time::Instant::now();
         let requester_id = user_id.parse().unwrap_or(0);
@@ -326,7 +346,7 @@ impl Agent {
                     "Error: permission denied — you are restricted from using `{name}` in this server."
                 )),
                 Ok(false) => {
-                    self.dispatch_tool_inner(name, args, user_id, username, channel_id, guild_id)
+                    self.dispatch_tool_inner(name, args, user_id, username, channel_id, guild_id, sandbox)
                         .await
                 }
                 Err(error) => {
@@ -338,7 +358,7 @@ impl Agent {
                 }
             }
         } else {
-            self.dispatch_tool_inner(name, args, user_id, username, channel_id, 0)
+            self.dispatch_tool_inner(name, args, user_id, username, channel_id, 0, sandbox)
                 .await
         };
         let content = match &outcome {

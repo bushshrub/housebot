@@ -3,6 +3,7 @@
 use super::*;
 
 impl Agent {
+    #[allow(clippy::too_many_arguments)]
     pub(crate) async fn dispatch_tool_inner(
         &self,
         name: &str,
@@ -11,6 +12,7 @@ impl Agent {
         username: &str,
         channel_id: u64,
         guild_id: u64,
+        sandbox: &LazySandbox,
     ) -> ToolOutcome {
         match name {
             "web_search" => ToolOutcome::Text(
@@ -426,6 +428,102 @@ impl Agent {
                 )
             }
             "get_lua_docs" => ToolOutcome::Text(LUA_DOCS.to_string()),
+            // ── Sandbox tools (owner-only; enforced at the tool-definition
+            //    layer, but re-checked here as a defence-in-depth measure) ──
+            "sandbox_clone_repository" => {
+                let is_owner = user_id.parse::<u64>().unwrap_or(0) == config::owner_id();
+                if !is_owner {
+                    return ToolOutcome::Text(
+                        "Error: permission denied — sandbox tools are owner-only.".into(),
+                    );
+                }
+                ToolOutcome::Text(
+                    sandbox
+                        .clone_repository(
+                            str_arg(args, "url"),
+                            args.get("branch").and_then(Value::as_str),
+                        )
+                        .await
+                        .unwrap_or_else(|e| format!("Error: {e}")),
+                )
+            }
+            "sandbox_list_files" => {
+                let is_owner = user_id.parse::<u64>().unwrap_or(0) == config::owner_id();
+                if !is_owner {
+                    return ToolOutcome::Text(
+                        "Error: permission denied — sandbox tools are owner-only.".into(),
+                    );
+                }
+                ToolOutcome::Text(
+                    sandbox
+                        .list_files(
+                            str_arg(args, "path"),
+                            args.get("max_depth")
+                                .and_then(Value::as_u64)
+                                .map(|d| d as u32),
+                        )
+                        .await
+                        .unwrap_or_else(|e| format!("Error: {e}")),
+                )
+            }
+            "sandbox_search_code" => {
+                let is_owner = user_id.parse::<u64>().unwrap_or(0) == config::owner_id();
+                if !is_owner {
+                    return ToolOutcome::Text(
+                        "Error: permission denied — sandbox tools are owner-only.".into(),
+                    );
+                }
+                ToolOutcome::Text(
+                    sandbox
+                        .search_code(
+                            str_arg(args, "query"),
+                            args.get("path").and_then(Value::as_str),
+                            args.get("glob").and_then(Value::as_str),
+                        )
+                        .await
+                        .unwrap_or_else(|e| format!("Error: {e}")),
+                )
+            }
+            "sandbox_read_file" => {
+                let is_owner = user_id.parse::<u64>().unwrap_or(0) == config::owner_id();
+                if !is_owner {
+                    return ToolOutcome::Text(
+                        "Error: permission denied — sandbox tools are owner-only.".into(),
+                    );
+                }
+                ToolOutcome::Text(
+                    sandbox
+                        .read_file(
+                            str_arg(args, "path"),
+                            args.get("start_line")
+                                .and_then(Value::as_u64)
+                                .map(|l| l as u32),
+                            args.get("end_line")
+                                .and_then(Value::as_u64)
+                                .map(|l| l as u32),
+                        )
+                        .await
+                        .unwrap_or_else(|e| format!("Error: {e}")),
+                )
+            }
+            "sandbox_run" => {
+                let is_owner = user_id.parse::<u64>().unwrap_or(0) == config::owner_id();
+                if !is_owner {
+                    return ToolOutcome::Text(
+                        "Error: permission denied — sandbox tools are owner-only.".into(),
+                    );
+                }
+                ToolOutcome::Text(
+                    sandbox
+                        .run(
+                            str_arg(args, "command"),
+                            args.get("working_dir").and_then(Value::as_str),
+                            args.get("timeout").and_then(Value::as_u64),
+                        )
+                        .await
+                        .unwrap_or_else(|e| format!("Error: {e}")),
+                )
+            }
             _ if name.contains("__") => {
                 let (prefix, tool_name) = name.split_once("__").unwrap();
                 for server in self.mcp_servers.iter() {
