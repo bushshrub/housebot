@@ -281,6 +281,7 @@ impl Agent {
             tools::feature_request::definition(),
             tools::edit_feature_request::definition(),
             tools::feature_development::definition(),
+            tools::github_api::definition(),
             tools::remind::definition(),
             tools::summarize_url::definition(),
             tools::token_metrics::definition(),

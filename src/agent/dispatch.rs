@@ -115,6 +115,10 @@ impl Agent {
                     }
                 }
             }
+            "github_api" => ToolOutcome::Text(
+                tools::github_api::handle_github_api(&self.reporter, str_arg(args, "action"), args)
+                    .await,
+            ),
             "create_feature_request" => ToolOutcome::Text(
                 tools::feature_request::create_feature_request(
                     &self.reporter,
