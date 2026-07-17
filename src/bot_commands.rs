@@ -116,13 +116,13 @@ pub async fn note_command(notes: &Notes, first_line: &str, rest: &str, author_id
         .filter(|s| !s.is_empty())
         .collect();
     if parts.len() < 2 {
-        return "Usage: `/storage notes list` | `/storage notes save` | `/storage notes get` | `/storage notes delete`".into();
+        return "Usage: `/storage notes list` | `/storage notes save name:<name> content:<text>` | `/storage notes get name:<name>` | `/storage notes delete name:<name>`".into();
     }
     match parts[1].to_lowercase().as_str() {
         "list" => {
             let all = notes.load_all(author_id).await;
             if all.is_empty() {
-                return "You have no saved notes. Use `/storage notes save` to create one.".into();
+                return "You have no saved notes. Use `/storage notes save name:<name> content:<text>` to create one.".into();
             }
             let mut lines = vec!["**Your notes:**".to_string()];
             for (name, body) in &all {
@@ -236,7 +236,7 @@ pub async fn erase_data_command(
 pub async fn memory_command(memory: &Memory, first_line: &str, author_id: u64) -> String {
     let parts: Vec<&str> = first_line.split_whitespace().collect();
     if parts.len() < 2 {
-        return "Usage: `/storage memory show` | `/storage memory clear` | `/storage memory search`".into();
+        return "Usage: `/storage memory show` | `/storage memory clear` | `/storage memory search query:<query>`".into();
     }
     match parts[1].to_lowercase().as_str() {
         "show" => {
