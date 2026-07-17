@@ -40,11 +40,9 @@ impl LazySandbox {
         if let Some(ref sandbox) = *guard {
             let current = *self.network.lock().await;
             if network == NetworkAccess::PublicInternet && current == NetworkAccess::None {
-                return Err(
-                    "Sandbox is already running without network access. \
+                return Err("Sandbox is already running without network access. \
                      Clone the repository before using other sandbox tools."
-                        .to_string(),
-                );
+                    .to_string());
             }
             return Ok(sandbox.clone());
         }

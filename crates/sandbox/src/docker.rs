@@ -67,6 +67,10 @@ pub fn build_run_args(id: &str, network: NetworkAccess) -> Vec<String> {
     args.push("--detach".to_string());
     args.push("--rm".to_string());
 
+    // VM-level isolation via Kata Containers; prevents container-escape from
+    // reaching the Docker host even if the in-container command is malicious.
+    args.push("--runtime=kata-runtime".to_string());
+
     // Container identity
     args.push(format!("--name={}", cfg.container_name));
 
@@ -286,6 +290,15 @@ mod tests {
     fn run_args_network_bridge_for_public() {
         let args = build_run_args("test-1", NetworkAccess::PublicInternet);
         assert!(args.contains(&"--network=housebot-sandbox-net".to_string()));
+    }
+
+    #[test]
+    fn run_args_use_kata_runtime() {
+        let args = build_run_args("test-1", NetworkAccess::None);
+        assert!(
+            args.contains(&"--runtime=kata-runtime".to_string()),
+            "must use kata-runtime for VM-level isolation"
+        );
     }
 
     #[test]

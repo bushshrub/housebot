@@ -42,9 +42,7 @@ pub async fn run_daemon(socket_path: &str) -> anyhow::Result<()> {
     if Path::new(socket_path).exists() {
         let meta = std::fs::symlink_metadata(socket_path)?;
         if !meta.file_type().is_socket() {
-            anyhow::bail!(
-                "socket path exists and is not a Unix socket: {socket_path}"
-            );
+            anyhow::bail!("socket path exists and is not a Unix socket: {socket_path}");
         }
         std::fs::remove_file(socket_path)?;
     }
@@ -84,7 +82,12 @@ async fn handle_connection(mut stream: UnixStream, containers: ContainerMap) -> 
         buf_reader.read_line(&mut line),
     )
     .await
-    .map_err(|_| anyhow::anyhow!("request read timed out after {}s", limits::SOCKET_TIMEOUT_SECS))?
+    .map_err(|_| {
+        anyhow::anyhow!(
+            "request read timed out after {}s",
+            limits::SOCKET_TIMEOUT_SECS
+        )
+    })?
     .map_err(|e| anyhow::anyhow!("failed to read request: {e}"))?;
 
     if line.trim().is_empty() {
@@ -438,11 +441,16 @@ async fn handle_read_file(
     };
 
     // Canonicalize path to prevent symlink escape, then verify it's under /workspace
-    let resolve_cmd = format!("realpath -q /workspace/{} 2>/dev/null || true", shell_escape_path(&read_params.path));
+    let resolve_cmd = format!(
+        "realpath -q /workspace/{} 2>/dev/null || true",
+        shell_escape_path(&read_params.path)
+    );
     let resolve_args = docker::build_exec_args(&container_name, &resolve_cmd, None);
     let resolved = match run_docker_with_timeout(&resolve_args, 10).await {
         Ok(out) => out.trim().to_string(),
-        Err(_) => return SandboxResponse::err(id.to_string(), "failed to resolve path".to_string()),
+        Err(_) => {
+            return SandboxResponse::err(id.to_string(), "failed to resolve path".to_string())
+        }
     };
 
     if resolved.is_empty() || !resolved.starts_with("/workspace/") {
