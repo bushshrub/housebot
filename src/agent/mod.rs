@@ -15,7 +15,7 @@ use crate::discord_bridge::DiscordBridge;
 use crate::github_issues::GitHubIssueReporter;
 use crate::history::History;
 use crate::llm::{ChatClient, OpenAiClient, TextSink, ThinkingMode, TokenUsage};
-use crate::llm_queue::{LlmPriority, LlmRequestQueue, QueuedChatClient};
+use crate::llm_queue::{LlmPriority, LlmQueueInfo, LlmRequestQueue, QueuedChatClient};
 use crate::lua_engine::{self, ScriptHost};
 use crate::mcp::McpServer;
 use crate::memory::Memory;
@@ -304,6 +304,12 @@ impl Agent {
             discord,
             channel_log: ChannelLog::default(),
         })
+    }
+
+    /// Current LLM queue utilization (active, pending, capacity).
+    /// Use this to decide whether to surface a queue-position message to users.
+    pub fn llm_queue_info(&self) -> LlmQueueInfo {
+        self.queued_client.queue_info()
     }
 
     /// Access to the reminders store (the bot's delivery loop needs it).
