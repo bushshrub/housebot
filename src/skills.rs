@@ -2,8 +2,10 @@
 
 use std::collections::BTreeMap;
 use std::path::PathBuf;
+use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
+use tokio::sync::Mutex;
 
 use crate::config;
 use crate::memory::ensure_dir;
@@ -30,6 +32,7 @@ impl Skill {
 #[derive(Clone)]
 pub struct Skills {
     path: PathBuf,
+    cache: Arc<Mutex<Option<BTreeMap<String, Skill>>>>,
 }
 
 impl Default for Skills {
@@ -41,19 +44,31 @@ impl Default for Skills {
 impl Skills {
     /// Create a store backed by the JSON file at `path`.
     pub fn new(path: impl Into<PathBuf>) -> Self {
-        Self { path: path.into() }
+        Self {
+            path: path.into(),
+            cache: Arc::new(Mutex::new(None)),
+        }
     }
 
-    /// Load every defined skill, keyed by name.
+    /// Load every defined skill, keyed by name (cached after first load).
     pub async fn load_all(&self) -> BTreeMap<String, Skill> {
+        {
+            let cache = self.cache.lock().await;
+            if let Some(skills) = &*cache {
+                return skills.clone();
+            }
+        }
         let raw = match tokio::fs::read_to_string(&self.path).await {
             Ok(s) => s,
             Err(_) => return BTreeMap::new(),
         };
-        if raw.trim().is_empty() {
-            return BTreeMap::new();
-        }
-        serde_json::from_str(&raw).unwrap_or_default()
+        let skills: BTreeMap<String, Skill> = if raw.trim().is_empty() {
+            BTreeMap::new()
+        } else {
+            serde_json::from_str(&raw).unwrap_or_default()
+        };
+        *self.cache.lock().await = Some(skills.clone());
+        skills
     }
 
     async fn write_all(&self, skills: &BTreeMap<String, Skill>) -> std::io::Result<()> {
@@ -73,7 +88,9 @@ impl Skills {
     pub async fn save(&self, skill: Skill) -> std::io::Result<()> {
         let mut all = self.load_all().await;
         all.insert(skill.name.clone(), skill);
-        self.write_all(&all).await
+        self.write_all(&all).await?;
+        *self.cache.lock().await = Some(all);
+        Ok(())
     }
 
     /// Delete a skill, returning whether it existed.
@@ -83,6 +100,7 @@ impl Skills {
             return Ok(false);
         }
         self.write_all(&all).await?;
+        *self.cache.lock().await = Some(all);
         Ok(true)
     }
 }
