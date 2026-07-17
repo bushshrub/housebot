@@ -544,6 +544,21 @@ fn prompt_static_base_present_regardless_of_deep_memory_or_skills() {
             "STATIC_BASE differs for prompt {i}"
         );
     }
+
+    // The text span from STATIC_BASE through the final stable guideline
+    // must also be identical across all config combinations.
+    let suffix_end = prompts[0]
+        .find("summarizing what they asked.\n")
+        .expect("final guideline in baseline")
+        + "summarizing what they asked.\n".len();
+    let baseline_stable = &prompts[0][..suffix_end];
+    for (i, p) in prompts.iter().enumerate().skip(1) {
+        assert_eq!(
+            &p[..suffix_end],
+            baseline_stable,
+            "stable-guidelines prefix differs for prompt {i}"
+        );
+    }
 }
 
 #[test]
@@ -640,7 +655,7 @@ fn prompt_memory_tools_separated_from_preceding_guidelines_bullet() {
         "2026-07-17 12:00",
     );
     assert!(
-        p.contains("sandbox API.\n- update_memory"),
+        p.contains("summarizing what they asked.\n- update_memory"),
         "memory tool must follow the last stable guidelines bullet on a new line, not merged"
     );
 }
@@ -671,9 +686,9 @@ fn prompt_config_content_ordered_between_guidelines_and_dynamic() {
         "actions",
         "2026-07-17 12:00",
     );
-    let guidelines_pos = p
-        .find("## Guidelines")
-        .expect("## Guidelines section present");
+    let last_stable_pos = p
+        .find("summarizing what they asked.")
+        .expect("final stable guideline present");
     let memory_tool_pos = p
         .find("- update_memory —")
         .expect("memory tool present with deep_memory enabled");
@@ -690,10 +705,10 @@ fn prompt_config_content_ordered_between_guidelines_and_dynamic() {
         .expect("personality section present");
     let date_pos = p.find("Current date/time:").expect("date/time present");
 
-    // Stable guidelines come first
+    // All stable guidelines come before config content
     assert!(
-        guidelines_pos < memory_tool_pos,
-        "stable guidelines must precede config content"
+        last_stable_pos < memory_tool_pos,
+        "all stable guidelines must precede config content"
     );
     // Config suffix: memory tools before skills
     assert!(
