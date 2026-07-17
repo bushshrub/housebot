@@ -183,6 +183,7 @@ pub struct Agent {
     queued_client: Arc<QueuedChatClient>,
     model: String,
     context_window_tokens: usize,
+    max_response_tokens: Option<u32>,
     history: History,
     memory: Memory,
     profile_store: ProfileStore,
@@ -253,6 +254,12 @@ impl Agent {
             .flatten()
             .map(|tokens| tokens as usize)
             .unwrap_or_else(|| config::env_parse("MAX_CONTEXT_TOKENS", 10_000));
+        let max_response_tokens_raw: u32 = config::env_parse("MAX_RESPONSE_TOKENS", 0);
+        let max_response_tokens = if max_response_tokens_raw > 0 {
+            Some(max_response_tokens_raw)
+        } else {
+            None
+        };
         let queue = Arc::new(LlmRequestQueue::default());
         let queued_client = Arc::new(QueuedChatClient::new(raw_client, queue));
         let client: Arc<dyn ChatClient> = queued_client.clone();
@@ -273,6 +280,7 @@ impl Agent {
             queued_client,
             model: config::env_or("LLM_MODEL", "gemma-4-12b-qat-q4kxl"),
             context_window_tokens,
+            max_response_tokens,
             history: History::default(),
             memory,
             profile_store: ProfileStore::default(),
@@ -394,6 +402,7 @@ impl Agent {
             queued_client,
             model: "test-model".into(),
             context_window_tokens: 10_000,
+            max_response_tokens: None,
             history,
             memory,
             profile_store,

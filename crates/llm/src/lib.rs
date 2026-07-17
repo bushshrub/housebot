@@ -143,6 +143,7 @@ pub trait TextSink: Send + Sync {
 
 /// Abstraction over the chat-completions API.
 #[async_trait]
+#[allow(clippy::too_many_arguments)]
 pub trait ChatClient: Send + Sync {
     /// Query the server's configured per-sequence context window, when supported.
     async fn context_window_tokens(&self) -> anyhow::Result<Option<u64>>;
@@ -153,6 +154,8 @@ pub trait ChatClient: Send + Sync {
     /// `Some(json!("required"))` to force a tool call or
     /// `Some(json!({"type":"function","function":{"name":"…"}}))` to force a
     /// specific function. `None` keeps the default `"auto"` behavior.
+    /// `max_tokens_override` caps total completion tokens; `None` uses the
+    /// default from `thinking`.
     async fn chat_stream(
         &self,
         model: &str,
@@ -160,6 +163,7 @@ pub trait ChatClient: Send + Sync {
         tools: &[Value],
         tool_choice: Option<Value>,
         thinking: ThinkingMode,
+        max_tokens_override: Option<u32>,
         sink: Option<&dyn TextSink>,
     ) -> anyhow::Result<ChatCompletion>;
 
@@ -373,12 +377,16 @@ impl ChatClient for OpenAiClient {
         tools: &[Value],
         tool_choice: Option<Value>,
         thinking: ThinkingMode,
+        max_tokens_override: Option<u32>,
         sink: Option<&dyn TextSink>,
     ) -> anyhow::Result<ChatCompletion> {
+        let max_tokens = max_tokens_override
+            .map(|cap| cap.min(thinking.max_completion_tokens()))
+            .unwrap_or_else(|| thinking.max_completion_tokens());
         let mut body = serde_json::json!({
             "model": model,
             "messages": messages,
-            "max_tokens": thinking.max_completion_tokens(),
+            "max_tokens": max_tokens,
             "reasoning": thinking.reasoning_field(),
             "stream": true,
             "stream_options": {"include_usage": true},

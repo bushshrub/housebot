@@ -169,6 +169,9 @@ impl QueuedChatClient {
     /// `tool_choice` value. Pass `Some(json!("required"))` to force a tool
     /// call. Unlike `chat_stream`, this method accepts an explicit priority so
     /// lower-priority tasks (e.g. Lua safety reviews) yield to normal traffic.
+    /// `max_tokens_override` caps total completion tokens; `None` uses the
+    /// default from `thinking`.
+    #[allow(clippy::too_many_arguments)]
     pub async fn chat_stream_with_priority(
         &self,
         priority: LlmPriority,
@@ -177,6 +180,7 @@ impl QueuedChatClient {
         tools: &[Value],
         tool_choice: Option<Value>,
         thinking: ThinkingMode,
+        max_tokens_override: Option<u32>,
     ) -> anyhow::Result<ChatCompletion> {
         let inner = Arc::clone(&self.inner);
         let model = model.to_string();
@@ -185,7 +189,15 @@ impl QueuedChatClient {
         self.queue
             .execute(priority, move || async move {
                 inner
-                    .chat_stream(&model, &messages, &tools, tool_choice, thinking, None)
+                    .chat_stream(
+                        &model,
+                        &messages,
+                        &tools,
+                        tool_choice,
+                        thinking,
+                        max_tokens_override,
+                        None,
+                    )
                     .await
             })
             .await
@@ -205,6 +217,7 @@ impl ChatClient for QueuedChatClient {
         tools: &[Value],
         tool_choice: Option<Value>,
         thinking: ThinkingMode,
+        max_tokens_override: Option<u32>,
         sink: Option<&dyn TextSink>,
     ) -> anyhow::Result<ChatCompletion> {
         let inner = Arc::clone(&self.inner);
@@ -214,7 +227,15 @@ impl ChatClient for QueuedChatClient {
         self.queue
             .execute(LlmPriority::Normal, move || async move {
                 inner
-                    .chat_stream(&model, &messages, &tools, tool_choice, thinking, sink)
+                    .chat_stream(
+                        &model,
+                        &messages,
+                        &tools,
+                        tool_choice,
+                        thinking,
+                        max_tokens_override,
+                        sink,
+                    )
                     .await
             })
             .await

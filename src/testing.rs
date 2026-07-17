@@ -95,6 +95,7 @@ impl ChatClient for MockChatClient {
         _tools: &[Value],
         _tool_choice: Option<Value>,
         _thinking: ThinkingMode,
+        _max_tokens_override: Option<u32>,
         sink: Option<&dyn TextSink>,
     ) -> anyhow::Result<ChatCompletion> {
         self.stream_calls.lock().unwrap().push(messages.to_vec());

@@ -158,6 +158,7 @@ impl Agent {
                 &[verdict_tool],
                 Some(json!("required")),
                 ThinkingMode::Low,
+                None,
             )
             .await;
         let Ok(completion) = completion else {
