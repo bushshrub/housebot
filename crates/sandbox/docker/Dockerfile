@@ -16,6 +16,7 @@ RUN apk add --no-cache \
     curl \
     ca-certificates \
     build-base \
+    findutils \
     ripgrep
 
 # Install Node.js (LTS) for JavaScript/TypeScript projects
