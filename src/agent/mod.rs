@@ -246,13 +246,21 @@ impl Agent {
             config::env_or("LLM_API_KEY", "not-required"),
         ));
         let mcp_servers = Arc::new(start_mcp_servers().await);
-        let context_window_tokens = raw_client
-            .context_window_tokens()
-            .await
-            .ok()
-            .flatten()
-            .map(|tokens| tokens as usize)
-            .unwrap_or_else(|| config::env_parse("MAX_CONTEXT_TOKENS", 10_000));
+        let context_window_tokens = tokio::time::timeout(
+            std::time::Duration::from_secs(10),
+            raw_client.context_window_tokens(),
+        )
+        .await
+        .unwrap_or(Ok(None))
+        .ok()
+        .flatten()
+        .map(|tokens| tokens as usize)
+        .unwrap_or_else(|| {
+            tracing::warn!(
+                "LLM /props probe timed out or failed — using MAX_CONTEXT_TOKENS fallback"
+            );
+            config::env_parse("MAX_CONTEXT_TOKENS", 10_000)
+        });
         let queue = Arc::new(LlmRequestQueue::default());
         let queued_client = Arc::new(QueuedChatClient::new(raw_client, queue));
         let client: Arc<dyn ChatClient> = queued_client.clone();

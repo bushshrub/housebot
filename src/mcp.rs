@@ -27,6 +27,7 @@ pub struct McpServer {
     stdin: Mutex<ChildStdin>,
     stdout: Mutex<Lines<BufReader<ChildStdout>>>,
     next_id: AtomicI64,
+    tools_cache: Mutex<Option<Vec<McpTool>>>,
     _child: Child,
 }
 
@@ -88,6 +89,7 @@ impl McpServer {
             stdin: Mutex::new(stdin),
             stdout: Mutex::new(BufReader::new(stdout).lines()),
             next_id: AtomicI64::new(1),
+            tools_cache: Mutex::new(None),
             _child: child,
         };
 
@@ -140,8 +142,14 @@ impl McpServer {
         anyhow::bail!("MCP server closed before responding")
     }
 
-    /// List every tool the server exposes.
+    /// List every tool the server exposes (cached after first call).
     pub async fn list_tools(&self) -> Vec<McpTool> {
+        {
+            let cache = self.tools_cache.lock().await;
+            if let Some(tools) = &*cache {
+                return tools.clone();
+            }
+        }
         let result = match self.request("tools/list", json!({})).await {
             Ok(r) => r,
             Err(e) => {
@@ -149,7 +157,7 @@ impl McpServer {
                 return vec![];
             }
         };
-        result
+        let tools: Vec<McpTool> = result
             .get("tools")
             .and_then(|t| t.as_array())
             .map(|arr| {
@@ -170,7 +178,9 @@ impl McpServer {
                     })
                     .collect()
             })
-            .unwrap_or_default()
+            .unwrap_or_default();
+        *self.tools_cache.lock().await = Some(tools.clone());
+        tools
     }
 
     /// Call a tool by name and return its concatenated text content.
