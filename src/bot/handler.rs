@@ -7,6 +7,7 @@ impl EventHandler for HouseBot {
     async fn ready(&self, ctx: Context, ready: Ready) {
         tracing::info!("Logged in as {} (ID: {})", ready.user.name, ready.user.id);
         self.discord.set_http(ctx.http.clone()).await;
+        self.discord.set_bot_user_id(ready.user.id.get()).await;
 
         register_slash_commands(&ctx).await;
 

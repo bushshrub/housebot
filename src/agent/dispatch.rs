@@ -260,6 +260,15 @@ impl Agent {
                     .await,
                 )
             }
+            "ping_user" => ToolOutcome::Text(
+                tools::ping_user::send_ping(
+                    &self.discord,
+                    channel_id,
+                    str_arg(args, "user_id"),
+                    str_arg(args, "message"),
+                )
+                .await,
+            ),
             "summarize_url" => ToolOutcome::Text(
                 tools::summarize_url::fetch_and_summarize(
                     &*self.client,

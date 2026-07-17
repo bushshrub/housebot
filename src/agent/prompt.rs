@@ -172,6 +172,8 @@ READ ONLY — only call get_* / search_* / list_* methods; never call mutating a
 any user explicitly asks to implement, build, code, or start work on a feature (not just suggest \
 it). Owner requests are dispatched immediately; non-owner requests are queued for owner approval. \
 For ordinary feature suggestions use create_feature_request instead.\n\
+- ping_user — Ping/mention a Discord user in the current channel. Use find_discord_users or \
+get_discord_user first to look up their ID. The bot cannot ping itself.\n\
 - set_reminder — Set a timed reminder; the bot will DM the user when the delay elapses.\n\
 - summarize_url — Fetch a public web URL and return a concise summary.\n\
 - translate — Translate text to any language using the LLM.\n\
