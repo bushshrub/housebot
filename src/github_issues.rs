@@ -119,7 +119,7 @@ impl GitHubIssueReporter {
 
     /// Whether every credential needed to file issues is present.
     pub fn is_configured(&self) -> bool {
-        self.direct_token.is_some()
+        (self.direct_token.as_deref().is_some_and(|t| !t.is_empty()) && !self.repo.is_empty())
             || (!self.app_id.is_empty()
                 && !self.private_key.is_empty()
                 && !self.installation_id.is_empty()
@@ -377,11 +377,12 @@ impl GitHubIssueReporter {
 
     /// List issues with optional state and label filters.
     pub async fn list_issues(&self, state: &str, labels: &str) -> String {
+        let state = urlencoding(state);
         let path = format!("/issues?state={state}&per_page=20");
         let path = if labels.is_empty() {
             path
         } else {
-            format!("{path}&labels={labels}")
+            format!("{path}&labels={}", urlencoding(labels))
         };
         match self.authed_get(&path).await {
             Ok(body) => format_issue_list(&body),
@@ -737,6 +738,18 @@ mod tests {
     }
 
     #[test]
+    fn with_direct_token_empty_token_not_configured() {
+        let r = GitHubIssueReporter::with_direct_token("".into(), "owner/repo".into());
+        assert!(!r.is_configured());
+    }
+
+    #[test]
+    fn with_direct_token_empty_repo_not_configured() {
+        let r = GitHubIssueReporter::with_direct_token("ghp_token".into(), "".into());
+        assert!(!r.is_configured());
+    }
+
+    #[test]
     fn format_issue_list_filters_out_pull_requests() {
         let body = r#"[
             {"number": 1, "title": "Real issue", "state": "open", "labels": []},
@@ -819,7 +832,14 @@ mod tests {
         };
         let result = reporter.get_repo().await;
         assert!(!result.starts_with("Error:"), "get_repo failed: {result}");
-        assert!(result.contains("full_name"));
+        let v: serde_json::Value =
+            serde_json::from_str(&result).expect("get_repo should return valid JSON");
+        assert_eq!(v["full_name"], "bushshrub/housebot");
+        assert!(v["stars"].as_u64().is_some());
+        assert!(v["forks"].as_u64().is_some());
+        assert!(v["open_issues"].as_u64().is_some());
+        assert!(!v["language"].as_str().unwrap_or("").is_empty());
+        assert!(!v["default_branch"].as_str().unwrap_or("").is_empty());
     }
 
     #[tokio::test]
@@ -833,6 +853,15 @@ mod tests {
             !result.starts_with("Error:"),
             "list_issues failed: {result}"
         );
+        // Text response from format_issue_list — should contain issue entries
+        assert!(
+            result.contains('#'),
+            "expected issue numbers in list_issues output:\n{result}"
+        );
+        // Every line should start with #
+        for line in result.lines() {
+            assert!(line.starts_with('#'), "unexpected line format: {line}");
+        }
     }
 
     #[tokio::test]
@@ -846,6 +875,13 @@ mod tests {
             !result.starts_with("Error:"),
             "search_issues failed: {result}"
         );
+        // Search results should also be formatted as issue lines with #
+        if !result.contains("No issues found.") {
+            assert!(
+                result.contains('#'),
+                "expected issue numbers in search_issues output:\n{result}"
+            );
+        }
     }
 
     #[tokio::test]
@@ -859,6 +895,23 @@ mod tests {
             !result.starts_with("Error:"),
             "list_workflows failed: {result}"
         );
+        let v: serde_json::Value =
+            serde_json::from_str(&result).expect("list_workflows should return valid JSON");
+        let workflows = v["workflows"]
+            .as_array()
+            .expect("workflows should be an array");
+        assert!(!workflows.is_empty(), "expected at least one workflow");
+        for w in workflows {
+            assert!(w["id"].as_u64().is_some(), "workflow missing id: {w}");
+            assert!(
+                !w["name"].as_str().unwrap_or("").is_empty(),
+                "workflow missing name: {w}"
+            );
+            assert!(
+                !w["state"].as_str().unwrap_or("").is_empty(),
+                "workflow missing state: {w}"
+            );
+        }
     }
 
     #[tokio::test]
@@ -872,6 +925,23 @@ mod tests {
             !result.starts_with("Error:"),
             "list_workflow_runs failed: {result}"
         );
+        let v: serde_json::Value =
+            serde_json::from_str(&result).expect("list_workflow_runs should return valid JSON");
+        let runs = v["workflow_runs"]
+            .as_array()
+            .expect("workflow_runs should be an array");
+        assert!(!runs.is_empty(), "expected at least one workflow run");
+        for r in runs {
+            assert!(r["id"].as_u64().is_some(), "run missing id: {r}");
+            assert!(
+                !r["head_branch"].as_str().unwrap_or("").is_empty(),
+                "run missing head_branch: {r}"
+            );
+            assert!(
+                !r["status"].as_str().unwrap_or("").is_empty(),
+                "run missing status: {r}"
+            );
+        }
     }
 
     #[tokio::test]
@@ -887,5 +957,22 @@ mod tests {
             !result.starts_with("Error:"),
             "list_workflow_runs with created failed: {result}"
         );
+        let v: serde_json::Value =
+            serde_json::from_str(&result).expect("list_workflow_runs should return valid JSON");
+        let runs = v["workflow_runs"]
+            .as_array()
+            .expect("workflow_runs should be an array");
+        assert!(
+            !runs.is_empty(),
+            "expected at least one workflow run since 2026-01-01"
+        );
+        for r in runs {
+            let created = r["created_at"].as_str().expect("run missing created_at");
+            assert!(
+                created >= "2026-01-01",
+                "run {id} created_at ({created}) is before 2026-01-01",
+                id = r["id"]
+            );
+        }
     }
 }
