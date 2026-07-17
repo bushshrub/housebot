@@ -9,10 +9,11 @@ use crate::github_issues::GitHubIssueReporter;
 pub fn definition() -> Value {
     json!({
         "name": "github_api",
-        "description": "Query the GitHub API for repository information, issues, and workflow runs. Used \
-            instead of fetch_webpage for GitHub data because the API provides accurate, structured results. \
-            Use this for listing issues, searching issues, checking workflow run status, getting repository \
-            metadata, and viewing workflow job details.",
+        "description": "Query the GitHub API for information, issues, and workflow runs in the \
+            configured repository (GITHUB_REPO). Used instead of fetch_webpage for this repo's \
+            GitHub data because the API provides accurate, structured results. Use this for listing \
+            issues, searching issues, checking workflow run status, getting repository metadata, and \
+            viewing workflow job details.",
         "input_schema": {
             "type": "object",
             "properties": {
@@ -44,7 +45,7 @@ pub fn definition() -> Value {
                 },
                 "workflow_name": {
                     "type": "string",
-                    "description": "Filter by workflow name or ID. Used with list_workflow_runs."
+                    "description": "Workflow file name (e.g. ci.yml) or numeric ID. Used with list_workflow_runs."
                 },
                 "branch": {
                     "type": "string",
@@ -57,6 +58,10 @@ pub fn definition() -> Value {
                 "event": {
                     "type": "string",
                     "description": "Filter by trigger event (push, pull_request, schedule, etc.). Used with list_workflow_runs."
+                },
+                "created": {
+                    "type": "string",
+                    "description": "Filter by created date (e.g. 2024-01-01, >=2024-01-01). Used with list_workflow_runs."
                 },
                 "run_id": {
                     "type": "integer",
@@ -103,8 +108,9 @@ pub async fn handle_github_api(
             let branch = args.get("branch").and_then(Value::as_str).unwrap_or("");
             let status = args.get("status").and_then(Value::as_str).unwrap_or("");
             let event = args.get("event").and_then(Value::as_str).unwrap_or("");
+            let created = args.get("created").and_then(Value::as_str).unwrap_or("");
             reporter
-                .list_workflow_runs(workflow_name, branch, status, event)
+                .list_workflow_runs(workflow_name, branch, status, event, created)
                 .await
         }
         "get_workflow_run" => {

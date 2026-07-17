@@ -59,6 +59,7 @@ pub struct ExistingIssue {
 }
 
 /// Files GitHub issues on behalf of the bot's GitHub App installation.
+/// Also supports direct GITHUB_TOKEN auth for integration testing.
 pub struct GitHubIssueReporter {
     app_id: String,
     private_key: String,
@@ -66,6 +67,7 @@ pub struct GitHubIssueReporter {
     repo: String,
     http: reqwest::Client,
     cached: Mutex<Option<(String, u64)>>, // (token, expires_at_unix)
+    direct_token: Option<String>,
 }
 
 impl Default for GitHubIssueReporter {
@@ -97,15 +99,31 @@ impl GitHubIssueReporter {
             repo,
             http: reqwest::Client::new(),
             cached: Mutex::new(None),
+            direct_token: None,
+        }
+    }
+
+    /// Construct a reporter that authenticates with a direct GITHUB_TOKEN
+    /// instead of the GitHub App JWT flow. Useful for integration tests.
+    pub fn with_direct_token(token: String, repo: String) -> Self {
+        Self {
+            app_id: String::new(),
+            private_key: String::new(),
+            installation_id: String::new(),
+            repo,
+            http: reqwest::Client::new(),
+            cached: Mutex::new(None),
+            direct_token: Some(token),
         }
     }
 
     /// Whether every credential needed to file issues is present.
     pub fn is_configured(&self) -> bool {
-        !self.app_id.is_empty()
-            && !self.private_key.is_empty()
-            && !self.installation_id.is_empty()
-            && !self.repo.is_empty()
+        self.direct_token.is_some()
+            || (!self.app_id.is_empty()
+                && !self.private_key.is_empty()
+                && !self.installation_id.is_empty()
+                && !self.repo.is_empty())
     }
 
     fn generate_jwt(&self) -> anyhow::Result<String> {
@@ -147,6 +165,15 @@ impl GitHubIssueReporter {
         Ok(token)
     }
 
+    /// Return a bearer token — either the direct token (GITHUB_TOKEN) or a
+    /// GitHub App installation token obtained via the JWT flow.
+    async fn token(&self) -> anyhow::Result<String> {
+        if let Some(token) = &self.direct_token {
+            return Ok(token.clone());
+        }
+        self.installation_token().await
+    }
+
     /// Create an issue and return its URL, or `None` on any failure / when unconfigured.
     pub async fn create_issue(&self, title: &str, body: &str, labels: &[&str]) -> Option<String> {
         self.create_issue_full(title, body, labels)
@@ -179,7 +206,7 @@ impl GitHubIssueReporter {
         body: &str,
         labels: &[&str],
     ) -> anyhow::Result<CreatedIssue> {
-        let token = self.installation_token().await?;
+        let token = self.token().await?;
         let url = format!("https://api.github.com/repos/{}/issues", self.repo);
         let labels: Vec<String> = if labels.is_empty() {
             vec!["bug".into()]
@@ -221,7 +248,7 @@ impl GitHubIssueReporter {
     }
 
     async fn try_fetch_issue(&self, issue_number: u64) -> anyhow::Result<ExistingIssue> {
-        let token = self.installation_token().await?;
+        let token = self.token().await?;
         let url = format!(
             "https://api.github.com/repos/{}/issues/{issue_number}",
             self.repo
@@ -265,7 +292,7 @@ impl GitHubIssueReporter {
         title: Option<&str>,
         body: Option<&str>,
     ) -> anyhow::Result<ExistingIssue> {
-        let token = self.installation_token().await?;
+        let token = self.token().await?;
         let url = format!(
             "https://api.github.com/repos/{}/issues/{issue_number}",
             self.repo
@@ -307,7 +334,7 @@ impl GitHubIssueReporter {
     }
 
     async fn try_post_issue_comment(&self, issue_number: u64, body: &str) -> anyhow::Result<()> {
-        let token = self.installation_token().await?;
+        let token = self.token().await?;
         let url = format!(
             "https://api.github.com/repos/{}/issues/{issue_number}/comments",
             self.repo
@@ -326,9 +353,15 @@ impl GitHubIssueReporter {
     }
 
     /// Perform an authenticated GET request to the GitHub API.
+    /// Paths starting with `/search/` are treated as root-level API paths;
+    /// all others are prefixed with `/repos/{repo}`.
     async fn authed_get(&self, path: &str) -> anyhow::Result<String> {
-        let token = self.installation_token().await?;
-        let url = format!("https://api.github.com/repos/{}{}", self.repo, path);
+        let token = self.token().await?;
+        let url = if path.starts_with("/search/") {
+            format!("https://api.github.com{path}")
+        } else {
+            format!("https://api.github.com/repos/{}{}", self.repo, path)
+        };
         let resp = self
             .http
             .get(&url)
@@ -359,7 +392,8 @@ impl GitHubIssueReporter {
     /// Search issues in the repository.
     pub async fn search_issues(&self, query: &str) -> String {
         let q = urlencoding(query);
-        let path = format!("/issues?per_page=20&q={q}");
+        let repo_q = urlencoding(&self.repo);
+        let path = format!("/search/issues?q=repo%3A{repo_q}+is%3Aissue+{q}&per_page=20");
         match self.authed_get(&path).await {
             Ok(body) => format_issue_list(&body),
             Err(e) => format!("Error: {e}"),
@@ -428,11 +462,14 @@ impl GitHubIssueReporter {
         branch: &str,
         status: &str,
         event: &str,
+        created: &str,
     ) -> String {
-        let mut params = vec![format!("per_page=20")];
-        if !workflow_name.is_empty() {
-            params.push(format!("workflow={}", urlencoding(workflow_name)));
-        }
+        let (base_path, mut params) = if workflow_name.is_empty() {
+            ("/actions/runs".to_string(), vec!["per_page=20".to_string()])
+        } else {
+            let path = format!("/actions/workflows/{}/runs", urlencoding(workflow_name));
+            (path, vec!["per_page=20".to_string()])
+        };
         if !branch.is_empty() {
             params.push(format!("branch={}", urlencoding(branch)));
         }
@@ -442,8 +479,11 @@ impl GitHubIssueReporter {
         if !event.is_empty() {
             params.push(format!("event={}", urlencoding(event)));
         }
+        if !created.is_empty() {
+            params.push(format!("created={}", urlencoding(created)));
+        }
         let qs = params.join("&");
-        let path = format!("/actions/runs?{qs}");
+        let path = format!("{base_path}?{qs}");
         match self.authed_get(&path).await {
             Ok(body) => match serde_json::from_str::<serde_json::Value>(&body) {
                 Ok(val) => {
@@ -577,9 +617,14 @@ fn format_issue_list(body: &str) -> String {
     match serde_json::from_str::<serde_json::Value>(body) {
         Ok(val) => {
             let issues: Vec<&serde_json::Value> = if let Some(arr) = val.as_array() {
-                arr.iter().collect()
+                arr.iter()
+                    .filter(|i| i.get("pull_request").is_none())
+                    .collect()
             } else if let Some(items) = val.get("items").and_then(|v| v.as_array()) {
-                items.iter().collect()
+                items
+                    .iter()
+                    .filter(|i| i.get("pull_request").is_none())
+                    .collect()
             } else {
                 return "Error: unexpected API response format.".to_string();
             };
@@ -683,5 +728,164 @@ mod tests {
         let r = GitHubIssueReporter::from_env();
         assert!(r.private_key.contains("line1\nline2"));
         std::env::remove_var("GITHUB_APP_PRIVATE_KEY");
+    }
+
+    #[test]
+    fn with_direct_token_is_configured() {
+        let r = GitHubIssueReporter::with_direct_token("ghp_token".into(), "owner/repo".into());
+        assert!(r.is_configured());
+    }
+
+    #[test]
+    fn format_issue_list_filters_out_pull_requests() {
+        let body = r#"[
+            {"number": 1, "title": "Real issue", "state": "open", "labels": []},
+            {"number": 2, "title": "PR", "state": "open", "labels": [], "pull_request": {"url": "..."}},
+            {"number": 3, "title": "Another issue", "state": "closed", "labels": [{"name": "bug"}]}
+        ]"#;
+        let result = format_issue_list(body);
+        assert!(result.contains("#1"));
+        assert!(result.contains("Real issue"));
+        assert!(result.contains("#3"));
+        assert!(result.contains("Another issue"));
+        assert!(!result.contains("#2"));
+        assert!(!result.contains("PR"));
+    }
+
+    #[test]
+    fn format_issue_list_filters_prs_from_search_response() {
+        let body = r#"{
+            "total_count": 2,
+            "items": [
+                {"number": 10, "title": "Search issue", "state": "open", "labels": []},
+                {"number": 11, "title": "Search PR", "state": "open", "labels": [], "pull_request": {"url": "..."}}
+            ]
+        }"#;
+        let result = format_issue_list(body);
+        assert!(result.contains("#10"));
+        assert!(result.contains("Search issue"));
+        assert!(!result.contains("#11"));
+        assert!(!result.contains("Search PR"));
+    }
+
+    #[test]
+    fn format_issue_list_returns_not_found_for_empty() {
+        let result = format_issue_list("[]");
+        assert_eq!(result, "No issues found.");
+    }
+
+    #[test]
+    fn format_issue_list_returns_not_found_for_empty_search() {
+        let body = r#"{"total_count": 0, "items": []}"#;
+        let result = format_issue_list(body);
+        assert_eq!(result, "No issues found.");
+    }
+
+    #[test]
+    fn format_issue_list_filters_prs_away_from_empty_result() {
+        // Only PRs in the response — should show "No issues found."
+        let body = r#"[
+            {"number": 5, "title": "Only PR", "state": "open", "labels": [], "pull_request": {"url": "..."}}
+        ]"#;
+        let result = format_issue_list(body);
+        assert_eq!(result, "No issues found.");
+    }
+
+    #[test]
+    fn urlencoding_encodes_correctly() {
+        assert_eq!(urlencoding("hello"), "hello");
+        assert_eq!(urlencoding("hello world"), "hello%20world");
+        assert_eq!(urlencoding("a/b"), "a%2Fb");
+        assert_eq!(urlencoding("repo:owner/repo"), "repo%3Aowner%2Frepo");
+    }
+
+    // ── Integration tests (require GITHUB_TOKEN env var) ────────────────────
+
+    /// Create a reporter from `GITHUB_TOKEN` + `GITHUB_REPO`, or skip.
+    fn integration_reporter() -> Option<GitHubIssueReporter> {
+        let token = std::env::var("GITHUB_TOKEN").ok()?;
+        let repo = std::env::var("GITHUB_REPO")
+            .ok()
+            .filter(|r| !r.is_empty())
+            .unwrap_or_else(|| "bushshrub/housebot".to_string());
+        Some(GitHubIssueReporter::with_direct_token(token, repo))
+    }
+
+    #[tokio::test]
+    async fn integration_get_repo() {
+        let reporter = match integration_reporter() {
+            Some(r) => r,
+            None => return,
+        };
+        let result = reporter.get_repo().await;
+        assert!(!result.starts_with("Error:"), "get_repo failed: {result}");
+        assert!(result.contains("full_name"));
+    }
+
+    #[tokio::test]
+    async fn integration_list_issues() {
+        let reporter = match integration_reporter() {
+            Some(r) => r,
+            None => return,
+        };
+        let result = reporter.list_issues("open", "").await;
+        assert!(
+            !result.starts_with("Error:"),
+            "list_issues failed: {result}"
+        );
+    }
+
+    #[tokio::test]
+    async fn integration_search_issues() {
+        let reporter = match integration_reporter() {
+            Some(r) => r,
+            None => return,
+        };
+        let result = reporter.search_issues("bug").await;
+        assert!(
+            !result.starts_with("Error:"),
+            "search_issues failed: {result}"
+        );
+    }
+
+    #[tokio::test]
+    async fn integration_list_workflows() {
+        let reporter = match integration_reporter() {
+            Some(r) => r,
+            None => return,
+        };
+        let result = reporter.list_workflows().await;
+        assert!(
+            !result.starts_with("Error:"),
+            "list_workflows failed: {result}"
+        );
+    }
+
+    #[tokio::test]
+    async fn integration_list_workflow_runs() {
+        let reporter = match integration_reporter() {
+            Some(r) => r,
+            None => return,
+        };
+        let result = reporter.list_workflow_runs("", "master", "", "", "").await;
+        assert!(
+            !result.starts_with("Error:"),
+            "list_workflow_runs failed: {result}"
+        );
+    }
+
+    #[tokio::test]
+    async fn integration_list_workflow_runs_with_created() {
+        let reporter = match integration_reporter() {
+            Some(r) => r,
+            None => return,
+        };
+        let result = reporter
+            .list_workflow_runs("", "", "", "", ">=2026-01-01")
+            .await;
+        assert!(
+            !result.starts_with("Error:"),
+            "list_workflow_runs with created failed: {result}"
+        );
     }
 }
