@@ -306,6 +306,7 @@ impl Agent {
         tools
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub(crate) async fn dispatch_tool(
         &self,
         name: &str,

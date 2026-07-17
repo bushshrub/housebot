@@ -3,6 +3,7 @@
 use super::*;
 
 impl Agent {
+    #[allow(clippy::too_many_arguments)]
     pub(crate) async fn dispatch_tool_inner(
         &self,
         name: &str,

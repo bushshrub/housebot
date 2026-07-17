@@ -268,6 +268,7 @@ impl HouseBot {
         if let Some(notice) = &result.session_notice {
             let _ = reply_no_ping(ctx, msg, notice).await;
         }
+        let allowed_pings = extract_mentioned_users(&safe, bot_id.get());
         let with_tool_summary = append_tool_summary(&safe, &result.tools_called);
         let (display, code_files) = extract_code_files(&with_tool_summary);
         send_final_message(
@@ -278,6 +279,7 @@ impl HouseBot {
             msg.author.id.get(),
             &self.paginated,
             progress.as_ref(),
+            &allowed_pings,
         )
         .await;
 

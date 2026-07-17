@@ -117,6 +117,23 @@ pub(crate) async fn reply_no_ping(
     msg.channel_id.send_message(&ctx.http, builder).await
 }
 
+pub(crate) async fn reply_with_mentions(
+    ctx: &Context,
+    msg: &Message,
+    content: &str,
+    allowed_users: &[u64],
+) -> serenity::Result<Message> {
+    let mut mentions = CreateAllowedMentions::new();
+    if !allowed_users.is_empty() {
+        mentions = mentions.users(allowed_users.iter().map(|id| UserId::new(*id)));
+    }
+    let builder = CreateMessage::new()
+        .content(content)
+        .reference_message(msg)
+        .allowed_mentions(mentions);
+    msg.channel_id.send_message(&ctx.http, builder).await
+}
+
 pub(crate) fn help_response() -> String {
     crate::tools::features::features_text().to_string()
 }
@@ -275,6 +292,25 @@ pub(crate) async fn respond_ephemeral(
     if let Err(e) = cmd.create_response(&ctx.http, response).await {
         tracing::warn!("Failed to send interaction response: {e}");
     }
+}
+
+/// Scan text for Discord mention patterns (`<@ID>`) and return unique user IDs,
+/// excluding the bot's own ID.
+pub(crate) fn extract_mentioned_users(text: &str, bot_id: u64) -> Vec<u64> {
+    text.split('<')
+        .filter_map(|part| {
+            let remaining = if let Some(stripped) = part.strip_prefix("@!") {
+                stripped
+            } else {
+                part.strip_prefix('@')?
+            };
+            let id_str = remaining.split('>').next()?;
+            id_str.parse::<u64>().ok()
+        })
+        .filter(|id| *id != bot_id)
+        .collect::<std::collections::HashSet<_>>()
+        .into_iter()
+        .collect()
 }
 
 pub(crate) const RETIRED_SLASH_COMMANDS: &[&str] = &[

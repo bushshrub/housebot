@@ -9,6 +9,15 @@ pub(crate) fn split_command(content: &str) -> (String, String) {
     }
 }
 
+fn build_allowed_mentions(allowed_pings: &[u64]) -> CreateAllowedMentions {
+    let mut mentions = CreateAllowedMentions::new();
+    if !allowed_pings.is_empty() {
+        mentions = mentions.users(allowed_pings.iter().map(|id| UserId::new(*id)));
+    }
+    mentions
+}
+
+#[allow(clippy::too_many_arguments)]
 pub(crate) async fn send_final_message(
     ctx: &Context,
     msg: &Message,
@@ -17,7 +26,9 @@ pub(crate) async fn send_final_message(
     owner_id: u64,
     store: &Mutex<HashMap<String, PaginatedResponse>>,
     progress: Option<&Message>,
+    allowed_pings: &[u64],
 ) {
+    let mentions = build_allowed_mentions(allowed_pings);
     if !paginate {
         let chunks = split_text(text, MAX_MESSAGE_LENGTH);
         if let (Some(progress), Some(first)) = (progress, chunks.first()) {
@@ -28,22 +39,42 @@ pub(crate) async fn send_final_message(
                     progress.id,
                     EditMessage::new()
                         .content(first)
-                        .allowed_mentions(CreateAllowedMentions::new()),
+                        .allowed_mentions(mentions.clone()),
                 )
                 .await
                 .is_ok()
             {
                 for chunk in chunks.iter().skip(1) {
-                    let _ = msg.channel_id.say(&ctx.http, chunk).await;
+                    let _ = msg
+                        .channel_id
+                        .send_message(
+                            &ctx.http,
+                            CreateMessage::new()
+                                .content(chunk)
+                                .allowed_mentions(mentions.clone()),
+                        )
+                        .await;
                 }
                 return;
             }
         }
         for (i, chunk) in chunks.iter().enumerate() {
             if i == 0 {
-                let _ = reply_no_ping(ctx, msg, chunk).await;
+                if !allowed_pings.is_empty() {
+                    let _ = reply_with_mentions(ctx, msg, chunk, allowed_pings).await;
+                } else {
+                    let _ = reply_no_ping(ctx, msg, chunk).await;
+                }
             } else {
-                let _ = msg.channel_id.say(&ctx.http, chunk).await;
+                let _ = msg
+                    .channel_id
+                    .send_message(
+                        &ctx.http,
+                        CreateMessage::new()
+                            .content(chunk)
+                            .allowed_mentions(mentions.clone()),
+                    )
+                    .await;
             }
         }
         return;
@@ -65,7 +96,7 @@ pub(crate) async fn send_final_message(
         .embed(pagination_embed(&pages, 0))
         .components(pagination_components(&token, 0, pages.len()))
         .reference_message(msg)
-        .allowed_mentions(CreateAllowedMentions::new());
+        .allowed_mentions(mentions);
     let _ = msg.channel_id.send_message(&ctx.http, builder).await;
 }
 

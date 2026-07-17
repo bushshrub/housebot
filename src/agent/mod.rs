@@ -164,6 +164,7 @@ impl TextSink for TextStreamAdapter<'_> {
 }
 
 /// Result of dispatching a single tool call.
+#[derive(Debug)]
 pub(crate) enum ToolOutcome {
     Text(String),
     Attachment {
