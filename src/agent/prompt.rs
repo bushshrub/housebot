@@ -105,7 +105,7 @@ discord.* bridge, limits). Call this before writing a Lua script if you are unsu
 algorithmic tasks. The script's print() output and return values are returned as the tool result. \
 Call get_lua_docs first if you need the API reference.";
 
-/// Configuration-dependent additions that sit after the stable guidelines
+/// Configuration-dependent additions that sit after all stable guideline
 /// bullets and before the memory-guidance bullet and dynamic content
 /// (memory-tool lines, skills section).
 struct ConfigSuffix {
@@ -116,8 +116,7 @@ struct ConfigSuffix {
 impl ConfigSuffix {
     fn new(deep_memory_enabled: bool, all_skills: &BTreeMap<String, Skill>) -> Self {
         let memory_tool_line = if deep_memory_enabled {
-            "- update_memory — Persist important facts about the current user for future conversations. Write the full memory each time.\n\
-             - search_memory — Search stored memory for a keyword or phrase. Use when the user refers to something you may have remembered.\n"
+            "- update_memory — Persist important facts about the current user for future conversations. Write the full memory each time.\n- search_memory — Search stored memory for a keyword or phrase. Use when the user refers to something you may have remembered.\n"
         } else {
             ""
         };
@@ -275,10 +274,7 @@ error, stop using search tools for this request and do not retry repeatedly; use
 common_crawl__search for historical URL evidence when appropriate, or explain that the search \
 service is temporarily unavailable.\n- For calculations, data processing, or algorithmic tasks \
 use run_lua to write and execute a Lua script; call get_lua_docs first if you are unsure of the \
-sandbox API.\n\
-{memory_tool_line}\
-{skills_section}\n\
-- {memory_guidance}\n- Keep responses concise unless asked for detail.\n- If a user \
+sandbox API.\n- Keep responses concise unless asked for detail.\n- If a user \
 suggests or requests a feature or improvement (but does not ask for it to be coded/built right \
 now), call create_feature_request with type `feature`, a clear title, and description, then tell \
 them the issue URL. If a user reports broken or incorrect bot behavior, call create_feature_request \
@@ -289,6 +285,9 @@ to any user: owner requests are dispatched directly; others go to the owner for 
 (starts with \"Error:\"), quote it exactly — do not paraphrase or soften it.\n- When the user's \
 message exceeds 500 characters, begin your reply with a **TL;DR:** line (one sentence) \
 summarizing what they asked.\n\
+{memory_tool_line}\
+{skills_section}\n\
+- {memory_guidance}\n\
 {profile_section}\
 {memory_section}\
 {personality_section}\n\n\
