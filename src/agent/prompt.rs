@@ -105,8 +105,9 @@ discord.* bridge, limits). Call this before writing a Lua script if you are unsu
 algorithmic tasks. The script's print() output and return values are returned as the tool result. \
 Call get_lua_docs first if you need the API reference.";
 
-/// Configuration-dependent additions that sit between the static tools and
-/// the guidelines (memory-tool lines, skills section).
+/// Configuration-dependent additions that sit after the stable guidelines
+/// bullets and before the memory-guidance bullet and dynamic content
+/// (memory-tool lines, skills section).
 struct ConfigSuffix {
     memory_tool_line: &'static str,
     skills_section: String,
@@ -134,7 +135,10 @@ impl ConfigSuffix {
                 lines.join("\n")
             )
         };
-        Self { memory_tool_line, skills_section }
+        Self {
+            memory_tool_line,
+            skills_section,
+        }
     }
 }
 
@@ -264,16 +268,17 @@ pub(crate) fn build_system_prompt_with_profile(
     );
 
     format!(
-        "{STATIC_BASE}\
-{memory_tool_line}\
-{skills_section}\n\n\
+        "{STATIC_BASE}\n\n\
 ## Guidelines\n- Be conversational and friendly.\n- Use Jellyfin tools for any media questions \
 before guessing.\n- Never infer sensitive traits, identity, or intent from a user's avatar.\n- Use download_file only when the user asks to view, receive, or download a specific file; never fetch private-network URLs.\n- Use web_search for simple factual or current-events questions. For complex questions requiring multiple perspectives, comparisons, or a comprehensive report, use deep_research and synthesize its dossier with source links. If either search tool returns a rate-limit \
 error, stop using search tools for this request and do not retry repeatedly; use \
 common_crawl__search for historical URL evidence when appropriate, or explain that the search \
 service is temporarily unavailable.\n- For calculations, data processing, or algorithmic tasks \
 use run_lua to write and execute a Lua script; call get_lua_docs first if you are unsure of the \
-sandbox API.\n- {memory_guidance}\n- Keep responses concise unless asked for detail.\n- If a user \
+sandbox API.\n\
+{memory_tool_line}\
+{skills_section}\n\
+- {memory_guidance}\n- Keep responses concise unless asked for detail.\n- If a user \
 suggests or requests a feature or improvement (but does not ask for it to be coded/built right \
 now), call create_feature_request with type `feature`, a clear title, and description, then tell \
 them the issue URL. If a user reports broken or incorrect bot behavior, call create_feature_request \

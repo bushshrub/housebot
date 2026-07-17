@@ -325,20 +325,125 @@ fn prompt_stable_prefix_unchanged_by_dynamic_content() {
     let skills = empty_skills();
 
     let cases: Vec<(&str, String)> = vec![
-        ("baseline",
-         build_system_prompt_with_profile("Alice", "1", "Alice", "", "", "", &skills, None, true, "", "", "2026-07-17 12:00")),
-        ("different timestamp",
-         build_system_prompt_with_profile("Alice", "1", "Alice", "", "", "", &skills, None, true, "", "", "2026-07-18 08:30")),
-        ("different username+id",
-         build_system_prompt_with_profile("Bob", "999", "Bob", "", "", "", &skills, None, true, "", "", "2026-07-17 12:00")),
-        ("profile fields and avatar",
-         build_system_prompt_with_profile("Alice", "1", "Alice", "Ali", "https://ex/av.png", "", &skills, None, true, "tags", "actions", "2026-07-17 12:00")),
-        ("user memory",
-         build_system_prompt_with_profile("Alice", "1", "Alice", "", "", "Likes cats", &skills, None, true, "", "", "2026-07-17 12:00")),
-        ("personality",
-         build_system_prompt_with_profile("Alice", "1", "Alice", "", "", "", &skills, Some("Friendly"), true, "", "", "2026-07-17 12:00")),
-        ("usage tags and quick actions",
-         build_system_prompt_with_profile("Alice", "1", "Alice", "", "", "", &skills, None, true, "media", "search", "2026-07-17 12:00")),
+        (
+            "baseline",
+            build_system_prompt_with_profile(
+                "Alice",
+                "1",
+                "Alice",
+                "",
+                "",
+                "",
+                &skills,
+                None,
+                true,
+                "",
+                "",
+                "2026-07-17 12:00",
+            ),
+        ),
+        (
+            "different timestamp",
+            build_system_prompt_with_profile(
+                "Alice",
+                "1",
+                "Alice",
+                "",
+                "",
+                "",
+                &skills,
+                None,
+                true,
+                "",
+                "",
+                "2026-07-18 08:30",
+            ),
+        ),
+        (
+            "different username+id",
+            build_system_prompt_with_profile(
+                "Bob",
+                "999",
+                "Bob",
+                "",
+                "",
+                "",
+                &skills,
+                None,
+                true,
+                "",
+                "",
+                "2026-07-17 12:00",
+            ),
+        ),
+        (
+            "profile fields and avatar",
+            build_system_prompt_with_profile(
+                "Alice",
+                "1",
+                "Alice",
+                "Ali",
+                "https://ex/av.png",
+                "",
+                &skills,
+                None,
+                true,
+                "tags",
+                "actions",
+                "2026-07-17 12:00",
+            ),
+        ),
+        (
+            "user memory",
+            build_system_prompt_with_profile(
+                "Alice",
+                "1",
+                "Alice",
+                "",
+                "",
+                "Likes cats",
+                &skills,
+                None,
+                true,
+                "",
+                "",
+                "2026-07-17 12:00",
+            ),
+        ),
+        (
+            "personality",
+            build_system_prompt_with_profile(
+                "Alice",
+                "1",
+                "Alice",
+                "",
+                "",
+                "",
+                &skills,
+                Some("Friendly"),
+                true,
+                "",
+                "",
+                "2026-07-17 12:00",
+            ),
+        ),
+        (
+            "usage tags and quick actions",
+            build_system_prompt_with_profile(
+                "Alice",
+                "1",
+                "Alice",
+                "",
+                "",
+                "",
+                &skills,
+                None,
+                true,
+                "media",
+                "search",
+                "2026-07-17 12:00",
+            ),
+        ),
     ];
 
     let prefix_end = dynamic_suffix_start(&cases[0].1);
@@ -346,7 +451,8 @@ fn prompt_stable_prefix_unchanged_by_dynamic_content() {
     for (label, prompt) in &cases {
         let end = dynamic_suffix_start(prompt);
         assert_eq!(
-            &prompt[..end], baseline_prefix,
+            &prompt[..end],
+            baseline_prefix,
             "stable prefix differs for: {label}"
         );
     }
@@ -356,26 +462,85 @@ fn prompt_stable_prefix_unchanged_by_dynamic_content() {
 fn prompt_static_base_present_regardless_of_deep_memory_or_skills() {
     let skills = empty_skills();
     let mut skill_map = BTreeMap::new();
-    skill_map.insert("greet".into(), Skill {
-        name: "greet".into(), description: Some("Say hello".into()), prompt: "..".into(), created_by: None,
-    });
+    skill_map.insert(
+        "greet".into(),
+        Skill {
+            name: "greet".into(),
+            description: Some("Say hello".into()),
+            prompt: "..".into(),
+            created_by: None,
+        },
+    );
 
     let prompts: Vec<String> = vec![
         // deep_memory enabled, no skills
-        build_system_prompt_with_profile("Alice", "1", "Alice", "", "", "", &skills, None, true, "", "", "2026-07-17 12:00"),
+        build_system_prompt_with_profile(
+            "Alice",
+            "1",
+            "Alice",
+            "",
+            "",
+            "",
+            &skills,
+            None,
+            true,
+            "",
+            "",
+            "2026-07-17 12:00",
+        ),
         // deep_memory disabled, no skills
-        build_system_prompt_with_profile("Alice", "1", "Alice", "", "", "", &skills, None, false, "", "", "2026-07-17 12:00"),
+        build_system_prompt_with_profile(
+            "Alice",
+            "1",
+            "Alice",
+            "",
+            "",
+            "",
+            &skills,
+            None,
+            false,
+            "",
+            "",
+            "2026-07-17 12:00",
+        ),
         // deep_memory enabled, with skills
-        build_system_prompt_with_profile("Alice", "1", "Alice", "", "", "", &skill_map, None, true, "", "", "2026-07-17 12:00"),
+        build_system_prompt_with_profile(
+            "Alice",
+            "1",
+            "Alice",
+            "",
+            "",
+            "",
+            &skill_map,
+            None,
+            true,
+            "",
+            "",
+            "2026-07-17 12:00",
+        ),
         // deep_memory disabled, with skills
-        build_system_prompt_with_profile("Alice", "1", "Alice", "", "", "", &skill_map, None, false, "", "", "2026-07-17 12:00"),
+        build_system_prompt_with_profile(
+            "Alice",
+            "1",
+            "Alice",
+            "",
+            "",
+            "",
+            &skill_map,
+            None,
+            false,
+            "",
+            "",
+            "2026-07-17 12:00",
+        ),
     ];
 
     let static_base = crate::agent::prompt::STATIC_BASE;
     let static_len = static_base.len();
     for (i, p) in prompts.iter().enumerate() {
         assert_eq!(
-            &p[..static_len], static_base,
+            &p[..static_len],
+            static_base,
             "STATIC_BASE differs for prompt {i}"
         );
     }
@@ -384,9 +549,22 @@ fn prompt_static_base_present_regardless_of_deep_memory_or_skills() {
 #[test]
 fn prompt_regression_dynamic_markers_after_guidelines_minimal() {
     let p = build_system_prompt_with_profile(
-        "Alice", "1", "Alice", "", "", "", &empty_skills(), None, false, "", "", "2026-07-17 12:00",
+        "Alice",
+        "1",
+        "Alice",
+        "",
+        "",
+        "",
+        &empty_skills(),
+        None,
+        false,
+        "",
+        "",
+        "2026-07-17 12:00",
     );
-    let guidelines_pos = p.find("## Guidelines").expect("## Guidelines section present");
+    let guidelines_pos = p
+        .find("## Guidelines")
+        .expect("## Guidelines section present");
     // In minimal form, only these markers appear
     assert!(
         p.find("Current date/time:").unwrap() > guidelines_pos,
@@ -401,14 +579,32 @@ fn prompt_regression_dynamic_markers_after_guidelines_minimal() {
 #[test]
 fn prompt_regression_dynamic_markers_after_guidelines_maximal() {
     let mut skills = BTreeMap::new();
-    skills.insert("greet".into(), Skill {
-        name: "greet".into(), description: Some("Say hello".into()), prompt: "..".into(), created_by: None,
-    });
-    let p = build_system_prompt_with_profile(
-        "Alice", "1", "Alice", "Ali", "https://ex/av.png", "Likes cats", &skills,
-        Some("Friendly"), true, "tags", "actions", "2026-07-17 12:00",
+    skills.insert(
+        "greet".into(),
+        Skill {
+            name: "greet".into(),
+            description: Some("Say hello".into()),
+            prompt: "..".into(),
+            created_by: None,
+        },
     );
-    let guidelines_pos = p.find("## Guidelines").expect("## Guidelines section present");
+    let p = build_system_prompt_with_profile(
+        "Alice",
+        "1",
+        "Alice",
+        "Ali",
+        "https://ex/av.png",
+        "Likes cats",
+        &skills,
+        Some("Friendly"),
+        true,
+        "tags",
+        "actions",
+        "2026-07-17 12:00",
+    );
+    let guidelines_pos = p
+        .find("## Guidelines")
+        .expect("## Guidelines section present");
     let markers = [
         "Current date/time:",
         "Current user:",
@@ -417,10 +613,113 @@ fn prompt_regression_dynamic_markers_after_guidelines_maximal() {
         "## Personality / tone",
     ];
     for marker in &markers {
-        let pos = p.find(marker).unwrap_or_else(|| panic!("marker {marker:?} not found"));
+        let pos = p
+            .find(marker)
+            .unwrap_or_else(|| panic!("marker {marker:?} not found"));
         assert!(
             pos > guidelines_pos,
             "marker {marker:?} (pos {pos}) appears before ## Guidelines (pos {guidelines_pos})"
         );
     }
+}
+
+#[test]
+fn prompt_memory_tools_separated_from_preceding_guidelines_bullet() {
+    let p = build_system_prompt_with_profile(
+        "Alice",
+        "1",
+        "Alice",
+        "",
+        "",
+        "",
+        &empty_skills(),
+        None,
+        true,
+        "",
+        "",
+        "2026-07-17 12:00",
+    );
+    assert!(
+        p.contains("sandbox API.\n- update_memory"),
+        "memory tool must follow the last stable guidelines bullet on a new line, not merged"
+    );
+}
+
+#[test]
+fn prompt_config_content_ordered_between_guidelines_and_dynamic() {
+    let mut skills = BTreeMap::new();
+    skills.insert(
+        "greet".into(),
+        Skill {
+            name: "greet".into(),
+            description: Some("Say hello".into()),
+            prompt: "..".into(),
+            created_by: None,
+        },
+    );
+    let p = build_system_prompt_with_profile(
+        "Alice",
+        "1",
+        "Alice",
+        "Ali",
+        "https://ex/av.png",
+        "Likes cats",
+        &skills,
+        Some("Friendly"),
+        true,
+        "tags",
+        "actions",
+        "2026-07-17 12:00",
+    );
+    let guidelines_pos = p
+        .find("## Guidelines")
+        .expect("## Guidelines section present");
+    let memory_tool_pos = p
+        .find("- update_memory —")
+        .expect("memory tool present with deep_memory enabled");
+    let run_skill_pos = p.find("- run_skill —").expect("run_skill tool present");
+    let memory_guidance_pos = p
+        .find("Actively use memory:")
+        .expect("memory guidance present");
+    let profile_pos = p.find("## User profile").expect("profile section present");
+    let memory_pos = p
+        .find("## Your memory about")
+        .expect("memory section present");
+    let personality_pos = p
+        .find("## Personality / tone")
+        .expect("personality section present");
+    let date_pos = p.find("Current date/time:").expect("date/time present");
+
+    // Stable guidelines come first
+    assert!(
+        guidelines_pos < memory_tool_pos,
+        "stable guidelines must precede config content"
+    );
+    // Config suffix: memory tools before skills
+    assert!(
+        memory_tool_pos < run_skill_pos,
+        "memory tools must precede skills section"
+    );
+    // Config content before memory_guidance
+    assert!(
+        run_skill_pos < memory_guidance_pos,
+        "skills section must precede memory guidance"
+    );
+    // memory_guidance before dynamic suffix
+    assert!(
+        memory_guidance_pos < profile_pos,
+        "memory guidance before profile section"
+    );
+    assert!(
+        memory_guidance_pos < memory_pos,
+        "memory guidance before memory section"
+    );
+    assert!(
+        memory_guidance_pos < personality_pos,
+        "memory guidance before personality section"
+    );
+    assert!(
+        memory_guidance_pos < date_pos,
+        "memory guidance before date/time"
+    );
 }
