@@ -215,6 +215,7 @@ impl HouseBot {
                     guild_id: msg.guild_id.map(|guild| guild.get()),
                     proactive,
                     record_profile_usage: !proactive,
+                    bot_id: bot_id.get(),
                 },
                 response_hooks
                     .as_ref()
@@ -278,6 +279,7 @@ impl HouseBot {
             msg.author.id.get(),
             &self.paginated,
             progress.as_ref(),
+            &result.allowed_pings,
         )
         .await;
 

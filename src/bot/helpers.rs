@@ -117,6 +117,23 @@ pub(crate) async fn reply_no_ping(
     msg.channel_id.send_message(&ctx.http, builder).await
 }
 
+pub(crate) async fn reply_with_mentions(
+    ctx: &Context,
+    msg: &Message,
+    content: &str,
+    allowed_users: &[u64],
+) -> serenity::Result<Message> {
+    let mut mentions = CreateAllowedMentions::new();
+    if !allowed_users.is_empty() {
+        mentions = mentions.users(allowed_users.iter().map(|id| UserId::new(*id)));
+    }
+    let builder = CreateMessage::new()
+        .content(content)
+        .reference_message(msg)
+        .allowed_mentions(mentions);
+    msg.channel_id.send_message(&ctx.http, builder).await
+}
+
 pub(crate) fn help_response() -> String {
     crate::tools::features::features_text().to_string()
 }

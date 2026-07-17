@@ -324,6 +324,7 @@ async fn dispatch_unknown_tool_returns_error() {
             "testuser",
             0,
             None,
+            0,
         )
         .await;
     match out {
@@ -332,6 +333,7 @@ async fn dispatch_unknown_tool_returns_error() {
             panic!("unexpected development action: {text}")
         }
         ToolOutcome::Attachment { text, .. } => panic!("unexpected attachment: {text}"),
+        ToolOutcome::PingUsers { text, .. } => panic!("unexpected ping users: {text}"),
     }
 }
 
@@ -359,6 +361,7 @@ async fn dispatch_blocks_tool_banned_by_guild_vote() {
             "restricted-user",
             10,
             Some(77),
+            0,
         )
         .await;
     match outcome {
@@ -549,7 +552,7 @@ async fn dispatch_get_lua_docs_returns_docs() {
     let client = Arc::new(MockChatClient::new());
     let (_t, agent) = test_agent(client);
     let out = agent
-        .dispatch_tool("get_lua_docs", &json!({}), "u", "testuser", 0, None)
+        .dispatch_tool("get_lua_docs", &json!({}), "u", "testuser", 0, None, 0)
         .await;
     let ToolOutcome::Text(t) = out else {
         panic!("expected Text outcome")
@@ -570,6 +573,7 @@ async fn dispatch_run_lua_executes_script() {
             "testuser",
             0,
             None,
+            0,
         )
         .await;
     let ToolOutcome::Text(t) = out else {
@@ -590,10 +594,176 @@ async fn dispatch_run_lua_strips_code_fence() {
             "testuser",
             0,
             None,
+            0,
         )
         .await;
     let ToolOutcome::Text(t) = out else {
         panic!("expected Text outcome")
     };
     assert_eq!(t, "2");
+}
+
+#[test]
+fn ping_users_tool_definition_is_valid() {
+    let def = tools::ping_users::definition();
+    let (name, desc, _params) = flatten_tool(&def);
+    assert_eq!(name, "ping_users");
+    assert!(!desc.is_empty());
+    assert!(desc.contains("ping"));
+}
+
+#[tokio::test]
+async fn build_tools_includes_ping_users() {
+    let client = Arc::new(MockChatClient::new());
+    let (_t, agent) = test_agent(client);
+    let tools = agent.build_tools(true).await;
+    let names: Vec<&str> = tools
+        .iter()
+        .filter_map(|t| t["function"]["name"].as_str())
+        .collect();
+    assert!(names.contains(&"ping_users"));
+}
+
+#[tokio::test]
+async fn dispatch_ping_users_returns_ping_users_outcome() {
+    let client = Arc::new(MockChatClient::new());
+    let (_t, agent) = test_agent(client);
+    let out = agent
+        .dispatch_tool(
+            "ping_users",
+            &json!({"user_ids": ["123", "456"], "reason": "for a bug report"}),
+            "u",
+            "testuser",
+            0,
+            None,
+            999,
+        )
+        .await;
+    match out {
+        ToolOutcome::PingUsers { text, user_ids } => {
+            assert!(text.contains("Pinging"));
+            assert!(text.contains("<@123>"));
+            assert!(text.contains("<@456>"));
+            assert!(text.contains("bug report"));
+            assert_eq!(user_ids, vec![123, 456]);
+        }
+        other => panic!("expected PingUsers outcome, got: {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn dispatch_ping_users_rejects_self_ping() {
+    let client = Arc::new(MockChatClient::new());
+    let (_t, agent) = test_agent(client);
+    let out = agent
+        .dispatch_tool(
+            "ping_users",
+            &json!({"user_ids": ["999"]}),
+            "u",
+            "testuser",
+            0,
+            None,
+            999,
+        )
+        .await;
+    match out {
+        ToolOutcome::Text(t) => assert!(t.contains("cannot ping the bot itself")),
+        other => panic!("expected Text error, got: {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn dispatch_ping_users_rejects_empty_list() {
+    let client = Arc::new(MockChatClient::new());
+    let (_t, agent) = test_agent(client);
+    let out = agent
+        .dispatch_tool(
+            "ping_users",
+            &json!({"user_ids": []}),
+            "u",
+            "testuser",
+            0,
+            None,
+            999,
+        )
+        .await;
+    match out {
+        ToolOutcome::Text(t) => assert!(t.contains("at least one user_id")),
+        other => panic!("expected Text error, got: {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn dispatch_ping_users_rejects_invalid_id() {
+    let client = Arc::new(MockChatClient::new());
+    let (_t, agent) = test_agent(client);
+    let out = agent
+        .dispatch_tool(
+            "ping_users",
+            &json!({"user_ids": ["not-a-number"]}),
+            "u",
+            "testuser",
+            0,
+            None,
+            999,
+        )
+        .await;
+    match out {
+        ToolOutcome::Text(t) => assert!(t.contains("invalid user_id")),
+        other => panic!("expected Text error, got: {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn run_agent_with_ping_users_then_text() {
+    let client = Arc::new(MockChatClient::new());
+    // First completion: ping_users tool call
+    client.push_tool_call(
+        "call_1",
+        "ping_users",
+        r#"{"user_ids": ["42", "99"], "reason": "discussion"}"#,
+    );
+    // Second completion: text with mentions
+    client.push_text("<@42> and <@99> please check this out!");
+    let (_t, agent) = test_agent(client);
+    let result = agent
+        .run(
+            AgentRequest::text("u1", "Alice", "ping some users"),
+            &NoHooks,
+        )
+        .await;
+    assert_eq!(result.text, "<@42> and <@99> please check this out!");
+    assert!(result.allowed_pings.contains(&42));
+    assert!(result.allowed_pings.contains(&99));
+    assert_eq!(result.allowed_pings.len(), 2);
+    assert!(result.tools_called.contains(&"ping_users".to_string()));
+}
+
+#[tokio::test]
+async fn allowed_pings_empty_when_no_ping_users_called() {
+    let client = Arc::new(MockChatClient::new());
+    client.push_text("Just a normal response.");
+    let (_t, agent) = test_agent(client);
+    let result = agent
+        .run(AgentRequest::text("u2", "Bob", "hello"), &NoHooks)
+        .await;
+    assert!(result.allowed_pings.is_empty());
+}
+
+#[tokio::test]
+async fn ping_users_deduplicates_ids_in_allowed_pings() {
+    let client = Arc::new(MockChatClient::new());
+    // Two separate ping_users calls with overlapping IDs
+    client.push_tool_call("call_1", "ping_users", r#"{"user_ids": ["42", "99"]}"#);
+    client.push_tool_call("call_2", "ping_users", r#"{"user_ids": ["99", "100"]}"#);
+    client.push_text("Hello everyone!");
+    let (_t, agent) = test_agent(client);
+    let result = agent
+        .run(AgentRequest::text("u3", "Carol", "ping many"), &NoHooks)
+        .await;
+    // 42 from first call, 99 from both (dedup), 100 from second
+    assert!(result.allowed_pings.contains(&42));
+    assert!(result.allowed_pings.contains(&99));
+    assert!(result.allowed_pings.contains(&100));
+    assert_eq!(result.allowed_pings.len(), 3);
 }

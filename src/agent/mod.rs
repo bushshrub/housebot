@@ -66,6 +66,8 @@ pub struct AgentRequest<'a> {
     pub guild_id: Option<u64>,
     pub proactive: bool,
     pub record_profile_usage: bool,
+    /// The Discord user ID of this bot (used to prevent self-ping).
+    pub bot_id: u64,
 }
 
 impl<'a> AgentRequest<'a> {
@@ -88,6 +90,7 @@ impl<'a> AgentRequest<'a> {
             guild_id: None,
             proactive: false,
             record_profile_usage: true,
+            bot_id: 0,
         }
     }
 }
@@ -119,6 +122,8 @@ pub struct AgentResult {
     pub attachments: Vec<AgentAttachment>,
     /// Set when a `prepare_feature_development` tool call produces a structured outcome.
     pub control_action: Option<AgentControlAction>,
+    /// Discord user IDs that are allowed to receive @mentions in the response text.
+    pub allowed_pings: Vec<u64>,
 }
 
 /// The result of the pre-execution Lua safety review.
@@ -164,6 +169,7 @@ impl TextSink for TextStreamAdapter<'_> {
 }
 
 /// Result of dispatching a single tool call.
+#[derive(Debug)]
 pub(crate) enum ToolOutcome {
     Text(String),
     Attachment {
@@ -174,6 +180,11 @@ pub(crate) enum ToolOutcome {
     DevelopmentAction {
         text: String,
         action: AgentControlAction,
+    },
+    /// A request to ping specific users; carries user IDs that should be allowed as mentions.
+    PingUsers {
+        text: String,
+        user_ids: Vec<u64>,
     },
 }
 
