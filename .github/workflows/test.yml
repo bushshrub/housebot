@@ -85,3 +85,31 @@ jobs:
           push: false
           cache-from: type=gha,scope=pr-${{ matrix.name }}
           cache-to: type=gha,mode=max,scope=pr-${{ matrix.name }}
+
+  sandbox-docker-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: sandbox-integ
+
+      - name: Build sandbox Docker image
+        run: |
+          docker build -t ghcr.io/bushshrub/housebot/sandbox:latest \
+            crates/sandbox/docker
+
+      - name: Run sandbox Docker integration tests
+        # Kata Containers is not available on GitHub-hosted runners.
+        # HOUSEBOT_SANDBOX_RUNTIME=runc exercises the full lifecycle with the
+        # standard OCI runtime.  The Kata runtime flag is verified by unit tests.
+        env:
+          HOUSEBOT_SANDBOX_RUNTIME: runc
+        run: |
+          cargo test --package housebot-sandbox \
+            -- --include-ignored --test-threads=1
