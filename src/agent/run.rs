@@ -128,8 +128,7 @@ impl Agent {
                     break "Sorry, something went wrong contacting the model.".to_string();
                 }
             };
-            let context_tokens =
-                completion.usage.prompt_tokens + completion.usage.completion_tokens;
+            let context_tokens = completion.usage.prompt_tokens;
             self.record_usage(user_id, &conversation_id, completion.usage)
                 .await;
             let usage = context_tokens as f64 / self.context_window_tokens.max(1) as f64;

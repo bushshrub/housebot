@@ -220,7 +220,7 @@ impl Agent {
         let mut all = self.session_stats.lock().await;
         let stats = all.entry(user_id.to_string()).or_default();
         stats.requests += 1;
-        stats.context_tokens = usage.prompt_tokens + usage.completion_tokens;
+        stats.context_tokens = usage.prompt_tokens;
         stats.input_tokens += usage.prompt_tokens;
         stats.output_tokens += usage.completion_tokens;
         stats.cached_tokens += usage.prompt_tokens_details.cached_tokens;
