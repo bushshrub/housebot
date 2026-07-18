@@ -27,7 +27,9 @@ pub struct SkillExample {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SkillArchive {
     pub version: u32,
+    pub description: Option<String>,
     pub instructions: String,
+    pub triggers: Vec<SkillTrigger>,
     pub enabled_tools: Vec<String>,
     pub examples: Vec<SkillExample>,
     pub archived_at: u64,
@@ -130,6 +132,9 @@ impl Skill {
         if self.instructions.is_empty() {
             if let Some(prompt) = self.prompt.take() {
                 self.instructions = prompt;
+                if self.version == 0 {
+                    self.version = 1;
+                }
             }
         }
     }
@@ -139,7 +144,9 @@ impl Skill {
     pub fn bump_version(&mut self) {
         self.version_history.push(SkillArchive {
             version: self.version,
+            description: self.description.clone(),
             instructions: self.instructions.clone(),
+            triggers: self.triggers.clone(),
             enabled_tools: self.enabled_tools.clone(),
             examples: self.examples.clone(),
             archived_at: now_secs(),
@@ -199,7 +206,18 @@ impl Skills {
         let mut skills: BTreeMap<String, Skill> = if raw.trim().is_empty() {
             BTreeMap::new()
         } else {
-            serde_json::from_str(&raw).unwrap_or_default()
+            match serde_json::from_str(&raw) {
+                Ok(s) => s,
+                Err(e) => {
+                    tracing::error!(
+                        target: "housebot::skills",
+                        error = %e,
+                        path = %self.path.display(),
+                        "Failed to parse skills file — returning empty store without caching"
+                    );
+                    return BTreeMap::new();
+                }
+            }
         };
         for skill in skills.values_mut() {
             skill.migrate_from_prompt();
@@ -288,7 +306,9 @@ mod tests {
             version: 2,
             version_history: vec![SkillArchive {
                 version: 1,
+                description: None,
                 instructions: "Old instructions".into(),
+                triggers: vec![],
                 enabled_tools: vec![],
                 examples: vec![],
                 archived_at: 100,
@@ -414,6 +434,11 @@ mod tests {
     #[test]
     fn bump_version_archives_and_increments() {
         let mut sk = skill("x", None, "v1 instructions");
+        sk.description = Some("v1 desc".into());
+        sk.triggers = vec![SkillTrigger {
+            trigger_type: "keyword".into(),
+            value: "test".into(),
+        }];
         sk.enabled_tools = vec!["search".into()];
         assert_eq!(sk.version, 1);
         sk.bump_version();
@@ -421,6 +446,12 @@ mod tests {
         assert_eq!(sk.version_history.len(), 1);
         assert_eq!(sk.version_history[0].version, 1);
         assert_eq!(sk.version_history[0].instructions, "v1 instructions");
+        assert_eq!(
+            sk.version_history[0].description.as_deref(),
+            Some("v1 desc")
+        );
+        assert_eq!(sk.version_history[0].triggers.len(), 1);
+        assert_eq!(sk.version_history[0].enabled_tools, vec!["search"]);
     }
 
     #[test]
@@ -534,6 +565,8 @@ mod tests {
         assert_eq!(skill.instructions, "Hello!");
         // prompt should be None after migration
         assert!(skill.prompt.is_none());
+        // migrated legacy skills should be at version 1
+        assert_eq!(skill.version, 1);
     }
 
     #[tokio::test]

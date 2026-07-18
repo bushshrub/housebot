@@ -286,27 +286,6 @@ impl Agent {
             "create_skill" => ToolOutcome::Text(
                 tools::create_skill::dispatch_create_skill(&self.skills, user_id, args).await,
             ),
-            "run_skill" => {
-                let skill_name = str_arg(args, "name");
-                let input = str_arg(args, "input");
-                match self.skills.get(skill_name).await {
-                    None => ToolOutcome::Text(format!("Error: Skill '{skill_name}' not found.")),
-                    Some(skill) => {
-                        let instructions = skill.effective_instructions();
-                        let system = build_skill_system_prompt(&skill, instructions);
-                        let msgs = vec![
-                            json!({"role": "system", "content": system}),
-                            json!({"role": "user", "content": input}),
-                        ];
-                        let completion = self
-                            .client
-                            .chat_once(&self.model, &msgs, 4096)
-                            .await
-                            .unwrap_or_default();
-                        ToolOutcome::Text(completion.content.unwrap_or_default())
-                    }
-                }
-            }
             "get_bot_features" => ToolOutcome::Text(tools::features::features_text().to_string()),
             "get_token_metrics" => ToolOutcome::Text(
                 tools::token_metrics::get_token_metrics(

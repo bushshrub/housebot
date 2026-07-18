@@ -144,21 +144,7 @@ impl ConfigSuffix {
         } else {
             let lines: Vec<String> = all_skills
                 .values()
-                .map(|s| {
-                    let trigger_hint = if s.has_triggers() {
-                        let triggers: Vec<&str> =
-                            s.triggers.iter().map(|t| t.value.as_str()).collect();
-                        format!(" (triggers on: {}) ", triggers.join(", "))
-                    } else {
-                        String::new()
-                    };
-                    format!(
-                        "  - **{}**{}— {}",
-                        s.name,
-                        trigger_hint,
-                        s.description_or_name()
-                    )
-                })
+                .map(|s| format!("  - **{}**", s.name))
                 .collect();
             format!(
                 "\n- run_skill — Execute a custom skill by name with an input string. Available skills:\n{}",

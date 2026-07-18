@@ -94,7 +94,10 @@ fn system_prompt_lists_skills() {
     );
     let p = build_system_prompt("Alice", "123", "Alice", "", "", &skills, None, true);
     assert!(p.contains("greet"));
-    assert!(p.contains("Say hello"));
+    // Descriptions are intentionally excluded from the global prompt
+    // (only the skill name is shown — user-authored metadata must not
+    // receive system-message authority).
+    assert!(!p.contains("Say hello"));
 }
 
 #[test]
