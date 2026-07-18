@@ -250,13 +250,13 @@ fn hint_unknown_tool_no_known_key() {
 
 // ── tool_status ──
 #[test]
-fn status_describes_common_tools() {
-    assert_eq!(tool_status("web_search"), "🔎 **Searching the web...**");
+fn status_includes_tool_name() {
+    assert_eq!(tool_status("web_search"), "🔎 **Running `web_search`...**");
     assert_eq!(
         tool_status("jellyfin__search"),
-        "🎬 **Querying Jellyfin...**"
+        "🎬 **Running `jellyfin__search`...**"
     );
-    assert_eq!(tool_status("run_lua"), "⚙️ **Running a Lua script...**");
+    assert_eq!(tool_status("run_lua"), "⚙️ **Running `run_lua`...**");
 }
 
 #[test]
@@ -265,6 +265,14 @@ fn status_has_a_generic_fallback() {
         tool_status("new_external_tool"),
         "🔧 **Running `new_external_tool`...**"
     );
+}
+
+#[test]
+fn status_fallback_caps_oversized_name() {
+    let long = "x".repeat(200);
+    let status = tool_status(&long);
+    assert!(status.chars().count() < 200);
+    assert!(status.contains('…'));
 }
 
 #[test]

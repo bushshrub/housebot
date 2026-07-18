@@ -100,28 +100,38 @@ pub fn tool_hint(tool_name: &str, args: &Value) -> String {
     }
 }
 
+fn display_tool_name(name: &str) -> String {
+    const MAX: usize = 80;
+    let sanitized: String = name.chars().filter(|c| !c.is_control()).collect();
+    let truncated: String = sanitized.chars().take(MAX).collect();
+    if sanitized.chars().count() > MAX {
+        format!("{}…", &truncated[..truncated.len().saturating_sub(1)])
+    } else {
+        truncated
+    }
+}
+
 /// User-facing status shown while an agent tool is executing.
 pub fn tool_status(tool_name: &str) -> String {
-    match tool_name {
-        "web_search" => "🔎 **Searching the web...**".into(),
-        "deep_research" => "🔎 **Researching...**".into(),
-        "fetch_webpage" | "summarize_url" => "🌐 **Reading a webpage...**".into(),
-        "common_crawl__search" => "🗂️ **Searching web archives...**".into(),
-        "download_file" => "📥 **Downloading a file...**".into(),
-        "run_lua" => "⚙️ **Running a Lua script...**".into(),
-        "get_lua_docs" => "📖 **Reading Lua documentation...**".into(),
-        "run_skill" => "🧩 **Running a skill...**".into(),
-        "translate" => "🌐 **Translating...**".into(),
-        "set_reminder" => "⏰ **Setting a reminder...**".into(),
-        "search_messages" | "get_recent_messages" => "💬 **Searching messages...**".into(),
-        "find_discord_users" | "get_discord_user" => "👤 **Looking up Discord users...**".into(),
-        "get_bot_features" => "🤖 **Checking bot features...**".into(),
-        "create_feature_request" => "📝 **Creating a feature request...**".into(),
-        "edit_feature_request" => "📝 **Updating a feature request...**".into(),
-        "prepare_feature_development" => "🛠️ **Preparing feature development...**".into(),
-        name if name.starts_with("jellyfin__") => "🎬 **Querying Jellyfin...**".into(),
-        _ => format!("🔧 **Running `{tool_name}`...**"),
-    }
+    let icon = match tool_name {
+        "web_search" | "deep_research" => "🔎",
+        "fetch_webpage" | "summarize_url" => "🌐",
+        "common_crawl__search" => "🗂️",
+        "download_file" => "📥",
+        "run_lua" => "⚙️",
+        "get_lua_docs" => "📖",
+        "run_skill" => "🧩",
+        "translate" => "🌐",
+        "set_reminder" => "⏰",
+        "search_messages" | "get_recent_messages" => "💬",
+        "find_discord_users" | "get_discord_user" => "👤",
+        "get_bot_features" => "🤖",
+        "create_feature_request" | "edit_feature_request" => "📝",
+        "prepare_feature_development" => "🛠️",
+        _ if tool_name.starts_with("jellyfin__") => "🎬",
+        _ => "🔧",
+    };
+    format!("{icon} **Running `{}`...**", display_tool_name(tool_name))
 }
 
 pub fn extract_code_files(text: &str) -> (String, Vec<(String, Vec<u8>)>) {
