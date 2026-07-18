@@ -106,13 +106,21 @@ impl HouseBot {
                     agent = agent.id_str(),
                     "Owner-immediate development job dispatched"
                 );
+                let prompt = build_dispatch_prompt(issue.number);
+                let mut inputs = serde_json::Map::new();
+                inputs.insert(
+                    "issue_number".into(),
+                    serde_json::Value::Number(serde_json::Number::from(issue.number)),
+                );
+                inputs.insert("prompt".into(), serde_json::Value::String(prompt));
                 let triggered = reporter
-                    .post_issue_comment(issue.number, DISPATCH_TRIGGER_COMMENT)
+                    .trigger_workflow_dispatch(DISPATCH_WORKFLOW_FILE, "master", &inputs)
                     .await;
                 let status = if triggered {
-                    "The opencode workflow will pick this up and open a pull request."
+                    "The opencode-dispatch workflow will pick this up and open a pull request."
                 } else {
-                    "⚠️ Failed to post the `/oc` trigger comment — comment `/oc` on the issue manually to start the agent."
+                    "⚠️ Failed to trigger the dispatch workflow. The issue has been created — \
+                     trigger the opencode-dispatch workflow manually."
                 };
                 let _ = reply_no_ping(
                     ctx,

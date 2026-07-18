@@ -352,6 +352,58 @@ impl GitHubIssueReporter {
         Ok(())
     }
 
+    /// Trigger a workflow_dispatch event on the configured repository.
+    /// Returns `true` if the dispatch was successfully requested, `false` otherwise.
+    pub async fn trigger_workflow_dispatch(
+        &self,
+        workflow_file_name: &str,
+        ref_branch: &str,
+        inputs: &serde_json::Map<String, serde_json::Value>,
+    ) -> bool {
+        if !self.is_configured() {
+            return false;
+        }
+        match self
+            .try_trigger_workflow_dispatch(workflow_file_name, ref_branch, inputs)
+            .await
+        {
+            Ok(()) => true,
+            Err(e) => {
+                tracing::error!(workflow = %workflow_file_name, "Failed to trigger workflow_dispatch: {e}");
+                false
+            }
+        }
+    }
+
+    async fn try_trigger_workflow_dispatch(
+        &self,
+        workflow_file_name: &str,
+        ref_branch: &str,
+        inputs: &serde_json::Map<String, serde_json::Value>,
+    ) -> anyhow::Result<()> {
+        let token = self.token().await?;
+        let url = format!(
+            "https://api.github.com/repos/{}/actions/workflows/{}/dispatches",
+            self.repo,
+            urlencoding(workflow_file_name)
+        );
+        let payload = json!({
+            "ref": ref_branch,
+            "inputs": inputs,
+        });
+        self.http
+            .post(&url)
+            .header("Authorization", format!("Bearer {token}"))
+            .header("Accept", "application/vnd.github+json")
+            .header("X-GitHub-Api-Version", "2022-11-28")
+            .header("User-Agent", "house-chatbot")
+            .json(&payload)
+            .send()
+            .await?
+            .error_for_status()?;
+        Ok(())
+    }
+
     /// Perform an authenticated GET request to the GitHub API.
     /// Paths starting with `/search/` are treated as root-level API paths;
     /// all others are prefixed with `/repos/{repo}`.

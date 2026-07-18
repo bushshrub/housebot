@@ -118,6 +118,19 @@ pub const DISPATCH_TRIGGER_COMMENT: &str = "/oc Implement the feature described 
      Follow the repository conventions, commit your changes, and open a pull request that \
      closes this issue.";
 
+/// The workflow file name for the dispatch-based OpenCode trigger.
+pub const DISPATCH_WORKFLOW_FILE: &str = "opencode-dispatch.yml";
+
+/// Build the prompt passed as a `workflow_dispatch` input to the
+/// `opencode-dispatch` workflow.
+pub fn build_dispatch_prompt(issue_number: u64) -> String {
+    format!(
+        "Implement the feature described in issue #{issue_number}. \
+         Follow the repository conventions, commit your changes, and open a pull request that \
+         closes this issue."
+    )
+}
+
 /// The labels to apply when dispatching (enhancement + queue + agent + source).
 pub fn dispatch_labels(agent: CodingAgent) -> Vec<String> {
     vec![
