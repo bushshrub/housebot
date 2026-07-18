@@ -801,6 +801,10 @@ fn all_tool_names_matches_built_in_definitions() {
     .map(String::from)
     .collect();
 
+    // `housebot` is a special sentinel name representing a full bot-interaction
+    // ban — it is not a real tool with a definition.
+    let sentinels: BTreeSet<String> = ["housebot"].into_iter().map(String::from).collect();
+
     for name in &defined {
         assert!(
             all_tool_names.contains(name),
@@ -810,7 +814,7 @@ fn all_tool_names_matches_built_in_definitions() {
 
     for name in &all_tool_names {
         assert!(
-            defined.contains(name) || conditionals.contains(name),
+            defined.contains(name) || conditionals.contains(name) || sentinels.contains(name),
             "tool `{name}` is in all_tool_names() but has no matching definition"
         );
     }
