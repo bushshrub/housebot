@@ -149,6 +149,10 @@ impl HouseBot {
         if let Some(referenced) = msg.referenced_message.as_deref() {
             media.extend(extract_media(referenced).await);
         }
+        media.extend(extract_gif_from_text(&msg.content).await);
+        if let Some(referenced) = msg.referenced_message.as_deref() {
+            media.extend(extract_gif_from_text(&referenced.content).await);
+        }
 
         // Load per-user settings (personality, thinking effort, and privacy).
         let personality = user_config.personality.clone();
