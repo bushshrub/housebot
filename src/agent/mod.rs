@@ -283,7 +283,7 @@ impl Agent {
         Ok(Self {
             client,
             queued_client,
-            model: config::env_or("LLM_MODEL", "claude-sonnet-5"),
+            model: config::env_or("LLM_MODEL", "gemma-4-12b-qat-q4kxl"),
             context_window_tokens,
             history: History::default(),
             memory,
