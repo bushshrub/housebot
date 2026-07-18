@@ -327,7 +327,8 @@ impl EventHandler for HouseBot {
     }
 
     async fn message(&self, ctx: Context, msg: Message) {
-        if msg.author.bot {
+        let bot_id = ctx.cache.current_user().id;
+        if msg.author.bot && (msg.author.id == bot_id || !config::respond_to_bot_pings()) {
             return;
         }
         let content = msg.content.trim().to_string();
@@ -364,7 +365,6 @@ impl EventHandler for HouseBot {
             return;
         }
         // ── routing ──
-        let bot_id = ctx.cache.current_user().id;
         let is_dm = msg.guild_id.is_none();
         let guild_id = msg.guild_id.map(|g| g.get());
 

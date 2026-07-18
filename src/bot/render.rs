@@ -35,32 +35,8 @@ pub(crate) async fn send_final_message(
     let mentions = build_allowed_mentions(allowed_pings);
     if !paginate {
         let chunks = split_text(text, MAX_MESSAGE_LENGTH);
-        if let (Some(progress), Some(first)) = (progress, chunks.first()) {
-            if progress
-                .channel_id
-                .edit_message(
-                    &ctx.http,
-                    progress.id,
-                    EditMessage::new()
-                        .content(first)
-                        .allowed_mentions(mentions.clone()),
-                )
-                .await
-                .is_ok()
-            {
-                for chunk in chunks.iter().skip(1) {
-                    let _ = msg
-                        .channel_id
-                        .send_message(
-                            &ctx.http,
-                            CreateMessage::new()
-                                .content(chunk)
-                                .allowed_mentions(mentions.clone()),
-                        )
-                        .await;
-                }
-                return Some(progress.id);
-            }
+        if let Some(progress) = progress {
+            let _ = progress.delete(&ctx.http).await;
         }
         let mut first_id = None;
         for (i, chunk) in chunks.iter().enumerate() {

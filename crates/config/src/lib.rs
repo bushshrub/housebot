@@ -32,6 +32,12 @@ pub fn owner_id() -> u64 {
     env_parse("OWNER_DISCORD_ID", 0)
 }
 
+/// Whether to respond to @-mentions from other bots (`RESPOND_TO_BOT_PINGS`,
+/// default `false`). The bot always ignores its own pings regardless.
+pub fn respond_to_bot_pings() -> bool {
+    env_parse("RESPOND_TO_BOT_PINGS", false)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
