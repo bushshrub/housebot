@@ -30,6 +30,17 @@ pub(crate) const LUA_DOCS: &str = "\
   Search the household Jellyfin media library.
 - `discord.send_message(content)` → (not available in agent context; use `print()` instead)
 
+**graph.* API** — construct directed graphs that are rendered as PNG images
+- `graph.title(title)` → set the graph title (max 60 characters)
+- `graph.node(id, label?)` → add or update a node. `id` is a unique string identifier.
+  `label` is the display text; if omitted, `id` is used as the label.
+  Both clamped to 60 characters. Max 16 nodes.
+- `graph.edge(from, to)` → add a directed edge from node `from` to node `to`.
+  If either endpoint does not exist yet, it is auto-created.
+  Both clamped to 60 characters. Max 32 edges.
+After the script completes, the graph is rendered to a PNG image and returned as an attachment.
+If no graph functions are called, no image is produced.
+
 **Execution limits**
 - Timeout: LUA_TIMEOUT_SECS env var (default 5 s, clamp 1–30 s)
 - Memory: LUA_MEMORY_LIMIT_MB env var (default 16 MB, clamp 1–256 MB)
