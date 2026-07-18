@@ -1,5 +1,7 @@
 //! Final-message delivery and pagination rendering.
 
+use serenity::all::MessageId;
+
 use super::*;
 
 pub(crate) fn split_command(content: &str) -> (String, String) {
@@ -17,6 +19,8 @@ fn build_allowed_mentions(allowed_pings: &[u64]) -> CreateAllowedMentions {
     mentions
 }
 
+/// Send the final response message. Returns the MessageId of the primary
+/// reply message when one was sent, so callers can attach emoji reactions.
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn send_final_message(
     ctx: &Context,
@@ -27,7 +31,7 @@ pub(crate) async fn send_final_message(
     store: &Mutex<HashMap<String, PaginatedResponse>>,
     progress: Option<&Message>,
     allowed_pings: &[u64],
-) {
+) -> Option<MessageId> {
     let mentions = build_allowed_mentions(allowed_pings);
     if !paginate {
         let chunks = split_text(text, MAX_MESSAGE_LENGTH);
@@ -55,16 +59,18 @@ pub(crate) async fn send_final_message(
                         )
                         .await;
                 }
-                return;
+                return Some(progress.id);
             }
         }
+        let mut first_id = None;
         for (i, chunk) in chunks.iter().enumerate() {
             if i == 0 {
-                if !allowed_pings.is_empty() {
-                    let _ = reply_with_mentions(ctx, msg, chunk, allowed_pings).await;
+                let sent = if !allowed_pings.is_empty() {
+                    reply_with_mentions(ctx, msg, chunk, allowed_pings).await
                 } else {
-                    let _ = reply_no_ping(ctx, msg, chunk).await;
-                }
+                    reply_no_ping(ctx, msg, chunk).await
+                };
+                first_id = sent.ok().map(|m| m.id);
             } else {
                 let _ = msg
                     .channel_id
@@ -77,7 +83,7 @@ pub(crate) async fn send_final_message(
                     .await;
             }
         }
-        return;
+        return first_id;
     }
 
     if let Some(progress) = progress {
@@ -97,7 +103,8 @@ pub(crate) async fn send_final_message(
         .components(pagination_components(&token, 0, pages.len()))
         .reference_message(msg)
         .allowed_mentions(mentions);
-    let _ = msg.channel_id.send_message(&ctx.http, builder).await;
+    let sent = msg.channel_id.send_message(&ctx.http, builder).await;
+    sent.ok().map(|m| m.id)
 }
 
 pub(crate) fn pagination_embed(pages: &[String], page: usize) -> CreateEmbed {
