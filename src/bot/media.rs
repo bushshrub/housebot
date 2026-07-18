@@ -439,8 +439,7 @@ mod media_tests {
 
     #[test]
     fn referenced_context_with_urls() {
-        let context =
-            referenced_message_context(&msg("Check https://example.com/page")).unwrap();
+        let context = referenced_message_context(&msg("Check https://example.com/page")).unwrap();
         assert!(context.contains("URL(s)"));
         assert!(context.contains("https://example.com/page"));
     }
