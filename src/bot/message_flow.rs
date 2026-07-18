@@ -236,6 +236,20 @@ impl HouseBot {
         let progress = reply_no_ping(ctx, msg, &progress_msg).await.ok();
         let pending_reaction = msg.react(&ctx.http, '⏳').await.ok();
 
+        // ── typing indicator ────────────────────────────────────────────────
+        let typing_active = Arc::new(AtomicBool::new(true));
+        let typing_handle = {
+            let active = typing_active.clone();
+            let http = ctx.http.clone();
+            let channel = msg.channel_id;
+            tokio::spawn(async move {
+                while active.load(Ordering::Relaxed) {
+                    let _ = channel.broadcast_typing(&http).await;
+                    tokio::time::sleep(Duration::from_secs(8)).await;
+                }
+            })
+        };
+
         let response_hooks = progress
             .as_ref()
             .map(|progress| ResponseProgressHooks::new(ctx, progress));
@@ -302,6 +316,8 @@ impl HouseBot {
 
         // Handle structured development control actions before displaying text.
         if let Some(action) = result.control_action {
+            typing_active.store(false, Ordering::Relaxed);
+            let _ = typing_handle.await;
             if let Some(reaction) = pending_reaction {
                 let _ = reaction.delete(&ctx.http).await;
             }
@@ -359,6 +375,9 @@ impl HouseBot {
                     .await;
             }
         }
+
+        typing_active.store(false, Ordering::Relaxed);
+        let _ = typing_handle.await;
 
         if let Some(reaction) = pending_reaction {
             let _ = reaction.delete(&ctx.http).await;
