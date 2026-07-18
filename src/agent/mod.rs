@@ -263,7 +263,7 @@ impl Agent {
             tracing::warn!(
                 "LLM /props probe timed out or failed — using MAX_CONTEXT_TOKENS fallback"
             );
-            config::env_parse("MAX_CONTEXT_TOKENS", 10_000)
+            config::env_parse("MAX_CONTEXT_TOKENS", 200_000)
         });
         let queue = Arc::new(LlmRequestQueue::default());
         let queued_client = Arc::new(QueuedChatClient::new(raw_client, queue));
@@ -283,7 +283,7 @@ impl Agent {
         Ok(Self {
             client,
             queued_client,
-            model: config::env_or("LLM_MODEL", "gemma-4-12b-qat-q4kxl"),
+            model: config::env_or("LLM_MODEL", "claude-sonnet-5"),
             context_window_tokens,
             history: History::default(),
             memory,
