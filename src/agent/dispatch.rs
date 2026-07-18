@@ -427,9 +427,17 @@ impl Agent {
                 .await;
                 if let Some(image) = output.image {
                     let text = if output.text.is_empty() {
-                        "Graph rendered.".to_string()
+                        format!(
+                            "Graph rendered as PNG ({} bytes) and attached to the Discord response.",
+                            image.len()
+                        )
                     } else {
-                        output.text
+                        format!(
+                            "{}\n\nA graph PNG image ({} bytes) was also generated and \
+                             automatically attached to the Discord response.",
+                            output.text,
+                            image.len()
+                        )
                     };
                     ToolOutcome::Attachment {
                         text,
