@@ -81,6 +81,7 @@ fn system_prompt_lists_skills() {
             description: Some("Say hello".into()),
             prompt: "..".into(),
             created_by: None,
+            editors: Vec::new(),
         },
     );
     let p = build_system_prompt("Alice", "123", "Alice", "", "", &skills, None, true);
@@ -470,6 +471,7 @@ fn prompt_static_base_present_regardless_of_deep_memory_or_skills() {
             description: Some("Say hello".into()),
             prompt: "..".into(),
             created_by: None,
+            editors: Vec::new(),
         },
     );
 
@@ -602,6 +604,7 @@ fn prompt_regression_dynamic_markers_after_guidelines_maximal() {
             description: Some("Say hello".into()),
             prompt: "..".into(),
             created_by: None,
+            editors: Vec::new(),
         },
     );
     let p = build_system_prompt_with_profile(
@@ -671,6 +674,7 @@ fn prompt_config_content_ordered_between_guidelines_and_dynamic() {
             description: Some("Say hello".into()),
             prompt: "..".into(),
             created_by: None,
+            editors: Vec::new(),
         },
     );
     let p = build_system_prompt_with_profile(

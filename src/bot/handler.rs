@@ -240,6 +240,7 @@ impl EventHandler for HouseBot {
                                 &self.user_cfg,
                                 &self.agent.reminders().clone(),
                                 &self.channel_log,
+                                &self.grocery,
                                 user_id,
                             )
                             .await;
@@ -291,6 +292,13 @@ impl EventHandler for HouseBot {
             tracing::info!(target: "housebot::commands", user_id, "!skill command received");
             let (first, rest) = split_command(&msg.content);
             let reply = skill_command(&self.skills, &first, &rest, user_id).await;
+            self.respond(&ctx, &msg, &reply).await;
+            return;
+        }
+        if content.starts_with("!grocery") {
+            tracing::info!(target: "housebot::commands", user_id, "!grocery command received");
+            let (first, rest) = split_command(&msg.content);
+            let reply = grocery_command(&self.grocery, &first, &rest, user_id).await;
             self.respond(&ctx, &msg, &reply).await;
             return;
         }

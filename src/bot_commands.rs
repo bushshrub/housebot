@@ -2,6 +2,7 @@
 
 use crate::bot_config::UserConfigStore;
 use crate::channel_log::ChannelLog;
+use crate::grocery::GroceryList;
 use crate::history::History;
 use crate::memory::Memory;
 use crate::message_log::MessageLog;
@@ -21,18 +22,34 @@ fn valid_name(name: &str) -> bool {
             .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_')
 }
 
+/// Parse a Discord user mention (`<@123>` or `<@!123>`) into a user ID string,
+/// or return the raw string if it doesn't look like a mention.
+fn parse_mention(raw: &str) -> &str {
+    let raw = raw.trim();
+    if let Some(inner) = raw.strip_prefix("<@!").or_else(|| raw.strip_prefix("<@")) {
+        if let Some(id) = inner.strip_suffix('>') {
+            return id;
+        }
+    }
+    raw
+}
+
 pub async fn skill_command(
     skills: &Skills,
     first_line: &str,
     rest: &str,
     author_id: u64,
 ) -> String {
+    let author_str = author_id.to_string();
     let parts: Vec<&str> = first_line
-        .splitn(3, char::is_whitespace)
+        .splitn(4, char::is_whitespace)
         .filter(|s| !s.is_empty())
         .collect();
     if parts.len() < 2 {
-        return "Usage: `!skill list` | `!skill add <name>` | `!skill delete <name>` | `!skill info <name>`".into();
+        return "Usage: `!skill list` | `!skill add <name>` | `!skill edit <name>` \
+                | `!skill delete <name>` | `!skill info <name>` \
+                | `!skill grant <name> <@user>` | `!skill revoke <name> <@user>`"
+            .into();
     }
     match parts[1].to_lowercase().as_str() {
         "list" => {
@@ -42,10 +59,16 @@ pub async fn skill_command(
             }
             let mut lines = vec!["**Skills:**".to_string()];
             for skill in all.values() {
+                let author = skill
+                    .created_by
+                    .as_deref()
+                    .map(|id| format!(" <@{id}>"))
+                    .unwrap_or_default();
                 lines.push(format!(
-                    "• **{}** — {}",
+                    "• **{}** — {}{}",
                     skill.name,
-                    truncate_chars(skill.description_or_name(), 80)
+                    truncate_chars(skill.description_or_name(), 80),
+                    author,
                 ));
             }
             lines.join("\n")
@@ -61,11 +84,25 @@ pub async fn skill_command(
                     if skill.prompt.chars().count() > 500 {
                         preview.push('…');
                     }
+                    let author = skill
+                        .created_by
+                        .as_deref()
+                        .map(|id| format!("\n**Author:** <@{id}>"))
+                        .unwrap_or_default();
+                    let editors = if skill.editors.is_empty() {
+                        String::new()
+                    } else {
+                        let list: Vec<String> =
+                            skill.editors.iter().map(|id| format!("<@{id}>")).collect();
+                        format!("\n**Editors:** {}", list.join(", "))
+                    };
                     format!(
-                        "**Skill: {}**\nDescription: {}\n```\n{}\n```",
+                        "**Skill: {}**\nDescription: {}{}{}\n```\n{}\n```",
                         skill.name,
                         skill.description.as_deref().unwrap_or("(none)"),
-                        preview
+                        author,
+                        editors,
+                        preview,
                     )
                 }
             }
@@ -90,23 +127,132 @@ pub async fn skill_command(
                 name: name.clone(),
                 description: Some(description),
                 prompt: rest.to_string(),
-                created_by: Some(author_id.to_string()),
+                created_by: Some(author_str),
+                editors: Vec::new(),
             };
             if skills.save(skill).await.is_err() {
                 return "Error: failed to save skill.".into();
             }
             format!("✅ Skill **{name}** saved.")
         }
+        "edit" => {
+            let Some(name) = parts.get(2).map(|s| s.to_lowercase()) else {
+                return "Usage: `!skill edit <name>` with the updated prompt on the next line."
+                    .into();
+            };
+            if rest.is_empty() {
+                return "Please include the updated skill prompt on a new line after the command."
+                    .into();
+            }
+            match skills.get(&name).await {
+                None => format!("Skill `{name}` not found."),
+                Some(mut skill) => {
+                    if !skill.can_edit(&author_str) {
+                        return format!(
+                            "⛔ Only the author (<@{}>) or a delegated editor can edit **{name}**.",
+                            skill.created_by.as_deref().unwrap_or("unknown")
+                        );
+                    }
+                    skill.prompt = rest.to_string();
+                    skill.description = if rest.chars().count() > 100 {
+                        Some(format!("{}…", truncate_chars(rest, 100)))
+                    } else {
+                        Some(rest.to_string())
+                    };
+                    if skills.save(skill).await.is_err() {
+                        return "Error: failed to save skill.".into();
+                    }
+                    format!("✅ Skill **{name}** updated.")
+                }
+            }
+        }
         "delete" => {
             let Some(name) = parts.get(2).map(|s| s.to_lowercase()) else {
                 return "Usage: `!skill delete <name>`".into();
             };
-            match skills.delete(&name).await {
-                Ok(true) => format!("✅ Skill **{name}** deleted."),
-                _ => format!("Skill `{name}` not found."),
+            match skills.get(&name).await {
+                None => format!("Skill `{name}` not found."),
+                Some(skill) => {
+                    if !skill.can_edit(&author_str) {
+                        return format!(
+                            "⛔ Only the author (<@{}>) or a delegated editor can delete **{name}**.",
+                            skill.created_by.as_deref().unwrap_or("unknown")
+                        );
+                    }
+                    match skills.delete(&name).await {
+                        Ok(true) => format!("✅ Skill **{name}** deleted."),
+                        _ => "Error: failed to delete skill.".into(),
+                    }
+                }
             }
         }
-        other => format!("Unknown subcommand `{other}`. Options: `list`, `add`, `delete`, `info`"),
+        "grant" => {
+            let Some(name) = parts.get(2).map(|s| s.to_lowercase()) else {
+                return "Usage: `!skill grant <name> <@user>`".into();
+            };
+            let Some(target_raw) = parts.get(3) else {
+                return "Usage: `!skill grant <name> <@user>`".into();
+            };
+            let target = parse_mention(target_raw);
+            if target.parse::<u64>().is_err() {
+                return "Please mention a valid user with @mention.".into();
+            }
+            match skills.get(&name).await {
+                None => format!("Skill `{name}` not found."),
+                Some(mut skill) => {
+                    if !skill.is_author(&author_str) {
+                        return format!(
+                            "⛔ Only the author (<@{}>) can grant edit permissions.",
+                            skill.created_by.as_deref().unwrap_or("unknown")
+                        );
+                    }
+                    if !skill.add_editor(target) {
+                        return format!("<@{target}> can already edit **{name}**.");
+                    }
+                    if skills.save(skill).await.is_err() {
+                        return "Error: failed to save skill.".into();
+                    }
+                    format!("✅ <@{target}> can now edit **{name}**.")
+                }
+            }
+        }
+        "revoke" => {
+            let Some(name) = parts.get(2).map(|s| s.to_lowercase()) else {
+                return "Usage: `!skill revoke <name> <@user>`".into();
+            };
+            let Some(target_raw) = parts.get(3) else {
+                return "Usage: `!skill revoke <name> <@user>`".into();
+            };
+            let target = parse_mention(target_raw);
+            if target.parse::<u64>().is_err() {
+                return "Please mention a valid user with @mention.".into();
+            }
+            match skills.get(&name).await {
+                None => format!("Skill `{name}` not found."),
+                Some(mut skill) => {
+                    if !skill.is_author(&author_str) {
+                        return format!(
+                            "⛔ Only the author (<@{}>) can revoke edit permissions.",
+                            skill.created_by.as_deref().unwrap_or("unknown")
+                        );
+                    }
+                    if !skill.remove_editor(target) {
+                        return format!(
+                            "<@{target}> does not have edit permission for **{name}**."
+                        );
+                    }
+                    if skills.save(skill).await.is_err() {
+                        return "Error: failed to save skill.".into();
+                    }
+                    format!("✅ Removed <@{target}> from editors of **{name}**.")
+                }
+            }
+        }
+        other => {
+            format!(
+                "Unknown subcommand `{other}`. Options: `list`, `add`, `edit`, `delete`, `info`, `grant`, `revoke`"
+            )
+        }
     }
 }
 
@@ -174,6 +320,53 @@ pub async fn note_command(notes: &Notes, first_line: &str, rest: &str, author_id
     }
 }
 
+pub async fn grocery_command(
+    grocery: &GroceryList,
+    first_line: &str,
+    rest: &str,
+    user_id: u64,
+) -> String {
+    let parts: Vec<&str> = first_line
+        .splitn(3, char::is_whitespace)
+        .filter(|s| !s.is_empty())
+        .collect();
+    match parts.get(1).copied() {
+        Some("add") => {
+            let item = if rest.is_empty() {
+                parts.get(2).map(|s| s.trim()).unwrap_or("")
+            } else {
+                rest.trim()
+            };
+            if item.is_empty() {
+                return "Usage: `!grocery add <item>`".into();
+            }
+            grocery
+                .add(user_id, item)
+                .await
+                .unwrap_or_else(|e| format!("⚠️ Failed to add item: {e}"))
+        }
+        Some("remove") | Some("rm") => {
+            let item = if rest.is_empty() {
+                parts.get(2).map(|s| s.trim()).unwrap_or("")
+            } else {
+                rest.trim()
+            };
+            if item.is_empty() {
+                return "Usage: `!grocery remove <item>`".into();
+            }
+            grocery
+                .remove(user_id, item)
+                .await
+                .unwrap_or_else(|e| format!("⚠️ Failed to remove item: {e}"))
+        }
+        Some("flush") => grocery
+            .flush(user_id)
+            .await
+            .unwrap_or_else(|e| format!("⚠️ Failed to flush list: {e}")),
+        _ => grocery.display(user_id).await,
+    }
+}
+
 /// Erase all stored data for the requesting user: message log, history, memory, notes, profile, reminders, and channel log entries.
 #[allow(clippy::too_many_arguments)]
 pub async fn erase_data_command(
@@ -185,6 +378,7 @@ pub async fn erase_data_command(
     user_config: &UserConfigStore,
     reminders: &Reminders,
     channel_log: &ChannelLog,
+    grocery: &GroceryList,
     user_id: u64,
 ) -> String {
     let log_result = message_log.clear(user_id.to_string()).await;
@@ -193,6 +387,7 @@ pub async fn erase_data_command(
     let notes_result = notes.clear(user_id.to_string()).await;
     let profile_result = profile_store.clear(user_id.to_string()).await;
     let config_result = user_config.clear(user_id).await;
+    let _ = grocery.flush(user_id).await;
 
     // Remove user's reminders
     let mut all_reminders = reminders.load().await;
@@ -331,6 +526,7 @@ mod tests {
         UserConfigStore,
         Reminders,
         ChannelLog,
+        GroceryList,
     ) {
         let tmp = TempDir::new().unwrap();
         let msg_log = MessageLog::new(tmp.path().join("message_log"));
@@ -341,6 +537,7 @@ mod tests {
         let user_config = UserConfigStore::new(tmp.path().join("user_config"));
         let reminders = Reminders::new(tmp.path().join("reminders.json"));
         let channel_log = ChannelLog::new(tmp.path().join("channel_log"));
+        let grocery = GroceryList::new(tmp.path().join("grocery"));
         (
             tmp,
             msg_log,
@@ -351,13 +548,24 @@ mod tests {
             user_config,
             reminders,
             channel_log,
+            grocery,
         )
     }
 
     #[tokio::test]
     async fn erase_data_clears_all_stores() {
-        let (_tmp, msg_log, history, memory, notes, profile, user_config, reminders, channel_log) =
-            stores();
+        let (
+            _tmp,
+            msg_log,
+            history,
+            memory,
+            notes,
+            profile,
+            user_config,
+            reminders,
+            channel_log,
+            grocery,
+        ) = stores();
         let user_id = 123u64;
 
         // Populate all stores
@@ -409,6 +617,7 @@ mod tests {
         channel_log
             .append(1, user_id, "Alice", None, "channel msg")
             .await;
+        grocery.add(user_id, "milk").await.unwrap();
 
         let reply = erase_data_command(
             &msg_log,
@@ -419,6 +628,7 @@ mod tests {
             &user_config,
             &reminders,
             &channel_log,
+            &grocery,
             user_id,
         )
         .await;
@@ -438,12 +648,23 @@ mod tests {
         assert_eq!(profile.load(user_id.to_string()).await.username, "");
         assert!(user_config.load(user_id).await.deep_memory_enabled);
         assert!(reminders.load().await.is_empty());
+        assert!(grocery.load(user_id).await.is_empty());
     }
 
     #[tokio::test]
     async fn erase_data_preserves_other_users() {
-        let (_tmp, msg_log, history, memory, notes, profile, user_config, reminders, channel_log) =
-            stores();
+        let (
+            _tmp,
+            msg_log,
+            history,
+            memory,
+            notes,
+            profile,
+            user_config,
+            reminders,
+            channel_log,
+            grocery,
+        ) = stores();
         let user_a = 100u64;
         let user_b = 200u64;
 
@@ -501,6 +722,7 @@ mod tests {
             &user_config,
             &reminders,
             &channel_log,
+            &grocery,
             user_a,
         )
         .await;
