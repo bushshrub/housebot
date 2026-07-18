@@ -1,6 +1,17 @@
 //! Attachment/media extraction and reference-message context.
 
+use std::sync::LazyLock;
+
+use image::codecs::gif::GifDecoder;
+use image::{AnimationDecoder, DynamicImage, ImageFormat};
+use regex::Regex;
+
 use super::*;
+
+const MAX_GIF_DIMENSION: u32 = 512;
+
+static GIF_URL_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"https?://[^\s<>]+").unwrap());
 
 pub(crate) async fn extract_media(msg: &Message) -> Vec<MediaData> {
     let mut media = Vec::new();
@@ -14,15 +25,111 @@ pub(crate) async fn extract_media(msg: &Message) -> Vec<MediaData> {
         };
         if let Ok(resp) = reqwest::get(&att.url).await {
             if let Ok(bytes) = resp.bytes().await {
-                use base64::Engine;
-                media.push(MediaData {
-                    media_type: media_type.to_string(),
-                    data: base64::engine::general_purpose::STANDARD.encode(&bytes),
-                });
+                if media_type == "image/gif" {
+                    media.extend(extract_gif_frames(&bytes).await);
+                } else {
+                    use base64::Engine;
+                    media.push(MediaData {
+                        media_type: media_type.to_string(),
+                        data: base64::engine::general_purpose::STANDARD.encode(&bytes),
+                    });
+                }
             }
         }
     }
     media
+}
+
+/// Download GIF frames from links found in message text and return as PNG
+/// media blocks.
+pub(crate) async fn extract_gif_from_text(text: &str) -> Vec<MediaData> {
+    let urls: Vec<String> = GIF_URL_RE
+        .find_iter(text)
+        .map(|m| {
+            m.as_str()
+                .trim_end_matches(['.', ',', '!', '?', ';', ':', ')', ']', '>', '&'])
+                .to_string()
+        })
+        .filter(|url| {
+            let lower = url.to_lowercase();
+            lower.ends_with(".gif") || lower.contains(".gif?")
+        })
+        .collect();
+    if urls.is_empty() {
+        return Vec::new();
+    }
+    let mut media = Vec::new();
+    for url in urls {
+        if let Ok(resp) = reqwest::get(&url).await {
+            if let Ok(bytes) = resp.bytes().await {
+                media.extend(extract_gif_frames(&bytes).await);
+            }
+        }
+    }
+    media
+}
+
+/// Decode an animated GIF, sample evenly-spaced frames, and return each as a
+/// base64-encoded PNG.
+pub(crate) async fn extract_gif_frames(bytes: &[u8]) -> Vec<MediaData> {
+    let max_frames = config::env_parse::<usize>("MAX_GIF_FRAMES", 5).max(1);
+    let owned = bytes.to_vec();
+    tokio::task::spawn_blocking(move || {
+        let cursor = std::io::Cursor::new(owned);
+        let decoder = match GifDecoder::new(cursor) {
+            Ok(d) => d,
+            Err(e) => {
+                tracing::warn!(%e, "Failed to decode GIF");
+                return Vec::new();
+            }
+        };
+        let frames: Vec<image::Frame> =
+            match decoder.into_frames().collect::<Result<Vec<_>, _>>() {
+                Ok(f) => f,
+                Err(e) => {
+                    tracing::warn!(%e, "Failed to collect GIF frames");
+                    return Vec::new();
+                }
+            };
+        let total = frames.len();
+        if total == 0 {
+            return Vec::new();
+        }
+
+        let count = max_frames.min(total);
+        let step = if count > 1 { (total - 1) / (count - 1) } else { 0 };
+        let indices: Vec<usize> = (0..count).map(|i| (i * step).min(total - 1)).collect();
+
+        use base64::Engine;
+        let mut media = Vec::with_capacity(indices.len());
+        for &idx in &indices {
+            let frame = &frames[idx];
+            let buf = frame.buffer();
+            let mut img = DynamicImage::ImageRgba8(buf.clone());
+
+            if img.width() > MAX_GIF_DIMENSION || img.height() > MAX_GIF_DIMENSION {
+                img = img.resize(
+                    MAX_GIF_DIMENSION,
+                    MAX_GIF_DIMENSION,
+                    image::imageops::FilterType::Lanczos3,
+                );
+            }
+
+            let mut png_buf = Vec::new();
+            if img
+                .write_to(&mut std::io::Cursor::new(&mut png_buf), ImageFormat::Png)
+                .is_ok()
+            {
+                media.push(MediaData {
+                    media_type: "image/png".to_string(),
+                    data: base64::engine::general_purpose::STANDARD.encode(&png_buf),
+                });
+            }
+        }
+        media
+    })
+    .await
+    .unwrap_or_default()
 }
 
 pub(crate) const MAX_PDF_PAGES: usize = 10;

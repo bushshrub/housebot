@@ -36,6 +36,7 @@ regex = "1"
 uuid = { version = "1", features = ["v4"] }
 jsonwebtoken = "9"
 base64 = "0.22"
+image = { version = "0.25", default-features = false, features = ["gif", "png"] }
 futures-util = "0.3"
 async-trait = "0.1"
 anyhow = "1"
