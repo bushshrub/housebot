@@ -283,9 +283,10 @@ specification, runner requirements, and security model.
 - **Always commit automatically.** The coding agent must create a commit for every set of
   changes it produces before handing work back; do not leave implemented changes uncommitted.
 - **Codex attribution.** Every commit created by the Codex coding agent must include a
-  `Co-authored-by` trailer naming Codex and the model used for that run, for example
-  `Co-authored-by: codex (GPT-5.6-luna) <codex@openai.com>`. Replace `GPT-5.6-luna` with the actual model
-  identifier when it differs; do not use a generic or omitted model name.
+  `Co-authored-by` trailer naming Codex and the model used for that run. Derive the model
+  identifier from the current runtime/model identity at commit time; do not hardcode a model
+  name in the instructions. For example, this run should use
+  `Co-authored-by: codex (GPT-5.6-luna) <codex@openai.com>`. Never use a generic or omitted model name.
 - **Agent-only attribution.** Commits created by a coding agent are attributed solely to that
   agent: the agent is the git author and committer, and any `Co-authored-by` trailer names the
   agent only. Never include the user who triggered the run — as author, committer, or
