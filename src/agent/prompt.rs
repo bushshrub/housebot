@@ -44,6 +44,7 @@ pub fn build_system_prompt(
     all_skills: &BTreeMap<String, Skill>,
     personality: Option<&str>,
     deep_memory_enabled: bool,
+    sandbox_available: bool,
 ) -> String {
     build_system_prompt_with_profile(
         username,
@@ -55,6 +56,7 @@ pub fn build_system_prompt(
         all_skills,
         personality,
         deep_memory_enabled,
+        sandbox_available,
         "",
         "",
         &Local::now().format("%Y-%m-%d %H:%M").to_string(),
@@ -104,25 +106,35 @@ account creation date, bot status).\n\
 - get_lua_docs — Return the full API reference for the Lua scripting sandbox (libraries, \
 discord.* bridge, limits). Call this before writing a Lua script if you are unsure of the API.\n\
 - run_lua — Write and execute a sandboxed Lua 5.4 script for calculations, data processing, or \
-algorithmic tasks. The script's print() output and return values are returned as the tool result. \
-Call get_lua_docs first if you need the API reference.\n\
+ algorithmic tasks. The script's print() output and return values are returned as the tool result. \
+Call get_lua_docs first if you need the API reference.\n";
+
+/// Sandbox tool descriptions appended to the tool list when sandboxd is
+/// reachable.  Kept as a single string so it can be embedded into the
+/// system prompt without breaking the bullet list.
+const SANDBOX_TOOLS_SECTION: &str = "\
 - sandbox_clone_repository, sandbox_list_files, sandbox_search_code, sandbox_read_file, \
 sandbox_run — Limited tools for inspecting and executing code in a temporary sandbox. \
 Use them only when code inspection or a short execution would materially improve the answer. \
 This is not a full software-development environment. Do not use it for autonomous feature \
 implementation, commits, pushes, pull requests, or deployment. Prefer conversational explanation \
-when execution is unnecessary. Report command and test results accurately.";
+when execution is unnecessary. Report command and test results accurately.\n";
 
 /// Configuration-dependent additions that sit after all stable guideline
 /// bullets and before the memory-guidance bullet and dynamic content
 /// (memory-tool lines, skills section).
 struct ConfigSuffix {
     memory_tool_line: &'static str,
+    sandbox_tools_line: &'static str,
     skills_section: String,
 }
 
 impl ConfigSuffix {
-    fn new(deep_memory_enabled: bool, all_skills: &BTreeMap<String, Skill>) -> Self {
+    fn new(
+        deep_memory_enabled: bool,
+        sandbox_available: bool,
+        all_skills: &BTreeMap<String, Skill>,
+    ) -> Self {
         let memory_tool_line = if deep_memory_enabled {
             "- update_memory — Persist important facts about the current user for future conversations. Write the full memory each time.\n- search_memory — Search stored memory for a keyword or phrase. Use when the user refers to something you may have remembered.\n"
         } else {
@@ -142,8 +154,14 @@ impl ConfigSuffix {
                 lines.join("\n")
             )
         };
+        let sandbox_tools_line = if sandbox_available {
+            SANDBOX_TOOLS_SECTION
+        } else {
+            ""
+        };
         Self {
             memory_tool_line,
+            sandbox_tools_line,
             skills_section,
         }
     }
@@ -244,6 +262,7 @@ pub(crate) fn build_system_prompt_with_profile(
     all_skills: &BTreeMap<String, Skill>,
     personality: Option<&str>,
     deep_memory_enabled: bool,
+    sandbox_available: bool,
     profile_tags: &str,
     quick_actions: &str,
     now: &str,
@@ -260,7 +279,7 @@ pub(crate) fn build_system_prompt_with_profile(
          still works normally."
     };
 
-    let config = ConfigSuffix::new(deep_memory_enabled, all_skills);
+    let config = ConfigSuffix::new(deep_memory_enabled, sandbox_available, all_skills);
     let dynamic = DynamicSuffix::new(
         username,
         user_id,
@@ -295,6 +314,7 @@ to any user: owner requests are dispatched directly; others go to the owner for 
 message exceeds 500 characters, begin your reply with a **TL;DR:** line (one sentence) \
 summarizing what they asked.\n\
 {memory_tool_line}\
+{sandbox_tools_line}\
 {skills_section}\n\
 - {memory_guidance}\n\
 {profile_section}\
@@ -303,6 +323,7 @@ summarizing what they asked.\n\
 Current date/time: {now}\n\
 Current user: {username} (ID: {user_id})\n",
         memory_tool_line = config.memory_tool_line,
+        sandbox_tools_line = config.sandbox_tools_line,
         skills_section = config.skills_section,
         profile_section = dynamic.profile_section,
         memory_section = dynamic.memory_section,

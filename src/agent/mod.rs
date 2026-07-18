@@ -211,6 +211,7 @@ pub struct Agent {
     discord: Arc<DiscordBridge>,
     channel_log: ChannelLog,
     sandbox_client: housebot_sandbox::SandboxClient,
+    sandbox_available: bool,
 }
 
 mod dispatch;
@@ -307,6 +308,7 @@ impl Agent {
             discord,
             channel_log: ChannelLog::default(),
             sandbox_client: housebot_sandbox::SandboxClient::from_env(),
+            sandbox_available: housebot_sandbox::SandboxClient::from_env().is_reachable(),
         })
     }
 
@@ -440,6 +442,7 @@ impl Agent {
             discord: Arc::new(DiscordBridge::default()),
             channel_log: ChannelLog::default(),
             sandbox_client: housebot_sandbox::SandboxClient::new("/dev/null"),
+            sandbox_available: false,
         }
     }
 

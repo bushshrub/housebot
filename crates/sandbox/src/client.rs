@@ -34,6 +34,14 @@ impl SandboxClient {
         Self::new(path)
     }
 
+    /// Check whether sandboxd appears to be reachable by testing if the
+    /// socket file exists.  This is a quick non-blocking probe; the first
+    /// actual request may still fail if the daemon died between the check
+    /// and the request.
+    pub fn is_reachable(&self) -> bool {
+        std::path::Path::new(&self.socket_path).exists()
+    }
+
     async fn send_request(&self, request: SandboxRequest) -> Result<SandboxResponse, String> {
         let timeout_dur = Duration::from_secs(limits::SOCKET_TIMEOUT_SECS);
 

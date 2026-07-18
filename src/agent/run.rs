@@ -80,6 +80,7 @@ impl Agent {
                 &all_skills,
                 personality,
                 deep_memory_enabled,
+                self.sandbox_available,
                 profile_tags,
                 quick_actions,
                 &now,
@@ -304,8 +305,8 @@ impl Agent {
             run_lua_tool(),
             get_lua_docs_tool(),
         ];
-        // Include sandbox tools only for the owner.
-        if sandbox_allowed {
+        // Include sandbox tools only for the owner when sandboxd is reachable.
+        if sandbox_allowed && self.sandbox_available {
             defs.extend(tools::sandbox::all_definitions());
         }
         // Conditionally include memory tools based on user's privacy setting.

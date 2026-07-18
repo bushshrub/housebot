@@ -530,7 +530,8 @@ async fn build_tools_excludes_code_execution() {
 #[tokio::test]
 async fn build_tools_includes_sandbox_tools_for_owner() {
     let client = Arc::new(MockChatClient::new());
-    let (_t, agent) = test_agent(client);
+    let (_t, mut agent) = test_agent(client);
+    agent.sandbox_available = true;
     let tools = agent.build_tools(true, true).await;
     let names: Vec<&str> = tools
         .iter()

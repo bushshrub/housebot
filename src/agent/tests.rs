@@ -34,7 +34,17 @@ fn empty_skills() -> BTreeMap<String, Skill> {
 
 #[test]
 fn system_prompt_includes_username_and_id() {
-    let p = build_system_prompt("Alice", "123", "Alice", "", "", &empty_skills(), None, true);
+    let p = build_system_prompt(
+        "Alice",
+        "123",
+        "Alice",
+        "",
+        "",
+        &empty_skills(),
+        None,
+        false,
+        true,
+    );
     assert!(p.contains("Alice"));
     assert!(p.contains("123"));
 }
@@ -49,6 +59,7 @@ fn system_prompt_memory_section_present_when_nonempty() {
         "Likes cats",
         &empty_skills(),
         None,
+        false,
         true,
     );
     assert!(p.contains("Likes cats"));
@@ -65,6 +76,7 @@ fn system_prompt_memory_absent_when_blank() {
         "   ",
         &empty_skills(),
         None,
+        false,
         true
     )
     .contains("Your memory"));
@@ -82,29 +94,57 @@ fn system_prompt_lists_skills() {
             created_by: None,
         },
     );
-    let p = build_system_prompt("Alice", "123", "Alice", "", "", &skills, None, true);
+    let p = build_system_prompt("Alice", "123", "Alice", "", "", &skills, None, false, true);
     assert!(p.contains("greet"));
     assert!(p.contains("Say hello"));
 }
 
 #[test]
 fn system_prompt_placeholder_without_skills() {
-    assert!(
-        build_system_prompt("Alice", "123", "Alice", "", "", &empty_skills(), None, true)
-            .contains("No skills are defined yet")
-    );
+    assert!(build_system_prompt(
+        "Alice",
+        "123",
+        "Alice",
+        "",
+        "",
+        &empty_skills(),
+        None,
+        false,
+        true
+    )
+    .contains("No skills are defined yet"));
 }
 
 #[test]
 fn system_prompt_has_tldr_and_500() {
-    let p = build_system_prompt("Alice", "123", "Alice", "", "", &empty_skills(), None, true);
+    let p = build_system_prompt(
+        "Alice",
+        "123",
+        "Alice",
+        "",
+        "",
+        &empty_skills(),
+        None,
+        false,
+        true,
+    );
     assert!(p.contains("TL;DR"));
     assert!(p.contains("500"));
 }
 
 #[test]
 fn system_prompt_explains_guarded_file_delivery() {
-    let prompt = build_system_prompt("Alice", "123", "", "", "", &empty_skills(), None, true);
+    let prompt = build_system_prompt(
+        "Alice",
+        "123",
+        "",
+        "",
+        "",
+        &empty_skills(),
+        None,
+        false,
+        true,
+    );
     assert!(prompt.contains("download_file"));
     assert!(prompt.contains("specific file"));
     assert!(prompt.contains("private-network URLs"));
@@ -112,7 +152,17 @@ fn system_prompt_explains_guarded_file_delivery() {
 
 #[test]
 fn system_prompt_routes_complex_questions_to_deep_research() {
-    let p = build_system_prompt("Alice", "123", "", "", "", &empty_skills(), None, true);
+    let p = build_system_prompt(
+        "Alice",
+        "123",
+        "",
+        "",
+        "",
+        &empty_skills(),
+        None,
+        false,
+        true,
+    );
     assert!(p.contains("deep_research"));
     assert!(p.contains("multiple perspectives"));
     assert!(p.contains("source links"));
@@ -120,13 +170,33 @@ fn system_prompt_routes_complex_questions_to_deep_research() {
 
 #[test]
 fn system_prompt_excludes_code_execution() {
-    let p = build_system_prompt("Alice", "123", "Alice", "", "", &empty_skills(), None, true);
+    let p = build_system_prompt(
+        "Alice",
+        "123",
+        "Alice",
+        "",
+        "",
+        &empty_skills(),
+        None,
+        false,
+        true,
+    );
     assert!(!p.contains("code execution"));
 }
 
 #[test]
 fn system_prompt_lists_discord_user_tools_once_and_in_order() {
-    let p = build_system_prompt("Alice", "123", "Alice", "", "", &empty_skills(), None, true);
+    let p = build_system_prompt(
+        "Alice",
+        "123",
+        "Alice",
+        "",
+        "",
+        &empty_skills(),
+        None,
+        false,
+        true,
+    );
     let find = p.find("- find_discord_users —").unwrap();
     let get = p.find("- get_discord_user —").unwrap();
     assert!(find < get);
@@ -143,6 +213,7 @@ fn system_prompt_includes_profile_section_with_nickname() {
         "",
         &empty_skills(),
         None,
+        false,
         true,
     );
     assert!(p.contains("User profile"));
@@ -151,7 +222,17 @@ fn system_prompt_includes_profile_section_with_nickname() {
 
 #[test]
 fn system_prompt_skips_profile_section_when_identical() {
-    let p = build_system_prompt("Alice", "123", "Alice", "", "", &empty_skills(), None, true);
+    let p = build_system_prompt(
+        "Alice",
+        "123",
+        "Alice",
+        "",
+        "",
+        &empty_skills(),
+        None,
+        false,
+        true,
+    );
     assert!(!p.contains("User profile"));
 }
 
@@ -167,6 +248,7 @@ fn system_prompt_includes_usage_profile() {
         &empty_skills(),
         None,
         true,
+        false,
         "media, reminders",
         "media (4), reminders (2)",
         "2026-07-17 12:00",
@@ -190,6 +272,7 @@ fn system_prompt_includes_profile_avatar_with_safety_guidance() {
         &empty_skills(),
         None,
         true,
+        false,
         "",
         "",
         "2026-07-17 12:00",
@@ -209,6 +292,7 @@ fn system_prompt_respects_deep_memory_disabled() {
         &empty_skills(),
         None,
         false,
+        false,
     );
     assert!(p.contains("Deep memory is disabled"));
     assert!(p.contains("Do NOT call update_memory"));
@@ -216,7 +300,17 @@ fn system_prompt_respects_deep_memory_disabled() {
 
 #[test]
 fn system_prompt_allows_deep_memory_when_enabled() {
-    let p = build_system_prompt("Alice", "123", "Alice", "", "", &empty_skills(), None, true);
+    let p = build_system_prompt(
+        "Alice",
+        "123",
+        "Alice",
+        "",
+        "",
+        &empty_skills(),
+        None,
+        true,
+        false,
+    );
     assert!(p.contains("Actively use memory"));
 }
 
@@ -296,7 +390,17 @@ fn build_user_message_with_audio_and_video() {
 }
 #[test]
 fn system_prompt_mentions_run_lua() {
-    let p = build_system_prompt("Alice", "123", "Alice", "", "", &empty_skills(), None, true);
+    let p = build_system_prompt(
+        "Alice",
+        "123",
+        "Alice",
+        "",
+        "",
+        &empty_skills(),
+        None,
+        false,
+        true,
+    );
     assert!(p.contains("run_lua"));
     assert!(p.contains("get_lua_docs"));
 }
@@ -337,6 +441,7 @@ fn prompt_stable_prefix_unchanged_by_dynamic_content() {
                 &skills,
                 None,
                 true,
+                false,
                 "",
                 "",
                 "2026-07-17 12:00",
@@ -354,6 +459,7 @@ fn prompt_stable_prefix_unchanged_by_dynamic_content() {
                 &skills,
                 None,
                 true,
+                false,
                 "",
                 "",
                 "2026-07-18 08:30",
@@ -371,6 +477,7 @@ fn prompt_stable_prefix_unchanged_by_dynamic_content() {
                 &skills,
                 None,
                 true,
+                false,
                 "",
                 "",
                 "2026-07-17 12:00",
@@ -388,6 +495,7 @@ fn prompt_stable_prefix_unchanged_by_dynamic_content() {
                 &skills,
                 None,
                 true,
+                false,
                 "tags",
                 "actions",
                 "2026-07-17 12:00",
@@ -405,6 +513,7 @@ fn prompt_stable_prefix_unchanged_by_dynamic_content() {
                 &skills,
                 None,
                 true,
+                false,
                 "",
                 "",
                 "2026-07-17 12:00",
@@ -422,6 +531,7 @@ fn prompt_stable_prefix_unchanged_by_dynamic_content() {
                 &skills,
                 Some("Friendly"),
                 true,
+                false,
                 "",
                 "",
                 "2026-07-17 12:00",
@@ -439,6 +549,7 @@ fn prompt_stable_prefix_unchanged_by_dynamic_content() {
                 &skills,
                 None,
                 true,
+                false,
                 "media",
                 "search",
                 "2026-07-17 12:00",
@@ -484,6 +595,7 @@ fn prompt_static_base_present_regardless_of_deep_memory_or_skills() {
             &skills,
             None,
             true,
+            false,
             "",
             "",
             "2026-07-17 12:00",
@@ -498,6 +610,7 @@ fn prompt_static_base_present_regardless_of_deep_memory_or_skills() {
             "",
             &skills,
             None,
+            false,
             false,
             "",
             "",
@@ -514,6 +627,7 @@ fn prompt_static_base_present_regardless_of_deep_memory_or_skills() {
             &skill_map,
             None,
             true,
+            false,
             "",
             "",
             "2026-07-17 12:00",
@@ -528,6 +642,7 @@ fn prompt_static_base_present_regardless_of_deep_memory_or_skills() {
             "",
             &skill_map,
             None,
+            false,
             false,
             "",
             "",
@@ -573,6 +688,7 @@ fn prompt_regression_dynamic_markers_after_guidelines_minimal() {
         &empty_skills(),
         None,
         false,
+        false,
         "",
         "",
         "2026-07-17 12:00",
@@ -613,6 +729,7 @@ fn prompt_regression_dynamic_markers_after_guidelines_maximal() {
         &skills,
         Some("Friendly"),
         true,
+        false,
         "tags",
         "actions",
         "2026-07-17 12:00",
@@ -650,6 +767,7 @@ fn prompt_memory_tools_separated_from_preceding_guidelines_bullet() {
         &empty_skills(),
         None,
         true,
+        false,
         "",
         "",
         "2026-07-17 12:00",
@@ -682,6 +800,7 @@ fn prompt_config_content_ordered_between_guidelines_and_dynamic() {
         &skills,
         Some("Friendly"),
         true,
+        false,
         "tags",
         "actions",
         "2026-07-17 12:00",

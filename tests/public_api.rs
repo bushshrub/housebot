@@ -74,6 +74,7 @@ fn system_prompt_reflects_memory_and_skills() {
         &skills,
         Some("Be terse"),
         true,
+        false,
     );
     assert!(prompt.contains("Alice"));
     assert!(prompt.contains("Prefers metric units"));
