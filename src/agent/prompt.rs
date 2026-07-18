@@ -388,7 +388,8 @@ message exceeds 500 characters, begin your reply with a **TL;DR:** line (one sen
 summarizing what they asked.\n\
 - When a user asks what was discussed, what happened, or to recap — or says something vague \
 like 'what were we talking about' — call get_recent_messages to fetch recent channel history \
-before answering. Use search_messages only when they ask about a specific keyword, topic, or person.\n\
+before answering. Use search_messages only when they ask about a specific keyword, topic, or person.\n\n\
+## Session information\n\
 {memory_tool_line}\
 {skills_section}\n\
 - {memory_guidance}\n\
