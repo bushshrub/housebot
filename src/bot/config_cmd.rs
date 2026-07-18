@@ -228,13 +228,14 @@ pub(crate) async fn handle_config_interaction(
                 CommandDataOptionValue::SubCommand(opts) => opts,
                 _ => return "Unexpected option structure.".into(),
             };
-            let enabled = sub_opts
-                .iter()
-                .find(|o| o.name == "enabled")
-                .and_then(|o| match &o.value {
-                    CommandDataOptionValue::Boolean(b) => Some(*b),
-                    _ => None,
-                });
+            let enabled =
+                sub_opts
+                    .iter()
+                    .find(|o| o.name == "enabled")
+                    .and_then(|o| match &o.value {
+                        CommandDataOptionValue::Boolean(b) => Some(*b),
+                        _ => None,
+                    });
             let Some(enabled) = enabled else {
                 return "Please specify `enabled`.".into();
             };

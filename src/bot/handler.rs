@@ -328,12 +328,15 @@ impl EventHandler for HouseBot {
 
     async fn message(&self, ctx: Context, msg: Message) {
         let bot_id = ctx.cache.current_user().id;
+        let is_mentioned = msg.mentions.iter().any(|u| u.id == bot_id);
         if msg.author.bot && msg.author.id != bot_id {
+            // Other bots must explicitly @-mention us; unmentioned bot
+            // messages are always ignored regardless of configuration.
+            if !is_mentioned {
+                return;
+            }
             let respond = if let Some(gid) = msg.guild_id {
-                self.server_cfg
-                    .load(gid.get())
-                    .await
-                    .respond_to_bot_pings
+                self.server_cfg.load(gid.get()).await.respond_to_bot_pings
             } else {
                 false
             };
@@ -400,7 +403,6 @@ impl EventHandler for HouseBot {
                 .await;
         }
 
-        let is_mentioned = msg.mentions.iter().any(|u| u.id == bot_id);
         let is_reply_to_bot = msg
             .referenced_message
             .as_ref()
