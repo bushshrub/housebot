@@ -35,9 +35,17 @@ async fn storage_layer_round_trips_across_modules() {
         .save(Skill {
             name: "greet".into(),
             description: Some("Say hi".into()),
-            prompt: "Greet the user warmly.".into(),
+            instructions: "Greet the user warmly.".into(),
+            triggers: Vec::new(),
+            enabled_tools: Vec::new(),
+            examples: Vec::new(),
+            version: 1,
+            version_history: Vec::new(),
             created_by: Some("42".into()),
             editors: Vec::new(),
+            created_at: 0,
+            updated_at: 0,
+            prompt: None,
         })
         .await
         .unwrap();
@@ -49,7 +57,7 @@ async fn storage_layer_round_trips_across_modules() {
     );
     assert_eq!(history.load("42").await.len(), 2);
     assert_eq!(
-        skills.get("greet").await.unwrap().prompt,
+        skills.get("greet").await.unwrap().effective_instructions(),
         "Greet the user warmly."
     );
 }
@@ -62,9 +70,17 @@ fn system_prompt_reflects_memory_and_skills() {
         Skill {
             name: "summarize".into(),
             description: Some("Condense text".into()),
-            prompt: "..".into(),
+            instructions: "..".into(),
+            triggers: Vec::new(),
+            enabled_tools: Vec::new(),
+            examples: Vec::new(),
+            version: 1,
+            version_history: Vec::new(),
             created_by: None,
             editors: Vec::new(),
+            created_at: 0,
+            updated_at: 0,
+            prompt: None,
         },
     );
     let prompt = build_system_prompt(

@@ -6,6 +6,7 @@ use std::time::{Duration, Instant};
 use tokio::sync::Mutex;
 
 pub mod common_crawl;
+pub mod create_skill;
 pub mod edit_feature_request;
 pub mod feature_development;
 pub mod feature_request;
@@ -31,6 +32,7 @@ pub fn all_tool_names() -> &'static [&'static str] {
         "fetch_webpage",
         "download_file",
         "common_crawl__search",
+        "create_skill",
         "run_skill",
         "create_feature_request",
         "edit_feature_request",

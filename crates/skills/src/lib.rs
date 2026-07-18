@@ -1,11 +1,7 @@
-//! Global custom skills — named prompt templates — stored as a single JSON object.
-//!
-//! Skills are globally shared. The author owns their skill; only the author (or
-//! delegated editors) can modify or delete it.
-
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
 use tokio::sync::Mutex;
@@ -13,23 +9,74 @@ use tokio::sync::Mutex;
 use housebot_config as config;
 use housebot_memory::ensure_dir;
 
-/// A user-defined skill: a named system prompt run against arbitrary input.
+/// A trigger condition that determines when a skill should be activated.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SkillTrigger {
+    pub trigger_type: String,
+    pub value: String,
+}
+
+/// A few-shot example pair for a skill.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SkillExample {
+    pub input: String,
+    pub output: String,
+}
+
+/// An archived version of a skill's core configuration.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SkillArchive {
+    pub version: u32,
+    pub instructions: String,
+    pub enabled_tools: Vec<String>,
+    pub examples: Vec<SkillExample>,
+    pub archived_at: u64,
+}
+
+/// A user-defined skill — a packaged unit of capability with trigger
+/// conditions, instructions, tool integration, few-shot examples, and
+/// version history.
 ///
-/// Skills are globally visible and executable by anyone. Editing and deletion
-/// are restricted to the [`author`](Skill::author_id) and any
-/// [`editors`](Skill::editors) they have delegated.
+/// Skills are globally visible and executable by anyone. Editing and
+/// deletion are restricted to the author and any delegated editors.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Skill {
     pub name: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
-    pub prompt: String,
+    /// Core behavioral instructions (replaces the legacy `prompt` field).
+    #[serde(default)]
+    pub instructions: String,
+    /// Conditions that determine when this skill should be activated.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub triggers: Vec<SkillTrigger>,
+    /// Tool names the skill is authorized to use during execution.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub enabled_tools: Vec<String>,
+    /// Few-shot input/output examples.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub examples: Vec<SkillExample>,
+    /// Current version number (increments on each modification).
+    #[serde(default)]
+    pub version: u32,
+    /// Archived previous versions.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub version_history: Vec<SkillArchive>,
     /// Discord user ID of the skill's author.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub created_by: Option<String>,
-    /// Discord user IDs of delegated editors (in addition to the author).
+    /// Discord user IDs of delegated editors.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub editors: Vec<String>,
+    /// Unix timestamp of creation.
+    #[serde(default)]
+    pub created_at: u64,
+    /// Unix timestamp of last modification.
+    #[serde(default)]
+    pub updated_at: u64,
+    /// Deprecated: migrated to `instructions` on load.
+    #[serde(default, skip_serializing)]
+    pub prompt: Option<String>,
 }
 
 impl Skill {
@@ -64,6 +111,54 @@ impl Skill {
         self.editors.retain(|e| e != editor_id);
         self.editors.len() < before
     }
+
+    /// Return the effective instructions, falling back to the legacy `prompt`
+    /// field when `instructions` is empty (backward compatibility).
+    pub fn effective_instructions(&self) -> &str {
+        if !self.instructions.is_empty() {
+            &self.instructions
+        } else if let Some(ref prompt) = self.prompt {
+            prompt
+        } else {
+            ""
+        }
+    }
+
+    /// Migrate the legacy `prompt` field into `instructions` if instructions
+    /// is empty.  Safe to call multiple times.
+    pub fn migrate_from_prompt(&mut self) {
+        if self.instructions.is_empty() {
+            if let Some(prompt) = self.prompt.take() {
+                self.instructions = prompt;
+            }
+        }
+    }
+
+    /// Archive the current version's configuration, increment the version,
+    /// and set `updated_at` to now.
+    pub fn bump_version(&mut self) {
+        self.version_history.push(SkillArchive {
+            version: self.version,
+            instructions: self.instructions.clone(),
+            enabled_tools: self.enabled_tools.clone(),
+            examples: self.examples.clone(),
+            archived_at: now_secs(),
+        });
+        self.version += 1;
+        self.updated_at = now_secs();
+    }
+
+    /// Check whether the skill has any trigger conditions defined.
+    pub fn has_triggers(&self) -> bool {
+        !self.triggers.is_empty()
+    }
+}
+
+fn now_secs() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs()
 }
 
 /// Handle to the global skills store.
@@ -89,6 +184,7 @@ impl Skills {
     }
 
     /// Load every defined skill, keyed by name (cached after first load).
+    /// Automatically migrates any legacy `prompt`-based skills.
     pub async fn load_all(&self) -> BTreeMap<String, Skill> {
         {
             let cache = self.cache.lock().await;
@@ -100,11 +196,14 @@ impl Skills {
             Ok(s) => s,
             Err(_) => return BTreeMap::new(),
         };
-        let skills: BTreeMap<String, Skill> = if raw.trim().is_empty() {
+        let mut skills: BTreeMap<String, Skill> = if raw.trim().is_empty() {
             BTreeMap::new()
         } else {
             serde_json::from_str(&raw).unwrap_or_default()
         };
+        for skill in skills.values_mut() {
+            skill.migrate_from_prompt();
+        }
         *self.cache.lock().await = Some(skills.clone());
         skills
     }
@@ -154,13 +253,51 @@ mod tests {
         (tmp, s)
     }
 
-    fn skill(name: &str, desc: Option<&str>, prompt: &str) -> Skill {
+    fn skill(name: &str, desc: Option<&str>, instructions: &str) -> Skill {
         Skill {
             name: name.to_string(),
             description: desc.map(String::from),
-            prompt: prompt.to_string(),
+            instructions: instructions.to_string(),
+            triggers: Vec::new(),
+            enabled_tools: Vec::new(),
+            examples: Vec::new(),
+            version: 1,
+            version_history: Vec::new(),
             created_by: None,
             editors: Vec::new(),
+            created_at: 0,
+            updated_at: 0,
+            prompt: None,
+        }
+    }
+
+    fn full_skill(name: &str) -> Skill {
+        Skill {
+            name: name.to_string(),
+            description: Some("A full-featured skill".into()),
+            instructions: "Do the thing".into(),
+            triggers: vec![SkillTrigger {
+                trigger_type: "keyword".into(),
+                value: "standup".into(),
+            }],
+            enabled_tools: vec!["web_search".into(), "fetch_webpage".into()],
+            examples: vec![SkillExample {
+                input: "summarize my week".into(),
+                output: "Here's your weekly summary...".into(),
+            }],
+            version: 2,
+            version_history: vec![SkillArchive {
+                version: 1,
+                instructions: "Old instructions".into(),
+                enabled_tools: vec![],
+                examples: vec![],
+                archived_at: 100,
+            }],
+            created_by: Some("author".into()),
+            editors: vec!["editor1".into()],
+            created_at: 50,
+            updated_at: 200,
+            prompt: None,
         }
     }
 
@@ -177,7 +314,7 @@ mod tests {
             .await
             .unwrap();
         let all = s.load_all().await;
-        assert_eq!(all.get("greet").unwrap().prompt, "Hello!");
+        assert_eq!(all.get("greet").unwrap().effective_instructions(), "Hello!");
     }
 
     #[tokio::test]
@@ -225,17 +362,82 @@ mod tests {
     #[tokio::test]
     async fn multiple_skills_coexist() {
         let (_t, s) = store();
-        s.save(skill("a", None, "A prompt")).await.unwrap();
-        s.save(skill("b", None, "B prompt")).await.unwrap();
+        s.save(skill("a", None, "A instructions")).await.unwrap();
+        s.save(skill("b", None, "B instructions")).await.unwrap();
         let all = s.load_all().await;
         assert!(all.contains_key("a"));
         assert!(all.contains_key("b"));
     }
 
-    #[tokio::test]
-    async fn skill_without_description_uses_name() {
-        let sk = skill("a", None, "A prompt");
+    #[test]
+    fn skill_without_description_uses_name() {
+        let sk = skill("a", None, "A instructions");
         assert_eq!(sk.description_or_name(), "a");
+    }
+
+    #[test]
+    fn effective_instructions_falls_back_to_legacy_prompt() {
+        let mut sk = skill("x", None, "");
+        sk.prompt = Some("legacy prompt".into());
+        assert_eq!(sk.effective_instructions(), "legacy prompt");
+    }
+
+    #[test]
+    fn effective_instructions_prefers_instructions_over_prompt() {
+        let mut sk = skill("x", None, "new instructions");
+        sk.prompt = Some("old prompt".into());
+        assert_eq!(sk.effective_instructions(), "new instructions");
+    }
+
+    #[test]
+    fn migrate_from_prompt_moves_to_instructions() {
+        let mut sk = Skill {
+            name: "x".into(),
+            description: None,
+            instructions: String::new(),
+            triggers: Vec::new(),
+            enabled_tools: Vec::new(),
+            examples: Vec::new(),
+            version: 1,
+            version_history: Vec::new(),
+            created_by: None,
+            editors: Vec::new(),
+            created_at: 0,
+            updated_at: 0,
+            prompt: Some("legacy".into()),
+        };
+        sk.migrate_from_prompt();
+        assert_eq!(sk.instructions, "legacy");
+        assert!(sk.prompt.is_none());
+    }
+
+    #[test]
+    fn bump_version_archives_and_increments() {
+        let mut sk = skill("x", None, "v1 instructions");
+        sk.enabled_tools = vec!["search".into()];
+        assert_eq!(sk.version, 1);
+        sk.bump_version();
+        assert_eq!(sk.version, 2);
+        assert_eq!(sk.version_history.len(), 1);
+        assert_eq!(sk.version_history[0].version, 1);
+        assert_eq!(sk.version_history[0].instructions, "v1 instructions");
+    }
+
+    #[test]
+    fn full_skill_round_trip() {
+        let sk = full_skill("test_skill");
+        assert_eq!(sk.name, "test_skill");
+        assert_eq!(sk.triggers.len(), 1);
+        assert_eq!(sk.enabled_tools.len(), 2);
+        assert_eq!(sk.examples.len(), 1);
+        assert_eq!(sk.version, 2);
+        assert!(sk.has_triggers());
+    }
+
+    #[test]
+    fn has_triggers_false_when_empty() {
+        let sk = skill("x", None, "instructions");
+        assert!(!sk.has_triggers());
     }
 
     // ── permission tests ─────────────────────────────────────────────────
@@ -243,9 +445,17 @@ mod tests {
         Skill {
             name: "x".into(),
             description: None,
-            prompt: "p".into(),
+            instructions: "p".into(),
+            triggers: Vec::new(),
+            enabled_tools: Vec::new(),
+            examples: Vec::new(),
+            version: 1,
+            version_history: Vec::new(),
             created_by: Some(author.to_string()),
             editors: vec!["300".into(), "400".into()],
+            created_at: 0,
+            updated_at: 0,
+            prompt: None,
         }
     }
 
@@ -259,10 +469,10 @@ mod tests {
     #[test]
     fn can_edit_author_or_editor() {
         let sk = authored_skill("100");
-        assert!(sk.can_edit("100")); // author
-        assert!(sk.can_edit("300")); // delegated editor
-        assert!(sk.can_edit("400")); // delegated editor
-        assert!(!sk.can_edit("500")); // nobody
+        assert!(sk.can_edit("100"));
+        assert!(sk.can_edit("300"));
+        assert!(sk.can_edit("400"));
+        assert!(!sk.can_edit("500"));
     }
 
     #[test]
@@ -270,9 +480,17 @@ mod tests {
         let sk = Skill {
             name: "x".into(),
             description: None,
-            prompt: "p".into(),
+            instructions: "p".into(),
+            triggers: Vec::new(),
+            enabled_tools: Vec::new(),
+            examples: Vec::new(),
+            version: 1,
+            version_history: Vec::new(),
             created_by: None,
             editors: vec![],
+            created_at: 0,
+            updated_at: 0,
+            prompt: None,
         };
         assert!(!sk.can_edit("100"));
     }
@@ -280,7 +498,7 @@ mod tests {
     #[test]
     fn add_editor_duplicate() {
         let mut sk = authored_skill("100");
-        assert!(!sk.add_editor("300")); // already present
+        assert!(!sk.add_editor("300"));
         assert_eq!(sk.editors.len(), 2);
     }
 
@@ -302,5 +520,30 @@ mod tests {
     fn remove_editor_missing() {
         let mut sk = authored_skill("100");
         assert!(!sk.remove_editor("999"));
+    }
+
+    #[tokio::test]
+    async fn legacy_prompt_is_migrated_on_load() {
+        let (_t, s) = store();
+        // Write old-format JSON with `prompt` field
+        let old_json = r#"{"greet":{"name":"greet","description":"old","prompt":"Hello!"}}"#;
+        tokio::fs::write(&s.path, old_json).await.unwrap();
+        let all = s.load_all().await;
+        let skill = all.get("greet").unwrap();
+        assert_eq!(skill.effective_instructions(), "Hello!");
+        assert_eq!(skill.instructions, "Hello!");
+        // prompt should be None after migration
+        assert!(skill.prompt.is_none());
+    }
+
+    #[tokio::test]
+    async fn new_skills_dont_write_prompt_field() {
+        let (_t, s) = store();
+        s.save(skill("new_skill", None, "new instructions"))
+            .await
+            .unwrap();
+        let raw = tokio::fs::read_to_string(&s.path).await.unwrap();
+        assert!(!raw.contains("\"prompt\""));
+        assert!(raw.contains("\"instructions\""));
     }
 }
