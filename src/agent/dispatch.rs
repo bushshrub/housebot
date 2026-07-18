@@ -418,18 +418,29 @@ impl Agent {
                     searxng: Arc::clone(&self.searxng),
                     mcp_servers: Arc::clone(&self.mcp_servers),
                 });
-                // Only `.text` is surfaced here — no redaction needed for the
-                // graph image path since it's never attached from this tool.
-                ToolOutcome::Text(
-                    lua_engine::run_script(
-                        script,
-                        host,
-                        lua_engine::LuaLimits::from_env(),
-                        |s: &str| s.to_string(),
-                    )
-                    .await
-                    .text,
+                let output = lua_engine::run_script(
+                    script,
+                    host,
+                    lua_engine::LuaLimits::from_env(),
+                    |s: &str| s.to_string(),
                 )
+                .await;
+                if let Some(image) = output.image {
+                    let text = if output.text.is_empty() {
+                        "Graph rendered.".to_string()
+                    } else {
+                        output.text
+                    };
+                    ToolOutcome::Attachment {
+                        text,
+                        attachment: AgentAttachment {
+                            filename: "graph.png".to_string(),
+                            bytes: image,
+                        },
+                    }
+                } else {
+                    ToolOutcome::Text(output.text)
+                }
             }
             "get_lua_docs" => ToolOutcome::Text(LUA_DOCS.to_string()),
             // ── Sandbox tools (owner-only; enforced at the tool-definition
