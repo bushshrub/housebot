@@ -247,16 +247,46 @@ impl ToolPermissions {
         self.save(&state).await.map_err(|e| e.to_string())
     }
 
-    /// Look up a proposal by its Discord message ID.
-    pub async fn find_by_message(&self, message_id: u64) -> Option<(String, BanProposal)> {
+    /// Remove a proposal (used for rollback on publication failure).
+    pub async fn remove_proposal(&self, guild_id: u64, proposal_id: &str) -> std::io::Result<()> {
         let _guard = self.lock.lock().await;
-        let state = self.load().await.ok()?;
+        let mut state = self.load().await?;
+        state
+            .proposals
+            .retain(|p| p.guild_id != guild_id || p.id != proposal_id);
+        self.save(&state).await
+    }
+
+    /// Look up a proposal by its Discord message ID.
+    pub async fn find_by_message(
+        &self,
+        message_id: u64,
+    ) -> std::io::Result<Option<(String, BanProposal)>> {
+        let _guard = self.lock.lock().await;
+        let state = self.load().await?;
         for proposal in &state.proposals {
             if proposal.message_id == message_id {
-                return Some((proposal.id.clone(), proposal.clone()));
+                return Ok(Some((proposal.id.clone(), proposal.clone())));
             }
         }
-        None
+        Ok(None)
+    }
+
+    /// Look up a proposal by its ID prefix (for slash-command votes that need
+    /// channel/message IDs before calling vote).
+    pub async fn find_proposal_by_prefix(
+        &self,
+        guild_id: u64,
+        prefix: &str,
+    ) -> std::io::Result<Option<BanProposal>> {
+        let _guard = self.lock.lock().await;
+        let state = self.load().await?;
+        let now = unix_now();
+        Ok(state
+            .proposals
+            .iter()
+            .find(|p| p.guild_id == guild_id && p.id.starts_with(prefix) && p.expires_at > now)
+            .cloned())
     }
 
     pub async fn status(&self, guild_id: u64) -> std::io::Result<GuildPermissionStatus> {

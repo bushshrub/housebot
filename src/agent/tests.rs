@@ -2,6 +2,7 @@
 
 use super::*;
 use crate::token_monitor::LeaderboardRank;
+use std::collections::BTreeSet;
 
 #[test]
 fn token_leaderboard_format_shows_period_metric_and_requester_rank() {
@@ -737,4 +738,80 @@ fn prompt_config_content_ordered_between_guidelines_and_dynamic() {
         memory_guidance_pos < date_pos,
         "memory guidance before date/time"
     );
+}
+
+/// Verify that `all_tool_names()` stays in sync with the actual tool
+/// definitions registered in `Agent::build_tools`.  Any name present in one
+/// but not the other represents either a missing autocomplete entry or a
+/// tool that was added/removed without updating the list.
+#[test]
+fn all_tool_names_matches_built_in_definitions() {
+    // Collect names from the definition functions (mirrors build_tools
+    // excluding conditionally-included sandbox and memory tools).
+    let defined: BTreeSet<String> = [
+        crate::tools::searxng::definition(),
+        crate::tools::searxng::deep_research_definition(),
+        crate::tools::web_fetch::definition(),
+        crate::tools::file_download::definition(),
+        crate::tools::common_crawl::definition(),
+        run_skill_tool(),
+        crate::tools::feature_request::definition(),
+        crate::tools::edit_feature_request::definition(),
+        crate::tools::feature_development::definition(),
+        crate::tools::github_api::definition(),
+        crate::tools::remind::definition(),
+        crate::tools::summarize_url::definition(),
+        crate::tools::token_metrics::definition(),
+        crate::tools::translate::definition(),
+        crate::tools::features::definition(),
+        search_messages_tool(),
+        get_recent_messages_tool(),
+        find_discord_users_tool(),
+        get_discord_user_tool(),
+        run_lua_tool(),
+        get_lua_docs_tool(),
+    ]
+    .into_iter()
+    .map(|def| {
+        def.get("name")
+            .and_then(|n| n.as_str())
+            .expect("tool definition must have a name")
+            .to_string()
+    })
+    .collect();
+
+    let all_tool_names: BTreeSet<String> = crate::tools::all_tool_names()
+        .iter()
+        .copied()
+        .map(String::from)
+        .collect();
+
+    // These are conditionally included in build_tools so they appear in
+    // all_tool_names but not in the unconditional list above.
+    let conditionals: BTreeSet<String> = [
+        "update_memory",
+        "search_memory",
+        "sandbox_clone_repository",
+        "sandbox_list_files",
+        "sandbox_search_code",
+        "sandbox_read_file",
+        "sandbox_run",
+    ]
+    .into_iter()
+    .map(String::from)
+    .collect();
+
+    for name in &defined {
+        assert!(
+            all_tool_names.contains(name),
+            "tool `{name}` is defined but missing from all_tool_names()"
+        );
+    }
+
+    for name in &all_tool_names {
+        assert!(
+            defined.contains(name) || conditionals.contains(name),
+            "tool `{name}` is in all_tool_names() but has no matching definition"
+        );
+    }
 }

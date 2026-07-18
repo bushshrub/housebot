@@ -125,10 +125,28 @@ impl EventHandler for HouseBot {
             "effort" => handle_effort_interaction(&self.user_cfg, &cmd.data.options, user_id).await,
             "tool_ban" => {
                 let sub_cmd = cmd.data.options.first().map(|o| o.name.as_str());
-                if sub_cmd == Some("propose") {
-                    self.handle_tool_ban_propose(&ctx, &cmd, user_id, guild_id)
-                        .await;
-                    return;
+                match sub_cmd {
+                    Some("propose") => {
+                        self.handle_tool_ban_propose(&ctx, &cmd, user_id, guild_id)
+                            .await;
+                        return;
+                    }
+                    Some("vote") => {
+                        let reply = self
+                            .handle_tool_ban_vote(&ctx, &cmd, user_id, guild_id)
+                            .await;
+                        let reply = self.redactor.redact(&reply);
+                        let response = CreateInteractionResponse::Message(
+                            CreateInteractionResponseMessage::new()
+                                .content(reply)
+                                .ephemeral(true),
+                        );
+                        if let Err(e) = cmd.create_response(&ctx.http, response).await {
+                            tracing::warn!("Failed to send /tool_ban vote response: {e}");
+                        }
+                        return;
+                    }
+                    _ => {}
                 }
                 handle_tool_ban_interaction(
                     &self.agent.tool_permissions(),
@@ -401,7 +419,14 @@ impl EventHandler for HouseBot {
         };
 
         let permissions = self.agent.tool_permissions();
-        let Some((_id, proposal)) = permissions.find_by_message(message_id).await else {
+        let found = match permissions.find_by_message(message_id).await {
+            Ok(found) => found,
+            Err(error) => {
+                tracing::error!(%error, %message_id, "Failed to load proposals for reaction vote");
+                return;
+            }
+        };
+        let Some((_id, proposal)) = found else {
             return;
         };
         if proposal.guild_id != guild_id {
@@ -417,19 +442,21 @@ impl EventHandler for HouseBot {
                 rejections,
                 quorum,
             }) => {
-                let text = format_proposal_message(&proposal, approvals, rejections, quorum);
+                let text = self.redactor.redact(&format_proposal_message(
+                    &proposal, approvals, rejections, quorum,
+                ));
                 let _ = ChannelId::new(proposal.channel_id)
                     .edit_message(&ctx.http, message_id, EditMessage::new().content(text))
                     .await;
             }
-            Ok(VoteResult::Approved(ban)) => {
-                let text = format_approved_message(&ban);
+            Ok(VoteResult::Approved(ref ban)) => {
+                let text = self.redactor.redact(&format_approved_message(ban));
                 let _ = ChannelId::new(proposal.channel_id)
                     .edit_message(&ctx.http, message_id, EditMessage::new().content(text))
                     .await;
             }
             Ok(VoteResult::Rejected) => {
-                let text = format_rejected_message(&proposal);
+                let text = self.redactor.redact(&format_rejected_message(&proposal));
                 let _ = ChannelId::new(proposal.channel_id)
                     .edit_message(&ctx.http, message_id, EditMessage::new().content(text))
                     .await;
@@ -473,6 +500,105 @@ impl HouseBot {
             .await;
     }
 
+    /// Handle `/tool_ban vote`: record the vote and update the public proposal message.
+    async fn handle_tool_ban_vote(
+        &self,
+        ctx: &Context,
+        cmd: &serenity::all::CommandInteraction,
+        author_id: u64,
+        guild_id: Option<u64>,
+    ) -> String {
+        let Some(guild_id) = guild_id else {
+            return "Tool-ban voting is only available inside a server.".into();
+        };
+        let Some(option) = cmd.data.options.first() else {
+            return "Unexpected option structure.".into();
+        };
+        let CommandDataOptionValue::SubCommand(options) = &option.value else {
+            return "Unexpected option structure.".into();
+        };
+        let proposal_str = options
+            .iter()
+            .find(|option| option.name == "proposal")
+            .and_then(|option| match &option.value {
+                CommandDataOptionValue::String(id) => Some(id.as_str()),
+                _ => None,
+            });
+        let approve = options
+            .iter()
+            .find(|option| option.name == "approve")
+            .and_then(|option| match option.value {
+                CommandDataOptionValue::Boolean(approve) => Some(approve),
+                _ => None,
+            });
+        let (Some(proposal_str), Some(approve)) = (proposal_str, approve) else {
+            return "Please specify a proposal ID and vote.".into();
+        };
+
+        let permissions = self.agent.tool_permissions();
+
+        // Look up the proposal *before* voting so we have channel/message IDs
+        // even if the vote finalizes and removes the proposal.
+        let proposal_info = permissions
+            .find_proposal_by_prefix(guild_id, proposal_str)
+            .await
+            .unwrap_or(None);
+
+        match permissions
+            .vote(guild_id, proposal_str, author_id, approve)
+            .await
+        {
+            Ok(VoteResult::Pending {
+                approvals,
+                rejections,
+                quorum,
+            }) => {
+                // Update the public message if we have channel/message IDs.
+                if let Some(ref p) = proposal_info {
+                    if p.channel_id != 0 && p.message_id != 0 {
+                        let text = self
+                            .redactor
+                            .redact(&format_proposal_message(p, approvals, rejections, quorum));
+                        let _ = ChannelId::new(p.channel_id)
+                            .edit_message(&ctx.http, p.message_id, EditMessage::new().content(text))
+                            .await;
+                    }
+                }
+                format!(
+                    "✅ Vote recorded. Current result: **{approvals} approve / {rejections} reject** (minimum {quorum} votes)."
+                )
+            }
+            Ok(VoteResult::Approved(ref ban)) => {
+                // Update the public message if we have channel/message IDs.
+                if let Some(ref p) = proposal_info {
+                    if p.channel_id != 0 && p.message_id != 0 {
+                        let text = self.redactor.redact(&format_approved_message(ban));
+                        let _ = ChannelId::new(p.channel_id)
+                            .edit_message(&ctx.http, p.message_id, EditMessage::new().content(text))
+                            .await;
+                    }
+                }
+                format!(
+                    "🚫 Vote passed. <@{}> is now blocked from using `{}` in this server.",
+                    ban.user_id, ban.tool_name
+                )
+            }
+            Ok(VoteResult::Rejected) => {
+                // Update the public message if we have channel/message IDs.
+                if let Some(ref p) = proposal_info {
+                    if p.channel_id != 0 && p.message_id != 0 {
+                        let text = self.redactor.redact(&format_rejected_message(p));
+                        let _ = ChannelId::new(p.channel_id)
+                            .edit_message(&ctx.http, p.message_id, EditMessage::new().content(text))
+                            .await;
+                    }
+                }
+                "✅ The proposal was rejected by majority vote.".into()
+            }
+            Err(error) => format!("⚠️ {error}"),
+        }
+    }
+
     /// Handle `/tool_ban propose`: send a visible channel message and add emoji
     /// voting reactions, then respond to the interaction ephemerally.
     async fn handle_tool_ban_propose(
@@ -491,7 +617,11 @@ impl HouseBot {
             .await;
             return;
         };
-        let CommandDataOptionValue::SubCommand(options) = &cmd.data.options[0].value else {
+        let Some(option) = cmd.data.options.first() else {
+            respond_ephemeral(ctx, cmd, "Unexpected option structure.").await;
+            return;
+        };
+        let CommandDataOptionValue::SubCommand(options) = &option.value else {
             respond_ephemeral(ctx, cmd, "Unexpected option structure.").await;
             return;
         };
@@ -539,7 +669,12 @@ impl HouseBot {
 
         // Send a visible channel message with the proposal.
         let (approvals, _) = proposal.vote_counts();
-        let text = format_proposal_message(&proposal, approvals, 0, permissions.min_votes());
+        let text = self.redactor.redact(&format_proposal_message(
+            &proposal,
+            approvals,
+            0,
+            permissions.min_votes(),
+        ));
         let msg = match cmd
             .channel_id
             .send_message(&ctx.http, CreateMessage::new().content(text))
@@ -548,6 +683,10 @@ impl HouseBot {
             Ok(msg) => msg,
             Err(error) => {
                 tracing::warn!(%error, "Failed to send proposal channel message");
+                // Roll back the proposal so we don't orphan it.
+                if let Err(e) = permissions.remove_proposal(guild_id, &proposal.id).await {
+                    tracing::error!(%e, "Failed to roll back proposal after message send failure");
+                }
                 let _ = cmd
                     .edit_response(
                         &ctx.http,
@@ -564,7 +703,20 @@ impl HouseBot {
             .set_proposal_message(guild_id, &proposal.id, cmd.channel_id.get(), msg.id.get())
             .await
         {
-            tracing::warn!(%error, "Failed to store proposal message IDs");
+            tracing::error!(%error, "Failed to store proposal message IDs — deleting posted message");
+            // Remove the orphaned message since we can't track it.
+            let _ = msg.delete(&ctx.http).await;
+            if let Err(e) = permissions.remove_proposal(guild_id, &proposal.id).await {
+                tracing::error!(%e, "Failed to roll back proposal after message mapping failure");
+            }
+            let _ = cmd
+                .edit_response(
+                    &ctx.http,
+                    EditInteractionResponse::new()
+                        .content("⚠️ Failed to save proposal metadata. Please try again."),
+                )
+                .await;
+            return;
         }
 
         // Add voting reactions.
@@ -582,15 +734,16 @@ impl HouseBot {
             .await;
 
         // Edit the deferred response with a confirmation.
+        let confirmation = self.redactor.redact(&format!(
+            "✅ Proposal created! Everyone in the server can see it and vote with reactions. \
+             Proposal ID: `{}`. Vote also with `/tool_ban vote proposal:{} approve:true|false`.",
+            &proposal.id[..8],
+            &proposal.id[..8],
+        ));
         let _ = cmd
             .edit_response(
                 &ctx.http,
-                EditInteractionResponse::new().content(format!(
-                    "✅ Proposal created! Everyone in the server can see it and vote with reactions. \
-                     Proposal ID: `{}`. Vote also with `/tool_ban vote proposal:{} approve:true|false`.",
-                    &proposal.id[..8],
-                    &proposal.id[..8],
-                )),
+                EditInteractionResponse::new().content(confirmation),
             )
             .await;
     }
