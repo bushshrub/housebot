@@ -22,8 +22,10 @@ pub mod web_fetch;
 
 /// Single Source of Truth for all built-in tool names (used by autocomplete and
 /// tool-ban validation). Does not include dynamically-discovered MCP tools.
+/// The special name `housebot` represents full bot interaction (not a tool).
 pub fn all_tool_names() -> &'static [&'static str] {
     &[
+        "housebot",
         "web_search",
         "deep_research",
         "fetch_webpage",

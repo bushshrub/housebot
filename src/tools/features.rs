@@ -32,6 +32,12 @@ pub fn features_text() -> &'static str {
 `/skill list|info|add|delete` — manage custom prompt skills shared across all users
 `/stats` — show your conversation and memory statistics
 
+**Prefix commands**
+`!grocery` — show your grocery list
+`!grocery add <item>` — add an item to your grocery list
+`!grocery remove <item>` — remove an item from your grocery list
+`!grocery flush` — clear your entire grocery list
+
 **Capabilities**
 - Web search, multi-step deep research with cross-referenced sources, webpage fetching, and public-file downloads delivered as Discord attachments
 - Jellyfin media server queries (movies, shows, music) — read-only
@@ -39,6 +45,7 @@ pub fn features_text() -> &'static str {
 - Timed reminders delivered by DM
 - Create and edit your own GitHub feature requests and bug reports
 - Custom skills (user-defined prompt templates) via `/skill`
+- Personal grocery list management (`!grocery`) with persistent storage across sessions
 - Personal notes and persistent memory across sessions
 - Persistent conversation archives and global token-usage leaderboards
 - Guild voting for user-specific tool-call restrictions and bans
