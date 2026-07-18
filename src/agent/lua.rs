@@ -2,6 +2,30 @@
 
 use super::*;
 
+/// Production [`ScriptHost`]: routes script capabilities through the agent and
+/// Discord bridge. Lives on the agent side so the Lua engine crate does not
+/// depend back on the agent.
+pub struct BotScriptHost {
+    pub agent: Arc<Agent>,
+    pub discord: Arc<DiscordBridge>,
+    pub channel_id: u64,
+}
+
+#[async_trait]
+impl ScriptHost for BotScriptHost {
+    async fn send_message(&self, content: &str) -> Result<(), String> {
+        self.discord.send_message(self.channel_id, content).await
+    }
+
+    async fn web_search(&self, query: &str, max_results: usize) -> String {
+        self.agent.web_search(query, max_results).await
+    }
+
+    async fn jellyfin_search(&self, query: &str) -> String {
+        self.agent.jellyfin_search(query).await
+    }
+}
+
 /// Lua sandbox documentation surfaced through the `get_lua_docs` tool.
 pub(crate) const LUA_DOCS: &str = "\
 **Lua 5.4 Sandbox — API Reference**

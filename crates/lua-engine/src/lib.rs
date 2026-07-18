@@ -17,10 +17,8 @@ use std::time::{Duration, Instant};
 use async_trait::async_trait;
 use mlua::{HookTriggers, Lua, LuaOptions, MultiValue, StdLib, Value as LuaValue, VmState};
 
-use crate::agent::Agent;
-use crate::config;
-use crate::discord_bridge::DiscordBridge;
-use crate::graph_render::{self, GraphBuilder};
+use graph_render::GraphBuilder;
+use housebot_config as config;
 
 /// Maximum characters of captured output (print + return values) per script.
 pub const MAX_OUTPUT_CHARS: usize = 4000;
@@ -50,28 +48,6 @@ pub trait ScriptHost: Send + Sync {
     async fn web_search(&self, query: &str, max_results: usize) -> String;
     /// Search the household Jellyfin media server.
     async fn jellyfin_search(&self, query: &str) -> String;
-}
-
-/// Production host: routes script capabilities through the agent and Discord bridge.
-pub struct BotScriptHost {
-    pub agent: Arc<Agent>,
-    pub discord: Arc<DiscordBridge>,
-    pub channel_id: u64,
-}
-
-#[async_trait]
-impl ScriptHost for BotScriptHost {
-    async fn send_message(&self, content: &str) -> Result<(), String> {
-        self.discord.send_message(self.channel_id, content).await
-    }
-
-    async fn web_search(&self, query: &str, max_results: usize) -> String {
-        self.agent.web_search(query, max_results).await
-    }
-
-    async fn jellyfin_search(&self, query: &str) -> String {
-        self.agent.jellyfin_search(query).await
-    }
 }
 
 /// Execution limits, resolved from `LUA_TIMEOUT_SECS` and `LUA_MEMORY_LIMIT_MB`.
@@ -584,5 +560,5 @@ fn friendly_error(error: &mlua::Error, limits: &LuaLimits) -> String {
 }
 
 #[cfg(test)]
-#[path = "lua_engine_tests.rs"]
+#[path = "tests.rs"]
 mod tests;

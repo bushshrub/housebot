@@ -67,7 +67,7 @@ impl HouseBot {
             }
             return;
         }
-        let host = Arc::new(lua_engine::BotScriptHost {
+        let host = Arc::new(crate::agent::BotScriptHost {
             agent: Arc::clone(&self.agent),
             discord: Arc::clone(&self.discord),
             channel_id: cmd.channel_id.get(),

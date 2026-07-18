@@ -629,3 +629,21 @@ async fn dispatch_run_lua_strips_code_fence() {
     };
     assert_eq!(t, "2");
 }
+
+/// Regression test for the `BotScriptHost` seam introduced when the Lua engine
+/// moved to its own crate: the adapter must satisfy the engine's `ScriptHost`
+/// trait and surface a bridge-not-connected error instead of panicking.
+#[tokio::test]
+async fn bot_script_host_is_a_script_host_and_reports_missing_bridge() {
+    let (_tmp, agent) = test_agent(Arc::new(MockChatClient::new()));
+    let host: Arc<dyn ScriptHost> = Arc::new(BotScriptHost {
+        agent: Arc::new(agent),
+        discord: Arc::new(DiscordBridge::default()),
+        channel_id: 1,
+    });
+    let err = host
+        .send_message("hi")
+        .await
+        .expect_err("no Discord HTTP client is connected");
+    assert!(err.contains("not available"), "unexpected error: {err}");
+}

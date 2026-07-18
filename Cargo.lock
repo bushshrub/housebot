@@ -893,6 +893,7 @@ dependencies = [
  "housebot-history",
  "housebot-llm",
  "housebot-llm-queue",
+ "housebot-lua-engine",
  "housebot-mcp",
  "housebot-memory",
  "housebot-message-log",
@@ -906,7 +907,6 @@ dependencies = [
  "housebot-token-monitor",
  "housebot-tool-permissions",
  "housebot-tools",
- "mlua",
  "regex",
  "reqwest",
  "sentry",
@@ -1070,6 +1070,17 @@ dependencies = [
  "async-trait",
  "housebot-llm",
  "serde_json",
+ "tokio",
+]
+
+[[package]]
+name = "housebot-lua-engine"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "graph-render",
+ "housebot-config",
+ "mlua",
  "tokio",
 ]
 
