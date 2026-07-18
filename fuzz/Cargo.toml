@@ -1,0 +1,51 @@
+[package]
+name = "housebot-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2021"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+arbitrary = { version = "1", features = ["derive"] }
+housebot-bot-formatting = { path = "../crates/bot-formatting" }
+housebot-bot-response = { path = "../crates/bot-response" }
+housebot-lua-engine = { path = "../crates/lua-engine" }
+libfuzzer-sys = "0.4"
+serde_json = "1"
+
+[[bin]]
+name = "split_text"
+path = "fuzz_targets/split_text.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "extract_code_files"
+path = "fuzz_targets/extract_code_files.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "tool_hint_status"
+path = "fuzz_targets/tool_hint_status.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "strip_code_fence"
+path = "fuzz_targets/strip_code_fence.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "redact"
+path = "fuzz_targets/redact.rs"
+test = false
+doc = false
+bench = false

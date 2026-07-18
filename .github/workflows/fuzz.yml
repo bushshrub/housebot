@@ -1,0 +1,50 @@
+name: Fuzz
+
+# Nightly fuzzing of untrusted-input parsing surfaces (issue #84). Runs on a
+# schedule and on demand so it never blocks the standard build/deploy pipeline.
+on:
+  schedule:
+    - cron: "0 3 * * *"
+  workflow_dispatch:
+    inputs:
+      seconds:
+        description: "Seconds to run each fuzz target"
+        default: "300"
+
+permissions:
+  contents: read
+
+jobs:
+  fuzz:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        target:
+          - split_text
+          - extract_code_files
+          - tool_hint_status
+          - strip_code_fence
+          - redact
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@nightly
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: fuzz
+      - name: Install cargo-fuzz
+        run: cargo install cargo-fuzz --locked
+      - name: Fuzz ${{ matrix.target }}
+        run: |
+          cargo +nightly fuzz run ${{ matrix.target }} -- \
+            -max_total_time=${{ github.event.inputs.seconds || 300 }} \
+            -timeout=10
+      # libFuzzer names crash artifacts by input hash, so re-runs of the same
+      # crash overwrite rather than duplicate — deduplication comes for free.
+      - name: Upload crash artifacts
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fuzz-crashes-${{ matrix.target }}
+          path: fuzz/artifacts/${{ matrix.target }}
+          if-no-files-found: ignore

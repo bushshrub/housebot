@@ -166,6 +166,14 @@ fn global_history_empty_state_keeps_profile_identity() {
 
 // ── split_text ──
 #[test]
+fn split_zero_limit_terminates() {
+    // Regression: limit 0 previously looped forever on any non-empty input.
+    let chunks = split_text("abc", 0);
+    assert!(!chunks.is_empty());
+    assert!(chunks.iter().all(|c| c.chars().count() <= 1));
+}
+
+#[test]
 fn split_short_text_single_chunk() {
     assert_eq!(split_text("hello", 2000), vec!["hello"]);
 }
