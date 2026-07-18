@@ -288,6 +288,9 @@ specification, runner requirements, and security model.
   agent: the agent is the git author and committer, and any `Co-authored-by` trailer names the
   agent only. Never include the user who triggered the run — as author, committer, or
   co-author — since they did not write the changes.
+- **Always commit as yourself.** The agent must set its own identity explicitly on every commit
+  (e.g. `git -c user.name=<agent> -c user.email=<agent-email> commit …`) rather than inheriting
+  the ambient git config, which typically names the repository owner.
 - **Secrets on runner.** `NVIDIA_API_KEY` is the only secret injected at runtime.
   OAuth sessions for Codex and Claude are pre-configured on the runner and must never be
   read, printed, or uploaded by workflow steps.
