@@ -26,6 +26,25 @@ struct QueueState {
 struct PendingRequest {
     id: u64,
     priority: LlmPriority,
+    notify: Arc<Notify>,
+}
+
+impl QueueState {
+    /// Wake the requests that could occupy the currently free slots, best
+    /// (highest priority, oldest) first. `Notify::notify_one` stores a permit,
+    /// so a request that has not started awaiting yet still observes the wake —
+    /// unlike `notify_waiters`, which only reaches already-registered waiters.
+    fn wake_eligible(&self, max_parallel: usize) {
+        let free = max_parallel.saturating_sub(self.active);
+        if free == 0 {
+            return;
+        }
+        let mut order: Vec<&PendingRequest> = self.pending.iter().collect();
+        order.sort_by_key(|request| (std::cmp::Reverse(request.priority), request.id));
+        for request in order.into_iter().take(free) {
+            request.notify.notify_one();
+        }
+    }
 }
 
 /// Snapshot of the queue's current utilization.
@@ -53,7 +72,6 @@ impl LlmQueueInfo {
 pub struct LlmRequestQueue {
     max_parallel: usize,
     state: Mutex<QueueState>,
-    notify: Notify,
 }
 
 impl Default for LlmRequestQueue {
@@ -68,7 +86,6 @@ impl LlmRequestQueue {
         Self {
             max_parallel,
             state: Mutex::new(QueueState::default()),
-            notify: Notify::new(),
         }
     }
 
@@ -78,11 +95,16 @@ impl LlmRequestQueue {
         F: FnOnce() -> Fut,
         Fut: Future<Output = T>,
     {
+        let notify = Arc::new(Notify::new());
         let id = {
             let mut state = self.state.lock().unwrap();
             let id = state.next_id;
             state.next_id += 1;
-            state.pending.push(PendingRequest { id, priority });
+            state.pending.push(PendingRequest {
+                id,
+                priority,
+                notify: Arc::clone(&notify),
+            });
             id
         };
         let mut ticket = QueueTicket {
@@ -92,7 +114,6 @@ impl LlmRequestQueue {
         };
 
         loop {
-            let notified = self.notify.notified();
             let can_start = {
                 let mut state = self.state.lock().unwrap();
                 let selected = state
@@ -103,6 +124,10 @@ impl LlmRequestQueue {
                 if state.active < self.max_parallel && selected == Some(id) {
                     state.pending.retain(|request| request.id != id);
                     state.active += 1;
+                    // With spare capacity the next pending request may still be
+                    // asleep from an earlier lost race; hand the remaining free
+                    // slots on explicitly.
+                    state.wake_eligible(self.max_parallel);
                     true
                 } else {
                     false
@@ -112,7 +137,7 @@ impl LlmRequestQueue {
                 ticket.acquired = true;
                 break;
             }
-            notified.await;
+            notify.notified().await;
         }
 
         let _permit = ActivePermit {
@@ -158,7 +183,7 @@ impl Drop for QueueTicket {
         if !self.acquired {
             let mut state = self.queue.state.lock().unwrap();
             state.pending.retain(|request| request.id != self.id);
-            self.queue.notify.notify_waiters();
+            state.wake_eligible(self.queue.max_parallel);
         }
     }
 }
@@ -171,7 +196,7 @@ impl Drop for ActivePermit {
     fn drop(&mut self) {
         let mut state = self.queue.state.lock().unwrap();
         state.active = state.active.saturating_sub(1);
-        self.queue.notify.notify_waiters();
+        state.wake_eligible(self.queue.max_parallel);
     }
 }
 
@@ -416,6 +441,40 @@ mod tests {
         hold.notify_one();
         t1.await.unwrap();
         t2.await.unwrap();
+        assert_eq!(queue.active_count(), 0);
+        assert_eq!(queue.pending_count(), 0);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn all_requests_complete_under_contention() {
+        let queue = Arc::new(LlmRequestQueue::new(2));
+        let done = Arc::new(AtomicUsize::new(0));
+        let mut tasks = Vec::new();
+        for i in 0..64 {
+            let queue = Arc::clone(&queue);
+            let done = Arc::clone(&done);
+            let priority = if i % 3 == 0 {
+                LlmPriority::LuaAnalysis
+            } else {
+                LlmPriority::Normal
+            };
+            tasks.push(tokio::spawn(async move {
+                queue
+                    .execute(priority, move || async move {
+                        tokio::task::yield_now().await;
+                        done.fetch_add(1, Ordering::SeqCst);
+                    })
+                    .await;
+            }));
+        }
+        tokio::time::timeout(Duration::from_secs(30), async {
+            for task in tasks {
+                task.await.unwrap();
+            }
+        })
+        .await
+        .expect("queue must not strand pending requests");
+        assert_eq!(done.load(Ordering::SeqCst), 64);
         assert_eq!(queue.active_count(), 0);
         assert_eq!(queue.pending_count(), 0);
     }

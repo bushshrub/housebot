@@ -1,0 +1,20 @@
+[package]
+name = "housebot-token-monitor"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.80"
+description = "Persistent conversation archive and global token-usage leaderboard"
+license = "AGPL-3.0-or-later"
+
+[dependencies]
+anyhow = "1"
+housebot-config = { path = "../config" }
+housebot-llm = { path = "../llm" }
+serde_json = "1"
+tokio = { version = "1", features = ["sync", "time", "rt"] }
+tokio-postgres = "0.7"
+tracing = "0.1"
+uuid = { version = "1", features = ["v4"] }
+
+[dev-dependencies]
+tokio = { version = "1", features = ["full", "test-util"] }

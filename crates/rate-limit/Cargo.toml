@@ -1,0 +1,7 @@
+[package]
+name = "housebot-rate-limit"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.80"
+description = "Sliding-window per-user rate limiter"
+license = "AGPL-3.0-or-later"

@@ -881,8 +881,13 @@ dependencies = [
  "common-crawl",
  "futures-util",
  "graph-render",
+ "housebot-config",
  "housebot-llm",
+ "housebot-mcp",
+ "housebot-memory",
+ "housebot-rate-limit",
  "housebot-sandbox",
+ "housebot-token-monitor",
  "jsonwebtoken",
  "mlua",
  "regex",
@@ -901,6 +906,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "housebot-config"
+version = "0.1.0"
+
+[[package]]
 name = "housebot-llm"
 version = "0.1.0"
 dependencies = [
@@ -914,6 +923,33 @@ dependencies = [
 ]
 
 [[package]]
+name = "housebot-mcp"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "serde_json",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
+name = "housebot-memory"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "housebot-config",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "tokio-postgres",
+ "tracing",
+]
+
+[[package]]
+name = "housebot-rate-limit"
+version = "0.1.0"
+
+[[package]]
 name = "housebot-sandbox"
 version = "0.1.0"
 dependencies = [
@@ -924,6 +960,20 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "url",
+ "uuid",
+]
+
+[[package]]
+name = "housebot-token-monitor"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "housebot-config",
+ "housebot-llm",
+ "serde_json",
+ "tokio",
+ "tokio-postgres",
+ "tracing",
  "uuid",
 ]
 

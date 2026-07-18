@@ -9,10 +9,15 @@ license = "AGPL-3.0-or-later"
 [workspace]
 members = [
     "crates/common-crawl",
+    "crates/config",
     "crates/deployment-bot",
     "crates/graph-render",
     "crates/llm",
+    "crates/mcp",
+    "crates/memory",
+    "crates/rate-limit",
     "crates/sandbox",
+    "crates/token-monitor",
 ]
 resolver = "2"
 
@@ -55,8 +60,13 @@ sha2 = "0.10"
 mlua = { version = "0.12", features = ["lua54", "vendored"] }
 common-crawl = { path = "crates/common-crawl" }
 graph-render = { path = "crates/graph-render" }
+housebot-config = { path = "crates/config" }
 housebot-llm = { path = "crates/llm" }
+housebot-mcp = { path = "crates/mcp" }
+housebot-memory = { path = "crates/memory" }
+housebot-rate-limit = { path = "crates/rate-limit" }
 housebot-sandbox = { path = "crates/sandbox" }
+housebot-token-monitor = { path = "crates/token-monitor" }
 
 [dev-dependencies]
 tempfile = "3"
