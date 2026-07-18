@@ -30,6 +30,10 @@ pub struct BanProposal {
     pub created_at: u64,
     pub expires_at: u64,
     pub votes: HashMap<u64, bool>,
+    #[serde(default)]
+    pub channel_id: u64,
+    #[serde(default)]
+    pub message_id: u64,
 }
 
 impl BanProposal {
@@ -153,6 +157,8 @@ impl ToolPermissions {
             created_at: now,
             expires_at: now.saturating_add(PROPOSAL_TTL_SECS),
             votes,
+            channel_id: 0,
+            message_id: 0,
         };
         state.proposals.push(proposal.clone());
         self.save(&state).await.map_err(|error| error.to_string())?;
@@ -217,6 +223,70 @@ impl ToolPermissions {
         };
         self.save(&state).await.map_err(|error| error.to_string())?;
         Ok(result)
+    }
+
+    /// Attach a Discord channel + message ID to an existing proposal (for emoji voting).
+    pub async fn set_proposal_message(
+        &self,
+        guild_id: u64,
+        proposal_id: &str,
+        channel_id: u64,
+        message_id: u64,
+    ) -> Result<(), String> {
+        let _guard = self.lock.lock().await;
+        let mut state = self.load().await.map_err(|e| e.to_string())?;
+        let Some(proposal) = state
+            .proposals
+            .iter_mut()
+            .find(|p| p.guild_id == guild_id && p.id == proposal_id)
+        else {
+            return Err("Proposal not found.".into());
+        };
+        proposal.channel_id = channel_id;
+        proposal.message_id = message_id;
+        self.save(&state).await.map_err(|e| e.to_string())
+    }
+
+    /// Remove a proposal (used for rollback on publication failure).
+    pub async fn remove_proposal(&self, guild_id: u64, proposal_id: &str) -> std::io::Result<()> {
+        let _guard = self.lock.lock().await;
+        let mut state = self.load().await?;
+        state
+            .proposals
+            .retain(|p| p.guild_id != guild_id || p.id != proposal_id);
+        self.save(&state).await
+    }
+
+    /// Look up a proposal by its Discord message ID.
+    pub async fn find_by_message(
+        &self,
+        message_id: u64,
+    ) -> std::io::Result<Option<(String, BanProposal)>> {
+        let _guard = self.lock.lock().await;
+        let state = self.load().await?;
+        for proposal in &state.proposals {
+            if proposal.message_id == message_id {
+                return Ok(Some((proposal.id.clone(), proposal.clone())));
+            }
+        }
+        Ok(None)
+    }
+
+    /// Look up a proposal by its ID prefix (for slash-command votes that need
+    /// channel/message IDs before calling vote).
+    pub async fn find_proposal_by_prefix(
+        &self,
+        guild_id: u64,
+        prefix: &str,
+    ) -> std::io::Result<Option<BanProposal>> {
+        let _guard = self.lock.lock().await;
+        let state = self.load().await?;
+        let now = unix_now();
+        Ok(state
+            .proposals
+            .iter()
+            .find(|p| p.guild_id == guild_id && p.id.starts_with(prefix) && p.expires_at > now)
+            .cloned())
     }
 
     pub async fn status(&self, guild_id: u64) -> std::io::Result<GuildPermissionStatus> {

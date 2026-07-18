@@ -9,11 +9,12 @@ use std::time::{Duration, Instant};
 use async_trait::async_trait;
 use regex::Regex;
 use serenity::all::{
-    ButtonStyle, Command, CommandDataOptionValue, CommandOptionType, ComponentInteractionDataKind,
-    Context, CreateActionRow, CreateAllowedMentions, CreateAttachment, CreateButton, CreateCommand,
-    CreateCommandOption, CreateEmbed, CreateInteractionResponse, CreateInteractionResponseMessage,
-    CreateSelectMenu, CreateSelectMenuKind, CreateSelectMenuOption, EditInteractionResponse,
-    EditMessage, EventHandler, GatewayIntents, GuildId, Interaction, Message, Ready, UserId,
+    ButtonStyle, ChannelId, Command, CommandDataOptionValue, CommandOptionType,
+    ComponentInteractionDataKind, Context, CreateActionRow, CreateAllowedMentions,
+    CreateAttachment, CreateAutocompleteResponse, CreateButton, CreateCommand, CreateCommandOption,
+    CreateEmbed, CreateInteractionResponse, CreateInteractionResponseMessage, CreateSelectMenu,
+    CreateSelectMenuKind, CreateSelectMenuOption, EditInteractionResponse, EditMessage,
+    EventHandler, GatewayIntents, GuildId, Interaction, Message, Ready, UserId,
 };
 use serenity::builder::CreateMessage;
 use serenity::Client;
