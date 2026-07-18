@@ -3,6 +3,8 @@
 use std::sync::LazyLock;
 use std::time::Duration;
 
+use std::net::IpAddr;
+
 use regex::Regex;
 use reqwest::Url;
 
@@ -23,8 +25,11 @@ pub(crate) async fn extract_media(msg: &Message) -> Vec<MediaData> {
         let Some(media_type) = media_type(&att.filename) else {
             continue;
         };
-        if let Ok(resp) = reqwest::get(&att.url).await {
+        if let Ok(resp) = MEDIA_CLIENT.get(&att.url).send().await {
             if let Ok(bytes) = resp.bytes().await {
+                if bytes.len() > MEDIA_MAX_SIZE {
+                    continue;
+                }
                 if media_type == "image/gif" {
                     media.extend(convert_gif_to_video(&bytes).await);
                 } else {
@@ -76,6 +81,17 @@ pub(crate) async fn extract_gif_from_text(text: &str) -> Vec<MediaData> {
     media
 }
 
+const MEDIA_FETCH_TIMEOUT: Duration = Duration::from_secs(30);
+const MEDIA_MAX_SIZE: usize = 25_000_000;
+
+static MEDIA_CLIENT: LazyLock<reqwest::Client> = LazyLock::new(|| {
+    reqwest::Client::builder()
+        .timeout(MEDIA_FETCH_TIMEOUT)
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .expect("static reqwest client")
+});
+
 /// Basic URL safety check: must be http/https, not localhost, not a private IP.
 fn is_safe_url(raw: &str) -> bool {
     let Ok(url) = Url::parse(raw) else {
@@ -84,14 +100,33 @@ fn is_safe_url(raw: &str) -> bool {
     if !matches!(url.scheme(), "http" | "https") {
         return false;
     }
-    match url.host_str() {
+    let host = match url.host_str() {
         None => return false,
-        Some(h) => {
-            if h.eq_ignore_ascii_case("localhost")
-                || h.ends_with(".localhost")
-                || h.ends_with(".local")
-            {
-                return false;
+        Some(h) => h,
+    };
+    if host.eq_ignore_ascii_case("localhost")
+        || host.ends_with(".localhost")
+        || host.ends_with(".local")
+    {
+        return false;
+    }
+    let host_trimmed = host.trim_start_matches('[').trim_end_matches(']');
+    if let Ok(ip) = host_trimmed.parse::<IpAddr>() {
+        match ip {
+            IpAddr::V4(v4) => {
+                if v4.is_loopback()
+                    || v4.is_private()
+                    || v4.is_link_local()
+                    || v4.is_unspecified()
+                    || v4.is_multicast()
+                {
+                    return false;
+                }
+            }
+            IpAddr::V6(v6) => {
+                if v6.is_loopback() || v6.is_unspecified() || v6.is_multicast() {
+                    return false;
+                }
             }
         }
     }
@@ -120,7 +155,7 @@ pub(crate) async fn convert_gif_to_video(bytes: &[u8]) -> Vec<MediaData> {
                 "-i",
                 &input.to_string_lossy(),
                 "-vf",
-                "scale=trunc(iw/2)*2:trunc(ih/2)*2",
+                "scale=max(2\\,trunc(iw/2)*2):max(2\\,trunc(ih/2)*2)",
                 "-c:v",
                 "libx264",
                 "-pix_fmt",
@@ -167,12 +202,15 @@ pub(crate) async fn convert_gif_to_video(bytes: &[u8]) -> Vec<MediaData> {
 pub(crate) const MAX_PDF_PAGES: usize = 10;
 
 pub(crate) async fn extract_pdf_pages(url: &str, filename: &str) -> Vec<MediaData> {
-    let Ok(response) = reqwest::get(url).await else {
+    let Ok(response) = MEDIA_CLIENT.get(url).send().await else {
         return Vec::new();
     };
     let Ok(bytes) = response.bytes().await else {
         return Vec::new();
     };
+    if bytes.len() > MEDIA_MAX_SIZE {
+        return Vec::new();
+    }
 
     let directory = std::env::temp_dir().join(format!("housebot-pdf-{}", Uuid::new_v4()));
     let input = directory.join("input.pdf");
@@ -473,5 +511,27 @@ mod media_tests {
             .unwrap()
             .block_on(convert_gif_to_video(b""));
         assert!(result.is_empty());
+    }
+
+    #[test]
+    fn is_safe_url_rejects_private_ipv4() {
+        assert!(!is_safe_url("http://10.0.0.1/image.gif"));
+        assert!(!is_safe_url("http://172.16.0.1/image.gif"));
+        assert!(!is_safe_url("http://192.168.1.1/image.gif"));
+        assert!(!is_safe_url("http://127.0.0.1/image.gif"));
+        assert!(!is_safe_url("http://169.254.1.1/image.gif"));
+        assert!(!is_safe_url("http://0.0.0.0/image.gif"));
+    }
+
+    #[test]
+    fn is_safe_url_rejects_private_ipv6() {
+        assert!(!is_safe_url("http://[::1]/image.gif"));
+        assert!(!is_safe_url("http://[::]/image.gif"));
+    }
+
+    #[test]
+    fn is_safe_url_allows_public_ipv4() {
+        assert!(is_safe_url("http://93.184.216.34/image.gif"));
+        assert!(is_safe_url("http://8.8.8.8/image.gif"));
     }
 }
