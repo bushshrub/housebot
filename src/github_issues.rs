@@ -663,6 +663,392 @@ impl GitHubIssueReporter {
         );
         self.create_issue(&title, &body, &["bug"]).await
     }
+
+    /// Close an issue by number. Returns `true` on success.
+    pub async fn close_issue(&self, issue_number: u64) -> bool {
+        if !self.is_configured() {
+            return false;
+        }
+        match self.try_close_issue(issue_number).await {
+            Ok(()) => true,
+            Err(e) => {
+                tracing::error!(issue_number, "Failed to close GitHub issue: {e}");
+                false
+            }
+        }
+    }
+
+    async fn try_close_issue(&self, issue_number: u64) -> anyhow::Result<()> {
+        let token = self.token().await?;
+        let url = format!(
+            "https://api.github.com/repos/{}/issues/{issue_number}",
+            self.repo
+        );
+        self.http
+            .patch(&url)
+            .header("Authorization", format!("Bearer {token}"))
+            .header("Accept", "application/vnd.github+json")
+            .header("X-GitHub-Api-Version", "2022-11-28")
+            .header("User-Agent", "house-chatbot")
+            .json(&json!({"state": "closed"}))
+            .send()
+            .await?
+            .error_for_status()?;
+        Ok(())
+    }
+
+    /// Fetch all pages of comments for an issue by following Link headers.
+    async fn fetch_all_comments(
+        &self,
+        comments_url: &str,
+        token: &str,
+    ) -> anyhow::Result<Vec<serde_json::Value>> {
+        let mut all_comments = Vec::new();
+        let mut url = comments_url.to_string();
+        loop {
+            let resp = self
+                .http
+                .get(&url)
+                .header("Authorization", format!("Bearer {token}"))
+                .header("Accept", "application/vnd.github+json")
+                .header("X-GitHub-Api-Version", "2022-11-28")
+                .header("User-Agent", "house-chatbot")
+                .send()
+                .await?
+                .error_for_status()?;
+            let next = next_page_url(&resp);
+            let page: Vec<serde_json::Value> = resp.json().await?;
+            all_comments.extend(page);
+            match next {
+                Some(u) => url = u,
+                None => break,
+            }
+        }
+        Ok(all_comments)
+    }
+
+    /// Fetch full issue detail including body, labels, and comments.
+    pub async fn get_issue_detail(&self, issue_number: u64) -> Option<String> {
+        if !self.is_configured() {
+            return None;
+        }
+        match self.try_get_issue_detail(issue_number).await {
+            Ok(info) => Some(info),
+            Err(e) => {
+                tracing::error!(issue_number, "Failed to fetch GitHub issue detail: {e}");
+                Some(format!("Error: {e}"))
+            }
+        }
+    }
+
+    async fn try_get_issue_detail(&self, issue_number: u64) -> anyhow::Result<String> {
+        let token = self.token().await?;
+        let url = format!(
+            "https://api.github.com/repos/{}/issues/{issue_number}",
+            self.repo
+        );
+        let issue: serde_json::Value = self
+            .http
+            .get(&url)
+            .header("Authorization", format!("Bearer {token}"))
+            .header("Accept", "application/vnd.github+json")
+            .header("X-GitHub-Api-Version", "2022-11-28")
+            .header("User-Agent", "house-chatbot")
+            .send()
+            .await?
+            .error_for_status()?
+            .json()
+            .await?;
+
+        let number = issue["number"].as_u64().unwrap_or(0);
+        let title = issue["title"].as_str().unwrap_or("(untitled)");
+        let state = issue["state"].as_str().unwrap_or("unknown");
+        let body = issue["body"].as_str().unwrap_or("*(no description)*");
+        let labels: Vec<String> = issue["labels"]
+            .as_array()
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|l| l["name"].as_str().map(|n| n.to_string()))
+                    .collect()
+            })
+            .unwrap_or_default();
+        let label_str = if labels.is_empty() {
+            String::new()
+        } else {
+            format!("\nLabels: {}", labels.join(", "))
+        };
+
+        // Fetch comments (all pages via Link header pagination)
+        let comments = self
+            .fetch_all_comments(&format!("{url}/comments?per_page=100"), &token)
+            .await?;
+
+        let comment_lines: Vec<String> = comments
+            .iter()
+            .map(|c| {
+                let author = c["user"]["login"].as_str().unwrap_or("unknown");
+                let cbody = c["body"].as_str().unwrap_or("");
+                format!("> **{author}:**\n{cbody}")
+            })
+            .collect();
+        let comments_section = if comment_lines.is_empty() {
+            String::new()
+        } else {
+            format!(
+                "\n\n**Comments ({}):**\n{}",
+                comment_lines.len(),
+                comment_lines.join("\n\n")
+            )
+        };
+
+        Ok(format!(
+            "#{number} **{title}** ({state}){label_str}\n\n{body}{comments_section}",
+        ))
+    }
+
+    /// Add labels to an issue. Returns `true` on success.
+    pub async fn add_labels(&self, issue_number: u64, labels: &[&str]) -> bool {
+        if !self.is_configured() {
+            return false;
+        }
+        match self.try_add_labels(issue_number, labels).await {
+            Ok(()) => true,
+            Err(e) => {
+                tracing::error!(issue_number, "Failed to add labels to GitHub issue: {e}");
+                false
+            }
+        }
+    }
+
+    async fn try_add_labels(&self, issue_number: u64, labels: &[&str]) -> anyhow::Result<()> {
+        let token = self.token().await?;
+        let url = format!(
+            "https://api.github.com/repos/{}/issues/{issue_number}/labels",
+            self.repo
+        );
+        self.http
+            .post(&url)
+            .header("Authorization", format!("Bearer {token}"))
+            .header("Accept", "application/vnd.github+json")
+            .header("X-GitHub-Api-Version", "2022-11-28")
+            .header("User-Agent", "house-chatbot")
+            .json(&json!({ "labels": labels }))
+            .send()
+            .await?
+            .error_for_status()?;
+        Ok(())
+    }
+
+    /// Remove labels from an issue. Returns `true` on success.
+    pub async fn remove_labels(&self, issue_number: u64, labels: &[&str]) -> bool {
+        if !self.is_configured() {
+            return false;
+        }
+        match self.try_remove_labels(issue_number, labels).await {
+            Ok(()) => true,
+            Err(e) => {
+                tracing::error!(
+                    issue_number,
+                    "Failed to remove labels from GitHub issue: {e}"
+                );
+                false
+            }
+        }
+    }
+
+    async fn try_remove_labels(&self, issue_number: u64, labels: &[&str]) -> anyhow::Result<()> {
+        let token = self.token().await?;
+        let mut errors = Vec::new();
+        for label in labels {
+            let url = format!(
+                "https://api.github.com/repos/{}/issues/{issue_number}/labels/{}",
+                self.repo,
+                urlencoding(label)
+            );
+            match self
+                .http
+                .delete(&url)
+                .header("Authorization", format!("Bearer {token}"))
+                .header("Accept", "application/vnd.github+json")
+                .header("X-GitHub-Api-Version", "2022-11-28")
+                .header("User-Agent", "house-chatbot")
+                .send()
+                .await
+            {
+                Ok(resp) => {
+                    if let Err(e) = resp.error_for_status() {
+                        errors.push(format!("'{label}': {e}"));
+                    }
+                }
+                Err(e) => {
+                    errors.push(format!("'{label}': {e}"));
+                }
+            }
+        }
+        if errors.is_empty() {
+            Ok(())
+        } else if errors.len() < labels.len() {
+            tracing::warn!(
+                issue_number,
+                "Partial label removal ({} of {} failed): {}",
+                errors.len(),
+                labels.len(),
+                errors.join("; ")
+            );
+            Ok(())
+        } else {
+            Err(anyhow::anyhow!(
+                "Failed to remove all requested labels: {}",
+                errors.join("; ")
+            ))
+        }
+    }
+
+    /// Prune issues matching criteria: optionally close stale issues or bulk-label them.
+    /// Returns a human-readable summary of what was done.
+    pub async fn prune_issues(
+        &self,
+        state: &str,
+        labels: &str,
+        action: &str,
+        action_value: &str,
+    ) -> String {
+        if !self.is_configured() {
+            return "Error: GitHub integration is not configured.".to_string();
+        }
+        match self
+            .try_prune_issues(state, labels, action, action_value)
+            .await
+        {
+            Ok(summary) => summary,
+            Err(e) => format!("Error: {e}"),
+        }
+    }
+
+    async fn try_prune_issues(
+        &self,
+        state: &str,
+        labels: &str,
+        action: &str,
+        action_value: &str,
+    ) -> anyhow::Result<String> {
+        let token = self.token().await?;
+        let state_e = urlencoding(state);
+        let mut path = format!(
+            "https://api.github.com/repos/{}/issues?state={state_e}&per_page=100",
+            self.repo
+        );
+        if !labels.is_empty() {
+            path.push_str(&format!("&labels={}", urlencoding(labels)));
+        }
+
+        // Fetch all pages of issues
+        let mut all_issues: Vec<serde_json::Value> = Vec::new();
+        let mut url = path;
+        loop {
+            let resp = self
+                .http
+                .get(&url)
+                .header("Authorization", format!("Bearer {token}"))
+                .header("Accept", "application/vnd.github+json")
+                .header("X-GitHub-Api-Version", "2022-11-28")
+                .header("User-Agent", "house-chatbot")
+                .send()
+                .await?
+                .error_for_status()?;
+            let next = next_page_url(&resp);
+            let page: Vec<serde_json::Value> = resp.json().await?;
+            // Filter out PRs
+            for issue in page {
+                if issue.get("pull_request").is_none() {
+                    all_issues.push(issue);
+                }
+            }
+            match next {
+                Some(u) => url = u,
+                None => break,
+            }
+        }
+
+        if all_issues.is_empty() {
+            return Ok("No issues found matching the criteria.".to_string());
+        }
+
+        let numbers: Vec<u64> = all_issues
+            .iter()
+            .filter_map(|i| i["number"].as_u64())
+            .collect();
+
+        let mut results: Vec<String> = Vec::new();
+        let mut successes = 0u64;
+        match action {
+            "close" => {
+                for &num in &numbers {
+                    if self.close_issue(num).await {
+                        successes += 1;
+                        results.push(format!("#{num} closed"));
+                    } else {
+                        results.push(format!("#{num} failed to close"));
+                    }
+                }
+            }
+            "label" => {
+                let new_labels: Vec<&str> = action_value
+                    .split(',')
+                    .map(|s| s.trim())
+                    .filter(|s| !s.is_empty())
+                    .collect();
+                if new_labels.is_empty() {
+                    return Err(anyhow::anyhow!(
+                        "No valid labels provided for 'label' action."
+                    ));
+                }
+                for &num in &numbers {
+                    if self.add_labels(num, &new_labels).await {
+                        successes += 1;
+                        results.push(format!("#{num} labelled with [{}]", new_labels.join(", ")));
+                    } else {
+                        results.push(format!("#{num} failed to label"));
+                    }
+                }
+            }
+            "unlabel" => {
+                let remove_labels: Vec<&str> = action_value
+                    .split(',')
+                    .map(|s| s.trim())
+                    .filter(|s| !s.is_empty())
+                    .collect();
+                if remove_labels.is_empty() {
+                    return Err(anyhow::anyhow!(
+                        "No valid labels provided for 'unlabel' action."
+                    ));
+                }
+                for &num in &numbers {
+                    if self.remove_labels(num, &remove_labels).await {
+                        successes += 1;
+                        results.push(format!("#{num} unlabelled [{}]", remove_labels.join(", ")));
+                    } else {
+                        results.push(format!("#{num} failed to unlabel"));
+                    }
+                }
+            }
+            other => return Err(anyhow::anyhow!("Unknown prune action: {other}")),
+        }
+
+        if successes > 0 {
+            Ok(format!(
+                "Pruned {} of {} issue(s):\n{}",
+                successes,
+                numbers.len(),
+                results.join("\n")
+            ))
+        } else {
+            Ok(format!(
+                "No issues were successfully pruned.\n{}",
+                results.join("\n")
+            ))
+        }
+    }
 }
 
 /// Format a GitHub issues API response as a compact text list.
@@ -728,6 +1114,20 @@ fn urlencoding(s: &str) -> String {
         }
     }
     result
+}
+
+/// Extract the `rel="next"` page URL from a GitHub API response's Link header.
+fn next_page_url(resp: &reqwest::Response) -> Option<String> {
+    let link = resp.headers().get("link")?.to_str().ok()?;
+    for part in link.split(',') {
+        let part = part.trim();
+        if part.contains("rel=\"next\"") {
+            let start = part.find('<')?;
+            let end = part.find('>')?;
+            return Some(part[start + 1..end].to_string());
+        }
+    }
+    None
 }
 
 #[cfg(test)]
@@ -862,6 +1262,62 @@ mod tests {
         assert_eq!(urlencoding("hello world"), "hello%20world");
         assert_eq!(urlencoding("a/b"), "a%2Fb");
         assert_eq!(urlencoding("repo:owner/repo"), "repo%3Aowner%2Frepo");
+    }
+
+    // ── New lifecycle method tests ─────────────────────────────────────────
+
+    #[tokio::test]
+    async fn close_issue_returns_false_when_unconfigured() {
+        let r =
+            GitHubIssueReporter::new(String::new(), String::new(), String::new(), String::new());
+        assert!(!r.close_issue(42).await);
+    }
+
+    #[tokio::test]
+    async fn get_issue_detail_returns_none_when_unconfigured() {
+        let r =
+            GitHubIssueReporter::new(String::new(), String::new(), String::new(), String::new());
+        assert!(r.get_issue_detail(42).await.is_none());
+    }
+
+    #[tokio::test]
+    async fn add_labels_returns_false_when_unconfigured() {
+        let r =
+            GitHubIssueReporter::new(String::new(), String::new(), String::new(), String::new());
+        assert!(!r.add_labels(42, &["bug"]).await);
+    }
+
+    #[tokio::test]
+    async fn remove_labels_returns_false_when_unconfigured() {
+        let r =
+            GitHubIssueReporter::new(String::new(), String::new(), String::new(), String::new());
+        assert!(!r.remove_labels(42, &["bug"]).await);
+    }
+
+    #[tokio::test]
+    async fn prune_issues_returns_not_configured_when_unconfigured() {
+        let r =
+            GitHubIssueReporter::new(String::new(), String::new(), String::new(), String::new());
+        let result = r.prune_issues("open", "", "close", "").await;
+        assert!(result.contains("not configured"));
+    }
+
+    #[test]
+    fn format_issue_list_parses_issue_numbers_for_prune() {
+        let body = r#"[
+            {"number": 10, "title": "Bug fix", "state": "open", "labels": [{"name": "bug"}]},
+            {"number": 20, "title": "Feature", "state": "open", "labels": [{"name": "enhancement"}]},
+            {"number": 30, "title": "PR", "state": "open", "labels": [], "pull_request": {"url": "..."}}
+        ]"#;
+        let result = format_issue_list(body);
+        // Should filter out PRs
+        assert!(result.contains("#10"));
+        assert!(result.contains("#20"));
+        assert!(!result.contains("#30"));
+        // Each line starts with #
+        for line in result.lines() {
+            assert!(line.starts_with('#'), "unexpected line: {line}");
+        }
     }
 
     // ── Integration tests (require GITHUB_TOKEN env var) ────────────────────

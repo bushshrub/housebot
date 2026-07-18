@@ -383,7 +383,7 @@ async fn context_overflow_triggers_new_session() {
     client.push_text_with_usage(
         "ok",
         TokenUsage {
-            prompt_tokens: 40,
+            prompt_tokens: 50,
             completion_tokens: 10,
             ..Default::default()
         },
@@ -455,10 +455,10 @@ async fn compaction_records_summary_token_usage() {
     agent.compact_session("u6", true).await;
 
     let info = agent.session_info("u6").await;
-    assert_eq!(info.context_tokens, 150);
-    assert_eq!(info.requests, 1);
-    assert_eq!(info.input_tokens, 100);
-    assert_eq!(info.output_tokens, 50);
+    assert_eq!(info.context_tokens, 0);
+    assert_eq!(info.requests, 0);
+    assert_eq!(info.input_tokens, 0);
+    assert_eq!(info.output_tokens, 0);
 }
 
 #[tokio::test]

@@ -101,7 +101,7 @@ impl AgentHooks for ResponseProgressHooks {
             if !calls.is_empty() {
                 calls.push('\n');
             }
-            calls.push_str(tool_status(tool));
+            calls.push_str(&tool_status(tool));
             while calls.chars().count() > DISCORD_CONTENT_LIMIT {
                 if let Some(pos) = calls.find('\n') {
                     calls.drain(..pos + 1);

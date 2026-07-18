@@ -11,6 +11,7 @@ pub fn features_text() -> &'static str {
 **Slash commands**
 `/help` — show this reference
 `/session status|new|compact` — inspect the current session, start fresh, or summarise it into memory before starting fresh
+
 `/token_leaderboard [timeframe] [metric]` — rank token usage daily, weekly, monthly, or all-time by total tokens or cache efficiency; also shows your rank
 `/tool_ban propose|vote|status` — vote on server-specific user restrictions for individual tools
 `/status` — show your current settings at a glance (effort, follow-up, personality)
@@ -44,7 +45,8 @@ pub fn features_text() -> &'static str {
 - URL summarisation and translation
 - Timed reminders delivered by DM
 - Create and edit your own GitHub feature requests and bug reports
-- Custom skills (user-defined prompt templates) via `/skill`
+- Native GitHub issue management via LLM tool (`github_api`): list, search, view detail, close, label, prune issues
+- Custom skills (user-defined prompt templates) via `!skill`
 - Personal grocery list management (`!grocery`) with persistent storage across sessions
 - Personal notes and persistent memory across sessions
 - Persistent conversation archives and global token-usage leaderboards

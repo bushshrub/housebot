@@ -1,6 +1,19 @@
 //! Attachment/media extraction and reference-message context.
 
+use std::sync::LazyLock;
+use std::time::Duration;
+
+use std::net::IpAddr;
+
+use regex::Regex;
+use reqwest::Url;
+
 use super::*;
+
+const GIF_FETCH_TIMEOUT: Duration = Duration::from_secs(15);
+const GIF_MAX_SIZE: usize = 10_000_000;
+
+static GIF_URL_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"https?://[^\s<>]+").unwrap());
 
 pub(crate) async fn extract_media(msg: &Message) -> Vec<MediaData> {
     let mut media = Vec::new();
@@ -12,28 +25,192 @@ pub(crate) async fn extract_media(msg: &Message) -> Vec<MediaData> {
         let Some(media_type) = media_type(&att.filename) else {
             continue;
         };
-        if let Ok(resp) = reqwest::get(&att.url).await {
+        if let Ok(resp) = MEDIA_CLIENT.get(&att.url).send().await {
             if let Ok(bytes) = resp.bytes().await {
-                use base64::Engine;
-                media.push(MediaData {
-                    media_type: media_type.to_string(),
-                    data: base64::engine::general_purpose::STANDARD.encode(&bytes),
-                });
+                if bytes.len() > MEDIA_MAX_SIZE {
+                    continue;
+                }
+                if media_type == "image/gif" {
+                    media.extend(convert_gif_to_video(&bytes).await);
+                } else {
+                    use base64::Engine;
+                    media.push(MediaData {
+                        media_type: media_type.to_string(),
+                        data: base64::engine::general_purpose::STANDARD.encode(&bytes),
+                    });
+                }
             }
         }
     }
     media
 }
 
+/// Download GIF from links found in message text and convert to video.
+pub(crate) async fn extract_gif_from_text(text: &str) -> Vec<MediaData> {
+    let urls: Vec<String> = GIF_URL_RE
+        .find_iter(text)
+        .map(|m| {
+            m.as_str()
+                .trim_end_matches(['.', ',', '!', '?', ';', ':', ')', ']', '>', '&'])
+                .to_string()
+        })
+        .filter(|url| {
+            let lower = url.to_lowercase();
+            lower.ends_with(".gif") || lower.contains(".gif?")
+        })
+        .filter(|url| is_safe_url(url))
+        .collect();
+    if urls.is_empty() {
+        return Vec::new();
+    }
+    let client = reqwest::Client::builder()
+        .timeout(GIF_FETCH_TIMEOUT)
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .unwrap_or_default();
+    let mut media = Vec::new();
+    for url in urls {
+        if let Ok(resp) = client.get(&url).send().await {
+            if let Ok(bytes) = resp.bytes().await {
+                if bytes.len() <= GIF_MAX_SIZE {
+                    media.extend(convert_gif_to_video(&bytes).await);
+                }
+            }
+        }
+    }
+    media
+}
+
+const MEDIA_FETCH_TIMEOUT: Duration = Duration::from_secs(30);
+const MEDIA_MAX_SIZE: usize = 25_000_000;
+
+static MEDIA_CLIENT: LazyLock<reqwest::Client> = LazyLock::new(|| {
+    reqwest::Client::builder()
+        .timeout(MEDIA_FETCH_TIMEOUT)
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .expect("static reqwest client")
+});
+
+/// Basic URL safety check: must be http/https, not localhost, not a private IP.
+fn is_safe_url(raw: &str) -> bool {
+    let Ok(url) = Url::parse(raw) else {
+        return false;
+    };
+    if !matches!(url.scheme(), "http" | "https") {
+        return false;
+    }
+    let host = match url.host_str() {
+        None => return false,
+        Some(h) => h,
+    };
+    if host.eq_ignore_ascii_case("localhost")
+        || host.ends_with(".localhost")
+        || host.ends_with(".local")
+    {
+        return false;
+    }
+    let host_trimmed = host.trim_start_matches('[').trim_end_matches(']');
+    if let Ok(ip) = host_trimmed.parse::<IpAddr>() {
+        match ip {
+            IpAddr::V4(v4) => {
+                if v4.is_loopback()
+                    || v4.is_private()
+                    || v4.is_link_local()
+                    || v4.is_unspecified()
+                    || v4.is_multicast()
+                {
+                    return false;
+                }
+            }
+            IpAddr::V6(v6) => {
+                if v6.is_loopback() || v6.is_unspecified() || v6.is_multicast() {
+                    return false;
+                }
+            }
+        }
+    }
+    true
+}
+
+/// Convert an animated GIF to an MP4 video using ffmpeg.
+pub(crate) async fn convert_gif_to_video(bytes: &[u8]) -> Vec<MediaData> {
+    let owned = bytes.to_vec();
+    tokio::task::spawn_blocking(move || {
+        let dir = std::env::temp_dir().join(format!("housebot-gif-{}", uuid::Uuid::new_v4()));
+        let input = dir.join("input.gif");
+        let output = dir.join("output.mp4");
+
+        if std::fs::create_dir_all(&dir).is_err() {
+            return Vec::new();
+        }
+        if std::fs::write(&input, &owned).is_err() {
+            let _ = std::fs::remove_dir_all(&dir);
+            return Vec::new();
+        }
+
+        let result = match std::process::Command::new("ffmpeg")
+            .args([
+                "-y",
+                "-i",
+                &input.to_string_lossy(),
+                "-vf",
+                "scale=max(2\\,trunc(iw/2)*2):max(2\\,trunc(ih/2)*2)",
+                "-c:v",
+                "libx264",
+                "-pix_fmt",
+                "yuv420p",
+                "-movflags",
+                "+faststart",
+                &output.to_string_lossy(),
+            ])
+            .output()
+        {
+            Ok(out) if out.status.success() => match std::fs::read(&output) {
+                Ok(video_bytes) => {
+                    use base64::Engine;
+                    vec![MediaData {
+                        media_type: "video/mp4".to_string(),
+                        data: base64::engine::general_purpose::STANDARD.encode(&video_bytes),
+                    }]
+                }
+                Err(e) => {
+                    tracing::warn!(%e, "Failed to read converted GIF video");
+                    Vec::new()
+                }
+            },
+            Ok(out) => {
+                tracing::warn!(
+                    stderr = %String::from_utf8_lossy(&out.stderr),
+                    "ffmpeg GIF conversion failed"
+                );
+                Vec::new()
+            }
+            Err(e) => {
+                tracing::warn!(%e, "Failed to execute ffmpeg for GIF conversion");
+                Vec::new()
+            }
+        };
+
+        let _ = std::fs::remove_dir_all(&dir);
+        result
+    })
+    .await
+    .unwrap_or_default()
+}
+
 pub(crate) const MAX_PDF_PAGES: usize = 10;
 
 pub(crate) async fn extract_pdf_pages(url: &str, filename: &str) -> Vec<MediaData> {
-    let Ok(response) = reqwest::get(url).await else {
+    let Ok(response) = MEDIA_CLIENT.get(url).send().await else {
         return Vec::new();
     };
     let Ok(bytes) = response.bytes().await else {
         return Vec::new();
     };
+    if bytes.len() > MEDIA_MAX_SIZE {
+        return Vec::new();
+    }
 
     let directory = std::env::temp_dir().join(format!("housebot-pdf-{}", Uuid::new_v4()));
     let input = directory.join("input.pdf");
@@ -185,7 +362,10 @@ pub(crate) fn unix_now() -> f64 {
 
 #[cfg(test)]
 mod media_tests {
-    use super::{attachment_context, is_pdf, media_type, pdf_render_arguments};
+    use super::{
+        attachment_context, convert_gif_to_video, extract_gif_from_text, is_pdf, is_safe_url,
+        media_type, pdf_render_arguments,
+    };
 
     #[test]
     fn recognizes_supported_media_extensions() {
@@ -225,5 +405,133 @@ mod media_tests {
             pdf_render_arguments(),
             ["-png", "-r", "144", "-f", "1", "-l", "10"]
         );
+    }
+
+    #[tokio::test]
+    async fn extract_gif_from_text_finds_gif_urls() {
+        let media = extract_gif_from_text("check this https://example.com/image.gif").await;
+        assert!(media.is_empty());
+    }
+
+    #[tokio::test]
+    async fn extract_gif_from_text_finds_gif_urls_with_query_params() {
+        let media = extract_gif_from_text("https://example.com/image.gif?width=400").await;
+        assert!(media.is_empty());
+    }
+
+    #[tokio::test]
+    async fn extract_gif_from_text_skips_non_gif_urls() {
+        let media = extract_gif_from_text("check this https://example.com/image.png").await;
+        assert!(media.is_empty());
+    }
+
+    #[tokio::test]
+    async fn extract_gif_from_text_handles_empty_text() {
+        let media = extract_gif_from_text("").await;
+        assert!(media.is_empty());
+    }
+
+    #[tokio::test]
+    async fn extract_gif_from_text_handles_no_urls() {
+        let media = extract_gif_from_text("just some text without urls").await;
+        assert!(media.is_empty());
+    }
+
+    #[tokio::test]
+    async fn extract_gif_from_text_trims_trailing_punctuation() {
+        let media = extract_gif_from_text("https://example.com/image.gif.").await;
+        assert!(media.is_empty());
+    }
+
+    #[tokio::test]
+    async fn extract_gif_from_text_multiple_urls() {
+        let media =
+            extract_gif_from_text("a https://example.com/a.gif b https://example.com/b.gif?x=1")
+                .await;
+        assert!(media.is_empty());
+    }
+
+    #[tokio::test]
+    async fn extract_gif_from_text_blocks_localhost() {
+        let media = extract_gif_from_text("http://localhost:8080/image.gif").await;
+        assert!(media.is_empty());
+    }
+
+    #[tokio::test]
+    async fn extract_gif_from_text_blocks_private_ip() {
+        let media = extract_gif_from_text("http://192.168.1.1/image.gif").await;
+        assert!(media.is_empty());
+    }
+
+    #[test]
+    fn is_safe_url_allows_public_urls() {
+        assert!(is_safe_url("https://example.com/image.gif"));
+        assert!(is_safe_url("http://cdn.example.com/foo.gif"));
+        assert!(is_safe_url(
+            "https://media.giphy.com/media/abc123/giphy.gif"
+        ));
+    }
+
+    #[test]
+    fn is_safe_url_rejects_localhost() {
+        assert!(!is_safe_url("http://localhost/image.gif"));
+        assert!(!is_safe_url("http://localhost:8080/image.gif"));
+        assert!(!is_safe_url("http://foo.localhost/image.gif"));
+    }
+
+    #[test]
+    fn is_safe_url_rejects_local_domain_hostnames() {
+        assert!(!is_safe_url("https://foo.local/image.gif"));
+    }
+
+    #[test]
+    fn is_safe_url_rejects_non_http_schemes() {
+        assert!(!is_safe_url("ftp://example.com/image.gif"));
+        assert!(!is_safe_url("file:///tmp/image.gif"));
+        assert!(!is_safe_url("data:image/gif;base64,R0lGOD"));
+    }
+
+    #[test]
+    fn is_safe_url_rejects_malformed_urls() {
+        assert!(!is_safe_url(""));
+        assert!(!is_safe_url("not a url"));
+    }
+
+    #[test]
+    fn convert_gif_to_video_handles_invalid_input() {
+        let result = tokio::runtime::Runtime::new()
+            .unwrap()
+            .block_on(convert_gif_to_video(b"not a real gif"));
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn convert_gif_to_video_handles_empty_input() {
+        let result = tokio::runtime::Runtime::new()
+            .unwrap()
+            .block_on(convert_gif_to_video(b""));
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn is_safe_url_rejects_private_ipv4() {
+        assert!(!is_safe_url("http://10.0.0.1/image.gif"));
+        assert!(!is_safe_url("http://172.16.0.1/image.gif"));
+        assert!(!is_safe_url("http://192.168.1.1/image.gif"));
+        assert!(!is_safe_url("http://127.0.0.1/image.gif"));
+        assert!(!is_safe_url("http://169.254.1.1/image.gif"));
+        assert!(!is_safe_url("http://0.0.0.0/image.gif"));
+    }
+
+    #[test]
+    fn is_safe_url_rejects_private_ipv6() {
+        assert!(!is_safe_url("http://[::1]/image.gif"));
+        assert!(!is_safe_url("http://[::]/image.gif"));
+    }
+
+    #[test]
+    fn is_safe_url_allows_public_ipv4() {
+        assert!(is_safe_url("http://93.184.216.34/image.gif"));
+        assert!(is_safe_url("http://8.8.8.8/image.gif"));
     }
 }

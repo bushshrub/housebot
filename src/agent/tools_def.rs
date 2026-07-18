@@ -61,9 +61,10 @@ pub(crate) fn search_messages_tool() -> Value {
         "name": "search_messages",
         "description": "Search Discord channel messages by regex pattern. The pattern is matched \
             against message content, the author's Discord username, AND the author's server \
-            nickname or display name. Use this when a user asks what someone said or what was \
-            discussed — e.g. to find all messages by 'hexagone', search for '(?i)hexagone' and \
-            it will match any message where that name appears as the author or in the text. \
+            nickname or display name. Use this only when searching for a specific keyword, \
+            topic, or person — e.g. to find all messages by 'hexagone', search for '(?i)hexagone' \
+            and it will match any message where that name appears as the author or in the text. \
+            For recaps or vague questions about what was discussed, use get_recent_messages instead. \
             Supports full Rust regex syntax; case-insensitive patterns ((?i)) are common.",
         "input_schema": {
             "type": "object",
@@ -91,8 +92,11 @@ pub(crate) fn get_recent_messages_tool() -> Value {
     json!({
         "name": "get_recent_messages",
         "description": "Return all messages from the current channel posted in the last N minutes, \
-            in chronological order. Use this to summarize a recent conversation, catch up on what \
-            was discussed, or answer questions like 'what happened in the last 30 minutes'.",
+            in chronological order. Use this to catch up on a recent conversation, summarize what \
+            was discussed, or answer vague/open-ended questions like 'what happened recently', \
+            'what were we talking about', or 'what did I miss'. Unlike search_messages \
+            (pattern-based), this returns everything in a time window — prefer it when the user does \
+            not specify a keyword or person. Also use it proactively when context seems missing.",
         "input_schema": {
             "type": "object",
             "properties": {

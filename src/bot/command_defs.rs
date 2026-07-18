@@ -445,6 +445,59 @@ pub(crate) async fn register_slash_commands(ctx: &Context) {
     if let Err(error) = Command::create_global_command(&ctx.http, tool_ban_cmd).await {
         tracing::error!(%error, "Failed to register /tool_ban slash command");
     }
+    let tool_restore_cmd = CreateCommand::new("tool_restore")
+        .description("Propose and vote on restoring tool access for a restricted user")
+        .add_option(
+            CreateCommandOption::new(
+                CommandOptionType::SubCommand,
+                "propose",
+                "Propose restoring a user's access to one tool",
+            )
+            .add_sub_option(
+                CreateCommandOption::new(CommandOptionType::User, "user", "User to restore")
+                    .required(true),
+            )
+            .add_sub_option(
+                CreateCommandOption::new(
+                    CommandOptionType::String,
+                    "tool",
+                    "Tool name — start typing for suggestions",
+                )
+                .required(true)
+                .set_autocomplete(true),
+            ),
+        )
+        .add_option(
+            CreateCommandOption::new(
+                CommandOptionType::SubCommand,
+                "vote",
+                "Vote on an open tool-restore proposal",
+            )
+            .add_sub_option(
+                CreateCommandOption::new(
+                    CommandOptionType::String,
+                    "proposal",
+                    "Proposal ID shown by propose or status",
+                )
+                .required(true),
+            )
+            .add_sub_option(
+                CreateCommandOption::new(
+                    CommandOptionType::Boolean,
+                    "approve",
+                    "True to approve the restoration; false to reject it",
+                )
+                .required(true),
+            ),
+        )
+        .add_option(CreateCommandOption::new(
+            CommandOptionType::SubCommand,
+            "status",
+            "Show active bans and open restore proposals",
+        ));
+    if let Err(error) = Command::create_global_command(&ctx.http, tool_restore_cmd).await {
+        tracing::error!(%error, "Failed to register /tool_restore slash command");
+    }
     let lua_cmd = CreateCommand::new("lua")
             .description(
                 "Run a sandboxed Lua script; use graph.node/edge to render a diagram (requires the Scripting role)",
@@ -490,6 +543,7 @@ pub(crate) async fn register_slash_commands(ctx: &Context) {
             tracing::info!(guild_id, "Registered /lua slash command to guild");
         }
     }
+
     for command in [
         CreateCommand::new("help").description("Show all available commands"),
         CreateCommand::new("commit").description("Show the bot's running commit hash"),

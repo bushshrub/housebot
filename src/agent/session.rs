@@ -73,6 +73,9 @@ impl Agent {
             .unwrap_or_default();
         self.record_usage(user_id, &conversation_id, completion.usage)
             .await;
+        // Discard the compact summary's in-memory token stats so they don't
+        // bleed into a newly auto-started session's counters.
+        self.session_stats.lock().await.remove(user_id);
         let summary = completion.content.unwrap_or_default();
 
         if !summary.trim().is_empty() {
@@ -217,7 +220,7 @@ impl Agent {
         let mut all = self.session_stats.lock().await;
         let stats = all.entry(user_id.to_string()).or_default();
         stats.requests += 1;
-        stats.context_tokens = usage.prompt_tokens + usage.completion_tokens;
+        stats.context_tokens = usage.prompt_tokens;
         stats.input_tokens += usage.prompt_tokens;
         stats.output_tokens += usage.completion_tokens;
         stats.cached_tokens += usage.prompt_tokens_details.cached_tokens;
