@@ -208,11 +208,19 @@ pub async fn handle_github_api(
                 .get("action_value")
                 .and_then(Value::as_str)
                 .unwrap_or("");
-            let action_type = if action.starts_with("close") {
+            let action_type = if action == "close" {
                 "close"
-            } else if action.starts_with("label:") {
+            } else if let Some(labels) = action.strip_prefix("label:") {
+                if labels.is_empty() {
+                    return "Error: prune_issues with 'label:' requires at least one label name."
+                        .to_string();
+                }
                 "label"
-            } else if action.starts_with("unlabel:") {
+            } else if let Some(labels) = action.strip_prefix("unlabel:") {
+                if labels.is_empty() {
+                    return "Error: prune_issues with 'unlabel:' requires at least one label name."
+                        .to_string();
+                }
                 "unlabel"
             } else {
                 return "Error: prune_issues requires action_value in format: 'close', 'label:name1,name2', or 'unlabel:name1,name2'.".to_string();
