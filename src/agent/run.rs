@@ -387,9 +387,29 @@ impl Agent {
         let started = std::time::Instant::now();
         let requester_id = user_id.parse().unwrap_or(0);
         let outcome = if name == "run_skill" {
-            // run_skill has its own tool-loop that calls dispatch_tool_inner for
-            // authorized skill tools; handle it before the permission check to
-            // avoid async recursion through dispatch_tool → dispatch_tool_inner.
+            // Guild permission check before skill execution.
+            if let Some(gid) = guild_id {
+                match self
+                    .tool_permissions
+                    .is_banned(gid, requester_id, "run_skill")
+                    .await
+                {
+                    Ok(true) => {
+                        return ToolOutcome::Text(
+                            "Error: permission denied — you are restricted from using `run_skill` in this server."
+                                .into(),
+                        )
+                    }
+                    Err(error) => {
+                        tracing::error!(%error, %gid, "tool permission check failed for run_skill");
+                        return ToolOutcome::Text(
+                            "Error: tool permissions are temporarily unavailable; the tool call was blocked for safety."
+                                .into(),
+                        );
+                    }
+                    Ok(false) => {}
+                }
+            }
             let skill_name = str_arg(args, "name");
             let input = str_arg(args, "input");
             match self.skills.get(skill_name).await {
@@ -406,6 +426,8 @@ impl Agent {
 
                     const MAX_SKILL_ROUNDS: usize = 8;
                     let mut rounds = 0usize;
+                    let mut skill_attachments: Vec<AgentAttachment> = Vec::new();
+                    let mut skill_control_action: Option<AgentControlAction> = None;
                     let final_text = loop {
                         rounds += 1;
                         if rounds > MAX_SKILL_ROUNDS {
@@ -432,10 +454,21 @@ impl Agent {
                             }
                         };
 
-                        let assistant_msg = json!({
+                        let mut assistant_msg = json!({
                             "role": "assistant",
                             "content": completion.content,
                         });
+                        if !completion.tool_calls.is_empty() {
+                            assistant_msg["tool_calls"] = Value::Array(
+                                completion.tool_calls.iter().map(|tc| {
+                                    json!({
+                                        "id": tc.id,
+                                        "type": "function",
+                                        "function": {"name": tc.name, "arguments": tc.arguments},
+                                    })
+                                }).collect(),
+                            );
+                        }
                         messages.push(assistant_msg);
 
                         let is_tool_turn = completion.finish_reason.as_deref()
@@ -449,7 +482,6 @@ impl Agent {
                         for tc in &completion.tool_calls {
                             let tc_args: Value =
                                 serde_json::from_str(&tc.arguments).unwrap_or(json!({}));
-                            // Guard against self-recursion on run_skill.
                             if tc.name == "run_skill" {
                                 messages.push(json!({
                                     "role": "tool",
@@ -458,6 +490,33 @@ impl Agent {
                                 }));
                                 continue;
                             }
+                            // Permission check for each nested tool.
+                            if guild_id.is_some() {
+                                match self
+                                    .tool_permissions
+                                    .is_banned(gid, requester_id, &tc.name)
+                                    .await
+                                {
+                                    Ok(true) => {
+                                        messages.push(json!({
+                                            "role": "tool",
+                                            "tool_call_id": tc.id,
+                                            "content": format!("Error: permission denied — you are restricted from using `{}` in this server.", tc.name),
+                                        }));
+                                        continue;
+                                    }
+                                    Err(error) => {
+                                        tracing::error!(%error, %gid, "tool permission check failed during skill execution");
+                                        messages.push(json!({
+                                            "role": "tool",
+                                            "tool_call_id": tc.id,
+                                            "content": "Error: tool permissions are temporarily unavailable.",
+                                        }));
+                                        continue;
+                                    }
+                                    Ok(false) => {}
+                                }
+                            }
                             let outcome = self
                                 .dispatch_tool_inner(
                                     &tc.name, &tc_args, user_id, username, channel_id, gid, sandbox,
@@ -465,8 +524,14 @@ impl Agent {
                                 .await;
                             let content = match &outcome {
                                 ToolOutcome::Text(t) => t.clone(),
-                                ToolOutcome::Attachment { text, .. } => text.clone(),
-                                ToolOutcome::DevelopmentAction { text, .. } => text.clone(),
+                                ToolOutcome::Attachment { text, attachment } => {
+                                    skill_attachments.push(attachment.clone());
+                                    text.clone()
+                                }
+                                ToolOutcome::DevelopmentAction { text, action } => {
+                                    skill_control_action = Some(action.clone());
+                                    text.clone()
+                                }
                             };
                             messages.push(json!({
                                 "role": "tool",
@@ -476,7 +541,19 @@ impl Agent {
                         }
                     };
 
-                    ToolOutcome::Text(final_text)
+                    if let Some(action) = skill_control_action {
+                        ToolOutcome::DevelopmentAction {
+                            text: final_text,
+                            action,
+                        }
+                    } else if let Some(attachment) = skill_attachments.into_iter().next() {
+                        ToolOutcome::Attachment {
+                            text: final_text,
+                            attachment,
+                        }
+                    } else {
+                        ToolOutcome::Text(final_text)
+                    }
                 }
             }
         } else if let Some(guild_id) = guild_id {
