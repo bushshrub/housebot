@@ -104,6 +104,7 @@ impl EventHandler for HouseBot {
             return;
         }
         let reply = match cmd.data.name.as_str() {
+            "github" => handle_github_interaction(self.agent.reporter(), &cmd.data.options).await,
             "config" => {
                 let is_admin = (config::owner_id() != 0 && config::owner_id() == user_id)
                     || cmd

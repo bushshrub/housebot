@@ -439,6 +439,69 @@ pub(crate) async fn register_slash_commands(ctx: &Context) {
             tracing::info!(guild_id, "Registered /lua slash command to guild");
         }
     }
+    let github_cmd = CreateCommand::new("github")
+        .description("Manage GitHub issues in the configured repository")
+        .add_option(
+            CreateCommandOption::new(
+                CommandOptionType::SubCommand,
+                "list",
+                "List issues with optional state and label filters",
+            )
+            .add_sub_option(CreateCommandOption::new(
+                CommandOptionType::String,
+                "state",
+                "Issue state: open, closed, or all (default: open)",
+            ))
+            .add_sub_option(CreateCommandOption::new(
+                CommandOptionType::String,
+                "labels",
+                "Comma-separated label filter",
+            )),
+        )
+        .add_option(
+            CreateCommandOption::new(
+                CommandOptionType::SubCommand,
+                "show",
+                "Show full issue details including description and comments",
+            )
+            .add_sub_option(
+                CreateCommandOption::new(
+                    CommandOptionType::Integer,
+                    "number",
+                    "Issue number to display",
+                )
+                .required(true),
+            ),
+        )
+        .add_option(
+            CreateCommandOption::new(
+                CommandOptionType::SubCommand,
+                "close",
+                "Close an issue by number",
+            )
+            .add_sub_option(
+                CreateCommandOption::new(
+                    CommandOptionType::Integer,
+                    "number",
+                    "Issue number to close",
+                )
+                .required(true),
+            ),
+        )
+        .add_option(
+            CreateCommandOption::new(
+                CommandOptionType::SubCommand,
+                "search",
+                "Search issues by query text",
+            )
+            .add_sub_option(
+                CreateCommandOption::new(CommandOptionType::String, "query", "Search query")
+                    .required(true),
+            ),
+        );
+    if let Err(e) = Command::create_global_command(&ctx.http, github_cmd).await {
+        tracing::error!("Failed to register /github slash command: {e}");
+    }
     for command in [
         CreateCommand::new("help").description("Show all available commands"),
         CreateCommand::new("commit").description("Show the bot's running commit hash"),
