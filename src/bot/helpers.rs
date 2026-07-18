@@ -164,8 +164,8 @@ pub(crate) fn commit_hash_response(sha: Option<&str>) -> String {
 }
 
 /// Whether a slash command response should only be visible to its requester.
-pub(crate) fn command_response_is_ephemeral(_command_name: &str) -> bool {
-    true
+pub(crate) fn command_response_is_ephemeral(command_name: &str) -> bool {
+    !matches!(command_name, "session" | "stats")
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

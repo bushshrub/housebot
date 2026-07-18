@@ -79,7 +79,7 @@ impl EventHandler for HouseBot {
         if cmd.data.name == "session" && session_action == Some("compact") {
             let deep_memory_enabled = self.user_cfg.load(user_id).await.deep_memory_enabled;
             let response = CreateInteractionResponse::Defer(
-                CreateInteractionResponseMessage::new().ephemeral(true),
+                CreateInteractionResponseMessage::new().ephemeral(false),
             );
             if let Err(e) = cmd.create_response(&ctx.http, response).await {
                 tracing::warn!("Failed to defer /session compact response: {e}");
@@ -187,7 +187,7 @@ impl EventHandler for HouseBot {
                                     .field("Output tokens", info.output_tokens.to_string(), true)
                                     .field("Cached tokens", info.cached_tokens.to_string(), true),
                             )
-                            .ephemeral(true),
+                            .ephemeral(false),
                     );
                     if let Err(e) = cmd.create_response(&ctx.http, response).await {
                         tracing::warn!("Failed to send /session response: {e}");
