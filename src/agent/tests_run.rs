@@ -383,7 +383,7 @@ async fn context_overflow_triggers_new_session() {
     client.push_text_with_usage(
         "ok",
         TokenUsage {
-            prompt_tokens: 40,
+            prompt_tokens: 50,
             completion_tokens: 10,
             ..Default::default()
         },
