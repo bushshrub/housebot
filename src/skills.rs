@@ -1,4 +1,7 @@
 //! Global custom skills — named prompt templates — stored as a single JSON object.
+//!
+//! Skills are globally shared. The author owns their skill; only the author (or
+//! delegated editors) can modify or delete it.
 
 use std::collections::BTreeMap;
 use std::path::PathBuf;
@@ -11,20 +14,55 @@ use crate::config;
 use crate::memory::ensure_dir;
 
 /// A user-defined skill: a named system prompt run against arbitrary input.
+///
+/// Skills are globally visible and executable by anyone. Editing and deletion
+/// are restricted to the [`author`](Skill::author_id) and any
+/// [`editors`](Skill::editors) they have delegated.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Skill {
     pub name: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
     pub prompt: String,
+    /// Discord user ID of the skill's author.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub created_by: Option<String>,
+    /// Discord user IDs of delegated editors (in addition to the author).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub editors: Vec<String>,
 }
 
 impl Skill {
     /// Description, falling back to the skill name when absent.
     pub fn description_or_name(&self) -> &str {
         self.description.as_deref().unwrap_or(&self.name)
+    }
+
+    /// Whether `user_id` is the original author of this skill.
+    pub fn is_author(&self, user_id: &str) -> bool {
+        self.created_by.as_deref() == Some(user_id)
+    }
+
+    /// Whether `user_id` may edit or delete this skill.
+    pub fn can_edit(&self, user_id: &str) -> bool {
+        self.is_author(user_id) || self.editors.iter().any(|e| e == user_id)
+    }
+
+    /// Add a delegated editor. Returns `false` if already present.
+    pub fn add_editor(&mut self, editor_id: &str) -> bool {
+        if self.editors.iter().any(|e| e == editor_id) {
+            false
+        } else {
+            self.editors.push(editor_id.to_string());
+            true
+        }
+    }
+
+    /// Remove a delegated editor. Returns `false` if not found.
+    pub fn remove_editor(&mut self, editor_id: &str) -> bool {
+        let before = self.editors.len();
+        self.editors.retain(|e| e != editor_id);
+        self.editors.len() < before
     }
 }
 
@@ -122,6 +160,7 @@ mod tests {
             description: desc.map(String::from),
             prompt: prompt.to_string(),
             created_by: None,
+            editors: Vec::new(),
         }
     }
 
@@ -197,5 +236,71 @@ mod tests {
     async fn skill_without_description_uses_name() {
         let sk = skill("a", None, "A prompt");
         assert_eq!(sk.description_or_name(), "a");
+    }
+
+    // ── permission tests ─────────────────────────────────────────────────
+    fn authored_skill(author: &str) -> Skill {
+        Skill {
+            name: "x".into(),
+            description: None,
+            prompt: "p".into(),
+            created_by: Some(author.to_string()),
+            editors: vec!["300".into(), "400".into()],
+        }
+    }
+
+    #[test]
+    fn is_author_matches() {
+        let sk = authored_skill("100");
+        assert!(sk.is_author("100"));
+        assert!(!sk.is_author("200"));
+    }
+
+    #[test]
+    fn can_edit_author_or_editor() {
+        let sk = authored_skill("100");
+        assert!(sk.can_edit("100")); // author
+        assert!(sk.can_edit("300")); // delegated editor
+        assert!(sk.can_edit("400")); // delegated editor
+        assert!(!sk.can_edit("500")); // nobody
+    }
+
+    #[test]
+    fn can_edit_author_when_no_created_by() {
+        let sk = Skill {
+            name: "x".into(),
+            description: None,
+            prompt: "p".into(),
+            created_by: None,
+            editors: vec![],
+        };
+        assert!(!sk.can_edit("100"));
+    }
+
+    #[test]
+    fn add_editor_duplicate() {
+        let mut sk = authored_skill("100");
+        assert!(!sk.add_editor("300")); // already present
+        assert_eq!(sk.editors.len(), 2);
+    }
+
+    #[test]
+    fn add_editor_new() {
+        let mut sk = authored_skill("100");
+        assert!(sk.add_editor("500"));
+        assert!(sk.editors.contains(&"500".to_string()));
+    }
+
+    #[test]
+    fn remove_editor_present() {
+        let mut sk = authored_skill("100");
+        assert!(sk.remove_editor("300"));
+        assert!(!sk.editors.contains(&"300".to_string()));
+    }
+
+    #[test]
+    fn remove_editor_missing() {
+        let mut sk = authored_skill("100");
+        assert!(!sk.remove_editor("999"));
     }
 }
