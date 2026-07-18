@@ -97,6 +97,7 @@ impl ScriptHost for AgentScriptHost {
         self.searxng
             .search(query, max_results.clamp(1, 20), "")
             .await
+            .text
     }
 
     async fn jellyfin_search(&self, query: &str) -> String {

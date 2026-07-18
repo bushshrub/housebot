@@ -149,6 +149,30 @@ pub fn extract_code_files(text: &str) -> (String, Vec<(String, Vec<u8>)>) {
     (modified.into_owned(), files)
 }
 
+/// Append source URLs as a formatted citations section, deduplicating them
+/// and limiting to a reasonable number. Only non-empty citations are included.
+pub(crate) fn append_citations(text: &str, citations: &[String]) -> String {
+    if citations.is_empty() {
+        return text.to_string();
+    }
+    let mut seen = std::collections::HashSet::new();
+    let unique: Vec<&str> = citations
+        .iter()
+        .filter(|c| !c.is_empty() && seen.insert(c.as_str()))
+        .map(|c| c.as_str())
+        .take(8)
+        .collect();
+    if unique.is_empty() {
+        return text.to_string();
+    }
+    let mut result = text.to_string();
+    result.push_str("\n\n📚 **Sources:**\n");
+    for url in &unique {
+        result.push_str(&format!("- <{url}>\n"));
+    }
+    result
+}
+
 pub(crate) fn append_tool_summary(text: &str, tools: &[String]) -> String {
     let summary = if tools.is_empty() {
         "none".to_string()

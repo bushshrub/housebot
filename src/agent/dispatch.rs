@@ -15,15 +15,20 @@ impl Agent {
         sandbox: &LazySandbox,
     ) -> ToolOutcome {
         match name {
-            "web_search" => ToolOutcome::Text(
-                self.searxng
+            "web_search" => {
+                let results = self
+                    .searxng
                     .search(
                         str_arg(args, "query"),
                         u64_arg(args, "max_results", 10) as usize,
                         str_arg(args, "language"),
                     )
-                    .await,
-            ),
+                    .await;
+                ToolOutcome::TextWithCitations {
+                    text: results.text,
+                    citations: results.urls,
+                }
+            }
             "deep_research" => {
                 let questions: Vec<String> = args
                     .get("questions")
@@ -36,16 +41,19 @@ impl Agent {
                             .collect()
                     })
                     .unwrap_or_default();
-                ToolOutcome::Text(
-                    self.searxng
-                        .deep_research(
-                            str_arg(args, "topic"),
-                            &questions,
-                            u64_arg(args, "max_results_per_query", 5) as usize,
-                            str_arg(args, "language"),
-                        )
-                        .await,
-                )
+                let results = self
+                    .searxng
+                    .deep_research(
+                        str_arg(args, "topic"),
+                        &questions,
+                        u64_arg(args, "max_results_per_query", 5) as usize,
+                        str_arg(args, "language"),
+                    )
+                    .await;
+                ToolOutcome::TextWithCitations {
+                    text: results.text,
+                    citations: results.urls,
+                }
             }
             "fetch_webpage" => ToolOutcome::Text(
                 self.web_fetch

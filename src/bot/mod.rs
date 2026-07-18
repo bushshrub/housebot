@@ -51,7 +51,7 @@ use crate::tool_permissions::{ToolPermissions, VoteResult};
 pub use crate::bot_commands::{
     erase_data_command, grocery_command, memory_command, note_command, skill_command, stats_command,
 };
-use crate::bot_formatting::{append_tool_summary, tool_status};
+use crate::bot_formatting::{append_citations, append_tool_summary, tool_status};
 pub use crate::bot_formatting::{extract_code_files, lang_ext, split_text, tool_hint};
 
 const MAX_MESSAGE_LENGTH: usize = 2000;

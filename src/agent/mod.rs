@@ -120,6 +120,8 @@ pub struct AgentResult {
     pub attachments: Vec<AgentAttachment>,
     /// Set when a `prepare_feature_development` tool call produces a structured outcome.
     pub control_action: Option<AgentControlAction>,
+    /// Source URLs from web search tools, injected by the system for citation integrity.
+    pub citations: Vec<String>,
 }
 
 /// The result of the pre-execution Lua safety review.
@@ -168,6 +170,11 @@ impl TextSink for TextStreamAdapter<'_> {
 #[derive(Debug)]
 pub(crate) enum ToolOutcome {
     Text(String),
+    /// Text result that also carries source URLs for citation injection.
+    TextWithCitations {
+        text: String,
+        citations: Vec<String>,
+    },
     Attachment {
         text: String,
         attachment: AgentAttachment,
@@ -347,6 +354,7 @@ impl Agent {
         self.searxng
             .search(query, max_results.clamp(1, 20), "")
             .await
+            .text
     }
 
     /// Search Jellyfin for the Lua scripting engine, via the MCP server's

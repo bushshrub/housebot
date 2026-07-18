@@ -336,6 +336,9 @@ async fn dispatch_unknown_tool_returns_error() {
         .await;
     match out {
         ToolOutcome::Text(t) => assert!(t.contains("Unknown tool")),
+        ToolOutcome::TextWithCitations { text, .. } => {
+            panic!("unexpected citations outcome: {text}")
+        }
         ToolOutcome::DevelopmentAction { text, .. } => {
             panic!("unexpected development action: {text}")
         }

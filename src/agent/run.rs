@@ -98,6 +98,7 @@ impl Agent {
         let mut attachments = Vec::new();
 
         let mut control_action: Option<AgentControlAction> = None;
+        let mut citations: Vec<String> = Vec::new();
 
         // Bound the tool loop so a model that keeps requesting tools cannot
         // spin forever (each iteration is a full LLM round trip).
@@ -183,11 +184,18 @@ impl Agent {
                         &tc.name, &args, user_id, username, channel_id, guild_id, &sandbox,
                     )
                     .await;
-                let content = match outcome {
-                    ToolOutcome::Text(ref t) => t.clone(),
+                let content = match &outcome {
+                    ToolOutcome::Text(t) => t.clone(),
+                    ToolOutcome::TextWithCitations {
+                        text,
+                        citations: ref srcs,
+                    } => {
+                        citations.extend(srcs.iter().cloned());
+                        text.clone()
+                    }
                     ToolOutcome::Attachment { text, attachment } => {
-                        attachments.push(attachment);
-                        text
+                        attachments.push(attachment.clone());
+                        text.clone()
                     }
                     ToolOutcome::DevelopmentAction {
                         ref text,
@@ -263,6 +271,10 @@ impl Agent {
             tools_called,
             attachments,
             control_action,
+            citations: {
+                citations.dedup();
+                citations
+            },
         }
     }
 
@@ -360,6 +372,7 @@ impl Agent {
         };
         let content = match &outcome {
             ToolOutcome::Text(t) => t.as_str(),
+            ToolOutcome::TextWithCitations { text, .. } => text.as_str(),
             ToolOutcome::Attachment { text, .. } => text.as_str(),
             ToolOutcome::DevelopmentAction { text, .. } => text.as_str(),
         };

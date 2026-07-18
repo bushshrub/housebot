@@ -16,6 +16,12 @@ use crate::tools::wait_for_slot;
 const DEFAULT_URL: &str = "http://searxng:8080";
 const SEARCHES_PER_MINUTE: usize = 30;
 
+/// Result of a search, containing both formatted text and source URLs for citation.
+pub struct SearchResults {
+    pub text: String,
+    pub urls: Vec<String>,
+}
+
 /// Client for one SearXNG instance.
 pub struct SearxNg {
     client: reqwest::Client,
@@ -73,42 +79,67 @@ impl SearxNg {
     }
 
     /// Run a search and format the top `max_results` hits as plain text for the model.
-    pub async fn search(&self, query: &str, max_results: usize, language: &str) -> String {
+    /// Returns both the formatted text and the source URLs for citation injection.
+    pub async fn search(&self, query: &str, max_results: usize, language: &str) -> SearchResults {
         if query.trim().is_empty() {
-            return "Error: search query cannot be empty".to_string();
+            return SearchResults {
+                text: "Error: search query cannot be empty".to_string(),
+                urls: vec![],
+            };
         }
         match self.search_response(query, language).await {
             Ok(parsed) => format_results(&parsed, max_results.clamp(1, 20)),
-            Err(error) => error,
+            Err(error) => SearchResults {
+                text: error,
+                urls: vec![],
+            },
         }
     }
 
     /// Run several related searches and return a source dossier grouped by corroboration.
+    /// Returns both the formatted text and the source URLs for citation injection.
     pub async fn deep_research(
         &self,
         topic: &str,
         questions: &[String],
         max_results_per_query: usize,
         language: &str,
-    ) -> String {
+    ) -> SearchResults {
         if topic.trim().is_empty() {
-            return "Error: research topic cannot be empty".to_string();
+            return SearchResults {
+                text: "Error: research topic cannot be empty".to_string(),
+                urls: vec![],
+            };
         }
         if !(2..=5).contains(&questions.len()) {
-            return "Error: deep research requires between 2 and 5 research questions".to_string();
+            return SearchResults {
+                text: "Error: deep research requires between 2 and 5 research questions"
+                    .to_string(),
+                urls: vec![],
+            };
         }
 
         let mut responses = Vec::with_capacity(questions.len() + 1);
         let overview = format!("{topic} overview");
         match self.search_response(&overview, language).await {
             Ok(response) => responses.push((overview, response)),
-            Err(error) => return error,
+            Err(error) => {
+                return SearchResults {
+                    text: error,
+                    urls: vec![],
+                }
+            }
         }
         for question in questions {
             let query = format!("{topic} {question}");
             match self.search_response(&query, language).await {
                 Ok(response) => responses.push((query, response)),
-                Err(error) => return error,
+                Err(error) => {
+                    return SearchResults {
+                        text: error,
+                        urls: vec![],
+                    }
+                }
             }
         }
 
@@ -187,7 +218,7 @@ fn format_research_dossier(
     topic: &str,
     responses: &[(String, SearchResponse)],
     limit: usize,
-) -> String {
+) -> SearchResults {
     let mut sources: HashMap<String, ResearchSource> = HashMap::new();
     let mut answers = Vec::new();
     for (thread_index, (query, response)) in responses.iter().enumerate() {
@@ -250,9 +281,10 @@ fn format_research_dossier(
             output.push_str(&format!("- {answer}\n"));
         }
     }
+    let urls: Vec<String> = sources.iter().map(|s| s.url.clone()).collect();
     if sources.is_empty() {
         output.push_str("\nNo sources were found. Refine the research questions.");
-        return output;
+        return SearchResults { text: output, urls };
     }
     output.push_str("\nCross-referenced sources:\n");
     for (index, source) in sources.iter().enumerate() {
@@ -280,18 +312,22 @@ fn format_research_dossier(
         }
         output.push_str("\n\n");
     }
-    output
+    SearchResults { text: output, urls }
 }
 
-fn format_results(response: &SearchResponse, limit: usize) -> String {
+fn format_results(response: &SearchResponse, limit: usize) -> SearchResults {
     let results: Vec<&SearchResult> = response
         .results
         .iter()
         .filter(|result| !result.url.is_empty())
         .take(limit)
         .collect();
+    let urls: Vec<String> = results.iter().map(|r| r.url.clone()).collect();
     if results.is_empty() && response.answers.is_empty() {
-        return "No results were found for your search query. Try rephrasing it.".to_string();
+        return SearchResults {
+            text: "No results were found for your search query. Try rephrasing it.".to_string(),
+            urls,
+        };
     }
     let mut output = String::new();
     for answer in response.answers.iter().filter_map(answer_text) {
@@ -312,7 +348,7 @@ fn format_results(response: &SearchResponse, limit: usize) -> String {
                 .unwrap_or_default(),
         ));
     }
-    output
+    SearchResults { text: output, urls }
 }
 
 /// Extract the text of one entry in `answers`, whatever its shape.
@@ -382,11 +418,12 @@ mod tests {
             r#"{"results":[{"title":"Rust","url":"https://rust-lang.org","content":"A language","engine":"brave"}]}"#,
         );
         let out = format_results(&parsed, 10);
-        assert!(out.contains("Found 1 search results"));
-        assert!(out.contains("Rust"));
-        assert!(out.contains("https://rust-lang.org"));
-        assert!(out.contains("A language"));
-        assert!(out.contains("(via brave)"));
+        assert!(out.text.contains("Found 1 search results"));
+        assert!(out.text.contains("Rust"));
+        assert!(out.text.contains("https://rust-lang.org"));
+        assert!(out.text.contains("A language"));
+        assert!(out.text.contains("(via brave)"));
+        assert_eq!(out.urls, vec!["https://rust-lang.org"]);
     }
 
     #[test]
@@ -399,8 +436,9 @@ mod tests {
             ]}"#,
         );
         let out = format_results(&parsed, 2);
-        assert!(out.contains("Found 2 search results"));
-        assert!(!out.contains("c.example"));
+        assert!(out.text.contains("Found 2 search results"));
+        assert!(!out.text.contains("c.example"));
+        assert_eq!(out.urls, vec!["https://a.example", "https://b.example"]);
     }
 
     #[test]
@@ -409,14 +447,16 @@ mod tests {
             r#"{"results":[{"title":"nourl"},{"title":"ok","url":"https://ok.example"}]}"#,
         );
         let out = format_results(&parsed, 10);
-        assert!(out.contains("Found 1 search results"));
-        assert!(!out.contains("nourl"));
+        assert!(out.text.contains("Found 1 search results"));
+        assert!(!out.text.contains("nourl"));
+        assert_eq!(out.urls, vec!["https://ok.example"]);
     }
 
     #[test]
     fn empty_results_reports_no_results() {
         let out = format_results(&response(r#"{"results":[]}"#), 10);
-        assert!(out.contains("No results"));
+        assert!(out.text.contains("No results"));
+        assert!(out.urls.is_empty());
     }
 
     #[test]
@@ -426,8 +466,9 @@ mod tests {
                 "answers":["42",{"answer":"forty-two","url":"https://a.example"}]}"#,
         );
         let out = format_results(&parsed, 10);
-        assert!(out.contains("Answer: 42"));
-        assert!(out.contains("Answer: forty-two"));
+        assert!(out.text.contains("Answer: 42"));
+        assert!(out.text.contains("Answer: forty-two"));
+        assert_eq!(out.urls, vec!["https://t.example"]);
     }
 
     #[test]
@@ -471,14 +512,27 @@ mod tests {
         ];
 
         let dossier = format_research_dossier("rust", &responses, 5);
-        assert_eq!(dossier.matches("URL: https://rust-lang.org").count(), 1);
-        assert!(dossier.contains("Appeared in research threads: 1, 2"));
-        assert!(dossier.contains("Search engines: brave, google"));
-        assert!(dossier.contains("Evidence: Overview"));
-        assert!(dossier.contains("Evidence: Memory safety"));
+        assert_eq!(
+            dossier.text.matches("URL: https://rust-lang.org").count(),
+            1
+        );
+        assert!(dossier.text.contains("Appeared in research threads: 1, 2"));
+        assert!(dossier.text.contains("Search engines: brave, google"));
+        assert!(dossier.text.contains("Evidence: Overview"));
+        assert!(dossier.text.contains("Evidence: Memory safety"));
         assert!(
-            dossier.find("https://rust-lang.org").unwrap()
-                < dossier.find("https://doc.rust-lang.org/book/").unwrap()
+            dossier.text.find("https://rust-lang.org").unwrap()
+                < dossier
+                    .text
+                    .find("https://doc.rust-lang.org/book/")
+                    .unwrap()
+        );
+        assert_eq!(
+            dossier.urls,
+            vec![
+                "https://rust-lang.org".to_string(),
+                "https://doc.rust-lang.org/book/".to_string()
+            ]
         );
     }
 
@@ -489,8 +543,9 @@ mod tests {
             .deep_research("rust", &["only one".to_string()], 5, "en")
             .await;
         assert_eq!(
-            output,
+            output.text,
             "Error: deep research requires between 2 and 5 research questions"
         );
+        assert!(output.urls.is_empty());
     }
 }

@@ -307,7 +307,8 @@ impl HouseBot {
             let _ = reply_no_ping(ctx, msg, notice).await;
         }
         let allowed_pings = extract_mentioned_users(&safe, bot_id.get());
-        let with_tool_summary = append_tool_summary(&safe, &result.tools_called);
+        let with_citations = append_citations(&safe, &result.citations);
+        let with_tool_summary = append_tool_summary(&with_citations, &result.tools_called);
         let (display, code_files) = extract_code_files(&with_tool_summary);
         let sent_id = send_final_message(
             ctx,
