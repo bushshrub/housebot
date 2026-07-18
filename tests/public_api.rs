@@ -37,6 +37,7 @@ async fn storage_layer_round_trips_across_modules() {
             description: Some("Say hi".into()),
             prompt: "Greet the user warmly.".into(),
             created_by: Some("42".into()),
+            editors: Vec::new(),
         })
         .await
         .unwrap();
@@ -63,6 +64,7 @@ fn system_prompt_reflects_memory_and_skills() {
             description: Some("Condense text".into()),
             prompt: "..".into(),
             created_by: None,
+            editors: Vec::new(),
         },
     );
     let prompt = build_system_prompt(
