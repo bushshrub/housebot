@@ -320,6 +320,59 @@ impl Agent {
         tools
     }
 
+    /// Build OpenAI tool definitions for only the tools in `enabled_tools`,
+    /// matching against built-in definitions and MCP server tools.
+    pub(crate) async fn build_skill_tools(&self, enabled_tools: &[String]) -> Vec<Value> {
+        // Collect all tool definitions from the same sources as build_tools,
+        // then filter to only those in the enabled list.
+        let mut all = Vec::new();
+        for server in self.mcp_servers.iter() {
+            for tool in server.list_tools().await {
+                all.push((
+                    format!("{}__{}", server.prefix, tool.name),
+                    tool.description,
+                    tool.input_schema,
+                ));
+            }
+        }
+        let builtin_defs: Vec<Value> = vec![
+            tools::searxng::definition(),
+            tools::searxng::deep_research_definition(),
+            tools::web_fetch::definition(),
+            tools::file_download::definition(),
+            tools::common_crawl::definition(),
+            run_skill_tool(),
+            create_skill_tool(),
+            tools::feature_request::definition(),
+            tools::edit_feature_request::definition(),
+            tools::feature_development::definition(),
+            tools::github_api::definition(),
+            tools::remind::definition(),
+            tools::summarize_url::definition(),
+            tools::token_metrics::definition(),
+            tools::translate::definition(),
+            tools::features::definition(),
+            search_messages_tool(),
+            get_recent_messages_tool(),
+            find_discord_users_tool(),
+            get_discord_user_tool(),
+            run_lua_tool(),
+            get_lua_docs_tool(),
+        ];
+        for def in builtin_defs {
+            let (name, desc, params) = flatten_tool(&def);
+            all.push((name, desc, params));
+        }
+
+        let mut tools = Vec::new();
+        for enabled in enabled_tools {
+            if let Some((name, desc, params)) = all.iter().find(|(n, _, _)| n == enabled) {
+                tools.push(to_openai_tool(name, desc, params.clone()));
+            }
+        }
+        tools
+    }
+
     #[allow(clippy::too_many_arguments)]
     pub(crate) async fn dispatch_tool(
         &self,
@@ -333,7 +386,100 @@ impl Agent {
     ) -> ToolOutcome {
         let started = std::time::Instant::now();
         let requester_id = user_id.parse().unwrap_or(0);
-        let outcome = if let Some(guild_id) = guild_id {
+        let outcome = if name == "run_skill" {
+            // run_skill has its own tool-loop that calls dispatch_tool_inner for
+            // authorized skill tools; handle it before the permission check to
+            // avoid async recursion through dispatch_tool → dispatch_tool_inner.
+            let skill_name = str_arg(args, "name");
+            let input = str_arg(args, "input");
+            match self.skills.get(skill_name).await {
+                None => ToolOutcome::Text(format!("Error: Skill '{skill_name}' not found.")),
+                Some(skill) => {
+                    let instructions = skill.effective_instructions();
+                    let system = build_skill_system_prompt(&skill, instructions);
+                    let tools = self.build_skill_tools(&skill.enabled_tools).await;
+
+                    let mut messages: Vec<Value> = vec![
+                        json!({"role": "system", "content": system}),
+                        json!({"role": "user", "content": input}),
+                    ];
+
+                    const MAX_SKILL_ROUNDS: usize = 8;
+                    let mut rounds = 0usize;
+                    let final_text = loop {
+                        rounds += 1;
+                        if rounds > MAX_SKILL_ROUNDS {
+                            break "Skill execution exceeded maximum tool rounds and was stopped."
+                                .to_string();
+                        }
+
+                        let completion = match self
+                            .client
+                            .chat_stream(
+                                &self.model,
+                                &messages,
+                                &tools,
+                                None,
+                                ThinkingMode::default(),
+                                None,
+                            )
+                            .await
+                        {
+                            Ok(c) => c,
+                            Err(e) => {
+                                tracing::error!(%e, "run_skill LLM error");
+                                break "Error: LLM call failed during skill execution.".to_string();
+                            }
+                        };
+
+                        let assistant_msg = json!({
+                            "role": "assistant",
+                            "content": completion.content,
+                        });
+                        messages.push(assistant_msg);
+
+                        let is_tool_turn = completion.finish_reason.as_deref()
+                            == Some("tool_calls")
+                            && !completion.tool_calls.is_empty();
+                        if !is_tool_turn {
+                            break completion.content.unwrap_or_default();
+                        }
+
+                        let gid = guild_id.unwrap_or(0);
+                        for tc in &completion.tool_calls {
+                            let tc_args: Value =
+                                serde_json::from_str(&tc.arguments).unwrap_or(json!({}));
+                            // Guard against self-recursion on run_skill.
+                            if tc.name == "run_skill" {
+                                messages.push(json!({
+                                    "role": "tool",
+                                    "tool_call_id": tc.id,
+                                    "content": "Error: run_skill cannot be called recursively.",
+                                }));
+                                continue;
+                            }
+                            let outcome = self
+                                .dispatch_tool_inner(
+                                    &tc.name, &tc_args, user_id, username, channel_id, gid, sandbox,
+                                )
+                                .await;
+                            let content = match &outcome {
+                                ToolOutcome::Text(t) => t.clone(),
+                                ToolOutcome::Attachment { text, .. } => text.clone(),
+                                ToolOutcome::DevelopmentAction { text, .. } => text.clone(),
+                            };
+                            messages.push(json!({
+                                "role": "tool",
+                                "tool_call_id": tc.id,
+                                "content": content,
+                            }));
+                        }
+                    };
+
+                    ToolOutcome::Text(final_text)
+                }
+            }
+        } else if let Some(guild_id) = guild_id {
             match self
                 .tool_permissions
                 .is_banned(guild_id, requester_id, name)

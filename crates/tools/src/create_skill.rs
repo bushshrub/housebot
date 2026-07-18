@@ -10,8 +10,9 @@ pub fn definition() -> Value {
         "name": "create_skill",
         "description": "Create or update a custom skill — a packaged unit of capability with \
             trigger conditions, instructions, authorized tools, and few-shot examples. \
-            Call this after gathering requirements from the user through conversation. \
-            When updating an existing skill, provide the version number to trigger \
+            Gather requirements from the user through conversation, then present the final \
+            draft to the user and obtain their explicit approval before calling this tool. \
+            When updating an existing skill, provide the correct version number to trigger \
             automatic version archiving.",
         "input_schema": {
             "type": "object",
@@ -101,9 +102,9 @@ pub(crate) async fn create_skill(
     name: &str,
     instructions: &str,
     description: Option<&str>,
-    triggers: Vec<SkillTrigger>,
-    enabled_tools: Vec<String>,
-    examples: Vec<SkillExample>,
+    triggers: Option<Vec<SkillTrigger>>,
+    enabled_tools: Option<Vec<String>>,
+    examples: Option<Vec<SkillExample>>,
     version: u64,
 ) -> String {
     if !valid_name(name) {
@@ -115,97 +116,115 @@ pub(crate) async fn create_skill(
     }
 
     let now = now_secs();
-    let is_update = version > 0;
 
-    if is_update {
-        let Some(mut existing) = skills.get(name).await else {
-            return format!(
-                "Error: Skill '{name}' not found — use version 0 to create a new skill."
-            );
-        };
-        if !existing.can_edit(author_id) {
-            return format!("⛔ Only the author or a delegated editor can update **{name}**.");
+    match skills.get(name).await {
+        Some(mut existing) => {
+            // Update path: require version to match the existing record exactly
+            if version != existing.version as u64 {
+                return format!(
+                    "Error: Skill '{name}' exists at version {} but version {} was supplied. \
+                     Provide the exact current version to update.",
+                    existing.version, version
+                );
+            }
+            if !existing.can_edit(author_id) {
+                return format!("⛔ Only the author or a delegated editor can update **{name}**.");
+            }
+            existing.bump_version();
+            let new_version = existing.version;
+            existing.instructions = instructions.to_string();
+            if let Some(desc) = description {
+                existing.description = Some(desc.to_string());
+            }
+            if let Some(ref t) = triggers {
+                existing.triggers = t.clone();
+            }
+            if let Some(ref t) = enabled_tools {
+                existing.enabled_tools = t.clone();
+            }
+            if let Some(ref e) = examples {
+                existing.examples = e.clone();
+            }
+            if skills.save(existing).await.is_err() {
+                return "Error: failed to save skill.".into();
+            }
+            format!("✅ Skill **{name}** updated to version {new_version}.")
         }
-        existing.bump_version();
-        let new_version = existing.version;
-        existing.instructions = instructions.to_string();
-        if let Some(desc) = description {
-            existing.description = Some(desc.to_string());
+        None => {
+            // Create path: require version 0
+            if version != 0 {
+                return format!(
+                    "Error: Skill '{name}' does not exist — use version 0 to create a new skill."
+                );
+            }
+            let skill = Skill {
+                name: name.to_string(),
+                description: description.map(String::from),
+                instructions: instructions.to_string(),
+                triggers: triggers.unwrap_or_default(),
+                enabled_tools: enabled_tools.unwrap_or_default(),
+                examples: examples.unwrap_or_default(),
+                version: 1,
+                version_history: Vec::new(),
+                created_by: Some(author_id.to_string()),
+                editors: Vec::new(),
+                created_at: now,
+                updated_at: now,
+                prompt: None,
+            };
+            if skills.save(skill).await.is_err() {
+                return "Error: failed to save skill.".into();
+            }
+            format!("✅ Skill **{name}** (v1) created successfully.")
         }
-        existing.triggers = triggers;
-        existing.enabled_tools = enabled_tools;
-        existing.examples = examples;
-        if skills.save(existing).await.is_err() {
-            return "Error: failed to save skill.".into();
-        }
-        format!("✅ Skill **{name}** updated to version {new_version}.")
-    } else {
-        if skills.get(name).await.is_some() {
-            return format!(
-                "Error: Skill '{name}' already exists. Provide its current version number to update it."
-            );
-        }
-        let skill = Skill {
-            name: name.to_string(),
-            description: description.map(String::from),
-            instructions: instructions.to_string(),
-            triggers,
-            enabled_tools,
-            examples,
-            version: 1,
-            version_history: Vec::new(),
-            created_by: Some(author_id.to_string()),
-            editors: Vec::new(),
-            created_at: now,
-            updated_at: now,
-            prompt: None,
-        };
-        if skills.save(skill).await.is_err() {
-            return "Error: failed to save skill.".into();
-        }
-        format!("✅ Skill **{name}** (v1) created successfully.")
     }
 }
 
-fn parse_triggers(val: Option<&Value>) -> Vec<SkillTrigger> {
-    val.and_then(|v| v.as_array())
-        .map(|arr| {
-            arr.iter()
-                .filter_map(|item| {
-                    let trigger_type = item.get("trigger_type")?.as_str()?.to_string();
-                    let value = item.get("value")?.as_str()?.to_string();
-                    Some(SkillTrigger {
-                        trigger_type,
-                        value,
+fn parse_triggers(val: Option<&Value>) -> Option<Vec<SkillTrigger>> {
+    val.map(|v| {
+        v.as_array()
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|item| {
+                        let trigger_type = item.get("trigger_type")?.as_str()?.to_string();
+                        let value = item.get("value")?.as_str()?.to_string();
+                        Some(SkillTrigger {
+                            trigger_type,
+                            value,
+                        })
                     })
-                })
-                .collect()
-        })
-        .unwrap_or_default()
+                    .collect()
+            })
+            .unwrap_or_default()
+    })
 }
 
-fn parse_examples(val: Option<&Value>) -> Vec<SkillExample> {
-    val.and_then(|v| v.as_array())
-        .map(|arr| {
-            arr.iter()
-                .filter_map(|item| {
-                    let input = item.get("input")?.as_str()?.to_string();
-                    let output = item.get("output")?.as_str()?.to_string();
-                    Some(SkillExample { input, output })
-                })
-                .collect()
-        })
-        .unwrap_or_default()
+fn parse_examples(val: Option<&Value>) -> Option<Vec<SkillExample>> {
+    val.map(|v| {
+        v.as_array()
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|item| {
+                        let input = item.get("input")?.as_str()?.to_string();
+                        let output = item.get("output")?.as_str()?.to_string();
+                        Some(SkillExample { input, output })
+                    })
+                    .collect()
+            })
+            .unwrap_or_default()
+    })
 }
 
-fn parse_strings(val: Option<&Value>) -> Vec<String> {
-    val.and_then(|v| v.as_array())
-        .map(|arr| {
-            arr.iter()
-                .filter_map(|item| item.as_str().map(String::from))
-                .collect()
-        })
-        .unwrap_or_default()
+fn parse_strings(val: Option<&Value>) -> Option<Vec<String>> {
+    val.map(|v| {
+        v.as_array()
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|item| item.as_str().map(String::from))
+                    .collect()
+            })
+            .unwrap_or_default()
+    })
 }
 
 /// Parse `create_skill` tool-call arguments and dispatch to the implementation.
@@ -334,6 +353,73 @@ mod tests {
         assert!(result.contains("⛔"));
     }
 
+    #[tokio::test]
+    async fn update_rejects_wrong_version() {
+        let (_t, skills) = test_skills();
+        dispatch_create_skill(
+            &skills,
+            "user1",
+            &json!({
+                "name": "s",
+                "instructions": "v1 instructions",
+            }),
+        )
+        .await;
+
+        let result = dispatch_create_skill(
+            &skills,
+            "user1",
+            &json!({
+                "name": "s",
+                "instructions": "v2 instructions",
+                "version": 999,
+            }),
+        )
+        .await;
+        assert!(result.contains("exists at version 1 but version 999 was supplied"));
+    }
+
+    #[tokio::test]
+    async fn omit_arrays_preserves_existing_on_update() {
+        let (_t, skills) = test_skills();
+        dispatch_create_skill(
+            &skills,
+            "user1",
+            &json!({
+                "name": "s",
+                "instructions": "original",
+                "triggers": [{"trigger_type": "keyword", "value": "hello"}],
+                "enabled_tools": ["web_search"],
+                "examples": [{"input": "hi", "output": "hello back"}],
+            }),
+        )
+        .await;
+
+        // Update instructions only — omit array fields
+        let result = dispatch_create_skill(
+            &skills,
+            "user1",
+            &json!({
+                "name": "s",
+                "instructions": "updated",
+                "version": 1,
+            }),
+        )
+        .await;
+        assert!(result.contains("updated"), "result: {result}");
+
+        let skill = skills.get("s").await.unwrap();
+        assert_eq!(skill.instructions, "updated");
+        // Arrays should be preserved since they were omitted
+        assert_eq!(skill.triggers.len(), 1, "triggers should be preserved");
+        assert_eq!(
+            skill.enabled_tools.len(),
+            1,
+            "enabled_tools should be preserved"
+        );
+        assert_eq!(skill.examples.len(), 1, "examples should be preserved");
+    }
+
     #[test]
     fn definition_has_required_fields() {
         let d = definition();
@@ -350,10 +436,15 @@ mod tests {
             {"trigger_type": "keyword", "value": "hello"},
             {"trigger_type": "intent", "value": "greeting"},
         ]);
-        let triggers = parse_triggers(Some(&v));
+        let triggers = parse_triggers(Some(&v)).unwrap();
         assert_eq!(triggers.len(), 2);
         assert_eq!(triggers[0].trigger_type, "keyword");
         assert_eq!(triggers[1].value, "greeting");
+    }
+
+    #[test]
+    fn parse_triggers_none_when_absent() {
+        assert!(parse_triggers(None).is_none());
     }
 
     #[test]
@@ -361,16 +452,26 @@ mod tests {
         let v = json!([
             {"input": "hi", "output": "hello back"},
         ]);
-        let examples = parse_examples(Some(&v));
+        let examples = parse_examples(Some(&v)).unwrap();
         assert_eq!(examples.len(), 1);
         assert_eq!(examples[0].input, "hi");
     }
 
     #[test]
+    fn parse_examples_none_when_absent() {
+        assert!(parse_examples(None).is_none());
+    }
+
+    #[test]
     fn parse_strings_from_value() {
         let v = json!(["web_search", "fetch_webpage"]);
-        let tools = parse_strings(Some(&v));
+        let tools = parse_strings(Some(&v)).unwrap();
         assert_eq!(tools, vec!["web_search", "fetch_webpage"]);
+    }
+
+    #[test]
+    fn parse_strings_none_when_absent() {
+        assert!(parse_strings(None).is_none());
     }
 
     #[tokio::test]
