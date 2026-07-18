@@ -35,6 +35,7 @@ use crate::coding_agent::pending::{DiscordMessageRef, DispatchStage, PendingJobS
 use crate::config;
 use crate::discord_bridge::DiscordBridge;
 use crate::graph_render;
+use crate::grocery::GroceryList;
 use crate::history::History;
 use crate::llm::ThinkingMode;
 use crate::lua_engine;
@@ -48,7 +49,7 @@ use crate::token_monitor::{LeaderboardMetric, LeaderboardPeriod};
 use crate::tool_permissions::{ToolPermissions, VoteResult};
 
 pub use crate::bot_commands::{
-    erase_data_command, memory_command, note_command, skill_command, stats_command,
+    erase_data_command, grocery_command, memory_command, note_command, skill_command, stats_command,
 };
 use crate::bot_formatting::{append_tool_summary, tool_status};
 pub use crate::bot_formatting::{extract_code_files, lang_ext, split_text, tool_hint};
@@ -185,6 +186,8 @@ pub struct HouseBot {
     catalog: AgentCatalog,
     /// Shared with `Agent` — provides Discord API access to the agent tools.
     discord: Arc<DiscordBridge>,
+    /// Per-user grocery lists.
+    grocery: GroceryList,
     /// Logs all guild channel messages for the search_messages tool.
     channel_log: ChannelLog,
 }
@@ -223,6 +226,7 @@ impl HouseBot {
             ),
             pending_jobs,
             catalog: AgentCatalog::load_embedded(),
+            grocery: GroceryList::default(),
             discord,
             channel_log: ChannelLog::default(),
         }
