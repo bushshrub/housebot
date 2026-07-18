@@ -96,8 +96,13 @@ data: global totals (all users, conversations, token breakdown) or per-user deta
 Supports period filtering (daily, weekly, monthly, all-time). More versatile than the \
 /token_leaderboard command.\n\
 - search_messages — Search the current channel's message log by regex pattern. Only matching \
-messages are returned, keeping token usage low. Use this when a user asks what was said, who \
-mentioned something, or what was discussed. Prefer a targeted pattern over a broad one.\n\
+messages are returned, keeping token usage low. Use this when a user asks about a specific \
+topic, keyword, or person — e.g. 'what did hexagone say about X'. Prefer a targeted pattern.\n\
+- get_recent_messages — Return all messages from the current channel in the last N minutes \
+(default 30) in chronological order. Use this to catch up on a recent conversation, summarize \
+what was discussed, or answer vague questions like 'what happened recently' or 'what were we \
+talking about'. Unlike search_messages (pattern-based), get_recent_messages returns everything \
+in a time window — use it when the topic is unclear or the user just wants a recap.\n\
 - find_discord_users — Resolve a username or nickname to users seen in the current channel.\n\
 - get_discord_user — Look up a Discord user's profile by their user ID (username, display name, \
 account creation date, bot status).\n\
@@ -295,6 +300,9 @@ to any user: owner requests are dispatched directly; others go to the owner for 
 - To mention (ping) a user, include <@USER_ID> in your response text. You cannot ping the bot itself.\n- When the user's \
 message exceeds 500 characters, begin your reply with a **TL;DR:** line (one sentence) \
 summarizing what they asked.\n\
+- When a user asks what was discussed, what happened, or to recap — or says something vague \
+like 'what were we talking about' — call get_recent_messages to fetch recent channel history \
+before answering. Use search_messages only when they ask about a specific keyword, topic, or person.\n\
 {memory_tool_line}\
 {skills_section}\n\
 - {memory_guidance}\n\

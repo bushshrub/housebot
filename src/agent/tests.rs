@@ -659,8 +659,12 @@ fn prompt_memory_tools_separated_from_preceding_guidelines_bullet() {
         "2026-07-17 12:00",
     );
     assert!(
-        p.contains("summarizing what they asked.\n- update_memory"),
-        "memory tool must follow the last stable guidelines bullet on a new line, not merged"
+        p.contains("summarizing what they asked.\n- When a user asks what was discussed"),
+        "new history guideline must appear after the TL;DR bullet"
+    );
+    assert!(
+        p.contains("topic, or person.\n- update_memory"),
+        "memory tool must follow the guidelines section on a new line, not merged"
     );
 }
 
