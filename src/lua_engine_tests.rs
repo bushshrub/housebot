@@ -1,6 +1,7 @@
 //! Unit tests for `lua_engine` (split out to keep the module under 600 lines).
 
 use super::*;
+use crate::tools::searxng::SearchResults;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Mutex;
 
@@ -18,10 +19,13 @@ impl ScriptHost for FakeHost {
         Ok(())
     }
 
-    async fn web_search(&self, query: &str, _max_results: usize) -> String {
+    async fn web_search(&self, query: &str, _max_results: usize) -> SearchResults {
         self.searches.fetch_add(1, Ordering::SeqCst);
         *self.last_search.lock().unwrap() = Some(query.to_string());
-        format!("results for: {query}")
+        SearchResults {
+            text: format!("results for: {query}"),
+            urls: Vec::new(),
+        }
     }
 
     async fn jellyfin_search(&self, query: &str) -> String {

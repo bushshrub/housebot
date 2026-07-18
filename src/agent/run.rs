@@ -272,7 +272,8 @@ impl Agent {
             attachments,
             control_action,
             citations: {
-                citations.dedup();
+                let mut seen = std::collections::HashSet::new();
+                citations.retain(|url| seen.insert(url.clone()));
                 citations
             },
         }

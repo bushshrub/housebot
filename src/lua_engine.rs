@@ -21,6 +21,7 @@ use crate::agent::Agent;
 use crate::config;
 use crate::discord_bridge::DiscordBridge;
 use crate::graph_render::{self, GraphBuilder};
+use crate::tools::searxng::SearchResults;
 
 /// Maximum characters of captured output (print + return values) per script.
 pub const MAX_OUTPUT_CHARS: usize = 4000;
@@ -46,8 +47,8 @@ const OUTPUT_TRUNCATED_MARKER: &str = "\n… (output truncated)";
 pub trait ScriptHost: Send + Sync {
     /// Send a message to the channel the script was invoked from.
     async fn send_message(&self, content: &str) -> Result<(), String>;
-    /// Search the web; returns formatted results or an `Error: …` string.
-    async fn web_search(&self, query: &str, max_results: usize) -> String;
+    /// Search the web; returns formatted results with source URLs or an `Error: …` string.
+    async fn web_search(&self, query: &str, max_results: usize) -> SearchResults;
     /// Search the household Jellyfin media server.
     async fn jellyfin_search(&self, query: &str) -> String;
 }
@@ -65,7 +66,7 @@ impl ScriptHost for BotScriptHost {
         self.discord.send_message(self.channel_id, content).await
     }
 
-    async fn web_search(&self, query: &str, max_results: usize) -> String {
+    async fn web_search(&self, query: &str, max_results: usize) -> SearchResults {
         self.agent.web_search(query, max_results).await
     }
 
@@ -101,12 +102,15 @@ struct RunState {
     messages_sent: Cell<usize>,
     graph: RefCell<GraphBuilder>,
     deadline: Instant,
+    captured_citations: RefCell<Vec<String>>,
 }
 
-/// A script's captured text output plus an optional rendered graph image.
+/// A script's captured text output plus an optional rendered graph image
+/// and any source URLs collected from web searches.
 pub struct ScriptOutput {
     pub text: String,
     pub image: Option<Vec<u8>>,
+    pub citations: Vec<String>,
 }
 
 impl RunState {
@@ -218,6 +222,7 @@ pub async fn run_script(
             limits.timeout.as_secs()
         ),
         image: None,
+        citations: Vec::new(),
     };
     match tokio::time::timeout(backstop, task).await {
         Ok(Ok(result)) => result,
@@ -228,6 +233,7 @@ pub async fn run_script(
                 ScriptOutput {
                     text: "Error: script execution failed unexpectedly.".to_string(),
                     image: None,
+                    citations: Vec::new(),
                 }
             }
         }
@@ -262,6 +268,7 @@ fn execute(
         messages_sent: Cell::new(0),
         graph: RefCell::new(GraphBuilder::default()),
         deadline: Instant::now() + limits.timeout,
+        captured_citations: RefCell::new(Vec::new()),
     });
     // The returned values borrow from the VM, so keep `lua` alive until they
     // are rendered into the output buffer.
@@ -291,7 +298,8 @@ fn execute(
     } else {
         trimmed.to_string()
     };
-    ScriptOutput { text, image }
+    let citations = state.captured_citations.borrow().clone();
+    ScriptOutput { text, image, citations }
 }
 
 /// Render the script's graph, if it built one. Node/edge labels and the
@@ -450,11 +458,15 @@ fn build_sandbox(
             let remaining = search_state.take_api_slot()?;
             let max_results = max_results.unwrap_or(10).clamp(1, 20);
             let query: String = query.chars().take(MAX_QUERY_CHARS).collect();
-            bridge_call(
+            let results: SearchResults = bridge_call(
                 &search_handle,
                 remaining,
                 search_host.web_search(&query, max_results),
-            )
+            )?;
+            for url in results.urls {
+                search_state.captured_citations.borrow_mut().push(url);
+            }
+            Ok(results.text)
         })?,
     )?;
 

@@ -30,6 +30,7 @@ use crate::tool_permissions::ToolPermissions;
 use crate::tools;
 use crate::tools::common_crawl::CommonCrawl;
 use crate::tools::file_download::FileDownloader;
+use crate::tools::searxng::SearchResults;
 use crate::tools::sandbox::LazySandbox;
 use crate::tools::searxng::SearxNg;
 use crate::tools::web_fetch::WebFetch;
@@ -350,11 +351,10 @@ impl Agent {
 
     /// Web search for the Lua scripting engine — same SearXNG instance and
     /// rate limits as the agent's `web_search` tool.
-    pub async fn web_search(&self, query: &str, max_results: usize) -> String {
+    pub async fn web_search(&self, query: &str, max_results: usize) -> SearchResults {
         self.searxng
             .search(query, max_results.clamp(1, 20), "")
             .await
-            .text
     }
 
     /// Search Jellyfin for the Lua scripting engine, via the MCP server's

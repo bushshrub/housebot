@@ -1,6 +1,7 @@
 //! Agent-side Lua support: sandbox docs, the agent script host, and the pre-execution safety review.
 
 use super::*;
+use crate::tools::searxng::SearchResults;
 
 /// Lua sandbox documentation surfaced through the `get_lua_docs` tool.
 pub(crate) const LUA_DOCS: &str = "\
@@ -93,11 +94,10 @@ impl ScriptHost for AgentScriptHost {
         )
     }
 
-    async fn web_search(&self, query: &str, max_results: usize) -> String {
+    async fn web_search(&self, query: &str, max_results: usize) -> SearchResults {
         self.searxng
             .search(query, max_results.clamp(1, 20), "")
             .await
-            .text
     }
 
     async fn jellyfin_search(&self, query: &str) -> String {

@@ -446,6 +446,11 @@ impl Agent {
                             bytes: image,
                         },
                     }
+                } else if !output.citations.is_empty() {
+                    ToolOutcome::TextWithCitations {
+                        text: output.text,
+                        citations: output.citations,
+                    }
                 } else {
                     ToolOutcome::Text(output.text)
                 }
