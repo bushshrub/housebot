@@ -347,6 +347,22 @@ pub(crate) async fn register_slash_commands(ctx: &Context) {
                 "timeout",
                 "Seconds to keep the conversation open without a ping (default 300)",
             )),
+        )
+        // ── bot_pings subcommand ───────────────────────────────────────────
+        .add_option(
+            CreateCommandOption::new(
+                CommandOptionType::SubCommand,
+                "bot_pings",
+                "Control whether the bot responds to @-mentions from other bots",
+            )
+            .add_sub_option(
+                CreateCommandOption::new(
+                    CommandOptionType::Boolean,
+                    "enabled",
+                    "Enable or disable responses to other bots",
+                )
+                .required(true),
+            ),
         );
 
     if let Err(e) = Command::create_global_command(&ctx.http, config_cmd).await {

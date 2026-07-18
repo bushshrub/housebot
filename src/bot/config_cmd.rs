@@ -217,6 +217,38 @@ pub(crate) async fn handle_config_interaction(
             }
         }
 
+        "bot_pings" => {
+            let Some(gid) = guild_id else {
+                return "This setting is only available in servers.".into();
+            };
+            if !is_admin {
+                return "Only server administrators can configure this.".into();
+            }
+            let sub_opts = match &top.value {
+                CommandDataOptionValue::SubCommand(opts) => opts,
+                _ => return "Unexpected option structure.".into(),
+            };
+            let enabled = sub_opts
+                .iter()
+                .find(|o| o.name == "enabled")
+                .and_then(|o| match &o.value {
+                    CommandDataOptionValue::Boolean(b) => Some(*b),
+                    _ => None,
+                });
+            let Some(enabled) = enabled else {
+                return "Please specify `enabled`.".into();
+            };
+            let mut cfg = server_cfg.load(gid).await;
+            cfg.respond_to_bot_pings = enabled;
+            if server_cfg.save(gid, &cfg).await.is_err() {
+                return "Error: failed to save config.".into();
+            }
+            format!(
+                "✅ Responses to other bots' pings {}.",
+                if enabled { "enabled" } else { "disabled" }
+            )
+        }
+
         "followup" => {
             let sub_opts = match &top.value {
                 CommandDataOptionValue::SubCommand(opts) => opts,
