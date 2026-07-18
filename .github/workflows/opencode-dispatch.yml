@@ -1,0 +1,50 @@
+name: opencode-dispatch
+
+# Triggered via workflow_dispatch by the Housebot GitHub App when an owner
+# approves a development job.  The standard opencode.yml (comment-based) is
+# left unchanged for manual /oc usage.
+on:
+  workflow_dispatch:
+    inputs:
+      issue_number:
+        description: Issue or PR number to work on
+        required: true
+        type: number
+      prompt:
+        description: The prompt/instruction for OpenCode
+        required: true
+        type: string
+
+concurrency:
+  group: opencode-dispatch-${{ inputs.issue_number }}
+  cancel-in-progress: false
+
+jobs:
+  opencode:
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      contents: write
+      pull-requests: write
+      issues: write
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Run opencode
+        uses: anomalyco/opencode/github@77fc88c8ade8e5a620ebbe1197f3a572d29ae91a
+        with:
+          model: opencode/deepseek-v4-flash-free
+          variant: high
+          issue_number: ${{ inputs.issue_number }}
+          prompt: ${{ inputs.prompt }}
+        env:
+          CONTEXT7_API_KEY: ${{ secrets.CONTEXT7_API_KEY }}
+          OPENCODE_CONFIG_CONTENT: |
+            {
+              "$schema": "https://opencode.ai/config.json",
+              "permission": "allow"
+            }
