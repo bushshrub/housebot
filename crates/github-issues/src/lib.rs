@@ -887,18 +887,14 @@ impl GitHubIssueReporter {
         }
         if errors.is_empty() {
             Ok(())
-        } else if errors.len() < labels.len() {
-            tracing::warn!(
-                issue_number,
-                "Partial label removal ({} of {} failed): {}",
+        } else {
+            // Partial failure is still failure: callers use the result to
+            // decide whether the labels are gone, so leftover labels must not
+            // be reported as removed.
+            Err(anyhow::anyhow!(
+                "Failed to remove {} of {} requested labels: {}",
                 errors.len(),
                 labels.len(),
-                errors.join("; ")
-            );
-            Ok(())
-        } else {
-            Err(anyhow::anyhow!(
-                "Failed to remove all requested labels: {}",
                 errors.join("; ")
             ))
         }
@@ -1333,6 +1329,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[ignore = "live GitHub API call; run explicitly with --ignored"]
     async fn integration_get_repo() {
         let reporter = match integration_reporter() {
             Some(r) => r,
@@ -1351,6 +1348,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[ignore = "live GitHub API call; run explicitly with --ignored"]
     async fn integration_list_issues() {
         let reporter = match integration_reporter() {
             Some(r) => r,
@@ -1373,6 +1371,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[ignore = "live GitHub API call; run explicitly with --ignored"]
     async fn integration_search_issues() {
         let reporter = match integration_reporter() {
             Some(r) => r,
@@ -1393,6 +1392,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[ignore = "live GitHub API call; run explicitly with --ignored"]
     async fn integration_list_workflows() {
         let reporter = match integration_reporter() {
             Some(r) => r,
@@ -1423,6 +1423,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[ignore = "live GitHub API call; run explicitly with --ignored"]
     async fn integration_list_workflow_runs() {
         let reporter = match integration_reporter() {
             Some(r) => r,
@@ -1453,6 +1454,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[ignore = "live GitHub API call; run explicitly with --ignored"]
     async fn integration_list_workflow_runs_with_created() {
         let reporter = match integration_reporter() {
             Some(r) => r,

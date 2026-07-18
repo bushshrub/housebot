@@ -140,11 +140,12 @@ impl McpServer {
     async fn request(&self, method: &str, params: Value) -> anyhow::Result<Value> {
         let id = self.next_id.fetch_add(1, Ordering::SeqCst);
         let line = build_request(id, method, params);
-        let mut io = self.io.lock().await;
-        // The write sits inside the timeout too: a child that stops reading
-        // stdin would otherwise block write_all forever while holding the io
-        // mutex, stranding every other caller.
+        // Lock acquisition, the write, and the response read all share one
+        // deadline: a hung child (or a long queue behind one) must not let a
+        // caller wait forever, and a child that stops reading stdin must not
+        // block write_all while holding the io mutex.
         tokio::time::timeout(RESPONSE_TIMEOUT, async {
+            let mut io = self.io.lock().await;
             io.stdin.write_all(line.as_bytes()).await?;
             io.stdin.flush().await?;
             while let Some(raw) = io.stdout.next_line().await? {
@@ -247,22 +248,38 @@ mod tests {
         assert!(extract_text(&result).contains("image"));
     }
 
-    /// `cat` echoes each request line back, and the echoed object carries the
-    /// request's own `id`, so it doubles as a JSON-RPC responder. Before the
-    /// protocol mutex spanned the whole exchange, one caller could consume and
-    /// discard another's response, stranding that caller forever.
+    /// A tiny shell responder answers every request with a `result` carrying
+    /// the request's own `marker` param, so each caller can verify it received
+    /// its own response. Before the protocol mutex spanned the whole exchange,
+    /// one caller could consume and discard another's response — stranding
+    /// that caller and, in the cross-consumption case, mixing up replies.
     #[cfg(unix)]
     #[tokio::test(flavor = "multi_thread")]
-    async fn concurrent_requests_all_complete() {
-        let server = McpServer::start("echo", "cat", &[], &[])
+    async fn concurrent_requests_each_get_their_own_response() {
+        let responder = r#"while IFS= read -r line; do
+            id=$(printf '%s' "$line" | sed -n 's/.*"id":\([0-9][0-9]*\).*/\1/p')
+            m=$(printf '%s' "$line" | sed -n 's/.*"marker":\([0-9][0-9]*\).*/\1/p')
+            if [ -n "$id" ]; then
+                printf '{"jsonrpc":"2.0","id":%s,"result":{"marker":%s}}\n' "$id" "${m:-0}"
+            fi
+        done"#;
+        let server = McpServer::start("echo", "sh", &["-c".into(), responder.into()], &[])
             .await
-            .expect("cat echo server starts");
+            .expect("shell responder starts");
         let server = std::sync::Arc::new(server);
         let mut tasks = Vec::new();
-        for i in 0..16 {
+        for i in 1..=16i64 {
             let server = std::sync::Arc::clone(&server);
             tasks.push(tokio::spawn(async move {
-                server.request("tools/call", json!({"i": i})).await.unwrap()
+                let result = server
+                    .request("tools/call", json!({"marker": i}))
+                    .await
+                    .unwrap();
+                assert_eq!(
+                    result["marker"].as_i64(),
+                    Some(i),
+                    "request {i} received someone else's response: {result}"
+                );
             }));
         }
         tokio::time::timeout(std::time::Duration::from_secs(10), async {
