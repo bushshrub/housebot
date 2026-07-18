@@ -76,7 +76,6 @@ mod develop;
 mod develop_actions;
 mod develop_component;
 pub(crate) mod emoji_reactions;
-mod github_cmd;
 mod handler;
 mod helpers;
 mod interactions;
@@ -95,8 +94,6 @@ use develop::*;
 use develop_actions::*;
 #[allow(unused_imports)]
 use develop_component::*;
-#[allow(unused_imports)]
-use github_cmd::*;
 #[allow(unused_imports)]
 use helpers::*;
 #[allow(unused_imports)]
