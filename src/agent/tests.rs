@@ -690,8 +690,8 @@ fn prompt_memory_tools_separated_from_preceding_guidelines_bullet() {
         "new history guideline must appear after the TL;DR bullet"
     );
     assert!(
-        p.contains("topic, or person.\n- update_memory"),
-        "memory tool must follow the guidelines section on a new line, not merged"
+        p.contains("## Session information\n- update_memory"),
+        "memory tool must appear in the Session information section"
     );
 }
 
