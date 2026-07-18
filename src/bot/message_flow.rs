@@ -78,10 +78,22 @@ impl HouseBot {
             None => text,
         };
 
-        let referenced_text = msg
-            .referenced_message
-            .as_deref()
-            .and_then(referenced_message_context);
+        let referenced_text = {
+            if let Some(referenced) = msg.referenced_message.as_deref() {
+                referenced_message_context(referenced)
+            } else if let Some(msg_ref) = msg.message_reference.as_ref() {
+                if let Some(msg_id) = msg_ref.message_id {
+                    match msg_ref.channel_id.message(&ctx.http, msg_id).await {
+                        Ok(fetched) => referenced_message_context(&fetched),
+                        Err(_) => None,
+                    }
+                } else {
+                    None
+                }
+            } else {
+                None
+            }
+        };
         let text = match referenced_text {
             Some(referenced) if text.is_empty() => referenced,
             Some(referenced) => format!("{text}\n\n{referenced}"),
