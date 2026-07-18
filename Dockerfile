@@ -19,7 +19,7 @@ RUN CGO_ENABLED=0 go build -o /go/bin/jellyfin-mcp .
 # Minimal runtime image: Alpine plus the statically linked bot binary.
 FROM alpine:3.22
 WORKDIR /app
-RUN apk add --no-cache poppler-utils
+RUN apk add --no-cache poppler-utils ffmpeg
 RUN mkdir -p data/history data/memories
 COPY --from=jellyfin-mcp-builder /go/bin/jellyfin-mcp /usr/local/bin/jellyfin-mcp
 RUN test -x /usr/local/bin/jellyfin-mcp
