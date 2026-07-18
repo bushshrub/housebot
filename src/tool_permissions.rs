@@ -43,12 +43,38 @@ impl BanProposal {
     }
 }
 
+/// A proposal to lift an existing tool ban via member voting.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct UnbanProposal {
+    pub id: String,
+    pub guild_id: u64,
+    pub target_user_id: u64,
+    pub tool_name: String,
+    pub proposed_by: u64,
+    pub created_at: u64,
+    pub expires_at: u64,
+    pub votes: HashMap<u64, bool>,
+    #[serde(default)]
+    pub channel_id: u64,
+    #[serde(default)]
+    pub message_id: u64,
+}
+
+impl UnbanProposal {
+    pub fn vote_counts(&self) -> (usize, usize) {
+        let approvals = self.votes.values().filter(|vote| **vote).count();
+        (approvals, self.votes.len().saturating_sub(approvals))
+    }
+}
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 struct PermissionState {
     #[serde(default)]
     bans: Vec<ToolBan>,
     #[serde(default)]
     proposals: Vec<BanProposal>,
+    #[serde(default)]
+    restore_proposals: Vec<UnbanProposal>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -60,12 +86,15 @@ pub enum VoteResult {
     },
     Approved(ToolBan),
     Rejected,
+    /// A ban was lifted by a successful restore vote.
+    RestoreVoted(ToolBan),
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct GuildPermissionStatus {
     pub bans: Vec<ToolBan>,
     pub proposals: Vec<BanProposal>,
+    pub restore_proposals: Vec<UnbanProposal>,
 }
 
 /// Persistent, concurrency-safe permission store.
@@ -304,7 +333,192 @@ impl ToolPermissions {
                 .into_iter()
                 .filter(|proposal| proposal.guild_id == guild_id && proposal.expires_at > now)
                 .collect(),
+            restore_proposals: state
+                .restore_proposals
+                .into_iter()
+                .filter(|p| p.guild_id == guild_id && p.expires_at > now)
+                .collect(),
         })
+    }
+
+    /// Propose restoring tool access that was previously banned.
+    pub async fn propose_restore(
+        &self,
+        guild_id: u64,
+        target_user_id: u64,
+        tool_name: &str,
+        proposed_by: u64,
+    ) -> Result<UnbanProposal, String> {
+        if guild_id == 0 {
+            return Err("Tool-restore voting is only available inside a server.".into());
+        }
+        let tool_name = validate_tool_name(tool_name)?;
+        let _guard = self.lock.lock().await;
+        let now = unix_now();
+        let mut state = self.load().await.map_err(|error| error.to_string())?;
+        state.restore_proposals.retain(|p| p.expires_at > now);
+        let has_ban = state.bans.iter().any(|ban| {
+            ban.guild_id == guild_id && ban.user_id == target_user_id && ban.tool_name == tool_name
+        });
+        if !has_ban {
+            return Err(format!(
+                "That user is not currently banned from `{tool_name}` in this server."
+            ));
+        }
+        if state.restore_proposals.iter().any(|p| {
+            p.guild_id == guild_id && p.target_user_id == target_user_id && p.tool_name == tool_name
+        }) {
+            return Err("An open restore proposal already covers that user and tool.".into());
+        }
+        let mut votes = HashMap::new();
+        votes.insert(proposed_by, true);
+        let proposal = UnbanProposal {
+            id: uuid::Uuid::new_v4().simple().to_string(),
+            guild_id,
+            target_user_id,
+            tool_name,
+            proposed_by,
+            created_at: now,
+            expires_at: now.saturating_add(PROPOSAL_TTL_SECS),
+            votes,
+            channel_id: 0,
+            message_id: 0,
+        };
+        state.restore_proposals.push(proposal.clone());
+        self.save(&state).await.map_err(|error| error.to_string())?;
+        Ok(proposal)
+    }
+
+    /// Vote on a tool-restore proposal.
+    pub async fn vote_restore(
+        &self,
+        guild_id: u64,
+        proposal_id: &str,
+        voter_id: u64,
+        approve: bool,
+    ) -> Result<VoteResult, String> {
+        if proposal_id.trim().len() < 4 {
+            return Err("Provide at least four characters of the proposal ID.".into());
+        }
+        let _guard = self.lock.lock().await;
+        let now = unix_now();
+        let mut state = self.load().await.map_err(|error| error.to_string())?;
+        state.restore_proposals.retain(|p| p.expires_at > now);
+        let Some(index) = state
+            .restore_proposals
+            .iter()
+            .position(|p| p.guild_id == guild_id && p.id.starts_with(proposal_id))
+        else {
+            return Err("No open restore proposal matches that ID in this server.".into());
+        };
+        if state
+            .restore_proposals
+            .iter()
+            .filter(|p| p.guild_id == guild_id && p.id.starts_with(proposal_id))
+            .count()
+            > 1
+        {
+            return Err("That proposal ID prefix is ambiguous; provide more characters.".into());
+        }
+        state.restore_proposals[index]
+            .votes
+            .insert(voter_id, approve);
+        let (approvals, rejections) = state.restore_proposals[index].vote_counts();
+        let total = approvals + rejections;
+        let result = if total >= self.min_votes && approvals > rejections {
+            let proposal = state.restore_proposals.remove(index);
+            let tool_name = proposal.tool_name;
+            let removed_ban_idx = state.bans.iter().position(|ban| {
+                ban.guild_id == guild_id
+                    && ban.user_id == proposal.target_user_id
+                    && ban.tool_name == tool_name
+            });
+            match removed_ban_idx {
+                Some(idx) => {
+                    let ban = state.bans.remove(idx);
+                    VoteResult::RestoreVoted(ban)
+                }
+                None => VoteResult::Rejected,
+            }
+        } else if total >= self.min_votes && rejections > approvals {
+            state.restore_proposals.remove(index);
+            VoteResult::Rejected
+        } else {
+            VoteResult::Pending {
+                approvals,
+                rejections,
+                quorum: self.min_votes,
+            }
+        };
+        self.save(&state).await.map_err(|error| error.to_string())?;
+        Ok(result)
+    }
+
+    /// Attach channel + message IDs to a restore proposal (for emoji voting).
+    pub async fn set_restore_proposal_message(
+        &self,
+        guild_id: u64,
+        proposal_id: &str,
+        channel_id: u64,
+        message_id: u64,
+    ) -> Result<(), String> {
+        let _guard = self.lock.lock().await;
+        let mut state = self.load().await.map_err(|e| e.to_string())?;
+        let Some(p) = state
+            .restore_proposals
+            .iter_mut()
+            .find(|p| p.guild_id == guild_id && p.id == proposal_id)
+        else {
+            return Err("Restore proposal not found.".into());
+        };
+        p.channel_id = channel_id;
+        p.message_id = message_id;
+        self.save(&state).await.map_err(|e| e.to_string())
+    }
+
+    /// Remove a restore proposal (used for rollback on publication failure).
+    pub async fn remove_restore_proposal(
+        &self,
+        guild_id: u64,
+        proposal_id: &str,
+    ) -> std::io::Result<()> {
+        let _guard = self.lock.lock().await;
+        let mut state = self.load().await?;
+        state
+            .restore_proposals
+            .retain(|p| p.guild_id != guild_id || p.id != proposal_id);
+        self.save(&state).await
+    }
+
+    /// Look up a restore proposal by its Discord message ID.
+    pub async fn find_restore_by_message(
+        &self,
+        message_id: u64,
+    ) -> std::io::Result<Option<(String, UnbanProposal)>> {
+        let _guard = self.lock.lock().await;
+        let state = self.load().await?;
+        for p in &state.restore_proposals {
+            if p.message_id == message_id {
+                return Ok(Some((p.id.clone(), p.clone())));
+            }
+        }
+        Ok(None)
+    }
+
+    /// Look up a restore proposal by its ID prefix.
+    pub async fn find_restore_proposal_by_prefix(
+        &self,
+        guild_id: u64,
+        prefix: &str,
+    ) -> std::io::Result<Option<UnbanProposal>> {
+        let _guard = self.lock.lock().await;
+        let state = self.load().await?;
+        let now = unix_now();
+        Ok(state
+            .restore_proposals
+            .iter()
+            .find(|p| p.guild_id == guild_id && p.id.starts_with(prefix) && p.expires_at > now)
+            .cloned())
     }
 
     async fn load(&self) -> std::io::Result<PermissionState> {
@@ -432,5 +646,101 @@ mod tests {
             .unwrap();
         assert!(store.is_banned(10, 200, "web_search").await.is_err());
         assert!(store.propose(10, 200, "web_search", 100).await.is_err());
+    }
+
+    // ── restore voting tests ──────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn restore_proposal_fails_without_existing_ban() {
+        let (_temp, store) = store(3);
+        let err = store
+            .propose_restore(10, 200, "web_search", 100)
+            .await
+            .unwrap_err();
+        assert!(err.contains("not currently banned"));
+    }
+
+    #[tokio::test]
+    async fn restore_approval_removes_ban() {
+        let (_temp, store) = store(3);
+        // First create a ban
+        let ban_proposal = store.propose(10, 200, "web_search", 100).await.unwrap();
+        store.vote(10, &ban_proposal.id, 101, true).await.unwrap();
+        store.vote(10, &ban_proposal.id, 102, false).await.unwrap();
+        assert!(store.is_banned(10, 200, "web_search").await.unwrap());
+
+        // Now propose to restore
+        let restore = store
+            .propose_restore(10, 200, "web_search", 300)
+            .await
+            .unwrap();
+        // Vote to approve the restore
+        store
+            .vote_restore(10, &restore.id, 101, true)
+            .await
+            .unwrap();
+        let result = store
+            .vote_restore(10, &restore.id, 102, true)
+            .await
+            .unwrap();
+        assert!(matches!(result, VoteResult::RestoreVoted(_)));
+        // Ban should be gone
+        assert!(!store.is_banned(10, 200, "web_search").await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn restore_rejection_keeps_ban() {
+        let (_temp, store) = store(3);
+        let ban_proposal = store.propose(10, 200, "translate", 100).await.unwrap();
+        store.vote(10, &ban_proposal.id, 101, true).await.unwrap();
+        store.vote(10, &ban_proposal.id, 102, false).await.unwrap();
+
+        let restore = store
+            .propose_restore(10, 200, "translate", 300)
+            .await
+            .unwrap();
+        store
+            .vote_restore(10, &restore.id, 101, false)
+            .await
+            .unwrap();
+        let result = store
+            .vote_restore(10, &restore.id, 102, false)
+            .await
+            .unwrap();
+        assert_eq!(result, VoteResult::Rejected);
+        // Ban should still be in place
+        assert!(store.is_banned(10, 200, "translate").await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn targeted_user_can_vote_on_own_restoration() {
+        let (_temp, store) = store(3);
+        let ban_proposal = store.propose(10, 200, "web_search", 100).await.unwrap();
+        store.vote(10, &ban_proposal.id, 101, true).await.unwrap();
+        store.vote(10, &ban_proposal.id, 102, false).await.unwrap();
+
+        let restore = store
+            .propose_restore(10, 200, "web_search", 300)
+            .await
+            .unwrap();
+        // Target (200) can vote on their own restoration
+        assert!(store.vote_restore(10, &restore.id, 200, true).await.is_ok());
+    }
+
+    #[tokio::test]
+    async fn prevents_duplicate_restore_proposals() {
+        let (_temp, store) = store(3);
+        let ban_proposal = store.propose(10, 200, "web_search", 100).await.unwrap();
+        store.vote(10, &ban_proposal.id, 101, true).await.unwrap();
+        store.vote(10, &ban_proposal.id, 102, false).await.unwrap();
+
+        store
+            .propose_restore(10, 200, "web_search", 300)
+            .await
+            .unwrap();
+        assert!(store
+            .propose_restore(10, 200, "web_search", 301)
+            .await
+            .is_err());
     }
 }
