@@ -106,6 +106,36 @@ impl HouseBot {
 
         let user_config = self.user_cfg.load(msg.author.id.get()).await;
 
+        // Check for a full bot ban (`housebot` tool name) in guild channels.
+        if let Some(guild_id) = msg.guild_id.map(|g| g.get()) {
+            match self
+                .agent
+                .tool_permissions()
+                .is_banned(guild_id, msg.author.id.get(), "housebot")
+                .await
+            {
+                Ok(true) => {
+                    tracing::info!(
+                        target: "housebot::commands",
+                        user_id = msg.author.id.get(),
+                        guild_id,
+                        "Blocked message from user banned from bot",
+                    );
+                    self.respond(
+                        ctx,
+                        msg,
+                        "⛔ You are banned from using this bot in this server.",
+                    )
+                    .await;
+                    return;
+                }
+                Err(error) => {
+                    tracing::error!(%error, %guild_id, "housebot ban check failed");
+                }
+                _ => {}
+            }
+        }
+
         if session_expired {
             self.agent
                 .compact_session(
