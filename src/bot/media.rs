@@ -1,13 +1,17 @@
 //! Attachment/media extraction and reference-message context.
 
 use std::sync::LazyLock;
+use std::time::Duration;
 
 use regex::Regex;
+use reqwest::Url;
 
 use super::*;
 
-static GIF_URL_RE: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"https?://[^\s<>]+").unwrap());
+const GIF_FETCH_TIMEOUT: Duration = Duration::from_secs(15);
+const GIF_MAX_SIZE: usize = 10_000_000;
+
+static GIF_URL_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"https?://[^\s<>]+").unwrap());
 
 pub(crate) async fn extract_media(msg: &Message) -> Vec<MediaData> {
     let mut media = Vec::new();
@@ -49,19 +53,49 @@ pub(crate) async fn extract_gif_from_text(text: &str) -> Vec<MediaData> {
             let lower = url.to_lowercase();
             lower.ends_with(".gif") || lower.contains(".gif?")
         })
+        .filter(|url| is_safe_url(url))
         .collect();
     if urls.is_empty() {
         return Vec::new();
     }
+    let client = reqwest::Client::builder()
+        .timeout(GIF_FETCH_TIMEOUT)
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .unwrap_or_default();
     let mut media = Vec::new();
     for url in urls {
-        if let Ok(resp) = reqwest::get(&url).await {
+        if let Ok(resp) = client.get(&url).send().await {
             if let Ok(bytes) = resp.bytes().await {
-                media.extend(convert_gif_to_video(&bytes).await);
+                if bytes.len() <= GIF_MAX_SIZE {
+                    media.extend(convert_gif_to_video(&bytes).await);
+                }
             }
         }
     }
     media
+}
+
+/// Basic URL safety check: must be http/https, not localhost, not a private IP.
+fn is_safe_url(raw: &str) -> bool {
+    let Ok(url) = Url::parse(raw) else {
+        return false;
+    };
+    if !matches!(url.scheme(), "http" | "https") {
+        return false;
+    }
+    match url.host_str() {
+        None => return false,
+        Some(h) => {
+            if h.eq_ignore_ascii_case("localhost")
+                || h.ends_with(".localhost")
+                || h.ends_with(".local")
+            {
+                return false;
+            }
+        }
+    }
+    true
 }
 
 /// Convert an animated GIF to an MP4 video using ffmpeg.
@@ -290,7 +324,10 @@ pub(crate) fn unix_now() -> f64 {
 
 #[cfg(test)]
 mod media_tests {
-    use super::{attachment_context, is_pdf, media_type, pdf_render_arguments};
+    use super::{
+        attachment_context, convert_gif_to_video, extract_gif_from_text, is_pdf, is_safe_url,
+        media_type, pdf_render_arguments,
+    };
 
     #[test]
     fn recognizes_supported_media_extensions() {
@@ -330,5 +367,111 @@ mod media_tests {
             pdf_render_arguments(),
             ["-png", "-r", "144", "-f", "1", "-l", "10"]
         );
+    }
+
+    #[tokio::test]
+    async fn extract_gif_from_text_finds_gif_urls() {
+        let media = extract_gif_from_text("check this https://example.com/image.gif").await;
+        assert!(media.is_empty());
+    }
+
+    #[tokio::test]
+    async fn extract_gif_from_text_finds_gif_urls_with_query_params() {
+        let media = extract_gif_from_text("https://example.com/image.gif?width=400").await;
+        assert!(media.is_empty());
+    }
+
+    #[tokio::test]
+    async fn extract_gif_from_text_skips_non_gif_urls() {
+        let media = extract_gif_from_text("check this https://example.com/image.png").await;
+        assert!(media.is_empty());
+    }
+
+    #[tokio::test]
+    async fn extract_gif_from_text_handles_empty_text() {
+        let media = extract_gif_from_text("").await;
+        assert!(media.is_empty());
+    }
+
+    #[tokio::test]
+    async fn extract_gif_from_text_handles_no_urls() {
+        let media = extract_gif_from_text("just some text without urls").await;
+        assert!(media.is_empty());
+    }
+
+    #[tokio::test]
+    async fn extract_gif_from_text_trims_trailing_punctuation() {
+        let media = extract_gif_from_text("https://example.com/image.gif.").await;
+        assert!(media.is_empty());
+    }
+
+    #[tokio::test]
+    async fn extract_gif_from_text_multiple_urls() {
+        let media =
+            extract_gif_from_text("a https://example.com/a.gif b https://example.com/b.gif?x=1")
+                .await;
+        assert!(media.is_empty());
+    }
+
+    #[tokio::test]
+    async fn extract_gif_from_text_blocks_localhost() {
+        let media = extract_gif_from_text("http://localhost:8080/image.gif").await;
+        assert!(media.is_empty());
+    }
+
+    #[tokio::test]
+    async fn extract_gif_from_text_blocks_private_ip() {
+        let media = extract_gif_from_text("http://192.168.1.1/image.gif").await;
+        assert!(media.is_empty());
+    }
+
+    #[test]
+    fn is_safe_url_allows_public_urls() {
+        assert!(is_safe_url("https://example.com/image.gif"));
+        assert!(is_safe_url("http://cdn.example.com/foo.gif"));
+        assert!(is_safe_url(
+            "https://media.giphy.com/media/abc123/giphy.gif"
+        ));
+    }
+
+    #[test]
+    fn is_safe_url_rejects_localhost() {
+        assert!(!is_safe_url("http://localhost/image.gif"));
+        assert!(!is_safe_url("http://localhost:8080/image.gif"));
+        assert!(!is_safe_url("http://foo.localhost/image.gif"));
+    }
+
+    #[test]
+    fn is_safe_url_rejects_local_domain_hostnames() {
+        assert!(!is_safe_url("https://foo.local/image.gif"));
+    }
+
+    #[test]
+    fn is_safe_url_rejects_non_http_schemes() {
+        assert!(!is_safe_url("ftp://example.com/image.gif"));
+        assert!(!is_safe_url("file:///tmp/image.gif"));
+        assert!(!is_safe_url("data:image/gif;base64,R0lGOD"));
+    }
+
+    #[test]
+    fn is_safe_url_rejects_malformed_urls() {
+        assert!(!is_safe_url(""));
+        assert!(!is_safe_url("not a url"));
+    }
+
+    #[test]
+    fn convert_gif_to_video_handles_invalid_input() {
+        let result = tokio::runtime::Runtime::new()
+            .unwrap()
+            .block_on(convert_gif_to_video(b"not a real gif"));
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn convert_gif_to_video_handles_empty_input() {
+        let result = tokio::runtime::Runtime::new()
+            .unwrap()
+            .block_on(convert_gif_to_video(b""));
+        assert!(result.is_empty());
     }
 }
