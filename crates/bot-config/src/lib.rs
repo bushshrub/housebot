@@ -1,0 +1,274 @@
+//! Per-server and per-user configuration, persisted as JSON under DATA_DIR.
+
+use std::collections::HashSet;
+use std::path::PathBuf;
+
+use serde::{Deserialize, Serialize};
+use tokio::fs;
+
+use housebot_config::data_dir;
+use housebot_llm::ThinkingMode;
+
+// ── server config ─────────────────────────────────────────────────────────────
+
+/// Configuration scoped to a Discord guild (server).
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct ServerConfig {
+    /// Channel IDs the bot is allowed to respond in. Empty means all channels.
+    #[serde(default)]
+    pub allowed_channel_ids: HashSet<u64>,
+    /// Who can view the server token leaderboard and whether the response is public.
+    #[serde(default)]
+    pub leaderboard_visibility: LeaderboardVisibility,
+    /// Roles allowed to view the leaderboard when visibility is restricted.
+    #[serde(default)]
+    pub leaderboard_role_ids: HashSet<u64>,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LeaderboardVisibility {
+    #[default]
+    Public,
+    Private,
+    Restricted,
+}
+
+impl LeaderboardVisibility {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Public => "public",
+            Self::Private => "private",
+            Self::Restricted => "restricted",
+        }
+    }
+}
+
+pub struct ServerConfigStore {
+    dir: PathBuf,
+}
+
+impl Default for ServerConfigStore {
+    fn default() -> Self {
+        Self::new(data_dir().join("server_config"))
+    }
+}
+
+impl ServerConfigStore {
+    pub fn new(dir: PathBuf) -> Self {
+        Self { dir }
+    }
+
+    fn path(&self, guild_id: u64) -> PathBuf {
+        self.dir.join(format!("{guild_id}.json"))
+    }
+
+    pub async fn load(&self, guild_id: u64) -> ServerConfig {
+        let bytes = fs::read(self.path(guild_id)).await.unwrap_or_default();
+        serde_json::from_slice(&bytes).unwrap_or_default()
+    }
+
+    pub async fn save(&self, guild_id: u64, cfg: &ServerConfig) -> anyhow::Result<()> {
+        fs::create_dir_all(&self.dir).await?;
+        let data = serde_json::to_vec_pretty(cfg)?;
+        fs::write(self.path(guild_id), data).await?;
+        Ok(())
+    }
+
+    /// Returns true if the channel is allowed (or if no restrictions are set).
+    pub async fn is_channel_allowed(&self, guild_id: Option<u64>, channel_id: u64) -> bool {
+        let Some(gid) = guild_id else {
+            return true; // DMs are always allowed
+        };
+        let cfg = self.load(gid).await;
+        cfg.allowed_channel_ids.is_empty() || cfg.allowed_channel_ids.contains(&channel_id)
+    }
+
+    /// Follow-ups require an explicitly configured server channel.
+    pub async fn is_followup_channel_allowed(
+        &self,
+        guild_id: Option<u64>,
+        channel_id: u64,
+    ) -> bool {
+        let Some(gid) = guild_id else {
+            return false;
+        };
+        self.load(gid)
+            .await
+            .allowed_channel_ids
+            .contains(&channel_id)
+    }
+}
+
+// ── user config ───────────────────────────────────────────────────────────────
+
+/// Configuration scoped to an individual Discord user.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct UserConfig {
+    /// Optional personality/tone override injected into the system prompt.
+    #[serde(default)]
+    pub personality: Option<String>,
+    /// Whether the bot should reply to follow-up messages without a ping/mention
+    /// in guild channels. DMs enable follow-ups by default.
+    #[serde(default)]
+    pub followup_enabled: bool,
+    /// How many seconds the bot will reply without a ping after the last interaction.
+    #[serde(default = "default_followup_timeout")]
+    pub followup_timeout_secs: u64,
+    /// Whether LLM responses are rendered as paginated embeds.
+    #[serde(default)]
+    pub labs_pagination_enabled: bool,
+    /// Reasoning budget used for this user's requests (set with `/effort`).
+    #[serde(default)]
+    pub thinking_mode: ThinkingMode,
+    /// Whether the bot may use `update_memory` and auto-save conversation summaries.
+    /// When disabled, short-term conversation history still works normally.
+    #[serde(default = "default_deep_memory_enabled")]
+    pub deep_memory_enabled: bool,
+    /// Whether the bot may respond proactively to messages it wasn't mentioned in.
+    /// Only narrow cases are handled (obvious reminder requests, help questions).
+    #[serde(default)]
+    pub proactive_assistance_enabled: bool,
+}
+
+fn default_followup_timeout() -> u64 {
+    housebot_config::env_parse("CONVERSATION_IDLE_TIMEOUT", 300)
+}
+
+fn default_deep_memory_enabled() -> bool {
+    true
+}
+
+impl Default for UserConfig {
+    fn default() -> Self {
+        Self {
+            personality: None,
+            followup_enabled: false,
+            followup_timeout_secs: default_followup_timeout(),
+            labs_pagination_enabled: false,
+            thinking_mode: ThinkingMode::default(),
+            deep_memory_enabled: true,
+            proactive_assistance_enabled: false,
+        }
+    }
+}
+
+pub struct UserConfigStore {
+    dir: PathBuf,
+}
+
+impl Default for UserConfigStore {
+    fn default() -> Self {
+        Self::new(data_dir().join("user_config"))
+    }
+}
+
+impl UserConfigStore {
+    pub fn new(dir: PathBuf) -> Self {
+        Self { dir }
+    }
+
+    fn path(&self, user_id: u64) -> PathBuf {
+        self.dir.join(format!("{user_id}.json"))
+    }
+
+    pub async fn load(&self, user_id: u64) -> UserConfig {
+        let bytes = fs::read(self.path(user_id)).await.unwrap_or_default();
+        serde_json::from_slice(&bytes).unwrap_or_default()
+    }
+
+    pub async fn save(&self, user_id: u64, cfg: &UserConfig) -> anyhow::Result<()> {
+        fs::create_dir_all(&self.dir).await?;
+        let data = serde_json::to_vec_pretty(cfg)?;
+        fs::write(self.path(user_id), data).await?;
+        Ok(())
+    }
+
+    pub async fn clear(&self, user_id: u64) -> std::io::Result<()> {
+        match fs::remove_file(self.path(user_id)).await {
+            Ok(()) => Ok(()),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(error) => Err(error),
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn labs_pagination_is_off_by_default() {
+        assert!(!UserConfig::default().labs_pagination_enabled);
+    }
+
+    #[test]
+    fn old_server_config_defaults_to_public_leaderboard() {
+        let config: ServerConfig =
+            serde_json::from_str(r#"{"allowed_channel_ids":[123]}"#).unwrap();
+        assert_eq!(config.leaderboard_visibility, LeaderboardVisibility::Public);
+        assert!(config.leaderboard_role_ids.is_empty());
+    }
+
+    #[test]
+    fn followup_is_off_by_default() {
+        assert!(!UserConfig::default().followup_enabled);
+    }
+
+    #[test]
+    fn old_user_config_defaults_labs_pagination_to_off() {
+        let config: UserConfig =
+            serde_json::from_str(r#"{"personality":null,"followup_timeout_secs":300}"#).unwrap();
+        assert!(!config.labs_pagination_enabled);
+        assert!(!config.followup_enabled);
+    }
+
+    #[test]
+    fn old_user_config_defaults_thinking_mode_to_medium() {
+        let config: UserConfig =
+            serde_json::from_str(r#"{"personality":null,"followup_timeout_secs":300}"#).unwrap();
+        assert_eq!(config.thinking_mode, ThinkingMode::Medium);
+    }
+
+    #[test]
+    fn thinking_mode_persists_through_serde() {
+        let config = UserConfig {
+            thinking_mode: ThinkingMode::XHigh,
+            ..UserConfig::default()
+        };
+        let json = serde_json::to_string(&config).unwrap();
+        let restored: UserConfig = serde_json::from_str(&json).unwrap();
+        assert_eq!(restored.thinking_mode, ThinkingMode::XHigh);
+    }
+
+    #[test]
+    fn deep_memory_is_on_by_default() {
+        assert!(UserConfig::default().deep_memory_enabled);
+    }
+
+    #[test]
+    fn proactive_assistance_is_off_by_default() {
+        assert!(!UserConfig::default().proactive_assistance_enabled);
+    }
+
+    #[test]
+    fn old_user_config_enables_memory_but_keeps_proactive_assistance_off() {
+        let config: UserConfig =
+            serde_json::from_str(r#"{"personality":null,"followup_timeout_secs":300}"#).unwrap();
+        assert!(config.deep_memory_enabled);
+        assert!(!config.proactive_assistance_enabled);
+    }
+
+    #[test]
+    fn privacy_fields_persist_through_serde() {
+        let config = UserConfig {
+            deep_memory_enabled: true,
+            proactive_assistance_enabled: true,
+            ..UserConfig::default()
+        };
+        let json = serde_json::to_string(&config).unwrap();
+        let restored: UserConfig = serde_json::from_str(&json).unwrap();
+        assert!(restored.deep_memory_enabled);
+        assert!(restored.proactive_assistance_enabled);
+    }
+}

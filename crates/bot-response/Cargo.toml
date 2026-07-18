@@ -1,0 +1,10 @@
+[package]
+name = "housebot-bot-response"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.80"
+description = "Outbound-response security helpers independent of Discord"
+license = "AGPL-3.0-or-later"
+
+[dependencies]
+

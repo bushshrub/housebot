@@ -876,17 +876,23 @@ dependencies = [
  "anyhow",
  "async-trait",
  "base64",
- "bytes",
  "chrono",
  "common-crawl",
- "futures-util",
  "graph-render",
+ "housebot-bot-commands",
+ "housebot-bot-config",
+ "housebot-bot-formatting",
+ "housebot-bot-response",
  "housebot-channel-log",
+ "housebot-coding-agent",
  "housebot-config",
  "housebot-database",
+ "housebot-discord-bridge",
+ "housebot-github-issues",
  "housebot-grocery",
  "housebot-history",
  "housebot-llm",
+ "housebot-llm-queue",
  "housebot-mcp",
  "housebot-memory",
  "housebot-message-log",
@@ -898,22 +904,64 @@ dependencies = [
  "housebot-skills",
  "housebot-testing",
  "housebot-token-monitor",
- "jsonwebtoken",
+ "housebot-tool-permissions",
+ "housebot-tools",
  "mlua",
  "regex",
  "reqwest",
  "sentry",
- "serde",
  "serde_json",
  "serenity",
- "sha2 0.10.9",
  "tempfile",
  "tokio",
- "tokio-postgres",
  "tracing",
  "tracing-subscriber",
  "uuid",
 ]
+
+[[package]]
+name = "housebot-bot-commands"
+version = "0.1.0"
+dependencies = [
+ "housebot-bot-config",
+ "housebot-channel-log",
+ "housebot-grocery",
+ "housebot-history",
+ "housebot-memory",
+ "housebot-message-log",
+ "housebot-notes",
+ "housebot-profile",
+ "housebot-reminders",
+ "housebot-skills",
+ "serde_json",
+ "tempfile",
+ "tokio",
+]
+
+[[package]]
+name = "housebot-bot-config"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "housebot-config",
+ "housebot-llm",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
+]
+
+[[package]]
+name = "housebot-bot-formatting"
+version = "0.1.0"
+dependencies = [
+ "regex",
+ "serde_json",
+]
+
+[[package]]
+name = "housebot-bot-response"
+version = "0.1.0"
 
 [[package]]
 name = "housebot-channel-log"
@@ -930,6 +978,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "housebot-coding-agent"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "chrono",
+ "housebot-config",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "uuid",
+]
+
+[[package]]
 name = "housebot-config"
 version = "0.1.0"
 
@@ -941,6 +1002,27 @@ dependencies = [
  "housebot-config",
  "tokio",
  "tokio-postgres",
+ "tracing",
+]
+
+[[package]]
+name = "housebot-discord-bridge"
+version = "0.1.0"
+dependencies = [
+ "serenity",
+ "tokio",
+]
+
+[[package]]
+name = "housebot-github-issues"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "jsonwebtoken",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "tokio",
  "tracing",
 ]
 
@@ -978,6 +1060,17 @@ dependencies = [
  "serde",
  "serde_json",
  "tracing",
+]
+
+[[package]]
+name = "housebot-llm-queue"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "housebot-llm",
+ "serde_json",
+ "tokio",
 ]
 
 [[package]]
@@ -1101,6 +1194,45 @@ dependencies = [
  "serde_json",
  "tokio",
  "tokio-postgres",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
+name = "housebot-tool-permissions"
+version = "0.1.0"
+dependencies = [
+ "housebot-config",
+ "housebot-memory",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "uuid",
+]
+
+[[package]]
+name = "housebot-tools"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "common-crawl",
+ "futures-util",
+ "housebot-coding-agent",
+ "housebot-config",
+ "housebot-github-issues",
+ "housebot-llm",
+ "housebot-rate-limit",
+ "housebot-reminders",
+ "housebot-sandbox",
+ "housebot-testing",
+ "housebot-token-monitor",
+ "regex",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
  "tracing",
  "uuid",
 ]

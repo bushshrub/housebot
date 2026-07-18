@@ -1,0 +1,32 @@
+[package]
+name = "housebot-tools"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.80"
+description = "Agent tool implementations (search, fetch, features, sandbox, …)"
+license = "AGPL-3.0-or-later"
+
+[dependencies]
+chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
+common-crawl = { path = "../common-crawl" }
+futures-util = "0.3"
+housebot-coding-agent = { path = "../coding-agent" }
+housebot-config = { path = "../config" }
+housebot-github-issues = { path = "../github-issues" }
+housebot-llm = { path = "../llm" }
+housebot-rate-limit = { path = "../rate-limit" }
+housebot-reminders = { path = "../reminders" }
+housebot-sandbox = { path = "../sandbox" }
+housebot-token-monitor = { path = "../token-monitor" }
+regex = "1"
+reqwest = { version = "0.12", default-features = false, features = ["json", "stream", "rustls-tls"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["fs", "io-util", "process", "rt", "sync", "time"] }
+tracing = "0.1"
+uuid = { version = "1", features = ["v4"] }
+
+[dev-dependencies]
+housebot-testing = { path = "../testing" }
+tempfile = "3"
+tokio = { version = "1", features = ["full", "test-util"] }
