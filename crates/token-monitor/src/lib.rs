@@ -8,8 +8,8 @@ use serde_json::Value;
 use tokio::sync::Mutex;
 use tokio_postgres::NoTls;
 
-use crate::config;
-use crate::llm::TokenUsage;
+use housebot_config as config;
+use housebot_llm::TokenUsage;
 
 const DEFAULT_DATABASE_URL: &str = "postgres://housebot:housebot@postgres/housebot";
 const DEFAULT_CONNECT_ATTEMPTS: usize = 10;

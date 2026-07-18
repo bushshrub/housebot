@@ -3,7 +3,7 @@
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use crate::config;
+use housebot_config as config;
 use serde_json::{json, Value};
 use tokio_postgres::NoTls;
 
@@ -175,7 +175,7 @@ pub fn search_memory_tool() -> Value {
     })
 }
 
-pub(crate) async fn ensure_dir(dir: &Path) -> std::io::Result<()> {
+pub async fn ensure_dir(dir: &Path) -> std::io::Result<()> {
     tokio::fs::create_dir_all(dir).await
 }
 

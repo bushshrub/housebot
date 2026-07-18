@@ -276,6 +276,14 @@ fn status_fallback_caps_oversized_name() {
 }
 
 #[test]
+fn status_caps_oversized_multibyte_name_without_panicking() {
+    let long = "é".repeat(200);
+    let status = tool_status(&long);
+    assert!(status.chars().count() < 200);
+    assert!(status.contains('…'));
+}
+
+#[test]
 fn hint_multiline_flattened() {
     let h = tool_hint("some_tool", &json!({"task": "line1\nline2"}));
     assert!(!h.contains('\n'));

@@ -12,7 +12,9 @@ mod bot_formatting;
 mod bot_response;
 pub mod channel_log;
 pub mod coding_agent;
-pub mod config;
+/// Re-exported from the `housebot-config` workspace crate; kept at this path so
+/// existing `crate::config::…` references continue to resolve.
+pub use housebot_config as config;
 pub mod database;
 pub mod discord_bridge;
 pub mod github_issues;
@@ -26,15 +28,23 @@ pub mod history;
 pub use housebot_llm as llm;
 pub mod llm_queue;
 pub mod lua_engine;
-pub mod mcp;
-pub mod memory;
+/// Re-exported from the `housebot-mcp` workspace crate; kept at this path so
+/// existing `crate::mcp::…` references continue to resolve.
+pub use housebot_mcp as mcp;
+/// Re-exported from the `housebot-memory` workspace crate; kept at this path so
+/// existing `crate::memory::…` references continue to resolve.
+pub use housebot_memory as memory;
 pub mod message_log;
 pub mod notes;
 pub mod profile;
-pub mod rate_limit;
+/// Re-exported from the `housebot-rate-limit` workspace crate; kept at this path so
+/// existing `crate::rate_limit::…` references continue to resolve.
+pub use housebot_rate_limit as rate_limit;
 pub mod reminders;
 pub mod skills;
 pub mod testing;
-pub mod token_monitor;
+/// Re-exported from the `housebot-token-monitor` workspace crate; kept at this
+/// path so existing `crate::token_monitor::…` references continue to resolve.
+pub use housebot_token_monitor as token_monitor;
 pub mod tool_permissions;
 pub mod tools;

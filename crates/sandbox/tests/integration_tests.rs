@@ -257,11 +257,13 @@ fn docker_list_args_filter_by_label() {
 #[test]
 fn limits_are_sane() {
     use housebot_sandbox::limits;
-    assert!(limits::DEFAULT_COMMAND_TIMEOUT_SECS <= limits::ABSOLUTE_MAX_TIMEOUT_SECS);
-    assert!(limits::MAX_OUTPUT_BYTES > 0);
-    assert!(limits::MAX_FILE_READ_BYTES > 0);
-    assert!(limits::MAX_SEARCH_MATCHES > 0);
-    assert!(limits::MAX_FILE_LIST_ENTRIES > 0);
+    const {
+        assert!(limits::DEFAULT_COMMAND_TIMEOUT_SECS <= limits::ABSOLUTE_MAX_TIMEOUT_SECS);
+        assert!(limits::MAX_OUTPUT_BYTES > 0);
+        assert!(limits::MAX_FILE_READ_BYTES > 0);
+        assert!(limits::MAX_SEARCH_MATCHES > 0);
+        assert!(limits::MAX_FILE_LIST_ENTRIES > 0);
+    }
 }
 
 // ══════════════════════════════════════════════════════════════════════════════

@@ -103,11 +103,12 @@ pub fn tool_hint(tool_name: &str, args: &Value) -> String {
 fn display_tool_name(name: &str) -> String {
     const MAX: usize = 80;
     let sanitized: String = name.chars().filter(|c| !c.is_control()).collect();
-    let truncated: String = sanitized.chars().take(MAX).collect();
     if sanitized.chars().count() > MAX {
-        format!("{}…", &truncated[..truncated.len().saturating_sub(1)])
-    } else {
+        let mut truncated: String = sanitized.chars().take(MAX - 1).collect();
+        truncated.push('…');
         truncated
+    } else {
+        sanitized
     }
 }
 
