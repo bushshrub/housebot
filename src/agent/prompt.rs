@@ -138,7 +138,7 @@ impl ConfigSuffix {
         };
         let skills_section = if all_skills.is_empty() {
             "\n- run_skill — Execute a custom skill by name. No skills are defined yet; users can add \
-             them with `!skill add`."
+             them with `/skill add`."
                 .to_string()
         } else {
             let lines: Vec<String> = all_skills

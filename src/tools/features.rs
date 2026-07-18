@@ -30,14 +30,14 @@ pub fn features_text() -> &'static str {
 `/storage memory show|search|clear` — inspect or clear persistent memory about you
 `/storage notes list|get|save|delete` — manage your named personal notes
 `/lua <script>` — run a sandboxed Lua script with `discord.send_message`, `discord.web_search`, `discord.jellyfin_search`, and `graph.node`/`graph.edge`/`graph.title` to render a flowchart or network diagram as an image (requires the Scripting role or higher, or guild administrator / bot owner)
+`/skill list|info|add|delete` — manage custom prompt skills shared across all users
+`/stats` — show your conversation and memory statistics
 
 **Prefix commands**
 `!grocery` — show your grocery list
 `!grocery add <item>` — add an item to your grocery list
 `!grocery remove <item>` — remove an item from your grocery list
 `!grocery flush` — clear your entire grocery list
-`!skill list|add|delete|info <name>` — manage custom prompt skills shared across all users
-`!stats` — show your conversation and memory stats
 
 **Capabilities**
 - Web search, multi-step deep research with cross-referenced sources, webpage fetching, and public-file downloads delivered as Discord attachments

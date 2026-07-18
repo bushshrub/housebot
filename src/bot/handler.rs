@@ -79,7 +79,7 @@ impl EventHandler for HouseBot {
         if cmd.data.name == "session" && session_action == Some("compact") {
             let deep_memory_enabled = self.user_cfg.load(user_id).await.deep_memory_enabled;
             let response = CreateInteractionResponse::Defer(
-                CreateInteractionResponseMessage::new().ephemeral(true),
+                CreateInteractionResponseMessage::new().ephemeral(false),
             );
             if let Err(e) = cmd.create_response(&ctx.http, response).await {
                 tracing::warn!("Failed to defer /session compact response: {e}");
@@ -222,7 +222,7 @@ impl EventHandler for HouseBot {
                                     .field("Output tokens", info.output_tokens.to_string(), true)
                                     .field("Cached tokens", info.cached_tokens.to_string(), true),
                             )
-                            .ephemeral(true),
+                            .ephemeral(false),
                     );
                     if let Err(e) = cmd.create_response(&ctx.http, response).await {
                         tracing::warn!("Failed to send /session response: {e}");
@@ -299,6 +299,18 @@ impl EventHandler for HouseBot {
                 handle_storage_interaction(&self.memory, &self.notes, &cmd.data.options, user_id)
                     .await
             }
+            "skill" => handle_skill_interaction(&self.skills, &cmd.data.options, user_id).await,
+            "stats" => {
+                handle_stats_interaction(
+                    &self.history,
+                    &self.memory,
+                    &self.notes,
+                    &self.skills,
+                    user_id,
+                    cmd.user.display_name(),
+                )
+                .await
+            }
             _ => return,
         };
 
@@ -327,6 +339,7 @@ impl EventHandler for HouseBot {
             tracing::info!(target: "housebot::commands", user_id, "!skill command received");
             let (first, rest) = split_command(&msg.content);
             let reply = skill_command(&self.skills, &first, &rest, user_id).await;
+            let reply = self.redactor.redact(&reply);
             self.respond(&ctx, &msg, &reply).await;
             return;
         }
