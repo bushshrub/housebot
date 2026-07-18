@@ -70,7 +70,7 @@ pub(crate) const STATIC_BASE: &str = "\
 You are a house assistant bot in a Discord server. You help with media, web \
 search, general information, and software development questions. You can see \
 and analyze images and animated GIFs shared as Discord attachments or linked \
-URLs — for GIFs multiple frames are sampled so you can understand the \
+URLs — GIFs are converted to video so you can understand the \
 animation, context, action, or sentiment.
 
 ## Tools\n\

@@ -2,13 +2,9 @@
 
 use std::sync::LazyLock;
 
-use image::codecs::gif::GifDecoder;
-use image::{AnimationDecoder, DynamicImage, ImageFormat};
 use regex::Regex;
 
 use super::*;
-
-const MAX_GIF_DIMENSION: u32 = 512;
 
 static GIF_URL_RE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"https?://[^\s<>]+").unwrap());
@@ -26,7 +22,7 @@ pub(crate) async fn extract_media(msg: &Message) -> Vec<MediaData> {
         if let Ok(resp) = reqwest::get(&att.url).await {
             if let Ok(bytes) = resp.bytes().await {
                 if media_type == "image/gif" {
-                    media.extend(extract_gif_frames(&bytes).await);
+                    media.extend(convert_gif_to_video(&bytes).await);
                 } else {
                     use base64::Engine;
                     media.push(MediaData {
@@ -40,8 +36,7 @@ pub(crate) async fn extract_media(msg: &Message) -> Vec<MediaData> {
     media
 }
 
-/// Download GIF frames from links found in message text and return as PNG
-/// media blocks.
+/// Download GIF from links found in message text and convert to video.
 pub(crate) async fn extract_gif_from_text(text: &str) -> Vec<MediaData> {
     let urls: Vec<String> = GIF_URL_RE
         .find_iter(text)
@@ -62,71 +57,74 @@ pub(crate) async fn extract_gif_from_text(text: &str) -> Vec<MediaData> {
     for url in urls {
         if let Ok(resp) = reqwest::get(&url).await {
             if let Ok(bytes) = resp.bytes().await {
-                media.extend(extract_gif_frames(&bytes).await);
+                media.extend(convert_gif_to_video(&bytes).await);
             }
         }
     }
     media
 }
 
-/// Decode an animated GIF, sample evenly-spaced frames, and return each as a
-/// base64-encoded PNG.
-pub(crate) async fn extract_gif_frames(bytes: &[u8]) -> Vec<MediaData> {
-    let max_frames = config::env_parse::<usize>("MAX_GIF_FRAMES", 5).max(1);
+/// Convert an animated GIF to an MP4 video using ffmpeg.
+pub(crate) async fn convert_gif_to_video(bytes: &[u8]) -> Vec<MediaData> {
     let owned = bytes.to_vec();
     tokio::task::spawn_blocking(move || {
-        let cursor = std::io::Cursor::new(owned);
-        let decoder = match GifDecoder::new(cursor) {
-            Ok(d) => d,
-            Err(e) => {
-                tracing::warn!(%e, "Failed to decode GIF");
-                return Vec::new();
-            }
-        };
-        let frames: Vec<image::Frame> =
-            match decoder.into_frames().collect::<Result<Vec<_>, _>>() {
-                Ok(f) => f,
-                Err(e) => {
-                    tracing::warn!(%e, "Failed to collect GIF frames");
-                    return Vec::new();
-                }
-            };
-        let total = frames.len();
-        if total == 0 {
+        let dir = std::env::temp_dir().join(format!("housebot-gif-{}", uuid::Uuid::new_v4()));
+        let input = dir.join("input.gif");
+        let output = dir.join("output.mp4");
+
+        if std::fs::create_dir_all(&dir).is_err() {
+            return Vec::new();
+        }
+        if std::fs::write(&input, &owned).is_err() {
+            let _ = std::fs::remove_dir_all(&dir);
             return Vec::new();
         }
 
-        let count = max_frames.min(total);
-        let step = if count > 1 { (total - 1) / (count - 1) } else { 0 };
-        let indices: Vec<usize> = (0..count).map(|i| (i * step).min(total - 1)).collect();
-
-        use base64::Engine;
-        let mut media = Vec::with_capacity(indices.len());
-        for &idx in &indices {
-            let frame = &frames[idx];
-            let buf = frame.buffer();
-            let mut img = DynamicImage::ImageRgba8(buf.clone());
-
-            if img.width() > MAX_GIF_DIMENSION || img.height() > MAX_GIF_DIMENSION {
-                img = img.resize(
-                    MAX_GIF_DIMENSION,
-                    MAX_GIF_DIMENSION,
-                    image::imageops::FilterType::Lanczos3,
+        let result = match std::process::Command::new("ffmpeg")
+            .args([
+                "-y",
+                "-i",
+                &input.to_string_lossy(),
+                "-vf",
+                "scale=trunc(iw/2)*2:trunc(ih/2)*2",
+                "-c:v",
+                "libx264",
+                "-pix_fmt",
+                "yuv420p",
+                "-movflags",
+                "+faststart",
+                &output.to_string_lossy(),
+            ])
+            .output()
+        {
+            Ok(out) if out.status.success() => match std::fs::read(&output) {
+                Ok(video_bytes) => {
+                    use base64::Engine;
+                    vec![MediaData {
+                        media_type: "video/mp4".to_string(),
+                        data: base64::engine::general_purpose::STANDARD.encode(&video_bytes),
+                    }]
+                }
+                Err(e) => {
+                    tracing::warn!(%e, "Failed to read converted GIF video");
+                    Vec::new()
+                }
+            },
+            Ok(out) => {
+                tracing::warn!(
+                    stderr = %String::from_utf8_lossy(&out.stderr),
+                    "ffmpeg GIF conversion failed"
                 );
+                Vec::new()
             }
+            Err(e) => {
+                tracing::warn!(%e, "Failed to execute ffmpeg for GIF conversion");
+                Vec::new()
+            }
+        };
 
-            let mut png_buf = Vec::new();
-            if img
-                .write_to(&mut std::io::Cursor::new(&mut png_buf), ImageFormat::Png)
-                .is_ok()
-            {
-                media.push(MediaData {
-                    media_type: "image/png".to_string(),
-                    data: base64::engine::general_purpose::STANDARD.encode(&png_buf),
-                });
-            }
-        }
-        media
+        let _ = std::fs::remove_dir_all(&dir);
+        result
     })
     .await
     .unwrap_or_default()
