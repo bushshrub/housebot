@@ -28,6 +28,12 @@ jobs:
       pull-requests: write
       issues: write
     steps:
+      - name: Verify dispatch source
+        if: ${{ !endsWith(github.actor, '[bot]') }}
+        run: |
+          echo "::error::This workflow can only be triggered by the authorized Housebot GitHub App installation. Direct dispatch by users is not permitted — the OWNER_DISCORD_ID authorization is enforced in the Rust dispatch flow."
+          exit 1
+
       - name: Checkout repository
         uses: actions/checkout@v6
         with:
