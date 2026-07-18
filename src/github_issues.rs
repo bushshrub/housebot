@@ -697,6 +697,36 @@ impl GitHubIssueReporter {
         Ok(())
     }
 
+    /// Fetch all pages of comments for an issue by following Link headers.
+    async fn fetch_all_comments(
+        &self,
+        comments_url: &str,
+        token: &str,
+    ) -> anyhow::Result<Vec<serde_json::Value>> {
+        let mut all_comments = Vec::new();
+        let mut url = comments_url.to_string();
+        loop {
+            let resp = self
+                .http
+                .get(&url)
+                .header("Authorization", format!("Bearer {token}"))
+                .header("Accept", "application/vnd.github+json")
+                .header("X-GitHub-Api-Version", "2022-11-28")
+                .header("User-Agent", "house-chatbot")
+                .send()
+                .await?
+                .error_for_status()?;
+            let next = next_page_url(&resp);
+            let page: Vec<serde_json::Value> = resp.json().await?;
+            all_comments.extend(page);
+            match next {
+                Some(u) => url = u,
+                None => break,
+            }
+        }
+        Ok(all_comments)
+    }
+
     /// Fetch full issue detail including body, labels, and comments.
     pub async fn get_issue_detail(&self, issue_number: u64) -> Option<String> {
         if !self.is_configured() {
@@ -748,19 +778,9 @@ impl GitHubIssueReporter {
             format!("\nLabels: {}", labels.join(", "))
         };
 
-        // Fetch comments
-        let comments_url = format!("{url}/comments");
-        let comments: Vec<serde_json::Value> = self
-            .http
-            .get(&comments_url)
-            .header("Authorization", format!("Bearer {token}"))
-            .header("Accept", "application/vnd.github+json")
-            .header("X-GitHub-Api-Version", "2022-11-28")
-            .header("User-Agent", "house-chatbot")
-            .send()
-            .await?
-            .error_for_status()?
-            .json()
+        // Fetch comments (all pages via Link header pagination)
+        let comments = self
+            .fetch_all_comments(&format!("{url}/comments?per_page=100"), &token)
             .await?;
 
         let comment_lines: Vec<String> = comments
@@ -838,23 +858,50 @@ impl GitHubIssueReporter {
 
     async fn try_remove_labels(&self, issue_number: u64, labels: &[&str]) -> anyhow::Result<()> {
         let token = self.token().await?;
+        let mut errors = Vec::new();
         for label in labels {
             let url = format!(
                 "https://api.github.com/repos/{}/issues/{issue_number}/labels/{}",
                 self.repo,
                 urlencoding(label)
             );
-            self.http
+            match self
+                .http
                 .delete(&url)
                 .header("Authorization", format!("Bearer {token}"))
                 .header("Accept", "application/vnd.github+json")
                 .header("X-GitHub-Api-Version", "2022-11-28")
                 .header("User-Agent", "house-chatbot")
                 .send()
-                .await?
-                .error_for_status()?;
+                .await
+            {
+                Ok(resp) => {
+                    if let Err(e) = resp.error_for_status() {
+                        errors.push(format!("'{label}': {e}"));
+                    }
+                }
+                Err(e) => {
+                    errors.push(format!("'{label}': {e}"));
+                }
+            }
         }
-        Ok(())
+        if errors.is_empty() {
+            Ok(())
+        } else if errors.len() < labels.len() {
+            tracing::warn!(
+                issue_number,
+                "Partial label removal ({} of {} failed): {}",
+                errors.len(),
+                labels.len(),
+                errors.join("; ")
+            );
+            Ok(())
+        } else {
+            Err(anyhow::anyhow!(
+                "Failed to remove all requested labels: {}",
+                errors.join("; ")
+            ))
+        }
     }
 
     /// Prune issues matching criteria: optionally close stale issues or bulk-label them.
@@ -885,38 +932,60 @@ impl GitHubIssueReporter {
         action: &str,
         action_value: &str,
     ) -> anyhow::Result<String> {
-        let issues_text = self.list_issues(state, labels).await;
-        if issues_text.starts_with("Error:") || issues_text == "No issues found." {
-            return Ok(format!(
-                "No issues found matching the criteria.\n{issues_text}"
-            ));
+        let token = self.token().await?;
+        let state_e = urlencoding(state);
+        let mut path = format!(
+            "https://api.github.com/repos/{}/issues?state={state_e}&per_page=100",
+            self.repo
+        );
+        if !labels.is_empty() {
+            path.push_str(&format!("&labels={}", urlencoding(labels)));
         }
 
-        // Parse issue numbers from the list output
-        let numbers: Vec<u64> = issues_text
-            .lines()
-            .filter_map(|line| {
-                let line = line.trim();
-                if line.starts_with('#') {
-                    if let Some(rest) = line.strip_prefix('#') {
-                        if let Some(num_str) = rest.split_whitespace().next() {
-                            return num_str.parse::<u64>().ok();
-                        }
-                    }
+        // Fetch all pages of issues
+        let mut all_issues: Vec<serde_json::Value> = Vec::new();
+        let mut url = path;
+        loop {
+            let resp = self
+                .http
+                .get(&url)
+                .header("Authorization", format!("Bearer {token}"))
+                .header("Accept", "application/vnd.github+json")
+                .header("X-GitHub-Api-Version", "2022-11-28")
+                .header("User-Agent", "house-chatbot")
+                .send()
+                .await?
+                .error_for_status()?;
+            let next = next_page_url(&resp);
+            let page: Vec<serde_json::Value> = resp.json().await?;
+            // Filter out PRs
+            for issue in page {
+                if issue.get("pull_request").is_none() {
+                    all_issues.push(issue);
                 }
-                None
-            })
-            .collect();
+            }
+            match next {
+                Some(u) => url = u,
+                None => break,
+            }
+        }
 
-        if numbers.is_empty() {
+        if all_issues.is_empty() {
             return Ok("No issues found matching the criteria.".to_string());
         }
 
+        let numbers: Vec<u64> = all_issues
+            .iter()
+            .filter_map(|i| i["number"].as_u64())
+            .collect();
+
         let mut results: Vec<String> = Vec::new();
+        let mut successes = 0u64;
         match action {
             "close" => {
                 for &num in &numbers {
                     if self.close_issue(num).await {
+                        successes += 1;
                         results.push(format!("#{num} closed"));
                     } else {
                         results.push(format!("#{num} failed to close"));
@@ -924,9 +993,19 @@ impl GitHubIssueReporter {
                 }
             }
             "label" => {
-                let new_labels: Vec<&str> = action_value.split(',').map(|s| s.trim()).collect();
+                let new_labels: Vec<&str> = action_value
+                    .split(',')
+                    .map(|s| s.trim())
+                    .filter(|s| !s.is_empty())
+                    .collect();
+                if new_labels.is_empty() {
+                    return Err(anyhow::anyhow!(
+                        "No valid labels provided for 'label' action."
+                    ));
+                }
                 for &num in &numbers {
                     if self.add_labels(num, &new_labels).await {
+                        successes += 1;
                         results.push(format!("#{num} labelled with [{}]", new_labels.join(", ")));
                     } else {
                         results.push(format!("#{num} failed to label"));
@@ -934,9 +1013,19 @@ impl GitHubIssueReporter {
                 }
             }
             "unlabel" => {
-                let remove_labels: Vec<&str> = action_value.split(',').map(|s| s.trim()).collect();
+                let remove_labels: Vec<&str> = action_value
+                    .split(',')
+                    .map(|s| s.trim())
+                    .filter(|s| !s.is_empty())
+                    .collect();
+                if remove_labels.is_empty() {
+                    return Err(anyhow::anyhow!(
+                        "No valid labels provided for 'unlabel' action."
+                    ));
+                }
                 for &num in &numbers {
                     if self.remove_labels(num, &remove_labels).await {
+                        successes += 1;
                         results.push(format!("#{num} unlabelled [{}]", remove_labels.join(", ")));
                     } else {
                         results.push(format!("#{num} failed to unlabel"));
@@ -946,11 +1035,19 @@ impl GitHubIssueReporter {
             other => return Err(anyhow::anyhow!("Unknown prune action: {other}")),
         }
 
-        Ok(format!(
-            "Pruned {} issue(s):\n{}",
-            results.len(),
-            results.join("\n")
-        ))
+        if successes > 0 {
+            Ok(format!(
+                "Pruned {} of {} issue(s):\n{}",
+                successes,
+                numbers.len(),
+                results.join("\n")
+            ))
+        } else {
+            Ok(format!(
+                "No issues were successfully pruned.\n{}",
+                results.join("\n")
+            ))
+        }
     }
 }
 
@@ -1017,6 +1114,20 @@ fn urlencoding(s: &str) -> String {
         }
     }
     result
+}
+
+/// Extract the `rel="next"` page URL from a GitHub API response's Link header.
+fn next_page_url(resp: &reqwest::Response) -> Option<String> {
+    let link = resp.headers().get("link")?.to_str().ok()?;
+    for part in link.split(',') {
+        let part = part.trim();
+        if part.contains("rel=\"next\"") {
+            let start = part.find('<')?;
+            let end = part.find('>')?;
+            return Some(part[start + 1..end].to_string());
+        }
+    }
+    None
 }
 
 #[cfg(test)]
