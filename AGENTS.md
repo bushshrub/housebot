@@ -284,6 +284,10 @@ specification, runner requirements, and security model.
   changes it produces before handing work back; do not leave implemented changes uncommitted.
 - **Codex attribution.** Every commit created by the Codex coding agent must include the exact
   trailer `Co-authored-by: codex <codex@openai.com>`.
+- **Agent-only attribution.** Commits created by a coding agent are attributed solely to that
+  agent: the agent is the git author and committer, and any `Co-authored-by` trailer names the
+  agent only. Never include the user who triggered the run — as author, committer, or
+  co-author — since they did not write the changes.
 - **Secrets on runner.** `NVIDIA_API_KEY` is the only secret injected at runtime.
   OAuth sessions for Codex and Claude are pre-configured on the runner and must never be
   read, printed, or uploaded by workflow steps.
