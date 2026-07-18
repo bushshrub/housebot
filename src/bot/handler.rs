@@ -408,6 +408,26 @@ impl EventHandler for HouseBot {
         if user_id == bot_id {
             return;
         }
+
+        // ── Emoji echo: when a user reacts to a bot reply, copy the reaction
+        //    back to the user's original message.
+        //
+        //    We do this *before* the tool-ban check so that the message-fetch
+        //    is shared: the tool-ban path returns early on non-proposal
+        //    messages, which is *after* our echo has already fired.
+        if let Ok(message) = reaction
+            .channel_id
+            .message(&ctx.http, reaction.message_id)
+            .await
+        {
+            if message.author.id.get() == bot_id {
+                if let Some(ref referenced) = message.referenced_message {
+                    let _ = referenced.react(&ctx.http, reaction.emoji.clone()).await;
+                }
+            }
+        }
+
+        // ── Tool-ban voting ──────────────────────────────────────────────
         let Some(guild_id) = reaction.guild_id.map(|g| g.get()) else {
             return;
         };
