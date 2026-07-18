@@ -165,18 +165,20 @@ impl EventHandler for HouseBot {
                         return;
                     }
                     Some("vote") => {
+                        let defer = CreateInteractionResponse::Defer(
+                            CreateInteractionResponseMessage::new().ephemeral(true),
+                        );
+                        if let Err(e) = cmd.create_response(&ctx.http, defer).await {
+                            tracing::warn!("Failed to defer /tool_restore vote response: {e}");
+                            return;
+                        }
                         let reply = self
                             .handle_tool_restore_vote(&ctx, &cmd, user_id, guild_id)
                             .await;
                         let reply = self.redactor.redact(&reply);
-                        let response = CreateInteractionResponse::Message(
-                            CreateInteractionResponseMessage::new()
-                                .content(reply)
-                                .ephemeral(true),
-                        );
-                        if let Err(e) = cmd.create_response(&ctx.http, response).await {
-                            tracing::warn!("Failed to send /tool_restore vote response: {e}");
-                        }
+                        let _ = cmd
+                            .edit_response(&ctx.http, EditInteractionResponse::new().content(reply))
+                            .await;
                         return;
                     }
                     _ => {}
@@ -781,12 +783,16 @@ impl HouseBot {
             }
         };
 
-        // Send a visible channel message with the proposal.
         let (approvals, _) = proposal.vote_counts();
-        let text = self.redactor.redact(&format_proposal_message(
-            &proposal,
-            approvals,
-            0,
+        let text = self.redactor.redact(&format!(
+            "🗳️ **Ban proposal** by <@{}>\n\
+             Target: <@{}>\n\
+             Tool: `{}`\n\
+             Votes: **{approvals} approve** / **0 reject** (minimum {} votes)\n\
+             React with ✅ to approve, ❌ to reject (or use `/tool_ban vote`)",
+            proposal.proposed_by,
+            proposal.target_user_id,
+            proposal.tool_name,
             permissions.min_votes(),
         ));
         let msg = match cmd
@@ -1028,10 +1034,15 @@ impl HouseBot {
         };
 
         let (approvals, _) = proposal.vote_counts();
-        let text = self.redactor.redact(&format_restore_proposal_message(
-            &proposal,
-            approvals,
-            0,
+        let text = self.redactor.redact(&format!(
+            "🔓 **Restore proposal** by <@{}>\n\
+             Target: <@{}>\n\
+             Tool: `{}`\n\
+             Votes: **{approvals} approve** / **0 reject** (minimum {} votes)\n\
+             React with ✅ to approve restore, ❌ to reject (or use `/tool_restore vote`)",
+            proposal.proposed_by,
+            proposal.target_user_id,
+            proposal.tool_name,
             permissions.min_votes(),
         ));
         let msg = match cmd
