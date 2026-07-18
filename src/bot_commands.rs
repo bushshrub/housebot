@@ -2,6 +2,7 @@
 
 use crate::bot_config::UserConfigStore;
 use crate::channel_log::ChannelLog;
+use crate::grocery::GroceryList;
 use crate::history::History;
 use crate::memory::Memory;
 use crate::message_log::MessageLog;
@@ -174,6 +175,53 @@ pub async fn note_command(notes: &Notes, first_line: &str, rest: &str, author_id
     }
 }
 
+pub async fn grocery_command(
+    grocery: &GroceryList,
+    first_line: &str,
+    rest: &str,
+    user_id: u64,
+) -> String {
+    let parts: Vec<&str> = first_line
+        .splitn(3, char::is_whitespace)
+        .filter(|s| !s.is_empty())
+        .collect();
+    match parts.get(1).copied() {
+        Some("add") => {
+            let item = if rest.is_empty() {
+                parts.get(2).map(|s| s.trim()).unwrap_or("")
+            } else {
+                rest.trim()
+            };
+            if item.is_empty() {
+                return "Usage: `!grocery add <item>`".into();
+            }
+            grocery
+                .add(user_id, item)
+                .await
+                .unwrap_or_else(|e| format!("⚠️ Failed to add item: {e}"))
+        }
+        Some("remove") | Some("rm") => {
+            let item = if rest.is_empty() {
+                parts.get(2).map(|s| s.trim()).unwrap_or("")
+            } else {
+                rest.trim()
+            };
+            if item.is_empty() {
+                return "Usage: `!grocery remove <item>`".into();
+            }
+            grocery
+                .remove(user_id, item)
+                .await
+                .unwrap_or_else(|e| format!("⚠️ Failed to remove item: {e}"))
+        }
+        Some("flush") => grocery
+            .flush(user_id)
+            .await
+            .unwrap_or_else(|e| format!("⚠️ Failed to flush list: {e}")),
+        _ => grocery.display(user_id).await,
+    }
+}
+
 /// Erase all stored data for the requesting user: message log, history, memory, notes, profile, reminders, and channel log entries.
 #[allow(clippy::too_many_arguments)]
 pub async fn erase_data_command(
@@ -185,6 +233,7 @@ pub async fn erase_data_command(
     user_config: &UserConfigStore,
     reminders: &Reminders,
     channel_log: &ChannelLog,
+    grocery: &GroceryList,
     user_id: u64,
 ) -> String {
     let log_result = message_log.clear(user_id.to_string()).await;
@@ -193,6 +242,7 @@ pub async fn erase_data_command(
     let notes_result = notes.clear(user_id.to_string()).await;
     let profile_result = profile_store.clear(user_id.to_string()).await;
     let config_result = user_config.clear(user_id).await;
+    let _ = grocery.flush(user_id).await;
 
     // Remove user's reminders
     let mut all_reminders = reminders.load().await;
@@ -331,6 +381,7 @@ mod tests {
         UserConfigStore,
         Reminders,
         ChannelLog,
+        GroceryList,
     ) {
         let tmp = TempDir::new().unwrap();
         let msg_log = MessageLog::new(tmp.path().join("message_log"));
@@ -341,6 +392,7 @@ mod tests {
         let user_config = UserConfigStore::new(tmp.path().join("user_config"));
         let reminders = Reminders::new(tmp.path().join("reminders.json"));
         let channel_log = ChannelLog::new(tmp.path().join("channel_log"));
+        let grocery = GroceryList::new(tmp.path().join("grocery"));
         (
             tmp,
             msg_log,
@@ -351,13 +403,24 @@ mod tests {
             user_config,
             reminders,
             channel_log,
+            grocery,
         )
     }
 
     #[tokio::test]
     async fn erase_data_clears_all_stores() {
-        let (_tmp, msg_log, history, memory, notes, profile, user_config, reminders, channel_log) =
-            stores();
+        let (
+            _tmp,
+            msg_log,
+            history,
+            memory,
+            notes,
+            profile,
+            user_config,
+            reminders,
+            channel_log,
+            grocery,
+        ) = stores();
         let user_id = 123u64;
 
         // Populate all stores
@@ -409,6 +472,7 @@ mod tests {
         channel_log
             .append(1, user_id, "Alice", None, "channel msg")
             .await;
+        grocery.add(user_id, "milk").await.unwrap();
 
         let reply = erase_data_command(
             &msg_log,
@@ -419,6 +483,7 @@ mod tests {
             &user_config,
             &reminders,
             &channel_log,
+            &grocery,
             user_id,
         )
         .await;
@@ -438,12 +503,23 @@ mod tests {
         assert_eq!(profile.load(user_id.to_string()).await.username, "");
         assert!(user_config.load(user_id).await.deep_memory_enabled);
         assert!(reminders.load().await.is_empty());
+        assert!(grocery.load(user_id).await.is_empty());
     }
 
     #[tokio::test]
     async fn erase_data_preserves_other_users() {
-        let (_tmp, msg_log, history, memory, notes, profile, user_config, reminders, channel_log) =
-            stores();
+        let (
+            _tmp,
+            msg_log,
+            history,
+            memory,
+            notes,
+            profile,
+            user_config,
+            reminders,
+            channel_log,
+            grocery,
+        ) = stores();
         let user_a = 100u64;
         let user_b = 200u64;
 
@@ -501,6 +577,7 @@ mod tests {
             &user_config,
             &reminders,
             &channel_log,
+            &grocery,
             user_a,
         )
         .await;

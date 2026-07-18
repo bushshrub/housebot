@@ -16,6 +16,7 @@ pub mod config;
 pub mod database;
 pub mod discord_bridge;
 pub mod github_issues;
+pub mod grocery;
 /// Re-exported from the `graph-render` workspace crate; kept at this path so
 /// existing `crate::graph_render::…` references continue to resolve.
 pub use graph_render;
