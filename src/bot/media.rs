@@ -364,11 +364,36 @@ pub(crate) fn unix_now() -> f64 {
 mod media_tests {
     use super::{
         attachment_context, convert_gif_to_video, extract_gif_from_text, is_pdf, is_safe_url,
-        media_type, pdf_render_arguments,
+        media_type, pdf_render_arguments, referenced_message_context,
     };
+    use serenity::all::Message;
+
+    fn msg(content: &str) -> Message {
+        serde_json::from_value(serde_json::json!({
+            "id": "1",
+            "channel_id": "1",
+            "author": {
+                "id": "1",
+                "username": "tester",
+                "discriminator": "0000",
+                "avatar": null
+            },
+            "content": content,
+            "timestamp": "2026-01-01T00:00:00+00:00",
+            "tts": false,
+            "mention_everyone": false,
+            "mentions": [],
+            "mention_roles": [],
+            "attachments": [],
+            "embeds": [],
+            "pinned": false,
+            "type": 0
+        }))
+        .unwrap()
+    }
 
     #[test]
-    fn recognizes_supported_media_extensions() {
+    fn recognized_supported_media_extensions() {
         assert_eq!(media_type("PHOTO.PNG"), Some("image/png"));
         assert_eq!(media_type("recording.mp3"), Some("audio/mpeg"));
         assert_eq!(media_type("clip.mp4"), Some("video/mp4"));
@@ -397,6 +422,101 @@ mod media_tests {
     #[test]
     fn attachment_context_omits_empty_attachment_lists() {
         assert!(attachment_context(std::iter::empty()).is_none());
+    }
+
+    #[test]
+    fn referenced_context_with_content() {
+        let context = referenced_message_context(&msg("Hello world")).unwrap();
+        assert!(context.contains("Hello world"));
+        assert!(context.starts_with("[Message being replied to]"));
+        assert!(context.ends_with("[End message being replied to]"));
+    }
+
+    #[test]
+    fn referenced_context_empty_content_no_attachments() {
+        assert!(referenced_message_context(&msg("")).is_none());
+    }
+
+    #[test]
+    fn referenced_context_with_urls() {
+        let context =
+            referenced_message_context(&msg("Check https://example.com/page")).unwrap();
+        assert!(context.contains("URL(s)"));
+        assert!(context.contains("https://example.com/page"));
+    }
+
+    #[test]
+    fn referenced_context_with_attachments() {
+        let m: Message = serde_json::from_value(serde_json::json!({
+            "id": "2",
+            "channel_id": "1",
+            "author": {
+                "id": "1",
+                "username": "tester",
+                "discriminator": "0000",
+                "avatar": null
+            },
+            "content": "",
+            "timestamp": "2026-01-01T00:00:00+00:00",
+            "tts": false,
+            "mention_everyone": false,
+            "mentions": [],
+            "mention_roles": [],
+            "attachments": [{
+                "id": "10",
+                "filename": "report.pdf",
+                "url": "https://cdn.discord.com/report.pdf",
+                "proxy_url": "https://media.discord.com/report.pdf",
+                "size": 1024,
+                "width": null,
+                "height": null,
+                "content_type": null
+            }],
+            "embeds": [],
+            "pinned": false,
+            "type": 0
+        }))
+        .unwrap();
+        let context = referenced_message_context(&m).unwrap();
+        assert!(context.contains("report.pdf"));
+        assert!(context.contains("already available"));
+    }
+
+    #[test]
+    fn referenced_context_content_and_attachments() {
+        let m: Message = serde_json::from_value(serde_json::json!({
+            "id": "3",
+            "channel_id": "1",
+            "author": {
+                "id": "1",
+                "username": "tester",
+                "discriminator": "0000",
+                "avatar": null
+            },
+            "content": "See attached file",
+            "timestamp": "2026-01-01T00:00:00+00:00",
+            "tts": false,
+            "mention_everyone": false,
+            "mentions": [],
+            "mention_roles": [],
+            "attachments": [{
+                "id": "11",
+                "filename": "data.csv",
+                "url": "https://cdn.discord.com/data.csv",
+                "proxy_url": "https://media.discord.com/data.csv",
+                "size": 512,
+                "width": null,
+                "height": null,
+                "content_type": null
+            }],
+            "embeds": [],
+            "pinned": false,
+            "type": 0
+        }))
+        .unwrap();
+        let context = referenced_message_context(&m).unwrap();
+        assert!(context.contains("See attached file"));
+        assert!(context.contains("data.csv"));
     }
 
     #[test]
