@@ -27,8 +27,8 @@ fn run_args_have_all_required_security_features() {
     );
     if std::env::var("HOUSEBOT_SANDBOX_RUNTIME").is_err() {
         assert!(
-            arg_str.contains("--runtime=kata"),
-            "default runtime must be kata (Kata Containers 2.x)"
+            arg_str.contains("--runtime=runsc"),
+            "default runtime must be runsc (gVisor)"
         );
     }
 }

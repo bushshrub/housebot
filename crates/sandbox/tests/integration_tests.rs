@@ -156,8 +156,8 @@ fn docker_args_all_security_options_present() {
     );
     if std::env::var("HOUSEBOT_SANDBOX_RUNTIME").is_err() {
         assert!(
-            joined.contains("--runtime=kata"),
-            "default runtime must be kata (Kata Containers 2.x)"
+            joined.contains("--runtime=runsc"),
+            "default runtime must be runsc (gVisor)"
         );
     }
 }
@@ -275,8 +275,8 @@ fn limits_are_sane() {
 // Requirements:
 //   - Docker daemon running and accessible
 //   - Sandbox image built and tagged as ghcr.io/bushshrub/housebot/sandbox:latest
-//   - In CI: set HOUSEBOT_SANDBOX_RUNTIME=runc (Kata not available on hosted runners)
-//   - In production: leave HOUSEBOT_SANDBOX_RUNTIME unset to use kata
+//   - In CI: set HOUSEBOT_SANDBOX_RUNTIME=runc (gVisor not available on hosted runners)
+//   - In production: leave HOUSEBOT_SANDBOX_RUNTIME unset to use runsc
 //
 // Run:
 //   cargo test --package housebot-sandbox -- --include-ignored --test-threads=1

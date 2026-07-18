@@ -67,12 +67,12 @@ pub fn build_run_args(id: &str, network: NetworkAccess) -> Vec<String> {
     args.push("--detach".to_string());
     args.push("--rm".to_string());
 
-    // VM-level isolation via Kata Containers (2.x shim registered as "kata"
-    // in /etc/docker/daemon.json).  Prevents container-escape from reaching
-    // the Docker host even if the in-container command is malicious.
+    // Kernel-level sandbox via gVisor (runsc).  gVisor intercepts syscalls
+    // in userspace, providing a secure isolation boundary without requiring
+    // hardware virtualization or nested VM support.
     // Override with HOUSEBOT_SANDBOX_RUNTIME=runc for CI or dev environments
-    // that don't have Kata installed.
-    let runtime = std::env::var("HOUSEBOT_SANDBOX_RUNTIME").unwrap_or_else(|_| "kata".to_string());
+    // that don't have gVisor installed.
+    let runtime = std::env::var("HOUSEBOT_SANDBOX_RUNTIME").unwrap_or_else(|_| "runsc".to_string());
     args.push(format!("--runtime={runtime}"));
 
     // Container identity
@@ -306,14 +306,14 @@ mod tests {
     }
 
     #[test]
-    fn run_args_default_runtime_is_kata() {
+    fn run_args_default_runtime_is_runsc() {
         if std::env::var("HOUSEBOT_SANDBOX_RUNTIME").is_ok() {
             return; // env override active; default assertion skipped
         }
         let args = build_run_args("test-1", NetworkAccess::None);
         assert!(
-            args.contains(&"--runtime=kata".to_string()),
-            "default runtime must be kata (Kata Containers 2.x)"
+            args.contains(&"--runtime=runsc".to_string()),
+            "default runtime must be runsc (gVisor)"
         );
     }
 
