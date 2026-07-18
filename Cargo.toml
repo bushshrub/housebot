@@ -8,15 +8,23 @@ license = "AGPL-3.0-or-later"
 
 [workspace]
 members = [
+    "crates/bot-commands",
+    "crates/bot-config",
+    "crates/bot-formatting",
+    "crates/bot-response",
     "crates/channel-log",
+    "crates/coding-agent",
     "crates/common-crawl",
     "crates/config",
     "crates/database",
     "crates/deployment-bot",
+    "crates/discord-bridge",
+    "crates/github-issues",
     "crates/graph-render",
     "crates/grocery",
     "crates/history",
     "crates/llm",
+    "crates/llm-queue",
     "crates/mcp",
     "crates/memory",
     "crates/message-log",
@@ -28,6 +36,8 @@ members = [
     "crates/skills",
     "crates/testing",
     "crates/token-monitor",
+    "crates/tool-permissions",
+    "crates/tools",
 ]
 resolver = "2"
 
@@ -42,16 +52,12 @@ path = "src/lib.rs"
 [dependencies]
 serenity = { version = "0.12", default-features = false, features = ["client", "gateway", "rustls_backend", "model", "cache"] }
 tokio = { version = "1", features = ["full"] }
-tokio-postgres = "0.7"
 reqwest = { version = "0.12", default-features = false, features = ["json", "stream", "rustls-tls"] }
-serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
 regex = "1"
 uuid = { version = "1", features = ["v4"] }
-jsonwebtoken = "9"
 base64 = "0.22"
-futures-util = "0.3"
+chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
 async-trait = "0.1"
 anyhow = "1"
 tracing = "0.1"
@@ -65,10 +71,18 @@ sentry = { version = "0.38.0", default-features = false, features = [
     "reqwest",
     "rustls",
 ] }
-bytes = "1"
-sha2 = "0.10"
 mlua = { version = "0.12", features = ["lua54", "vendored"] }
 common-crawl = { path = "crates/common-crawl" }
+housebot-bot-commands = { path = "crates/bot-commands" }
+housebot-bot-config = { path = "crates/bot-config" }
+housebot-bot-formatting = { path = "crates/bot-formatting" }
+housebot-bot-response = { path = "crates/bot-response" }
+housebot-coding-agent = { path = "crates/coding-agent" }
+housebot-discord-bridge = { path = "crates/discord-bridge" }
+housebot-github-issues = { path = "crates/github-issues" }
+housebot-llm-queue = { path = "crates/llm-queue" }
+housebot-tool-permissions = { path = "crates/tool-permissions" }
+housebot-tools = { path = "crates/tools" }
 graph-render = { path = "crates/graph-render" }
 housebot-channel-log = { path = "crates/channel-log" }
 housebot-config = { path = "crates/config" }

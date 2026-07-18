@@ -1,0 +1,16 @@
+[package]
+name = "housebot-github-issues"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.80"
+description = "GitHub App client for issues, comments, and pull requests"
+license = "AGPL-3.0-or-later"
+
+[dependencies]
+anyhow = "1"
+jsonwebtoken = "9"
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["rt", "time"] }
+tracing = "0.1"

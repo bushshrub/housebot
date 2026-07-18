@@ -1,0 +1,25 @@
+[package]
+name = "housebot-bot-commands"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.80"
+description = "Prefix-command handlers for storage and utility features"
+license = "AGPL-3.0-or-later"
+
+[dependencies]
+housebot-bot-config = { path = "../bot-config" }
+housebot-channel-log = { path = "../channel-log" }
+housebot-grocery = { path = "../grocery" }
+housebot-history = { path = "../history" }
+housebot-memory = { path = "../memory" }
+housebot-message-log = { path = "../message-log" }
+housebot-notes = { path = "../notes" }
+housebot-profile = { path = "../profile" }
+housebot-reminders = { path = "../reminders" }
+housebot-skills = { path = "../skills" }
+serde_json = "1"
+tokio = { version = "1", features = ["rt"] }
+
+[dev-dependencies]
+tempfile = "3"
+tokio = { version = "1", features = ["full", "test-util"] }
