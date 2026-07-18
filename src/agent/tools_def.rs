@@ -61,9 +61,10 @@ pub(crate) fn search_messages_tool() -> Value {
         "name": "search_messages",
         "description": "Search Discord channel messages by regex pattern. The pattern is matched \
             against message content, the author's Discord username, AND the author's server \
-            nickname or display name. Use this when a user asks what someone said or what was \
-            discussed — e.g. to find all messages by 'hexagone', search for '(?i)hexagone' and \
-            it will match any message where that name appears as the author or in the text. \
+            nickname or display name. Use this only when searching for a specific keyword, \
+            topic, or person — e.g. to find all messages by 'hexagone', search for '(?i)hexagone' \
+            and it will match any message where that name appears as the author or in the text. \
+            For recaps or vague questions about what was discussed, use get_recent_messages instead. \
             Supports full Rust regex syntax; case-insensitive patterns ((?i)) are common.",
         "input_schema": {
             "type": "object",
