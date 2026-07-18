@@ -35,9 +35,6 @@ pub(crate) async fn send_final_message(
     let mentions = build_allowed_mentions(allowed_pings);
     if !paginate {
         let chunks = split_text(text, MAX_MESSAGE_LENGTH);
-        if let Some(progress) = progress {
-            let _ = progress.delete(&ctx.http).await;
-        }
         let mut first_id = None;
         for (i, chunk) in chunks.iter().enumerate() {
             if i == 0 {
