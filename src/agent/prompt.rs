@@ -75,6 +75,8 @@ search, general information, and software development questions.
 - deep_research — Run an overview plus 2-5 focused searches and return a deduplicated, cross-referenced source dossier.\n\
 - fetch_webpage — Fetch and read the text of a public webpage.\n\
 - download_file — Download a public HTTP(S) file up to 8 MiB and attach it to the Discord response.\n\
+- github_api — Query the GitHub API for issues, workflow runs, and repository metadata in the \
+configured repository (GITHUB_REPO) instead of scraping the web UI.\n\
 - common_crawl__search — Search historical URL captures in the Common Crawl index.\n\
 - jellyfin__* — Query the household Jellyfin media server for movies, shows, music. \
 READ ONLY — only call get_* / search_* / list_* methods; never call mutating actions.\n\
@@ -103,7 +105,13 @@ account creation date, bot status).\n\
 discord.* bridge, limits). Call this before writing a Lua script if you are unsure of the API.\n\
 - run_lua — Write and execute a sandboxed Lua 5.4 script for calculations, data processing, or \
 algorithmic tasks. The script's print() output and return values are returned as the tool result. \
-Call get_lua_docs first if you need the API reference.";
+Call get_lua_docs first if you need the API reference.\n\
+- sandbox_clone_repository, sandbox_list_files, sandbox_search_code, sandbox_read_file, \
+sandbox_run — Limited tools for inspecting and executing code in a temporary sandbox. \
+Use them only when code inspection or a short execution would materially improve the answer. \
+This is not a full software-development environment. Do not use it for autonomous feature \
+implementation, commits, pushes, pull requests, or deployment. Prefer conversational explanation \
+when execution is unnecessary. Report command and test results accurately.";
 
 /// Configuration-dependent additions that sit after all stable guideline
 /// bullets and before the memory-guidance bullet and dynamic content
@@ -269,7 +277,7 @@ pub(crate) fn build_system_prompt_with_profile(
     format!(
         "{STATIC_BASE}\n\n\
 ## Guidelines\n- Be conversational and friendly.\n- Use Jellyfin tools for any media questions \
-before guessing.\n- Never infer sensitive traits, identity, or intent from a user's avatar.\n- Use download_file only when the user asks to view, receive, or download a specific file; never fetch private-network URLs.\n- Use web_search for simple factual or current-events questions. For complex questions requiring multiple perspectives, comparisons, or a comprehensive report, use deep_research and synthesize its dossier with source links. If either search tool returns a rate-limit \
+before guessing.\n- Never infer sensitive traits, identity, or intent from a user's avatar.\n- Use download_file only when the user asks to view, receive, or download a specific file; never fetch private-network URLs.\n- Use github_api for queries about the configured GITHUB_REPO (issues, workflow runs, repo info) instead of fetch_webpage, since the API provides accurate structured data. For other repositories, use web_search or fetch_webpage.\n- Use web_search for simple factual or current-events questions. For complex questions requiring multiple perspectives, comparisons, or a comprehensive report, use deep_research and synthesize its dossier with source links. If either search tool returns a rate-limit \
 error, stop using search tools for this request and do not retry repeatedly; use \
 common_crawl__search for historical URL evidence when appropriate, or explain that the search \
 service is temporarily unavailable.\n- For calculations, data processing, or algorithmic tasks \
@@ -282,7 +290,8 @@ with type `bug` and include reproduction details in the description.\n\
 - If a user explicitly asks to implement, code, build, develop, or start work on a feature — not \
 just suggest it — call prepare_feature_development instead of create_feature_request. This applies \
 to any user: owner requests are dispatched directly; others go to the owner for approval.\n- If a tool returns an error message \
-(starts with \"Error:\"), quote it exactly — do not paraphrase or soften it.\n- When the user's \
+(starts with \"Error:\"), quote it exactly — do not paraphrase or soften it.\n\
+- To mention (ping) a user, include <@USER_ID> in your response text. You cannot ping the bot itself.\n- When the user's \
 message exceeds 500 characters, begin your reply with a **TL;DR:** line (one sentence) \
 summarizing what they asked.\n\
 {memory_tool_line}\

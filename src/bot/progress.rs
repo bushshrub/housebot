@@ -15,14 +15,16 @@ pub(crate) fn compact_progress(stage: usize, detail: Option<&str>) -> String {
     }
 }
 
-pub(crate) enum CompactProgressTarget {
-    Interaction {
-        ctx: Context,
-        command: Box<serenity::all::CommandInteraction>,
-    },
+pub(crate) struct CompactProgressHooks {
+    ctx: Context,
+    command: Box<serenity::all::CommandInteraction>,
 }
 
-pub(crate) struct CompactProgressHooks(pub(crate) CompactProgressTarget);
+impl CompactProgressHooks {
+    pub(crate) fn new(ctx: Context, command: Box<serenity::all::CommandInteraction>) -> Self {
+        Self { ctx, command }
+    }
+}
 
 #[async_trait]
 impl AgentHooks for CompactProgressHooks {
@@ -35,13 +37,13 @@ impl AgentHooks for CompactProgressHooks {
             return;
         };
         let content = compact_progress(stage, (!detail.is_empty()).then_some(detail));
-        match &self.0 {
-            CompactProgressTarget::Interaction { ctx, command } => {
-                let _ = command
-                    .edit_response(&ctx.http, EditInteractionResponse::new().content(content))
-                    .await;
-            }
-        }
+        let _ = self
+            .command
+            .edit_response(
+                &self.ctx.http,
+                EditInteractionResponse::new().content(content),
+            )
+            .await;
     }
 }
 

@@ -9,11 +9,12 @@ use std::time::{Duration, Instant};
 use async_trait::async_trait;
 use regex::Regex;
 use serenity::all::{
-    ButtonStyle, Command, CommandDataOptionValue, CommandOptionType, ComponentInteractionDataKind,
-    Context, CreateActionRow, CreateAllowedMentions, CreateAttachment, CreateButton, CreateCommand,
-    CreateCommandOption, CreateEmbed, CreateInteractionResponse, CreateInteractionResponseMessage,
-    CreateSelectMenu, CreateSelectMenuKind, CreateSelectMenuOption, EditInteractionResponse,
-    EditMessage, EventHandler, GatewayIntents, GuildId, Interaction, Message, Ready, UserId,
+    ButtonStyle, ChannelId, Command, CommandDataOptionValue, CommandOptionType,
+    ComponentInteractionDataKind, Context, CreateActionRow, CreateAllowedMentions,
+    CreateAttachment, CreateAutocompleteResponse, CreateButton, CreateCommand, CreateCommandOption,
+    CreateEmbed, CreateInteractionResponse, CreateInteractionResponseMessage, CreateSelectMenu,
+    CreateSelectMenuKind, CreateSelectMenuOption, EditInteractionResponse, EditMessage,
+    EventHandler, GatewayIntents, GuildId, Interaction, Message, Ready, UserId,
 };
 use serenity::builder::CreateMessage;
 use serenity::Client;
@@ -27,7 +28,9 @@ use crate::bot_config::{LeaderboardVisibility, ServerConfig, ServerConfigStore, 
 pub use crate::bot_response::SecretRedactor;
 use crate::channel_log::ChannelLog;
 use crate::coding_agent::catalog::{AgentCatalog, CodingAgent};
-use crate::coding_agent::issue::{build_issue_body, dispatch_labels, DISPATCH_TRIGGER_COMMENT};
+use crate::coding_agent::issue::{
+    build_dispatch_prompt, build_issue_body, dispatch_labels, DISPATCH_WORKFLOW_FILE,
+};
 use crate::coding_agent::pending::{DiscordMessageRef, DispatchStage, PendingJobStore};
 use crate::config;
 use crate::discord_bridge::DiscordBridge;
@@ -71,6 +74,7 @@ mod config_cmd;
 mod develop;
 mod develop_actions;
 mod develop_component;
+pub(crate) mod emoji_reactions;
 mod handler;
 mod helpers;
 mod interactions;
@@ -243,7 +247,7 @@ impl HouseBot {
         responded.push_back(id);
     }
 
-    /// Start a fresh conversation for `/session new` and its prefix aliases.
+    /// Start a fresh conversation for `/session new`.
     pub(crate) async fn handle_new(&self, channel_id: u64, user_id: u64) -> String {
         tracing::info!(target: "housebot::commands", user_id, "Session reset requested");
         self.agent.reset_session(&user_id.to_string()).await;

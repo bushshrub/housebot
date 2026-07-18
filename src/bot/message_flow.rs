@@ -166,8 +166,16 @@ impl HouseBot {
             }
         }
 
-        // Keep the progress message in the thinking state until the model starts its final reply.
-        let progress = reply_no_ping(ctx, msg, "🧠 **Thinking...**").await.ok();
+        // Check LLM queue utilization so we can show the user their position
+        // when the system is saturated (all 4 LLM slots occupied).
+        let queue_info = self.agent.llm_queue_info();
+        let progress_msg = if queue_info.is_saturated() {
+            let position = queue_info.pending + 1;
+            format!("⏳ **You are #{position} in line. Waiting for an LLM slot to open up...**")
+        } else {
+            "🧠 **Thinking...**".to_string()
+        };
+        let progress = reply_no_ping(ctx, msg, &progress_msg).await.ok();
         let pending_reaction = msg.react(&ctx.http, '⏳').await.ok();
 
         let response_hooks = progress
@@ -268,9 +276,10 @@ impl HouseBot {
         if let Some(notice) = &result.session_notice {
             let _ = reply_no_ping(ctx, msg, notice).await;
         }
+        let allowed_pings = extract_mentioned_users(&safe, bot_id.get());
         let with_tool_summary = append_tool_summary(&safe, &result.tools_called);
         let (display, code_files) = extract_code_files(&with_tool_summary);
-        send_final_message(
+        let sent_id = send_final_message(
             ctx,
             msg,
             &display,
@@ -278,8 +287,20 @@ impl HouseBot {
             msg.author.id.get(),
             &self.paginated,
             progress.as_ref(),
+            &allowed_pings,
         )
         .await;
+
+        // Add dynamic emoji reactions to the response based on content
+        if let Some(reply_id) = sent_id {
+            let emojis = crate::bot::emoji_reactions::select_reactions(&with_tool_summary);
+            for emoji in emojis {
+                let _ = msg
+                    .channel_id
+                    .create_reaction(&ctx.http, reply_id, emoji)
+                    .await;
+            }
+        }
 
         if let Some(reaction) = pending_reaction {
             let _ = reaction.delete(&ctx.http).await;

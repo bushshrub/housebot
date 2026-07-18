@@ -59,6 +59,7 @@ pub struct ExistingIssue {
 }
 
 /// Files GitHub issues on behalf of the bot's GitHub App installation.
+/// Also supports direct GITHUB_TOKEN auth for integration testing.
 pub struct GitHubIssueReporter {
     app_id: String,
     private_key: String,
@@ -66,6 +67,7 @@ pub struct GitHubIssueReporter {
     repo: String,
     http: reqwest::Client,
     cached: Mutex<Option<(String, u64)>>, // (token, expires_at_unix)
+    direct_token: Option<String>,
 }
 
 impl Default for GitHubIssueReporter {
@@ -97,15 +99,31 @@ impl GitHubIssueReporter {
             repo,
             http: reqwest::Client::new(),
             cached: Mutex::new(None),
+            direct_token: None,
+        }
+    }
+
+    /// Construct a reporter that authenticates with a direct GITHUB_TOKEN
+    /// instead of the GitHub App JWT flow. Useful for integration tests.
+    pub fn with_direct_token(token: String, repo: String) -> Self {
+        Self {
+            app_id: String::new(),
+            private_key: String::new(),
+            installation_id: String::new(),
+            repo,
+            http: reqwest::Client::new(),
+            cached: Mutex::new(None),
+            direct_token: Some(token),
         }
     }
 
     /// Whether every credential needed to file issues is present.
     pub fn is_configured(&self) -> bool {
-        !self.app_id.is_empty()
-            && !self.private_key.is_empty()
-            && !self.installation_id.is_empty()
-            && !self.repo.is_empty()
+        (self.direct_token.as_deref().is_some_and(|t| !t.is_empty()) && !self.repo.is_empty())
+            || (!self.app_id.is_empty()
+                && !self.private_key.is_empty()
+                && !self.installation_id.is_empty()
+                && !self.repo.is_empty())
     }
 
     fn generate_jwt(&self) -> anyhow::Result<String> {
@@ -147,6 +165,15 @@ impl GitHubIssueReporter {
         Ok(token)
     }
 
+    /// Return a bearer token — either the direct token (GITHUB_TOKEN) or a
+    /// GitHub App installation token obtained via the JWT flow.
+    async fn token(&self) -> anyhow::Result<String> {
+        if let Some(token) = &self.direct_token {
+            return Ok(token.clone());
+        }
+        self.installation_token().await
+    }
+
     /// Create an issue and return its URL, or `None` on any failure / when unconfigured.
     pub async fn create_issue(&self, title: &str, body: &str, labels: &[&str]) -> Option<String> {
         self.create_issue_full(title, body, labels)
@@ -179,7 +206,7 @@ impl GitHubIssueReporter {
         body: &str,
         labels: &[&str],
     ) -> anyhow::Result<CreatedIssue> {
-        let token = self.installation_token().await?;
+        let token = self.token().await?;
         let url = format!("https://api.github.com/repos/{}/issues", self.repo);
         let labels: Vec<String> = if labels.is_empty() {
             vec!["bug".into()]
@@ -221,7 +248,7 @@ impl GitHubIssueReporter {
     }
 
     async fn try_fetch_issue(&self, issue_number: u64) -> anyhow::Result<ExistingIssue> {
-        let token = self.installation_token().await?;
+        let token = self.token().await?;
         let url = format!(
             "https://api.github.com/repos/{}/issues/{issue_number}",
             self.repo
@@ -265,7 +292,7 @@ impl GitHubIssueReporter {
         title: Option<&str>,
         body: Option<&str>,
     ) -> anyhow::Result<ExistingIssue> {
-        let token = self.installation_token().await?;
+        let token = self.token().await?;
         let url = format!(
             "https://api.github.com/repos/{}/issues/{issue_number}",
             self.repo
@@ -307,7 +334,7 @@ impl GitHubIssueReporter {
     }
 
     async fn try_post_issue_comment(&self, issue_number: u64, body: &str) -> anyhow::Result<()> {
-        let token = self.installation_token().await?;
+        let token = self.token().await?;
         let url = format!(
             "https://api.github.com/repos/{}/issues/{issue_number}/comments",
             self.repo
@@ -325,6 +352,305 @@ impl GitHubIssueReporter {
         Ok(())
     }
 
+    /// Trigger a workflow_dispatch event on the configured repository.
+    /// Returns `true` if the dispatch was successfully requested, `false` otherwise.
+    pub async fn trigger_workflow_dispatch(
+        &self,
+        workflow_file_name: &str,
+        ref_branch: &str,
+        inputs: &serde_json::Map<String, serde_json::Value>,
+    ) -> bool {
+        if !self.is_configured() {
+            return false;
+        }
+        match self
+            .try_trigger_workflow_dispatch(workflow_file_name, ref_branch, inputs)
+            .await
+        {
+            Ok(()) => true,
+            Err(e) => {
+                tracing::error!(workflow = %workflow_file_name, "Failed to trigger workflow_dispatch: {e}");
+                false
+            }
+        }
+    }
+
+    async fn try_trigger_workflow_dispatch(
+        &self,
+        workflow_file_name: &str,
+        ref_branch: &str,
+        inputs: &serde_json::Map<String, serde_json::Value>,
+    ) -> anyhow::Result<()> {
+        let token = self.token().await?;
+        let url = format!(
+            "https://api.github.com/repos/{}/actions/workflows/{}/dispatches",
+            self.repo,
+            urlencoding(workflow_file_name)
+        );
+        let payload = json!({
+            "ref": ref_branch,
+            "inputs": inputs,
+        });
+        self.http
+            .post(&url)
+            .header("Authorization", format!("Bearer {token}"))
+            .header("Accept", "application/vnd.github+json")
+            .header("X-GitHub-Api-Version", "2022-11-28")
+            .header("User-Agent", "house-chatbot")
+            .json(&payload)
+            .send()
+            .await?
+            .error_for_status()?;
+        Ok(())
+    }
+
+    /// Perform an authenticated GET request to the GitHub API.
+    /// Paths starting with `/search/` are treated as root-level API paths;
+    /// all others are prefixed with `/repos/{repo}`.
+    async fn authed_get(&self, path: &str) -> anyhow::Result<String> {
+        let token = self.token().await?;
+        let url = if path.starts_with("/search/") {
+            format!("https://api.github.com{path}")
+        } else {
+            format!("https://api.github.com/repos/{}{}", self.repo, path)
+        };
+        let resp = self
+            .http
+            .get(&url)
+            .header("Authorization", format!("Bearer {token}"))
+            .header("Accept", "application/vnd.github+json")
+            .header("X-GitHub-Api-Version", "2022-11-28")
+            .header("User-Agent", "house-chatbot")
+            .send()
+            .await?
+            .error_for_status()?;
+        Ok(resp.text().await?)
+    }
+
+    /// List issues with optional state and label filters.
+    pub async fn list_issues(&self, state: &str, labels: &str) -> String {
+        let state = urlencoding(state);
+        let path = format!("/issues?state={state}&per_page=20");
+        let path = if labels.is_empty() {
+            path
+        } else {
+            format!("{path}&labels={}", urlencoding(labels))
+        };
+        match self.authed_get(&path).await {
+            Ok(body) => format_issue_list(&body),
+            Err(e) => format!("Error: {e}"),
+        }
+    }
+
+    /// Search issues in the repository.
+    pub async fn search_issues(&self, query: &str) -> String {
+        let q = urlencoding(query);
+        let repo_q = urlencoding(&self.repo);
+        let path = format!("/search/issues?q=repo%3A{repo_q}+is%3Aissue+{q}&per_page=20");
+        match self.authed_get(&path).await {
+            Ok(body) => format_issue_list(&body),
+            Err(e) => format!("Error: {e}"),
+        }
+    }
+
+    /// Get basic repository metadata (stars, forks, description, etc.).
+    pub async fn get_repo(&self) -> String {
+        match self.authed_get("").await {
+            Ok(body) => match serde_json::from_str::<serde_json::Value>(&body) {
+                Ok(repo) => json!({
+                    "full_name": repo["full_name"],
+                    "description": repo["description"],
+                    "default_branch": repo["default_branch"],
+                    "stars": repo["stargazers_count"],
+                    "forks": repo["forks_count"],
+                    "open_issues": repo["open_issues_count"],
+                    "language": repo["language"],
+                    "topics": repo["topics"],
+                    "visibility": repo["visibility"],
+                    "html_url": repo["html_url"],
+                    "created_at": repo["created_at"],
+                    "updated_at": repo["updated_at"],
+                })
+                .to_string(),
+                Err(e) => format!("Error: failed to parse repo info — {e}"),
+            },
+            Err(e) => format!("Error: {e}"),
+        }
+    }
+
+    /// List all workflows in the repository.
+    pub async fn list_workflows(&self) -> String {
+        match self.authed_get("/actions/workflows?per_page=50").await {
+            Ok(body) => match serde_json::from_str::<serde_json::Value>(&body) {
+                Ok(val) => {
+                    let workflows = val["workflows"]
+                        .as_array()
+                        .map(|arr| {
+                            arr.iter()
+                                .map(|w| {
+                                    json!({
+                                        "id": w["id"],
+                                        "name": w["name"],
+                                        "state": w["state"],
+                                        "path": w["path"],
+                                        "html_url": w["html_url"],
+                                    })
+                                })
+                                .collect::<Vec<_>>()
+                        })
+                        .unwrap_or_default();
+                    serde_json::to_string_pretty(&json!({"workflows": workflows}))
+                        .unwrap_or_default()
+                }
+                Err(e) => format!("Error: failed to parse workflows — {e}"),
+            },
+            Err(e) => format!("Error: {e}"),
+        }
+    }
+
+    /// List workflow runs with optional filters.
+    pub async fn list_workflow_runs(
+        &self,
+        workflow_name: &str,
+        branch: &str,
+        status: &str,
+        event: &str,
+        created: &str,
+    ) -> String {
+        let (base_path, mut params) = if workflow_name.is_empty() {
+            ("/actions/runs".to_string(), vec!["per_page=20".to_string()])
+        } else {
+            let path = format!("/actions/workflows/{}/runs", urlencoding(workflow_name));
+            (path, vec!["per_page=20".to_string()])
+        };
+        if !branch.is_empty() {
+            params.push(format!("branch={}", urlencoding(branch)));
+        }
+        if !status.is_empty() {
+            params.push(format!("status={}", urlencoding(status)));
+        }
+        if !event.is_empty() {
+            params.push(format!("event={}", urlencoding(event)));
+        }
+        if !created.is_empty() {
+            params.push(format!("created={}", urlencoding(created)));
+        }
+        let qs = params.join("&");
+        let path = format!("{base_path}?{qs}");
+        match self.authed_get(&path).await {
+            Ok(body) => match serde_json::from_str::<serde_json::Value>(&body) {
+                Ok(val) => {
+                    let runs = val["workflow_runs"]
+                        .as_array()
+                        .map(|arr| {
+                            arr.iter()
+                                .map(|r| {
+                                    json!({
+                                        "id": r["id"],
+                                        "name": r["name"],
+                                        "workflow_id": r["workflow_id"],
+                                        "head_branch": r["head_branch"],
+                                        "head_sha": r["head_sha"],
+                                        "status": r["status"],
+                                        "conclusion": r["conclusion"],
+                                        "event": r["event"],
+                                        "display_title": r["display_title"],
+                                        "html_url": r["html_url"],
+                                        "created_at": r["created_at"],
+                                        "updated_at": r["updated_at"],
+                                        "run_started_at": r["run_started_at"],
+                                    })
+                                })
+                                .collect::<Vec<_>>()
+                        })
+                        .unwrap_or_default();
+                    let total = &val["total_count"];
+                    serde_json::to_string_pretty(
+                        &json!({"total_count": total, "workflow_runs": runs}),
+                    )
+                    .unwrap_or_default()
+                }
+                Err(e) => format!("Error: failed to parse workflow runs — {e}"),
+            },
+            Err(e) => format!("Error: {e}"),
+        }
+    }
+
+    /// Get details for a specific workflow run.
+    pub async fn get_workflow_run(&self, run_id: u64) -> String {
+        match self.authed_get(&format!("/actions/runs/{run_id}")).await {
+            Ok(body) => match serde_json::from_str::<serde_json::Value>(&body) {
+                Ok(val) => {
+                    let run = json!({
+                        "id": val["id"],
+                        "name": val["name"],
+                        "head_branch": val["head_branch"],
+                        "head_sha": val["head_sha"],
+                        "status": val["status"],
+                        "conclusion": val["conclusion"],
+                        "event": val["event"],
+                        "display_title": val["display_title"],
+                        "html_url": val["html_url"],
+                        "created_at": val["created_at"],
+                        "updated_at": val["updated_at"],
+                        "run_started_at": val["run_started_at"],
+                        "run_attempt": val["run_attempt"],
+                        "actor": val["actor"]["login"],
+                    });
+                    serde_json::to_string_pretty(&run).unwrap_or_default()
+                }
+                Err(e) => format!("Error: failed to parse workflow run — {e}"),
+            },
+            Err(e) => format!("Error: {e}"),
+        }
+    }
+
+    /// List jobs for a specific workflow run.
+    pub async fn get_workflow_run_jobs(&self, run_id: u64) -> String {
+        match self
+            .authed_get(&format!("/actions/runs/{run_id}/jobs?per_page=50"))
+            .await
+        {
+            Ok(body) => match serde_json::from_str::<serde_json::Value>(&body) {
+                Ok(val) => {
+                    let jobs = val["jobs"]
+                        .as_array()
+                        .map(|arr| {
+                            arr.iter()
+                                .map(|j| {
+                                    json!({
+                                        "id": j["id"],
+                                        "name": j["name"],
+                                        "status": j["status"],
+                                        "conclusion": j["conclusion"],
+                                        "started_at": j["started_at"],
+                                        "completed_at": j["completed_at"],
+                                        "runner_name": j["runner_name"],
+                                        "steps": j["steps"].as_array().map(|steps| {
+                                            steps.iter().map(|s| {
+                                                json!({
+                                                    "name": s["name"],
+                                                    "status": s["status"],
+                                                    "conclusion": s["conclusion"],
+                                                    "number": s["number"],
+                                                })
+                                            }).collect::<Vec<_>>()
+                                        }),
+                                    })
+                                })
+                                .collect::<Vec<_>>()
+                        })
+                        .unwrap_or_default();
+                    let total = &val["total_count"];
+                    serde_json::to_string_pretty(&json!({"total_count": total, "jobs": jobs}))
+                        .unwrap_or_default()
+                }
+                Err(e) => format!("Error: failed to parse workflow jobs — {e}"),
+            },
+            Err(e) => format!("Error: {e}"),
+        }
+    }
+
     /// Create an issue that references a Sentry event, with no sensitive data in the body.
     pub async fn create_error_issue(&self, sentry_event_id: &str) -> Option<String> {
         if !self.is_configured() {
@@ -337,6 +663,71 @@ impl GitHubIssueReporter {
         );
         self.create_issue(&title, &body, &["bug"]).await
     }
+}
+
+/// Format a GitHub issues API response as a compact text list.
+fn format_issue_list(body: &str) -> String {
+    match serde_json::from_str::<serde_json::Value>(body) {
+        Ok(val) => {
+            let issues: Vec<&serde_json::Value> = if let Some(arr) = val.as_array() {
+                arr.iter()
+                    .filter(|i| i.get("pull_request").is_none())
+                    .collect()
+            } else if let Some(items) = val.get("items").and_then(|v| v.as_array()) {
+                items
+                    .iter()
+                    .filter(|i| i.get("pull_request").is_none())
+                    .collect()
+            } else {
+                return "Error: unexpected API response format.".to_string();
+            };
+            if issues.is_empty() {
+                return "No issues found.".to_string();
+            }
+            let lines: Vec<String> = issues
+                .iter()
+                .map(|i| {
+                    let number = i["number"].as_u64().unwrap_or(0);
+                    let title = i["title"].as_str().unwrap_or("(untitled)");
+                    let state = i["state"].as_str().unwrap_or("unknown");
+                    let labels: Vec<String> = i["labels"]
+                        .as_array()
+                        .map(|labels| {
+                            labels
+                                .iter()
+                                .filter_map(|l| l["name"].as_str().map(|n| n.to_string()))
+                                .collect()
+                        })
+                        .unwrap_or_default();
+                    let label_str = if labels.is_empty() {
+                        String::new()
+                    } else {
+                        format!(" [{}]", labels.join(", "))
+                    };
+                    format!("#{number} ({state}){label_str} — {title}")
+                })
+                .collect();
+            lines.join("\n")
+        }
+        Err(e) => format!("Error: failed to parse response — {e}"),
+    }
+}
+
+/// Percent-encode a string for URL query parameters.
+fn urlencoding(s: &str) -> String {
+    let mut result = String::with_capacity(s.len());
+    for byte in s.bytes() {
+        match byte {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                result.push(byte as char);
+            }
+            b' ' => result.push_str("%20"),
+            _ => {
+                result.push_str(&format!("%{byte:02X}"));
+            }
+        }
+    }
+    result
 }
 
 #[cfg(test)]
@@ -390,5 +781,250 @@ mod tests {
         let r = GitHubIssueReporter::from_env();
         assert!(r.private_key.contains("line1\nline2"));
         std::env::remove_var("GITHUB_APP_PRIVATE_KEY");
+    }
+
+    #[test]
+    fn with_direct_token_is_configured() {
+        let r = GitHubIssueReporter::with_direct_token("ghp_token".into(), "owner/repo".into());
+        assert!(r.is_configured());
+    }
+
+    #[test]
+    fn with_direct_token_empty_token_not_configured() {
+        let r = GitHubIssueReporter::with_direct_token("".into(), "owner/repo".into());
+        assert!(!r.is_configured());
+    }
+
+    #[test]
+    fn with_direct_token_empty_repo_not_configured() {
+        let r = GitHubIssueReporter::with_direct_token("ghp_token".into(), "".into());
+        assert!(!r.is_configured());
+    }
+
+    #[test]
+    fn format_issue_list_filters_out_pull_requests() {
+        let body = r#"[
+            {"number": 1, "title": "Real issue", "state": "open", "labels": []},
+            {"number": 2, "title": "PR", "state": "open", "labels": [], "pull_request": {"url": "..."}},
+            {"number": 3, "title": "Another issue", "state": "closed", "labels": [{"name": "bug"}]}
+        ]"#;
+        let result = format_issue_list(body);
+        assert!(result.contains("#1"));
+        assert!(result.contains("Real issue"));
+        assert!(result.contains("#3"));
+        assert!(result.contains("Another issue"));
+        assert!(!result.contains("#2"));
+        assert!(!result.contains("PR"));
+    }
+
+    #[test]
+    fn format_issue_list_filters_prs_from_search_response() {
+        let body = r#"{
+            "total_count": 2,
+            "items": [
+                {"number": 10, "title": "Search issue", "state": "open", "labels": []},
+                {"number": 11, "title": "Search PR", "state": "open", "labels": [], "pull_request": {"url": "..."}}
+            ]
+        }"#;
+        let result = format_issue_list(body);
+        assert!(result.contains("#10"));
+        assert!(result.contains("Search issue"));
+        assert!(!result.contains("#11"));
+        assert!(!result.contains("Search PR"));
+    }
+
+    #[test]
+    fn format_issue_list_returns_not_found_for_empty() {
+        let result = format_issue_list("[]");
+        assert_eq!(result, "No issues found.");
+    }
+
+    #[test]
+    fn format_issue_list_returns_not_found_for_empty_search() {
+        let body = r#"{"total_count": 0, "items": []}"#;
+        let result = format_issue_list(body);
+        assert_eq!(result, "No issues found.");
+    }
+
+    #[test]
+    fn format_issue_list_filters_prs_away_from_empty_result() {
+        // Only PRs in the response — should show "No issues found."
+        let body = r#"[
+            {"number": 5, "title": "Only PR", "state": "open", "labels": [], "pull_request": {"url": "..."}}
+        ]"#;
+        let result = format_issue_list(body);
+        assert_eq!(result, "No issues found.");
+    }
+
+    #[test]
+    fn urlencoding_encodes_correctly() {
+        assert_eq!(urlencoding("hello"), "hello");
+        assert_eq!(urlencoding("hello world"), "hello%20world");
+        assert_eq!(urlencoding("a/b"), "a%2Fb");
+        assert_eq!(urlencoding("repo:owner/repo"), "repo%3Aowner%2Frepo");
+    }
+
+    // ── Integration tests (require GITHUB_TOKEN env var) ────────────────────
+
+    /// Create a reporter from `GITHUB_TOKEN` + `GITHUB_REPO`, or skip.
+    fn integration_reporter() -> Option<GitHubIssueReporter> {
+        let token = std::env::var("GITHUB_TOKEN").ok()?;
+        let repo = std::env::var("GITHUB_REPO")
+            .ok()
+            .filter(|r| !r.is_empty())
+            .unwrap_or_else(|| "bushshrub/housebot".to_string());
+        Some(GitHubIssueReporter::with_direct_token(token, repo))
+    }
+
+    #[tokio::test]
+    async fn integration_get_repo() {
+        let reporter = match integration_reporter() {
+            Some(r) => r,
+            None => return,
+        };
+        let result = reporter.get_repo().await;
+        assert!(!result.starts_with("Error:"), "get_repo failed: {result}");
+        let v: serde_json::Value =
+            serde_json::from_str(&result).expect("get_repo should return valid JSON");
+        assert_eq!(v["full_name"], "bushshrub/housebot");
+        assert!(v["stars"].as_u64().is_some());
+        assert!(v["forks"].as_u64().is_some());
+        assert!(v["open_issues"].as_u64().is_some());
+        assert!(!v["language"].as_str().unwrap_or("").is_empty());
+        assert!(!v["default_branch"].as_str().unwrap_or("").is_empty());
+    }
+
+    #[tokio::test]
+    async fn integration_list_issues() {
+        let reporter = match integration_reporter() {
+            Some(r) => r,
+            None => return,
+        };
+        let result = reporter.list_issues("open", "").await;
+        assert!(
+            !result.starts_with("Error:"),
+            "list_issues failed: {result}"
+        );
+        // Text response from format_issue_list — should contain issue entries
+        assert!(
+            result.contains('#'),
+            "expected issue numbers in list_issues output:\n{result}"
+        );
+        // Every line should start with #
+        for line in result.lines() {
+            assert!(line.starts_with('#'), "unexpected line format: {line}");
+        }
+    }
+
+    #[tokio::test]
+    async fn integration_search_issues() {
+        let reporter = match integration_reporter() {
+            Some(r) => r,
+            None => return,
+        };
+        let result = reporter.search_issues("bug").await;
+        assert!(
+            !result.starts_with("Error:"),
+            "search_issues failed: {result}"
+        );
+        // Search results should also be formatted as issue lines with #
+        if !result.contains("No issues found.") {
+            assert!(
+                result.contains('#'),
+                "expected issue numbers in search_issues output:\n{result}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn integration_list_workflows() {
+        let reporter = match integration_reporter() {
+            Some(r) => r,
+            None => return,
+        };
+        let result = reporter.list_workflows().await;
+        assert!(
+            !result.starts_with("Error:"),
+            "list_workflows failed: {result}"
+        );
+        let v: serde_json::Value =
+            serde_json::from_str(&result).expect("list_workflows should return valid JSON");
+        let workflows = v["workflows"]
+            .as_array()
+            .expect("workflows should be an array");
+        assert!(!workflows.is_empty(), "expected at least one workflow");
+        for w in workflows {
+            assert!(w["id"].as_u64().is_some(), "workflow missing id: {w}");
+            assert!(
+                !w["name"].as_str().unwrap_or("").is_empty(),
+                "workflow missing name: {w}"
+            );
+            assert!(
+                !w["state"].as_str().unwrap_or("").is_empty(),
+                "workflow missing state: {w}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn integration_list_workflow_runs() {
+        let reporter = match integration_reporter() {
+            Some(r) => r,
+            None => return,
+        };
+        let result = reporter.list_workflow_runs("", "master", "", "", "").await;
+        assert!(
+            !result.starts_with("Error:"),
+            "list_workflow_runs failed: {result}"
+        );
+        let v: serde_json::Value =
+            serde_json::from_str(&result).expect("list_workflow_runs should return valid JSON");
+        let runs = v["workflow_runs"]
+            .as_array()
+            .expect("workflow_runs should be an array");
+        assert!(!runs.is_empty(), "expected at least one workflow run");
+        for r in runs {
+            assert!(r["id"].as_u64().is_some(), "run missing id: {r}");
+            assert!(
+                !r["head_branch"].as_str().unwrap_or("").is_empty(),
+                "run missing head_branch: {r}"
+            );
+            assert!(
+                !r["status"].as_str().unwrap_or("").is_empty(),
+                "run missing status: {r}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn integration_list_workflow_runs_with_created() {
+        let reporter = match integration_reporter() {
+            Some(r) => r,
+            None => return,
+        };
+        let result = reporter
+            .list_workflow_runs("", "", "", "", ">=2026-01-01")
+            .await;
+        assert!(
+            !result.starts_with("Error:"),
+            "list_workflow_runs with created failed: {result}"
+        );
+        let v: serde_json::Value =
+            serde_json::from_str(&result).expect("list_workflow_runs should return valid JSON");
+        let runs = v["workflow_runs"]
+            .as_array()
+            .expect("workflow_runs should be an array");
+        assert!(
+            !runs.is_empty(),
+            "expected at least one workflow run since 2026-01-01"
+        );
+        for r in runs {
+            let created = r["created_at"].as_str().expect("run missing created_at");
+            assert!(
+                created >= "2026-01-01",
+                "run {id} created_at ({created}) is before 2026-01-01",
+                id = r["id"]
+            );
+        }
     }
 }

@@ -15,7 +15,7 @@ use crate::discord_bridge::DiscordBridge;
 use crate::github_issues::GitHubIssueReporter;
 use crate::history::History;
 use crate::llm::{ChatClient, OpenAiClient, TextSink, ThinkingMode, TokenUsage};
-use crate::llm_queue::{LlmPriority, LlmRequestQueue, QueuedChatClient};
+use crate::llm_queue::{LlmPriority, LlmQueueInfo, LlmRequestQueue, QueuedChatClient};
 use crate::lua_engine::{self, ScriptHost};
 use crate::mcp::McpServer;
 use crate::memory::Memory;
@@ -30,6 +30,7 @@ use crate::tool_permissions::ToolPermissions;
 use crate::tools;
 use crate::tools::common_crawl::CommonCrawl;
 use crate::tools::file_download::FileDownloader;
+use crate::tools::sandbox::LazySandbox;
 use crate::tools::searxng::SearxNg;
 use crate::tools::web_fetch::WebFetch;
 
@@ -164,6 +165,7 @@ impl TextSink for TextStreamAdapter<'_> {
 }
 
 /// Result of dispatching a single tool call.
+#[derive(Debug)]
 pub(crate) enum ToolOutcome {
     Text(String),
     Attachment {
@@ -208,6 +210,7 @@ pub struct Agent {
     tool_permissions: ToolPermissions,
     discord: Arc<DiscordBridge>,
     channel_log: ChannelLog,
+    sandbox_client: housebot_sandbox::SandboxClient,
 }
 
 mod dispatch;
@@ -246,13 +249,21 @@ impl Agent {
             config::env_or("LLM_API_KEY", "not-required"),
         ));
         let mcp_servers = Arc::new(start_mcp_servers().await);
-        let context_window_tokens = raw_client
-            .context_window_tokens()
-            .await
-            .ok()
-            .flatten()
-            .map(|tokens| tokens as usize)
-            .unwrap_or_else(|| config::env_parse("MAX_CONTEXT_TOKENS", 10_000));
+        let context_window_tokens = tokio::time::timeout(
+            std::time::Duration::from_secs(10),
+            raw_client.context_window_tokens(),
+        )
+        .await
+        .unwrap_or(Ok(None))
+        .ok()
+        .flatten()
+        .map(|tokens| tokens as usize)
+        .unwrap_or_else(|| {
+            tracing::warn!(
+                "LLM /props probe timed out or failed — using MAX_CONTEXT_TOKENS fallback"
+            );
+            config::env_parse("MAX_CONTEXT_TOKENS", 10_000)
+        });
         let queue = Arc::new(LlmRequestQueue::default());
         let queued_client = Arc::new(QueuedChatClient::new(raw_client, queue));
         let client: Arc<dyn ChatClient> = queued_client.clone();
@@ -295,7 +306,14 @@ impl Agent {
             tool_permissions: ToolPermissions::default(),
             discord,
             channel_log: ChannelLog::default(),
+            sandbox_client: housebot_sandbox::SandboxClient::from_env(),
         })
+    }
+
+    /// Current LLM queue utilization (active, pending, capacity).
+    /// Use this to decide whether to surface a queue-position message to users.
+    pub fn llm_queue_info(&self) -> LlmQueueInfo {
+        self.queued_client.queue_info()
     }
 
     /// Access to the reminders store (the bot's delivery loop needs it).
@@ -421,6 +439,7 @@ impl Agent {
             tool_permissions: ToolPermissions::default(),
             discord: Arc::new(DiscordBridge::default()),
             channel_log: ChannelLog::default(),
+            sandbox_client: housebot_sandbox::SandboxClient::new("/dev/null"),
         }
     }
 

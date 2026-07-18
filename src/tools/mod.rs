@@ -11,12 +11,49 @@ pub mod feature_development;
 pub mod feature_request;
 pub mod features;
 pub mod file_download;
+pub mod github_api;
 pub mod remind;
+pub mod sandbox;
 pub mod searxng;
 pub mod summarize_url;
 pub mod token_metrics;
 pub mod translate;
 pub mod web_fetch;
+
+/// Single Source of Truth for all built-in tool names (used by autocomplete and
+/// tool-ban validation). Does not include dynamically-discovered MCP tools.
+pub fn all_tool_names() -> &'static [&'static str] {
+    &[
+        "web_search",
+        "deep_research",
+        "fetch_webpage",
+        "download_file",
+        "common_crawl__search",
+        "run_skill",
+        "create_feature_request",
+        "edit_feature_request",
+        "prepare_feature_development",
+        "github_api",
+        "set_reminder",
+        "summarize_url",
+        "get_token_metrics",
+        "translate",
+        "get_bot_features",
+        "search_messages",
+        "get_recent_messages",
+        "find_discord_users",
+        "get_discord_user",
+        "run_lua",
+        "get_lua_docs",
+        "update_memory",
+        "search_memory",
+        "sandbox_clone_repository",
+        "sandbox_list_files",
+        "sandbox_search_code",
+        "sandbox_read_file",
+        "sandbox_run",
+    ]
+}
 
 /// Block until fewer than `limit` requests happened in the last 60 seconds, then
 /// record one. The lock is released while sleeping so other tasks can queue up.

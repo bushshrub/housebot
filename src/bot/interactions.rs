@@ -493,7 +493,7 @@ pub(crate) async fn handle_skill_interaction(
     author_id: u64,
 ) -> String {
     let Some(command) = options.first() else {
-        return "Usage: `/skill list` | `/skill info <name>` | `/skill add <name>` | `/skill delete <name>`".into();
+        return "Usage: `/skill list` | `/skill info <name>` | `/skill add <name> <prompt>` | `/skill delete <name>`".into();
     };
     let sub_opts = match &command.value {
         CommandDataOptionValue::SubCommand(opts) => opts,

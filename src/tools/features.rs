@@ -38,7 +38,7 @@ pub fn features_text() -> &'static str {
 - URL summarisation and translation
 - Timed reminders delivered by DM
 - Create and edit your own GitHub feature requests and bug reports
-- Custom skills (user-defined prompt templates) via `!skill`
+- Custom skills (user-defined prompt templates) via `/skill`
 - Personal notes and persistent memory across sessions
 - Persistent conversation archives and global token-usage leaderboards
 - Guild voting for user-specific tool-call restrictions and bans

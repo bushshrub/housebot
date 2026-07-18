@@ -408,9 +408,10 @@ pub(crate) async fn register_slash_commands(ctx: &Context) {
                 CreateCommandOption::new(
                     CommandOptionType::String,
                     "tool",
-                    "Exact tool name, for example web_search",
+                    "Tool name — start typing for suggestions",
                 )
-                .required(true),
+                .required(true)
+                .set_autocomplete(true),
             ),
         )
         .add_option(

@@ -21,18 +21,34 @@ fn valid_name(name: &str) -> bool {
             .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_')
 }
 
+/// Parse a Discord user mention (`<@123>` or `<@!123>`) into a user ID string,
+/// or return the raw string if it doesn't look like a mention.
+fn parse_mention(raw: &str) -> &str {
+    let raw = raw.trim();
+    if let Some(inner) = raw.strip_prefix("<@!").or_else(|| raw.strip_prefix("<@")) {
+        if let Some(id) = inner.strip_suffix('>') {
+            return id;
+        }
+    }
+    raw
+}
+
 pub async fn skill_command(
     skills: &Skills,
     first_line: &str,
     rest: &str,
     author_id: u64,
 ) -> String {
+    let author_str = author_id.to_string();
     let parts: Vec<&str> = first_line
-        .splitn(3, char::is_whitespace)
+        .splitn(4, char::is_whitespace)
         .filter(|s| !s.is_empty())
         .collect();
     if parts.len() < 2 {
-        return "Usage: `!skill list` | `!skill add <name>` | `!skill delete <name>` | `!skill info <name>`".into();
+        return "Usage: `!skill list` | `!skill add <name>` | `!skill edit <name>` \
+                | `!skill delete <name>` | `!skill info <name>` \
+                | `!skill grant <name> <@user>` | `!skill revoke <name> <@user>`"
+            .into();
     }
     match parts[1].to_lowercase().as_str() {
         "list" => {
@@ -42,10 +58,16 @@ pub async fn skill_command(
             }
             let mut lines = vec!["**Skills:**".to_string()];
             for skill in all.values() {
+                let author = skill
+                    .created_by
+                    .as_deref()
+                    .map(|id| format!(" <@{id}>"))
+                    .unwrap_or_default();
                 lines.push(format!(
-                    "• **{}** — {}",
+                    "• **{}** — {}{}",
                     skill.name,
-                    truncate_chars(skill.description_or_name(), 80)
+                    truncate_chars(skill.description_or_name(), 80),
+                    author,
                 ));
             }
             lines.join("\n")
@@ -61,11 +83,25 @@ pub async fn skill_command(
                     if skill.prompt.chars().count() > 500 {
                         preview.push('…');
                     }
+                    let author = skill
+                        .created_by
+                        .as_deref()
+                        .map(|id| format!("\n**Author:** <@{id}>"))
+                        .unwrap_or_default();
+                    let editors = if skill.editors.is_empty() {
+                        String::new()
+                    } else {
+                        let list: Vec<String> =
+                            skill.editors.iter().map(|id| format!("<@{id}>")).collect();
+                        format!("\n**Editors:** {}", list.join(", "))
+                    };
                     format!(
-                        "**Skill: {}**\nDescription: {}\n```\n{}\n```",
+                        "**Skill: {}**\nDescription: {}{}{}\n```\n{}\n```",
                         skill.name,
                         skill.description.as_deref().unwrap_or("(none)"),
-                        preview
+                        author,
+                        editors,
+                        preview,
                     )
                 }
             }
@@ -90,23 +126,132 @@ pub async fn skill_command(
                 name: name.clone(),
                 description: Some(description),
                 prompt: rest.to_string(),
-                created_by: Some(author_id.to_string()),
+                created_by: Some(author_str),
+                editors: Vec::new(),
             };
             if skills.save(skill).await.is_err() {
                 return "Error: failed to save skill.".into();
             }
             format!("✅ Skill **{name}** saved.")
         }
+        "edit" => {
+            let Some(name) = parts.get(2).map(|s| s.to_lowercase()) else {
+                return "Usage: `!skill edit <name>` with the updated prompt on the next line."
+                    .into();
+            };
+            if rest.is_empty() {
+                return "Please include the updated skill prompt on a new line after the command."
+                    .into();
+            }
+            match skills.get(&name).await {
+                None => format!("Skill `{name}` not found."),
+                Some(mut skill) => {
+                    if !skill.can_edit(&author_str) {
+                        return format!(
+                            "⛔ Only the author (<@{}>) or a delegated editor can edit **{name}**.",
+                            skill.created_by.as_deref().unwrap_or("unknown")
+                        );
+                    }
+                    skill.prompt = rest.to_string();
+                    skill.description = if rest.chars().count() > 100 {
+                        Some(format!("{}…", truncate_chars(rest, 100)))
+                    } else {
+                        Some(rest.to_string())
+                    };
+                    if skills.save(skill).await.is_err() {
+                        return "Error: failed to save skill.".into();
+                    }
+                    format!("✅ Skill **{name}** updated.")
+                }
+            }
+        }
         "delete" => {
             let Some(name) = parts.get(2).map(|s| s.to_lowercase()) else {
                 return "Usage: `!skill delete <name>`".into();
             };
-            match skills.delete(&name).await {
-                Ok(true) => format!("✅ Skill **{name}** deleted."),
-                _ => format!("Skill `{name}` not found."),
+            match skills.get(&name).await {
+                None => format!("Skill `{name}` not found."),
+                Some(skill) => {
+                    if !skill.can_edit(&author_str) {
+                        return format!(
+                            "⛔ Only the author (<@{}>) or a delegated editor can delete **{name}**.",
+                            skill.created_by.as_deref().unwrap_or("unknown")
+                        );
+                    }
+                    match skills.delete(&name).await {
+                        Ok(true) => format!("✅ Skill **{name}** deleted."),
+                        _ => "Error: failed to delete skill.".into(),
+                    }
+                }
             }
         }
-        other => format!("Unknown subcommand `{other}`. Options: `list`, `add`, `delete`, `info`"),
+        "grant" => {
+            let Some(name) = parts.get(2).map(|s| s.to_lowercase()) else {
+                return "Usage: `!skill grant <name> <@user>`".into();
+            };
+            let Some(target_raw) = parts.get(3) else {
+                return "Usage: `!skill grant <name> <@user>`".into();
+            };
+            let target = parse_mention(target_raw);
+            if target.parse::<u64>().is_err() {
+                return "Please mention a valid user with @mention.".into();
+            }
+            match skills.get(&name).await {
+                None => format!("Skill `{name}` not found."),
+                Some(mut skill) => {
+                    if !skill.is_author(&author_str) {
+                        return format!(
+                            "⛔ Only the author (<@{}>) can grant edit permissions.",
+                            skill.created_by.as_deref().unwrap_or("unknown")
+                        );
+                    }
+                    if !skill.add_editor(target) {
+                        return format!("<@{target}> can already edit **{name}**.");
+                    }
+                    if skills.save(skill).await.is_err() {
+                        return "Error: failed to save skill.".into();
+                    }
+                    format!("✅ <@{target}> can now edit **{name}**.")
+                }
+            }
+        }
+        "revoke" => {
+            let Some(name) = parts.get(2).map(|s| s.to_lowercase()) else {
+                return "Usage: `!skill revoke <name> <@user>`".into();
+            };
+            let Some(target_raw) = parts.get(3) else {
+                return "Usage: `!skill revoke <name> <@user>`".into();
+            };
+            let target = parse_mention(target_raw);
+            if target.parse::<u64>().is_err() {
+                return "Please mention a valid user with @mention.".into();
+            }
+            match skills.get(&name).await {
+                None => format!("Skill `{name}` not found."),
+                Some(mut skill) => {
+                    if !skill.is_author(&author_str) {
+                        return format!(
+                            "⛔ Only the author (<@{}>) can revoke edit permissions.",
+                            skill.created_by.as_deref().unwrap_or("unknown")
+                        );
+                    }
+                    if !skill.remove_editor(target) {
+                        return format!(
+                            "<@{target}> does not have edit permission for **{name}**."
+                        );
+                    }
+                    if skills.save(skill).await.is_err() {
+                        return "Error: failed to save skill.".into();
+                    }
+                    format!("✅ Removed <@{target}> from editors of **{name}**.")
+                }
+            }
+        }
+        other => {
+            format!(
+                "Unknown subcommand `{other}`. Options: `list`, `add`, `edit`, `delete`, `info`, `grant`, `revoke`"
+            )
+        }
     }
 }
 
@@ -116,13 +261,13 @@ pub async fn note_command(notes: &Notes, first_line: &str, rest: &str, author_id
         .filter(|s| !s.is_empty())
         .collect();
     if parts.len() < 2 {
-        return "Usage: `!storage notes list` | `!storage notes save <name>` | `!storage notes get <name>` | `!storage notes delete <name>`".into();
+        return "Usage: `/storage notes list` | `/storage notes save name:<name> content:<text>` | `/storage notes get name:<name>` | `/storage notes delete name:<name>`".into();
     }
     match parts[1].to_lowercase().as_str() {
         "list" => {
             let all = notes.load_all(author_id).await;
             if all.is_empty() {
-                return "You have no saved notes. Use `!storage notes save <name>` (with the content on the next line).".into();
+                return "You have no saved notes. Use `/storage notes save name:<name> content:<text>` to create one.".into();
             }
             let mut lines = vec!["**Your notes:**".to_string()];
             for (name, body) in &all {
@@ -136,7 +281,7 @@ pub async fn note_command(notes: &Notes, first_line: &str, rest: &str, author_id
         }
         "get" => {
             let Some(name) = parts.get(2).map(|s| s.to_lowercase()) else {
-                return "Usage: `!storage notes get <name>`".into();
+                return "Usage: `/storage notes get name:<name>`".into();
             };
             match notes.get(author_id, &name).await {
                 None => format!("Note `{name}` not found."),
@@ -145,7 +290,7 @@ pub async fn note_command(notes: &Notes, first_line: &str, rest: &str, author_id
         }
         "save" => {
             let Some(name) = parts.get(2).map(|s| s.trim().to_lowercase()) else {
-                return "Usage: `!storage notes save <name>` with the note content on the next line.".into();
+                return "Usage: `/storage notes save name:<name> content:<text>`".into();
             };
             if !valid_name(&name) {
                 return "Note name must be lowercase letters, numbers, and underscores only."
@@ -161,14 +306,16 @@ pub async fn note_command(notes: &Notes, first_line: &str, rest: &str, author_id
         }
         "delete" => {
             let Some(name) = parts.get(2).map(|s| s.to_lowercase()) else {
-                return "Usage: `!storage notes delete <name>`".into();
+                return "Usage: `/storage notes delete name:<name>`".into();
             };
             match notes.delete(author_id, &name).await {
                 Ok(true) => format!("✅ Note **{name}** deleted."),
                 _ => format!("Note `{name}` not found."),
             }
         }
-        other => format!("Unknown subcommand `{other}`. Options: `list`, `save`, `get`, `delete`"),
+        other => {
+            format!("Unknown subcommand `{other}`. Use `/storage notes list|save|get|delete`.")
+        }
     }
 }
 
@@ -234,7 +381,7 @@ pub async fn erase_data_command(
 pub async fn memory_command(memory: &Memory, first_line: &str, author_id: u64) -> String {
     let parts: Vec<&str> = first_line.split_whitespace().collect();
     if parts.len() < 2 {
-        return "Usage: `!storage memory show` | `!storage memory clear` | `!storage memory search <query>`".into();
+        return "Usage: `/storage memory show` | `/storage memory clear` | `/storage memory search query:<query>`".into();
     }
     match parts[1].to_lowercase().as_str() {
         "show" => {
@@ -252,7 +399,7 @@ pub async fn memory_command(memory: &Memory, first_line: &str, author_id: u64) -
         "search" => {
             let query = parts[2..].join(" ");
             if query.is_empty() {
-                return "Usage: `!storage memory search <query>`".into();
+                return "Usage: `/storage memory search query:<query>`".into();
             }
             let content = memory.load(author_id.to_string()).await;
             if content.trim().is_empty() {
@@ -270,7 +417,7 @@ pub async fn memory_command(memory: &Memory, first_line: &str, author_id: u64) -
                 truncate_discord(&header, &matching.join("\n"))
             }
         }
-        other => format!("Unknown subcommand `{other}`. Options: `show`, `clear`, `search`"),
+        other => format!("Unknown subcommand `{other}`. Use `/storage memory show|clear|search`."),
     }
 }
 
