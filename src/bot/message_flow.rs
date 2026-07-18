@@ -236,19 +236,9 @@ impl HouseBot {
         let progress = reply_no_ping(ctx, msg, &progress_msg).await.ok();
         let pending_reaction = msg.react(&ctx.http, '⏳').await.ok();
 
-        // ── typing indicator ────────────────────────────────────────────────
-        let typing_active = Arc::new(AtomicBool::new(true));
-        let typing_handle = {
-            let active = typing_active.clone();
-            let http = ctx.http.clone();
-            let channel = msg.channel_id;
-            tokio::spawn(async move {
-                while active.load(Ordering::Relaxed) {
-                    let _ = channel.broadcast_typing(&http).await;
-                    tokio::time::sleep(Duration::from_secs(8)).await;
-                }
-            })
-        };
+        // ── typing indicator (raced against agent.run via select!) ───────────
+        let typing_http = ctx.http.clone();
+        let typing_channel = msg.channel_id;
 
         let response_hooks = progress
             .as_ref()
@@ -275,34 +265,43 @@ impl HouseBot {
             .map(|(name, count)| format!("{name} ({count})"))
             .collect::<Vec<_>>()
             .join(", ");
-        let result: AgentResult = self
-            .agent
-            .run(
-                AgentRequest {
-                    user_id: &user_id_string,
-                    username: &msg.author.name,
-                    text: &user_text,
-                    media: &media,
-                    personality: personality.as_deref(),
-                    thinking,
-                    channel_id: msg.channel_id.get(),
-                    deep_memory_enabled: user_config.deep_memory_enabled && !proactive,
-                    display_name: &profile.display_name,
-                    nickname: &profile.nickname,
-                    avatar_url: &profile.avatar_url,
-                    profile_tags: &profile_tags,
-                    quick_actions: &quick_actions,
-                    guild_id: msg.guild_id.map(|guild| guild.get()),
-                    proactive,
-                    record_profile_usage: !proactive,
-                },
-                response_hooks
-                    .as_ref()
-                    .map_or(&NoHooks as &dyn AgentHooks, |hooks| {
-                        hooks as &dyn AgentHooks
-                    }),
-            )
-            .await;
+        let result: AgentResult = tokio::select! {
+            r = async {
+                self.agent
+                    .run(
+                        AgentRequest {
+                            user_id: &user_id_string,
+                            username: &msg.author.name,
+                            text: &user_text,
+                            media: &media,
+                            personality: personality.as_deref(),
+                            thinking,
+                            channel_id: msg.channel_id.get(),
+                            deep_memory_enabled: user_config.deep_memory_enabled && !proactive,
+                            display_name: &profile.display_name,
+                            nickname: &profile.nickname,
+                            avatar_url: &profile.avatar_url,
+                            profile_tags: &profile_tags,
+                            quick_actions: &quick_actions,
+                            guild_id: msg.guild_id.map(|guild| guild.get()),
+                            proactive,
+                            record_profile_usage: !proactive,
+                        },
+                        response_hooks
+                            .as_ref()
+                            .map_or(&NoHooks as &dyn AgentHooks, |hooks| {
+                                hooks as &dyn AgentHooks
+                            }),
+                    )
+                    .await
+            } => r,
+            _ = async {
+                loop {
+                    let _ = typing_channel.broadcast_typing(&typing_http).await;
+                    tokio::time::sleep(Duration::from_secs(8)).await;
+                }
+            } => unreachable!(),
+        };
 
         {
             let mut convos = self.conversations.lock().await;
@@ -316,8 +315,6 @@ impl HouseBot {
 
         // Handle structured development control actions before displaying text.
         if let Some(action) = result.control_action {
-            typing_active.store(false, Ordering::Relaxed);
-            let _ = typing_handle.await;
             if let Some(reaction) = pending_reaction {
                 let _ = reaction.delete(&ctx.http).await;
             }
@@ -375,9 +372,6 @@ impl HouseBot {
                     .await;
             }
         }
-
-        typing_active.store(false, Ordering::Relaxed);
-        let _ = typing_handle.await;
 
         if let Some(reaction) = pending_reaction {
             let _ = reaction.delete(&ctx.http).await;
