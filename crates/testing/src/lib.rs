@@ -9,7 +9,7 @@ use std::sync::Mutex;
 use async_trait::async_trait;
 use serde_json::Value;
 
-use crate::llm::{ChatClient, ChatCompletion, TextSink, ThinkingMode, TokenUsage, ToolCall};
+use housebot_llm::{ChatClient, ChatCompletion, TextSink, ThinkingMode, TokenUsage, ToolCall};
 
 /// A scriptable, recording [`ChatClient`] for tests.
 #[derive(Default)]

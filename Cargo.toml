@@ -8,15 +8,25 @@ license = "AGPL-3.0-or-later"
 
 [workspace]
 members = [
+    "crates/channel-log",
     "crates/common-crawl",
     "crates/config",
+    "crates/database",
     "crates/deployment-bot",
     "crates/graph-render",
+    "crates/grocery",
+    "crates/history",
     "crates/llm",
     "crates/mcp",
     "crates/memory",
+    "crates/message-log",
+    "crates/notes",
+    "crates/profile",
     "crates/rate-limit",
+    "crates/reminders",
     "crates/sandbox",
+    "crates/skills",
+    "crates/testing",
     "crates/token-monitor",
 ]
 resolver = "2"
@@ -60,12 +70,22 @@ sha2 = "0.10"
 mlua = { version = "0.12", features = ["lua54", "vendored"] }
 common-crawl = { path = "crates/common-crawl" }
 graph-render = { path = "crates/graph-render" }
+housebot-channel-log = { path = "crates/channel-log" }
 housebot-config = { path = "crates/config" }
+housebot-database = { path = "crates/database" }
+housebot-grocery = { path = "crates/grocery" }
+housebot-history = { path = "crates/history" }
 housebot-llm = { path = "crates/llm" }
 housebot-mcp = { path = "crates/mcp" }
 housebot-memory = { path = "crates/memory" }
+housebot-message-log = { path = "crates/message-log" }
+housebot-notes = { path = "crates/notes" }
+housebot-profile = { path = "crates/profile" }
 housebot-rate-limit = { path = "crates/rate-limit" }
+housebot-reminders = { path = "crates/reminders" }
 housebot-sandbox = { path = "crates/sandbox" }
+housebot-skills = { path = "crates/skills" }
+housebot-testing = { path = "crates/testing" }
 housebot-token-monitor = { path = "crates/token-monitor" }
 
 [dev-dependencies]

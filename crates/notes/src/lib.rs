@@ -3,8 +3,8 @@
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 
-use crate::config;
-use crate::memory::ensure_dir;
+use housebot_config as config;
+use housebot_memory::ensure_dir;
 
 /// Handle to the per-user notes store.
 #[derive(Clone)]

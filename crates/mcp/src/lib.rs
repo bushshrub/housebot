@@ -6,11 +6,14 @@
 
 use std::process::Stdio;
 use std::sync::atomic::{AtomicI64, Ordering};
+use std::time::Duration;
 
 use serde_json::{json, Value};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader, Lines};
 use tokio::process::{Child, ChildStdin, ChildStdout, Command};
 use tokio::sync::Mutex;
+
+const RESPONSE_TIMEOUT: Duration = Duration::from_secs(120);
 
 /// A tool exposed by an MCP server.
 #[derive(Debug, Clone)]
@@ -24,11 +27,17 @@ pub struct McpTool {
 pub struct McpServer {
     /// Namespace prefix used to qualify this server's tool names (`prefix__tool`).
     pub prefix: String,
-    stdin: Mutex<ChildStdin>,
-    stdout: Mutex<Lines<BufReader<ChildStdout>>>,
+    /// Held across a full write-request/read-response exchange so concurrent
+    /// callers cannot consume (and discard) each other's responses.
+    io: Mutex<McpIo>,
     next_id: AtomicI64,
     tools_cache: Mutex<Option<Vec<McpTool>>>,
     _child: Child,
+}
+
+struct McpIo {
+    stdin: ChildStdin,
+    stdout: Lines<BufReader<ChildStdout>>,
 }
 
 /// Encode a JSON-RPC request as a single newline-terminated line.
@@ -74,7 +83,10 @@ impl McpServer {
             .envs(env.iter().cloned())
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
-            .stderr(Stdio::null());
+            .stderr(Stdio::null())
+            // Reap the child on any startup failure below (and whenever the
+            // server handle itself is dropped) instead of leaking it.
+            .kill_on_drop(true);
         let mut child = match cmd.spawn() {
             Ok(c) => c,
             Err(e) => {
@@ -86,8 +98,10 @@ impl McpServer {
         let stdout = child.stdout.take()?;
         let server = Self {
             prefix: prefix.to_string(),
-            stdin: Mutex::new(stdin),
-            stdout: Mutex::new(BufReader::new(stdout).lines()),
+            io: Mutex::new(McpIo {
+                stdin,
+                stdout: BufReader::new(stdout).lines(),
+            }),
             next_id: AtomicI64::new(1),
             tools_cache: Mutex::new(None),
             _child: child,
@@ -114,32 +128,38 @@ impl McpServer {
         // Fire-and-forget the initialized notification.
         let mut line = json!({"jsonrpc": "2.0", "method": "notifications/initialized"}).to_string();
         line.push('\n');
-        self.stdin.lock().await.write_all(line.as_bytes()).await?;
+        self.io
+            .lock()
+            .await
+            .stdin
+            .write_all(line.as_bytes())
+            .await?;
         Ok(())
     }
 
     async fn request(&self, method: &str, params: Value) -> anyhow::Result<Value> {
         let id = self.next_id.fetch_add(1, Ordering::SeqCst);
         let line = build_request(id, method, params);
-        {
-            let mut stdin = self.stdin.lock().await;
-            stdin.write_all(line.as_bytes()).await?;
-            stdin.flush().await?;
-        }
-        let mut stdout = self.stdout.lock().await;
-        while let Some(raw) = stdout.next_line().await? {
-            let Ok(msg) = serde_json::from_str::<Value>(&raw) else {
-                continue; // skip non-JSON log lines
-            };
-            if msg.get("id").and_then(|v| v.as_i64()) != Some(id) {
-                continue; // notification or unrelated response
+        let mut io = self.io.lock().await;
+        io.stdin.write_all(line.as_bytes()).await?;
+        io.stdin.flush().await?;
+        tokio::time::timeout(RESPONSE_TIMEOUT, async {
+            while let Some(raw) = io.stdout.next_line().await? {
+                let Ok(msg) = serde_json::from_str::<Value>(&raw) else {
+                    continue; // skip non-JSON log lines
+                };
+                if msg.get("id").and_then(|v| v.as_i64()) != Some(id) {
+                    continue; // notification or unrelated response
+                }
+                if let Some(err) = msg.get("error") {
+                    anyhow::bail!("MCP error: {err}");
+                }
+                return Ok(msg.get("result").cloned().unwrap_or(Value::Null));
             }
-            if let Some(err) = msg.get("error") {
-                anyhow::bail!("MCP error: {err}");
-            }
-            return Ok(msg.get("result").cloned().unwrap_or(Value::Null));
-        }
-        anyhow::bail!("MCP server closed before responding")
+            anyhow::bail!("MCP server closed before responding")
+        })
+        .await
+        .map_err(|_| anyhow::anyhow!("MCP server did not respond within {RESPONSE_TIMEOUT:?}"))?
     }
 
     /// List every tool the server exposes (cached after first call).
@@ -222,5 +242,32 @@ mod tests {
     fn extract_text_falls_back_to_json_for_non_text_items() {
         let result = json!({"content": [{"type": "image", "data": "x"}]});
         assert!(extract_text(&result).contains("image"));
+    }
+
+    /// `cat` echoes each request line back, and the echoed object carries the
+    /// request's own `id`, so it doubles as a JSON-RPC responder. Before the
+    /// protocol mutex spanned the whole exchange, one caller could consume and
+    /// discard another's response, stranding that caller forever.
+    #[cfg(unix)]
+    #[tokio::test(flavor = "multi_thread")]
+    async fn concurrent_requests_all_complete() {
+        let server = McpServer::start("echo", "cat", &[], &[])
+            .await
+            .expect("cat echo server starts");
+        let server = std::sync::Arc::new(server);
+        let mut tasks = Vec::new();
+        for i in 0..16 {
+            let server = std::sync::Arc::clone(&server);
+            tasks.push(tokio::spawn(async move {
+                server.request("tools/call", json!({"i": i})).await.unwrap()
+            }));
+        }
+        tokio::time::timeout(std::time::Duration::from_secs(10), async {
+            for task in tasks {
+                task.await.unwrap();
+            }
+        })
+        .await
+        .expect("no request may be stranded waiting for its response");
     }
 }

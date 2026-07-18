@@ -1,0 +1,14 @@
+[package]
+name = "housebot-database"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.80"
+description = "PostgreSQL connection bootstrap for deployment storage"
+license = "AGPL-3.0-or-later"
+
+[dependencies]
+anyhow = "1"
+housebot-config = { path = "../config" }
+tokio = { version = "1", features = ["rt"] }
+tokio-postgres = "0.7"
+tracing = "0.1"

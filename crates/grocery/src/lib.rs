@@ -2,8 +2,8 @@ use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
-use crate::config;
-use crate::memory::ensure_dir;
+use housebot_config as config;
+use housebot_memory::ensure_dir;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GroceryItem {

@@ -3,20 +3,20 @@
 use anyhow::Context;
 use tokio_postgres::{Client, NoTls};
 
-use crate::config;
+use housebot_config as config;
 
 const MIGRATIONS: &[(&str, &str)] = &[
     (
         "000_create_schema_migrations",
-        include_str!("../db/migrations/000_create_schema_migrations.sql"),
+        include_str!("../../../db/migrations/000_create_schema_migrations.sql"),
     ),
     (
         "001_create_user_memories",
-        include_str!("../db/migrations/001_create_user_memories.sql"),
+        include_str!("../../../db/migrations/001_create_user_memories.sql"),
     ),
     (
         "002_create_token_monitor",
-        include_str!("../db/migrations/002_create_token_monitor.sql"),
+        include_str!("../../../db/migrations/002_create_token_monitor.sql"),
     ),
 ];
 const MIGRATION_LOCK_ID: i64 = 1_593_778_914;
