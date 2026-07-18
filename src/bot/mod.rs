@@ -28,7 +28,7 @@ pub use crate::bot_response::SecretRedactor;
 use crate::channel_log::ChannelLog;
 use crate::coding_agent::catalog::{AgentCatalog, CodingAgent};
 use crate::coding_agent::issue::{
-    build_dispatch_prompt, build_issue_body, dispatch_labels, DISPATCH_WORKFLOW_FILE,
+    build_dispatch_prompt, build_issue_body, dispatch_labels, dispatch_workflow_file,
 };
 use crate::coding_agent::pending::{DiscordMessageRef, DispatchStage, PendingJobStore};
 use crate::config;

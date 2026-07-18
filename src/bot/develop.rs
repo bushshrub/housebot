@@ -114,13 +114,18 @@ impl HouseBot {
                 );
                 inputs.insert("prompt".into(), serde_json::Value::String(prompt));
                 let triggered = reporter
-                    .trigger_workflow_dispatch(DISPATCH_WORKFLOW_FILE, "master", &inputs)
+                    .trigger_workflow_dispatch(dispatch_workflow_file(agent), "master", &inputs)
                     .await;
+                let workflow_name = format!("{}-dispatch", agent.id_str());
                 let status = if triggered {
-                    "The opencode-dispatch workflow will pick this up and open a pull request."
+                    format!(
+                        "The {workflow_name} workflow will pick this up and open a pull request."
+                    )
                 } else {
-                    "⚠️ Failed to trigger the dispatch workflow. The issue has been created — \
-                     trigger the opencode-dispatch workflow manually."
+                    format!(
+                        "⚠️ Failed to trigger the dispatch workflow. The issue has been created — \
+                         trigger the {workflow_name} workflow manually."
+                    )
                 };
                 let _ = reply_no_ping(
                     ctx,

@@ -1,0 +1,49 @@
+name: claude-dispatch
+
+# Triggered via workflow_dispatch by the Housebot GitHub App when an owner
+# approves a development job assigned to the Claude Code agent.
+on:
+  workflow_dispatch:
+    inputs:
+      issue_number:
+        description: Issue number to work on
+        required: true
+        type: number
+      prompt:
+        description: The prompt/instruction for Claude Code
+        required: true
+        type: string
+
+concurrency:
+  group: claude-dispatch-${{ inputs.issue_number }}
+  cancel-in-progress: false
+
+jobs:
+  claude:
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      contents: write
+      pull-requests: write
+      issues: write
+    steps:
+      - name: Verify dispatch source
+        if: ${{ !endsWith(github.actor, '[bot]') }}
+        run: |
+          echo "::error::This workflow can only be triggered by the authorized Housebot GitHub App installation. Direct dispatch by users is not permitted — the OWNER_DISCORD_ID authorization is enforced in the Rust dispatch flow."
+          exit 1
+
+      - name: Checkout repository
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Run Claude Code
+        uses: anthropics/claude-code-action@beta
+        with:
+          direct_prompt: ${{ inputs.prompt }}
+          issue_number: ${{ inputs.issue_number }}
+        env:
+          CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
