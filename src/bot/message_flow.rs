@@ -77,28 +77,6 @@ impl HouseBot {
             Some(attachments) => format!("{text}\n\n{attachments}"),
             None => text,
         };
-
-        let referenced_text = {
-            if let Some(referenced) = msg.referenced_message.as_deref() {
-                referenced_message_context(referenced)
-            } else if let Some(msg_ref) = msg.message_reference.as_ref() {
-                if let Some(msg_id) = msg_ref.message_id {
-                    match msg_ref.channel_id.message(&ctx.http, msg_id).await {
-                        Ok(fetched) => referenced_message_context(&fetched),
-                        Err(_) => None,
-                    }
-                } else {
-                    None
-                }
-            } else {
-                None
-            }
-        };
-        let text = match referenced_text {
-            Some(referenced) if text.is_empty() => referenced,
-            Some(referenced) => format!("{text}\n\n{referenced}"),
-            None => text,
-        };
         if text.is_empty() && !message_has_attachments(msg) {
             return;
         }
@@ -146,6 +124,40 @@ impl HouseBot {
                 }
                 _ => {}
             }
+        }
+
+        let referenced_text = {
+            if let Some(referenced) = msg.referenced_message.as_deref() {
+                referenced_message_context(referenced)
+            } else if let Some(msg_ref) = msg.message_reference.as_ref() {
+                if let Some(msg_id) = msg_ref.message_id {
+                    match msg_ref.channel_id.message(&ctx.http, msg_id).await {
+                        Ok(fetched) => referenced_message_context(&fetched),
+                        Err(error) => {
+                            tracing::debug!(
+                                target: "housebot::message_flow",
+                                channel_id = msg_ref.channel_id.get(),
+                                message_id = msg_id.get(),
+                                %error,
+                                "Failed to fetch referenced message"
+                            );
+                            None
+                        }
+                    }
+                } else {
+                    None
+                }
+            } else {
+                None
+            }
+        };
+        let text = match referenced_text {
+            Some(referenced) if text.is_empty() => referenced,
+            Some(referenced) => format!("{text}\n\n{referenced}"),
+            None => text,
+        };
+        if text.is_empty() && !message_has_attachments(msg) {
+            return;
         }
 
         if session_expired {
