@@ -180,51 +180,87 @@ pub(crate) async fn create_skill(
     }
 }
 
-fn parse_triggers(val: Option<&Value>) -> Option<Vec<SkillTrigger>> {
-    val.map(|v| {
-        v.as_array()
-            .map(|arr| {
-                arr.iter()
-                    .filter_map(|item| {
-                        let trigger_type = item.get("trigger_type")?.as_str()?.to_string();
-                        let value = item.get("value")?.as_str()?.to_string();
-                        Some(SkillTrigger {
-                            trigger_type,
-                            value,
-                        })
+fn parse_triggers(val: Option<&Value>) -> Result<Option<Vec<SkillTrigger>>, String> {
+    match val {
+        None => Ok(None),
+        Some(v) => {
+            let arr = v
+                .as_array()
+                .ok_or_else(|| "'triggers' must be an array".to_string())?;
+            let triggers: Result<Vec<_>, String> = arr
+                .iter()
+                .map(|item| {
+                    let trigger_type = item
+                        .get("trigger_type")
+                        .and_then(Value::as_str)
+                        .ok_or_else(|| {
+                            "Each trigger must have a string field 'trigger_type'".to_string()
+                        })?
+                        .to_string();
+                    let value = item
+                        .get("value")
+                        .and_then(Value::as_str)
+                        .ok_or_else(|| "Each trigger must have a string field 'value'".to_string())?
+                        .to_string();
+                    Result::<_, String>::Ok(SkillTrigger {
+                        trigger_type,
+                        value,
                     })
-                    .collect()
-            })
-            .unwrap_or_default()
-    })
+                })
+                .collect();
+            Ok(Some(triggers?))
+        }
+    }
 }
 
-fn parse_examples(val: Option<&Value>) -> Option<Vec<SkillExample>> {
-    val.map(|v| {
-        v.as_array()
-            .map(|arr| {
-                arr.iter()
-                    .filter_map(|item| {
-                        let input = item.get("input")?.as_str()?.to_string();
-                        let output = item.get("output")?.as_str()?.to_string();
-                        Some(SkillExample { input, output })
-                    })
-                    .collect()
-            })
-            .unwrap_or_default()
-    })
+fn parse_examples(val: Option<&Value>) -> Result<Option<Vec<SkillExample>>, String> {
+    match val {
+        None => Ok(None),
+        Some(v) => {
+            let arr = v
+                .as_array()
+                .ok_or_else(|| "'examples' must be an array".to_string())?;
+            let examples: Result<Vec<_>, String> = arr
+                .iter()
+                .map(|item| {
+                    let input = item
+                        .get("input")
+                        .and_then(Value::as_str)
+                        .ok_or_else(|| "Each example must have a string field 'input'".to_string())?
+                        .to_string();
+                    let output = item
+                        .get("output")
+                        .and_then(Value::as_str)
+                        .ok_or_else(|| {
+                            "Each example must have a string field 'output'".to_string()
+                        })?
+                        .to_string();
+                    Result::<_, String>::Ok(SkillExample { input, output })
+                })
+                .collect();
+            Ok(Some(examples?))
+        }
+    }
 }
 
-fn parse_strings(val: Option<&Value>) -> Option<Vec<String>> {
-    val.map(|v| {
-        v.as_array()
-            .map(|arr| {
-                arr.iter()
-                    .filter_map(|item| item.as_str().map(String::from))
-                    .collect()
-            })
-            .unwrap_or_default()
-    })
+fn parse_strings(val: Option<&Value>) -> Result<Option<Vec<String>>, String> {
+    match val {
+        None => Ok(None),
+        Some(v) => {
+            let arr = v
+                .as_array()
+                .ok_or_else(|| "Expected an array of strings".to_string())?;
+            let strings: Result<Vec<_>, String> = arr
+                .iter()
+                .map(|item| {
+                    item.as_str()
+                        .ok_or_else(|| "Each element must be a string".to_string())
+                        .map(String::from)
+                })
+                .collect();
+            Ok(Some(strings?))
+        }
+    }
 }
 
 /// Parse `create_skill` tool-call arguments and dispatch to the implementation.
@@ -239,9 +275,18 @@ pub async fn dispatch_create_skill(skills: &Skills, author_id: &str, args: &Valu
         .and_then(Value::as_str)
         .unwrap_or("");
     let description = args.get("description").and_then(Value::as_str);
-    let triggers = parse_triggers(args.get("triggers"));
-    let enabled_tools = parse_strings(args.get("enabled_tools"));
-    let examples = parse_examples(args.get("examples"));
+    let triggers = match parse_triggers(args.get("triggers")) {
+        Ok(t) => t,
+        Err(e) => return format!("Error: {e}"),
+    };
+    let enabled_tools = match parse_strings(args.get("enabled_tools")) {
+        Ok(t) => t,
+        Err(e) => return format!("Error: {e}"),
+    };
+    let examples = match parse_examples(args.get("examples")) {
+        Ok(e) => e,
+        Err(e) => return format!("Error: {e}"),
+    };
     let version = args.get("version").and_then(Value::as_u64).unwrap_or(0);
 
     create_skill(
@@ -436,7 +481,7 @@ mod tests {
             {"trigger_type": "keyword", "value": "hello"},
             {"trigger_type": "intent", "value": "greeting"},
         ]);
-        let triggers = parse_triggers(Some(&v)).unwrap();
+        let triggers = parse_triggers(Some(&v)).unwrap().unwrap();
         assert_eq!(triggers.len(), 2);
         assert_eq!(triggers[0].trigger_type, "keyword");
         assert_eq!(triggers[1].value, "greeting");
@@ -444,7 +489,18 @@ mod tests {
 
     #[test]
     fn parse_triggers_none_when_absent() {
-        assert!(parse_triggers(None).is_none());
+        assert!(parse_triggers(None).unwrap().is_none());
+    }
+
+    #[test]
+    fn parse_triggers_rejects_non_array() {
+        assert!(parse_triggers(Some(&json!("not_an_array"))).is_err());
+    }
+
+    #[test]
+    fn parse_triggers_rejects_malformed_element() {
+        let v = json!([{"trigger_type": "keyword"}]); // missing "value"
+        assert!(parse_triggers(Some(&v)).is_err());
     }
 
     #[test]
@@ -452,26 +508,41 @@ mod tests {
         let v = json!([
             {"input": "hi", "output": "hello back"},
         ]);
-        let examples = parse_examples(Some(&v)).unwrap();
+        let examples = parse_examples(Some(&v)).unwrap().unwrap();
         assert_eq!(examples.len(), 1);
         assert_eq!(examples[0].input, "hi");
     }
 
     #[test]
     fn parse_examples_none_when_absent() {
-        assert!(parse_examples(None).is_none());
+        assert!(parse_examples(None).unwrap().is_none());
+    }
+
+    #[test]
+    fn parse_examples_rejects_non_array() {
+        assert!(parse_examples(Some(&json!(42))).is_err());
     }
 
     #[test]
     fn parse_strings_from_value() {
         let v = json!(["web_search", "fetch_webpage"]);
-        let tools = parse_strings(Some(&v)).unwrap();
+        let tools = parse_strings(Some(&v)).unwrap().unwrap();
         assert_eq!(tools, vec!["web_search", "fetch_webpage"]);
     }
 
     #[test]
     fn parse_strings_none_when_absent() {
-        assert!(parse_strings(None).is_none());
+        assert!(parse_strings(None).unwrap().is_none());
+    }
+
+    #[test]
+    fn parse_strings_rejects_non_array() {
+        assert!(parse_strings(Some(&json!("bad"))).is_err());
+    }
+
+    #[test]
+    fn parse_strings_rejects_non_string_element() {
+        assert!(parse_strings(Some(&json!([42]))).is_err());
     }
 
     #[tokio::test]
