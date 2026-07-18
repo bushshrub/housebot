@@ -40,6 +40,7 @@ members = [
     "crates/tool-permissions",
     "crates/tools",
 ]
+exclude = ["fuzz"]
 resolver = "2"
 
 [[bin]]

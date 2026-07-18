@@ -38,6 +38,9 @@ fn truncate(text: &str, limit: usize) -> String {
 }
 
 pub fn split_text(text: &str, limit: usize) -> Vec<String> {
+    // A zero limit would produce an empty chunk without advancing, looping
+    // forever; clamp so pathological callers still terminate.
+    let limit = limit.max(1);
     let chars: Vec<char> = text.chars().collect();
     if chars.len() <= limit {
         return vec![text.to_string()];
