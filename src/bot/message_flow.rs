@@ -93,7 +93,7 @@ impl HouseBot {
 
         // Seahorse emoji filter — silently ignore messages containing the
         // duck emoji (🦆), which is commonly used as a stand-in for "seahorse".
-        if text.contains('\u{1f986}') {
+        if msg.content.contains('\u{1f986}') {
             tracing::info!(
                 target: "housebot::seahorse_filter",
                 user_id = msg.author.id.get(),

@@ -50,25 +50,31 @@ impl Skills {
         }
     }
 
+    /// Read and parse the skills file (no caching, no locking).
+    async fn load_raw(&self) -> Result<BTreeMap<String, Skill>, anyhow::Error> {
+        let raw = tokio::fs::read_to_string(&self.path).await?;
+        if raw.trim().is_empty() {
+            return Ok(BTreeMap::new());
+        }
+        Ok(serde_json::from_str(&raw)?)
+    }
+
     /// Load every defined skill, keyed by name (cached after first load).
     pub async fn load_all(&self) -> BTreeMap<String, Skill> {
-        {
-            let cache = self.cache.lock().await;
-            if let Some(skills) = &*cache {
-                return skills.clone();
+        let mut cache = self.cache.lock().await;
+        if let Some(skills) = &*cache {
+            return skills.clone();
+        }
+        match self.load_raw().await {
+            Ok(skills) => {
+                *cache = Some(skills.clone());
+                skills
+            }
+            Err(e) => {
+                tracing::error!(target: "housebot::skills", "Failed to load skills: {e}");
+                BTreeMap::new()
             }
         }
-        let raw = match tokio::fs::read_to_string(&self.path).await {
-            Ok(s) => s,
-            Err(_) => return BTreeMap::new(),
-        };
-        let skills: BTreeMap<String, Skill> = if raw.trim().is_empty() {
-            BTreeMap::new()
-        } else {
-            serde_json::from_str(&raw).unwrap_or_default()
-        };
-        *self.cache.lock().await = Some(skills.clone());
-        skills
     }
 
     async fn write_all(&self, skills: &BTreeMap<String, Skill>) -> std::io::Result<()> {
@@ -86,21 +92,29 @@ impl Skills {
 
     /// Save (or overwrite) a skill under its own name.
     pub async fn save(&self, skill: Skill) -> std::io::Result<()> {
-        let mut all = self.load_all().await;
+        let mut cache = self.cache.lock().await;
+        let mut all = match &*cache {
+            Some(skills) => skills.clone(),
+            None => self.load_raw().await.unwrap_or_default(),
+        };
         all.insert(skill.name.clone(), skill);
         self.write_all(&all).await?;
-        *self.cache.lock().await = Some(all);
+        *cache = Some(all);
         Ok(())
     }
 
     /// Delete a skill, returning whether it existed.
     pub async fn delete(&self, name: &str) -> std::io::Result<bool> {
-        let mut all = self.load_all().await;
+        let mut cache = self.cache.lock().await;
+        let mut all = match &*cache {
+            Some(skills) => skills.clone(),
+            None => self.load_raw().await.unwrap_or_default(),
+        };
         if all.remove(name).is_none() {
             return Ok(false);
         }
         self.write_all(&all).await?;
-        *self.cache.lock().await = Some(all);
+        *cache = Some(all);
         Ok(true)
     }
 }

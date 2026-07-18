@@ -144,11 +144,9 @@ impl McpServer {
 
     /// List every tool the server exposes (cached after first call).
     pub async fn list_tools(&self) -> Vec<McpTool> {
-        {
-            let cache = self.tools_cache.lock().await;
-            if let Some(tools) = &*cache {
-                return tools.clone();
-            }
+        let mut cache = self.tools_cache.lock().await;
+        if let Some(tools) = &*cache {
+            return tools.clone();
         }
         let result = match self.request("tools/list", json!({})).await {
             Ok(r) => r,
@@ -157,29 +155,31 @@ impl McpServer {
                 return vec![];
             }
         };
-        let tools: Vec<McpTool> = result
-            .get("tools")
-            .and_then(|t| t.as_array())
-            .map(|arr| {
-                arr.iter()
-                    .filter_map(|t| {
-                        Some(McpTool {
-                            name: t.get("name")?.as_str()?.to_string(),
-                            description: t
-                                .get("description")
-                                .and_then(|d| d.as_str())
-                                .unwrap_or("")
-                                .to_string(),
-                            input_schema: t
-                                .get("inputSchema")
-                                .cloned()
-                                .unwrap_or_else(|| json!({"type": "object"})),
-                        })
-                    })
-                    .collect()
+        let Some(arr) = result.get("tools").and_then(|t| t.as_array()) else {
+            tracing::error!(
+                "tools/list response for '{}' missing valid 'tools' array",
+                self.prefix
+            );
+            return vec![];
+        };
+        let tools: Vec<McpTool> = arr
+            .iter()
+            .filter_map(|t| {
+                Some(McpTool {
+                    name: t.get("name")?.as_str()?.to_string(),
+                    description: t
+                        .get("description")
+                        .and_then(|d| d.as_str())
+                        .unwrap_or("")
+                        .to_string(),
+                    input_schema: t
+                        .get("inputSchema")
+                        .cloned()
+                        .unwrap_or_else(|| json!({"type": "object"})),
+                })
             })
-            .unwrap_or_default();
-        *self.tools_cache.lock().await = Some(tools.clone());
+            .collect();
+        *cache = Some(tools.clone());
         tools
     }
 
