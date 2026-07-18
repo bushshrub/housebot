@@ -23,6 +23,10 @@ pub struct ServerConfig {
     /// Roles allowed to view the leaderboard when visibility is restricted.
     #[serde(default)]
     pub leaderboard_role_ids: HashSet<u64>,
+    /// Whether to respond to @-mentions from other bots in this server.
+    /// The bot always ignores its own pings regardless.
+    #[serde(default)]
+    pub respond_to_bot_pings: bool,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -208,6 +212,7 @@ mod tests {
             serde_json::from_str(r#"{"allowed_channel_ids":[123]}"#).unwrap();
         assert_eq!(config.leaderboard_visibility, LeaderboardVisibility::Public);
         assert!(config.leaderboard_role_ids.is_empty());
+        assert!(!config.respond_to_bot_pings);
     }
 
     #[test]

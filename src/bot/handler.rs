@@ -328,8 +328,18 @@ impl EventHandler for HouseBot {
 
     async fn message(&self, ctx: Context, msg: Message) {
         let bot_id = ctx.cache.current_user().id;
-        if msg.author.bot && (msg.author.id == bot_id || !config::respond_to_bot_pings()) {
-            return;
+        if msg.author.bot && msg.author.id != bot_id {
+            let respond = if let Some(gid) = msg.guild_id {
+                self.server_cfg
+                    .load(gid.get())
+                    .await
+                    .respond_to_bot_pings
+            } else {
+                false
+            };
+            if !respond {
+                return;
+            }
         }
         let content = msg.content.trim().to_string();
         let channel_id = msg.channel_id.get();
