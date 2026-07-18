@@ -5,8 +5,9 @@ use super::*;
 pub(crate) fn run_skill_tool() -> Value {
     json!({
         "name": "run_skill",
-        "description": "Execute a named skill — a custom prompt template saved by users. Pass the \
-            skill name and the text input to process.",
+        "description": "Execute a named custom skill — a packaged capability with instructions, \
+            optional tool access, and examples. Pass the skill name and text input. Skills with \
+            enabled tools will automatically have those tools available during execution.",
         "input_schema": {
             "type": "object",
             "properties": {
@@ -16,6 +17,10 @@ pub(crate) fn run_skill_tool() -> Value {
             "required": ["name", "input"]
         }
     })
+}
+
+pub(crate) fn create_skill_tool() -> Value {
+    tools::create_skill::definition()
 }
 
 /// Wrap a tool in the OpenAI function-calling envelope.

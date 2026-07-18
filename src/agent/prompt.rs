@@ -139,12 +139,26 @@ impl ConfigSuffix {
         };
         let skills_section = if all_skills.is_empty() {
             "\n- run_skill — Execute a custom skill by name. No skills are defined yet; users can add \
-             them with `/skill add`."
+              them through conversation (describe what you want the skill to do)."
                 .to_string()
         } else {
             let lines: Vec<String> = all_skills
                 .values()
-                .map(|s| format!("  - **{}**: {}", s.name, s.description_or_name()))
+                .map(|s| {
+                    let trigger_hint = if s.has_triggers() {
+                        let triggers: Vec<&str> =
+                            s.triggers.iter().map(|t| t.value.as_str()).collect();
+                        format!(" (triggers on: {}) ", triggers.join(", "))
+                    } else {
+                        String::new()
+                    };
+                    format!(
+                        "  - **{}**{}— {}",
+                        s.name,
+                        trigger_hint,
+                        s.description_or_name()
+                    )
+                })
                 .collect();
             format!(
                 "\n- run_skill — Execute a custom skill by name with an input string. Available skills:\n{}",
@@ -325,4 +339,44 @@ Current user: {username} (ID: {user_id})\n",
         username = dynamic.username,
         user_id = dynamic.user_id,
     )
+}
+
+/// Build a system prompt for skill execution that includes instructions,
+/// trigger context, enabled tools, and few-shot examples.
+pub(crate) fn build_skill_system_prompt(skill: &Skill, instructions: &str) -> String {
+    let mut parts = vec![instructions.to_string()];
+
+    if !skill.triggers.is_empty() {
+        let triggers: Vec<String> = skill
+            .triggers
+            .iter()
+            .map(|t| format!("  - {}: {}", t.trigger_type, t.value))
+            .collect();
+        parts.push(format!("## Trigger conditions\n{}", triggers.join("\n")));
+    }
+
+    if !skill.enabled_tools.is_empty() {
+        parts.push(format!(
+            "## Available tools\nYou have access to the following tools: {}.\n\
+             Use them when needed to fulfill the user's request.",
+            skill.enabled_tools.join(", ")
+        ));
+    }
+
+    if !skill.examples.is_empty() {
+        let examples: Vec<String> = skill
+            .examples
+            .iter()
+            .map(|ex| {
+                format!(
+                    "User: {}\nAssistant: {}",
+                    ex.input.replace('\n', "\n  "),
+                    ex.output.replace('\n', "\n  ")
+                )
+            })
+            .collect();
+        parts.push(format!("## Examples\n{}", examples.join("\n\n")));
+    }
+
+    parts.join("\n\n")
 }

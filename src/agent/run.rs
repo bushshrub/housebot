@@ -287,6 +287,7 @@ impl Agent {
             tools::file_download::definition(),
             tools::common_crawl::definition(),
             run_skill_tool(),
+            create_skill_tool(),
             tools::feature_request::definition(),
             tools::edit_feature_request::definition(),
             tools::feature_development::definition(),

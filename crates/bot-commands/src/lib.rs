@@ -80,8 +80,9 @@ pub async fn skill_command(
             match skills.get(&name).await {
                 None => format!("Skill `{name}` not found."),
                 Some(skill) => {
-                    let mut preview = truncate_chars(&skill.prompt, 500);
-                    if skill.prompt.chars().count() > 500 {
+                    let instructions = skill.effective_instructions();
+                    let mut preview = truncate_chars(instructions, 500);
+                    if instructions.chars().count() > 500 {
                         preview.push('…');
                     }
                     let author = skill
@@ -96,12 +97,38 @@ pub async fn skill_command(
                             skill.editors.iter().map(|id| format!("<@{id}>")).collect();
                         format!("\n**Editors:** {}", list.join(", "))
                     };
+                    let version = format!("\n**Version:** v{}", skill.version);
+                    let trigger_info = if skill.has_triggers() {
+                        let triggers: Vec<String> = skill
+                            .triggers
+                            .iter()
+                            .map(|t| format!("{}: {}", t.trigger_type, t.value))
+                            .collect();
+                        format!("\n**Triggers:** {}", triggers.join("; "))
+                    } else {
+                        String::new()
+                    };
+                    let tools_info = if skill.enabled_tools.is_empty() {
+                        String::new()
+                    } else {
+                        format!("\n**Tools:** {}", skill.enabled_tools.join(", "))
+                    };
+                    let example_count = skill.examples.len();
+                    let examples_info = if example_count > 0 {
+                        format!("\n**Examples:** {example_count}")
+                    } else {
+                        String::new()
+                    };
                     format!(
-                        "**Skill: {}**\nDescription: {}{}{}\n```\n{}\n```",
+                        "**Skill: {}**\nDescription: {}{}{}{}{}{}{}\n```\n{}\n```",
                         skill.name,
                         skill.description.as_deref().unwrap_or("(none)"),
                         author,
                         editors,
+                        version,
+                        trigger_info,
+                        tools_info,
+                        examples_info,
                         preview,
                     )
                 }
@@ -126,9 +153,23 @@ pub async fn skill_command(
             let skill = Skill {
                 name: name.clone(),
                 description: Some(description),
-                prompt: rest.to_string(),
+                instructions: rest.to_string(),
+                triggers: Vec::new(),
+                enabled_tools: Vec::new(),
+                examples: Vec::new(),
+                version: 1,
+                version_history: Vec::new(),
                 created_by: Some(author_str),
                 editors: Vec::new(),
+                created_at: std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_secs(),
+                updated_at: std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_secs(),
+                prompt: None,
             };
             if skills.save(skill).await.is_err() {
                 return "Error: failed to save skill.".into();
@@ -153,7 +194,8 @@ pub async fn skill_command(
                             skill.created_by.as_deref().unwrap_or("unknown")
                         );
                     }
-                    skill.prompt = rest.to_string();
+                    skill.bump_version();
+                    skill.instructions = rest.to_string();
                     skill.description = if rest.chars().count() > 100 {
                         Some(format!("{}…", truncate_chars(rest, 100)))
                     } else {

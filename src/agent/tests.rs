@@ -79,9 +79,17 @@ fn system_prompt_lists_skills() {
         Skill {
             name: "greet".into(),
             description: Some("Say hello".into()),
-            prompt: "..".into(),
+            instructions: "..".into(),
+            triggers: Vec::new(),
+            enabled_tools: Vec::new(),
+            examples: Vec::new(),
+            version: 1,
+            version_history: Vec::new(),
             created_by: None,
             editors: Vec::new(),
+            created_at: 0,
+            updated_at: 0,
+            prompt: None,
         },
     );
     let p = build_system_prompt("Alice", "123", "Alice", "", "", &skills, None, true);
@@ -469,9 +477,17 @@ fn prompt_static_base_present_regardless_of_deep_memory_or_skills() {
         Skill {
             name: "greet".into(),
             description: Some("Say hello".into()),
-            prompt: "..".into(),
+            instructions: "..".into(),
+            triggers: Vec::new(),
+            enabled_tools: Vec::new(),
+            examples: Vec::new(),
+            version: 1,
+            version_history: Vec::new(),
             created_by: None,
             editors: Vec::new(),
+            created_at: 0,
+            updated_at: 0,
+            prompt: None,
         },
     );
 
@@ -602,9 +618,17 @@ fn prompt_regression_dynamic_markers_after_guidelines_maximal() {
         Skill {
             name: "greet".into(),
             description: Some("Say hello".into()),
-            prompt: "..".into(),
+            instructions: "..".into(),
+            triggers: Vec::new(),
+            enabled_tools: Vec::new(),
+            examples: Vec::new(),
+            version: 1,
+            version_history: Vec::new(),
             created_by: None,
             editors: Vec::new(),
+            created_at: 0,
+            updated_at: 0,
+            prompt: None,
         },
     );
     let p = build_system_prompt_with_profile(
@@ -676,9 +700,17 @@ fn prompt_config_content_ordered_between_guidelines_and_dynamic() {
         Skill {
             name: "greet".into(),
             description: Some("Say hello".into()),
-            prompt: "..".into(),
+            instructions: "..".into(),
+            triggers: Vec::new(),
+            enabled_tools: Vec::new(),
+            examples: Vec::new(),
+            version: 1,
+            version_history: Vec::new(),
             created_by: None,
             editors: Vec::new(),
+            created_at: 0,
+            updated_at: 0,
+            prompt: None,
         },
     );
     let p = build_system_prompt_with_profile(
@@ -763,6 +795,7 @@ fn all_tool_names_matches_built_in_definitions() {
         crate::tools::file_download::definition(),
         crate::tools::common_crawl::definition(),
         run_skill_tool(),
+        create_skill_tool(),
         crate::tools::feature_request::definition(),
         crate::tools::edit_feature_request::definition(),
         crate::tools::feature_development::definition(),

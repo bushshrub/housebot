@@ -13,6 +13,7 @@ futures-util = "0.3"
 housebot-coding-agent = { path = "../coding-agent" }
 housebot-config = { path = "../config" }
 housebot-github-issues = { path = "../github-issues" }
+housebot-skills = { path = "../skills" }
 housebot-llm = { path = "../llm" }
 housebot-rate-limit = { path = "../rate-limit" }
 housebot-reminders = { path = "../reminders" }

@@ -283,14 +283,19 @@ impl Agent {
                 )
                 .await,
             ),
+            "create_skill" => ToolOutcome::Text(
+                tools::create_skill::dispatch_create_skill(&self.skills, user_id, args).await,
+            ),
             "run_skill" => {
                 let skill_name = str_arg(args, "name");
                 let input = str_arg(args, "input");
                 match self.skills.get(skill_name).await {
                     None => ToolOutcome::Text(format!("Error: Skill '{skill_name}' not found.")),
                     Some(skill) => {
+                        let instructions = skill.effective_instructions();
+                        let system = build_skill_system_prompt(&skill, instructions);
                         let msgs = vec![
-                            json!({"role": "system", "content": skill.prompt}),
+                            json!({"role": "system", "content": system}),
                             json!({"role": "user", "content": input}),
                         ];
                         let completion = self
