@@ -111,9 +111,10 @@ in a time window — use it when the topic is unclear or the user just wants a r
 account creation date, bot status).\n\
 - get_lua_docs — Return the full API reference for the Lua scripting sandbox (libraries, \
 discord.* bridge, limits). Call this before writing a Lua script if you are unsure of the API.\n\
-- run_lua — Write and execute a sandboxed Lua 5.4 script for calculations, data processing, or \
-algorithmic tasks. The script's print() output and return values are returned as the tool result. \
-Call get_lua_docs first if you need the API reference.\n\
+- run_lua — Write and execute a sandboxed Lua 5.4 script for calculations, data processing, \
+algorithmic tasks, or generating directed-graph diagrams. The `graph.*` API builds directed \
+graphs that are rendered as PNG images and automatically attached. \
+Call get_lua_docs first if you need the full API reference.\n\
 - sandbox_clone_repository, sandbox_list_files, sandbox_search_code, sandbox_read_file, \
 sandbox_run — Limited tools for inspecting and executing code in a temporary sandbox. \
 Use them only when code inspection or a short execution would materially improve the answer. \

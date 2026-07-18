@@ -162,10 +162,12 @@ pub(crate) fn run_lua_tool() -> Value {
     json!({
         "name": "run_lua",
         "description": "Write and execute a sandboxed Lua 5.4 script for calculations, data \
-            processing, or algorithmic tasks. `print(...)` output and return values are captured \
-            and returned as the tool result. `discord.web_search` and `discord.jellyfin_search` \
-            are available as bridge functions. Call `get_lua_docs` first if you need the full \
-            API reference for the sandbox.",
+            processing, algorithmic tasks, or generating directed-graph diagrams. `print(...)` \
+            output and return values are captured and returned as the tool result. The `graph.*` \
+            API (`graph.node`, `graph.edge`, `graph.title`) builds directed graphs that are \
+            rendered as PNG images and automatically attached to the Discord response. \
+            `discord.web_search` and `discord.jellyfin_search` are available as bridge functions. \
+            Call `get_lua_docs` first if you need the full API reference for the sandbox.",
         "input_schema": {
             "type": "object",
             "properties": {
