@@ -141,9 +141,12 @@ impl McpServer {
         let id = self.next_id.fetch_add(1, Ordering::SeqCst);
         let line = build_request(id, method, params);
         let mut io = self.io.lock().await;
-        io.stdin.write_all(line.as_bytes()).await?;
-        io.stdin.flush().await?;
+        // The write sits inside the timeout too: a child that stops reading
+        // stdin would otherwise block write_all forever while holding the io
+        // mutex, stranding every other caller.
         tokio::time::timeout(RESPONSE_TIMEOUT, async {
+            io.stdin.write_all(line.as_bytes()).await?;
+            io.stdin.flush().await?;
             while let Some(raw) = io.stdout.next_line().await? {
                 let Ok(msg) = serde_json::from_str::<Value>(&raw) else {
                     continue; // skip non-JSON log lines
