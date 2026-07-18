@@ -112,9 +112,9 @@ jobs:
             crates/sandbox/docker
 
       - name: Run sandbox Docker integration tests
-        # Kata Containers is not available on GitHub-hosted runners.
+        # gVisor (runsc) is not available on GitHub-hosted runners.
         # HOUSEBOT_SANDBOX_RUNTIME=runc exercises the full lifecycle with the
-        # standard OCI runtime.  The Kata runtime flag is verified by unit tests.
+        # standard OCI runtime.  The gVisor runtime flag is verified by unit tests.
         env:
           HOUSEBOT_SANDBOX_RUNTIME: runc
         run: |

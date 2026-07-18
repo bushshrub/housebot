@@ -124,7 +124,7 @@ data/                # runtime — gitignored
 | `GITHUB_APP_ID` / `GITHUB_APP_PRIVATE_KEY` / `GITHUB_INSTALLATION_ID` / `GITHUB_REPO` | no | — | GitHub App creds for feature-request issue filing (all four required) |
 | `OWNER_DISCORD_ID` | no | `0` | Discord user ID allowed to dispatch coding jobs; `0` disables dispatch |
 | `SANDBOX_SOCKET_PATH` | no | `/run/housebot-sandbox/sandbox.sock` | Unix socket path for sandboxd |
-| `HOUSEBOT_SANDBOX_RUNTIME` | no | `kata` | Container runtime for sandboxd; set to `runc` in dev/CI |
+| `HOUSEBOT_SANDBOX_RUNTIME` | no | `runsc` | Container runtime for sandboxd (gVisor); set to `runc` in dev/CI |
 
 (`DOCKER_NETWORK` is read only by the independent `deployment-bot` crate, not the chatbot.)
 
@@ -200,12 +200,12 @@ and run short commands in a temporary isolated container.
 ### Security boundary
 
 ```
-Housebot  →  Unix socket  →  sandboxd  →  docker run --runtime=kata  →  Kata VM
+Housebot  →  Unix socket  →  sandboxd  →  docker run --runtime=runsc  →  gVisor
 ```
 
 - **Housebot never holds the Docker socket.**  Only `sandboxd` does.
-- **Kata Containers 2.x** runs each container inside a lightweight VM so a
-  container escape cannot reach the Docker host.
+- **gVisor (runsc)** runs each container with a userspace kernel that intercepts
+  syscalls, preventing container escape without requiring hardware virtualization.
 - Container is `--read-only`, `--cap-drop=ALL`, `--no-new-privileges`,
   `--user=sandbox`, with tmpfs mounts only on `/workspace`, `/tmp`,
   `/home/sandbox`.
@@ -237,10 +237,10 @@ When adding or changing a sandbox tool:
 # Build the sandbox image
 docker build -t ghcr.io/bushshrub/housebot/sandbox:latest crates/sandbox/docker
 
-# With Kata (production-equivalent)
+# With gVisor (production-equivalent)
 cargo test --package housebot-sandbox -- --include-ignored --test-threads=1
 
-# Without Kata (dev / CI)
+# Without gVisor (dev / CI)
 HOUSEBOT_SANDBOX_RUNTIME=runc \
   cargo test --package housebot-sandbox -- --include-ignored --test-threads=1
 ```
