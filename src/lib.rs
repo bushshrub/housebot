@@ -3,8 +3,7 @@
 //!
 //! This is the Rust rewrite of the original Python implementation. Most functionality
 //! lives in small workspace crates under `crates/`, re-exported here at their original
-//! module paths; this crate keeps only the agent core, the Lua engine (mutually
-//! recursive with the agent), and the Discord frontend.
+//! module paths; this crate keeps only the agent core and the Discord frontend.
 
 pub mod agent;
 pub mod bot;
@@ -53,7 +52,9 @@ pub use housebot_llm as llm;
 /// Re-exported from the `housebot-llm-queue` workspace crate; kept at this path so
 /// existing `crate::llm_queue::…` references continue to resolve.
 pub use housebot_llm_queue as llm_queue;
-pub mod lua_engine;
+/// Re-exported from the `housebot-lua-engine` workspace crate; kept at this path so
+/// existing `crate::lua_engine::…` references continue to resolve.
+pub use housebot_lua_engine as lua_engine;
 /// Re-exported from the `housebot-mcp` workspace crate; kept at this path so
 /// existing `crate::mcp::…` references continue to resolve.
 pub use housebot_mcp as mcp;

@@ -25,6 +25,7 @@ members = [
     "crates/history",
     "crates/llm",
     "crates/llm-queue",
+    "crates/lua-engine",
     "crates/mcp",
     "crates/memory",
     "crates/message-log",
@@ -71,7 +72,6 @@ sentry = { version = "0.38.0", default-features = false, features = [
     "reqwest",
     "rustls",
 ] }
-mlua = { version = "0.12", features = ["lua54", "vendored"] }
 common-crawl = { path = "crates/common-crawl" }
 housebot-bot-commands = { path = "crates/bot-commands" }
 housebot-bot-config = { path = "crates/bot-config" }
@@ -81,6 +81,7 @@ housebot-coding-agent = { path = "crates/coding-agent" }
 housebot-discord-bridge = { path = "crates/discord-bridge" }
 housebot-github-issues = { path = "crates/github-issues" }
 housebot-llm-queue = { path = "crates/llm-queue" }
+housebot-lua-engine = { path = "crates/lua-engine" }
 housebot-tool-permissions = { path = "crates/tool-permissions" }
 housebot-tools = { path = "crates/tools" }
 graph-render = { path = "crates/graph-render" }

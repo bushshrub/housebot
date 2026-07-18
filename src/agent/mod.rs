@@ -216,6 +216,7 @@ pub struct Agent {
 mod dispatch;
 mod leaderboard_fmt;
 mod lua;
+pub use lua::BotScriptHost;
 mod prompt;
 mod run;
 mod session;

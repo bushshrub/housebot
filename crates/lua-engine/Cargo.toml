@@ -1,0 +1,17 @@
+[package]
+name = "housebot-lua-engine"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.80"
+description = "Sandboxed Lua 5.4 scripting engine with bridged bot capabilities"
+license = "AGPL-3.0-or-later"
+
+[dependencies]
+async-trait = "0.1"
+graph-render = { path = "../graph-render" }
+housebot-config = { path = "../config" }
+mlua = { version = "0.12", features = ["lua54", "vendored"] }
+tokio = { version = "1", features = ["rt", "time", "macros"] }
+
+[dev-dependencies]
+tokio = { version = "1", features = ["full", "test-util"] }
