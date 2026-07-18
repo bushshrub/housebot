@@ -17,5 +17,9 @@ fuzz_target!(|input: (&str, u16)| {
     }
     if !text.is_empty() {
         assert!(!chunks.is_empty(), "non-empty input produced no chunks");
+        assert!(
+            chunks.iter().all(|chunk| !chunk.is_empty()),
+            "non-empty input produced an empty chunk"
+        );
     }
 });

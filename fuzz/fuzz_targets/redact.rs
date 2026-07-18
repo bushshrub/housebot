@@ -12,7 +12,7 @@ fuzz_target!(|input: (String, String)| {
     let redacted = redactor.redact(&text);
     // Redaction applies to non-trivial secrets; short values are ignored to
     // avoid mangling ordinary text, so only assert above that threshold.
-    if secret.chars().count() >= 8 && text.contains(&secret) {
+    if secret.len() >= 8 && text.contains(&secret) {
         assert!(
             !redacted.contains(&secret),
             "secret survived redaction"

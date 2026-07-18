@@ -11,6 +11,14 @@ fuzz_target!(|text: &str| {
     for (name, bytes) in &files {
         assert!(!name.is_empty());
         assert!(bytes.len() <= text.len());
+        assert!(
+            bytes.is_empty()
+                || text
+                    .as_bytes()
+                    .windows(bytes.len())
+                    .any(|window| window == bytes),
+            "extracted bytes must come from input"
+        );
     }
     let _ = modified;
 });
