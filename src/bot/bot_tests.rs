@@ -261,7 +261,10 @@ fn status_describes_common_tools() {
 
 #[test]
 fn status_has_a_generic_fallback() {
-    assert_eq!(tool_status("new_external_tool"), "🔧 **Running a tool...**");
+    assert_eq!(
+        tool_status("new_external_tool"),
+        "🔧 **Running `new_external_tool`...**"
+    );
 }
 
 #[test]

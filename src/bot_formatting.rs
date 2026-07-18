@@ -101,26 +101,26 @@ pub fn tool_hint(tool_name: &str, args: &Value) -> String {
 }
 
 /// User-facing status shown while an agent tool is executing.
-pub fn tool_status(tool_name: &str) -> &'static str {
+pub fn tool_status(tool_name: &str) -> String {
     match tool_name {
-        "web_search" => "🔎 **Searching the web...**",
-        "deep_research" => "🔎 **Researching...**",
-        "fetch_webpage" | "summarize_url" => "🌐 **Reading a webpage...**",
-        "common_crawl__search" => "🗂️ **Searching web archives...**",
-        "download_file" => "📥 **Downloading a file...**",
-        "run_lua" => "⚙️ **Running a Lua script...**",
-        "get_lua_docs" => "📖 **Reading Lua documentation...**",
-        "run_skill" => "🧩 **Running a skill...**",
-        "translate" => "🌐 **Translating...**",
-        "set_reminder" => "⏰ **Setting a reminder...**",
-        "search_messages" | "get_recent_messages" => "💬 **Searching messages...**",
-        "find_discord_users" | "get_discord_user" => "👤 **Looking up Discord users...**",
-        "get_bot_features" => "🤖 **Checking bot features...**",
-        "create_feature_request" => "📝 **Creating a feature request...**",
-        "edit_feature_request" => "📝 **Updating a feature request...**",
-        "prepare_feature_development" => "🛠️ **Preparing feature development...**",
-        name if name.starts_with("jellyfin__") => "🎬 **Querying Jellyfin...**",
-        _ => "🔧 **Running a tool...**",
+        "web_search" => "🔎 **Searching the web...**".into(),
+        "deep_research" => "🔎 **Researching...**".into(),
+        "fetch_webpage" | "summarize_url" => "🌐 **Reading a webpage...**".into(),
+        "common_crawl__search" => "🗂️ **Searching web archives...**".into(),
+        "download_file" => "📥 **Downloading a file...**".into(),
+        "run_lua" => "⚙️ **Running a Lua script...**".into(),
+        "get_lua_docs" => "📖 **Reading Lua documentation...**".into(),
+        "run_skill" => "🧩 **Running a skill...**".into(),
+        "translate" => "🌐 **Translating...**".into(),
+        "set_reminder" => "⏰ **Setting a reminder...**".into(),
+        "search_messages" | "get_recent_messages" => "💬 **Searching messages...**".into(),
+        "find_discord_users" | "get_discord_user" => "👤 **Looking up Discord users...**".into(),
+        "get_bot_features" => "🤖 **Checking bot features...**".into(),
+        "create_feature_request" => "📝 **Creating a feature request...**".into(),
+        "edit_feature_request" => "📝 **Updating a feature request...**".into(),
+        "prepare_feature_development" => "🛠️ **Preparing feature development...**".into(),
+        name if name.starts_with("jellyfin__") => "🎬 **Querying Jellyfin...**".into(),
+        _ => format!("🔧 **Running `{tool_name}`...**"),
     }
 }
 
