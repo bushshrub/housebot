@@ -10,8 +10,8 @@ use std::sync::Arc;
 use serde::{Deserialize, Serialize};
 use tokio::sync::Mutex;
 
-use crate::config;
-use crate::memory::ensure_dir;
+use housebot_config as config;
+use housebot_memory::ensure_dir;
 
 /// A user-defined skill: a named system prompt run against arbitrary input.
 ///

@@ -1,0 +1,20 @@
+[package]
+name = "housebot-channel-log"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.80"
+description = "Global per-channel message log with regex search"
+license = "AGPL-3.0-or-later"
+
+[dependencies]
+chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
+housebot-config = { path = "../config" }
+housebot-memory = { path = "../memory" }
+regex = "1"
+serde_json = "1"
+tokio = { version = "1", features = ["fs", "io-util", "rt"] }
+tracing = "0.1"
+
+[dev-dependencies]
+tempfile = "3"
+tokio = { version = "1", features = ["full", "test-util"] }

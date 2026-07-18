@@ -881,12 +881,22 @@ dependencies = [
  "common-crawl",
  "futures-util",
  "graph-render",
+ "housebot-channel-log",
  "housebot-config",
+ "housebot-database",
+ "housebot-grocery",
+ "housebot-history",
  "housebot-llm",
  "housebot-mcp",
  "housebot-memory",
+ "housebot-message-log",
+ "housebot-notes",
+ "housebot-profile",
  "housebot-rate-limit",
+ "housebot-reminders",
  "housebot-sandbox",
+ "housebot-skills",
+ "housebot-testing",
  "housebot-token-monitor",
  "jsonwebtoken",
  "mlua",
@@ -906,8 +916,56 @@ dependencies = [
 ]
 
 [[package]]
+name = "housebot-channel-log"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "housebot-config",
+ "housebot-memory",
+ "regex",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
 name = "housebot-config"
 version = "0.1.0"
+
+[[package]]
+name = "housebot-database"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "housebot-config",
+ "tokio",
+ "tokio-postgres",
+ "tracing",
+]
+
+[[package]]
+name = "housebot-grocery"
+version = "0.1.0"
+dependencies = [
+ "housebot-config",
+ "housebot-memory",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
+]
+
+[[package]]
+name = "housebot-history"
+version = "0.1.0"
+dependencies = [
+ "housebot-config",
+ "housebot-memory",
+ "serde_json",
+ "tempfile",
+ "tokio",
+]
 
 [[package]]
 name = "housebot-llm"
@@ -946,8 +1004,56 @@ dependencies = [
 ]
 
 [[package]]
+name = "housebot-message-log"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "housebot-config",
+ "housebot-memory",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
+name = "housebot-notes"
+version = "0.1.0"
+dependencies = [
+ "housebot-config",
+ "housebot-memory",
+ "serde_json",
+ "tempfile",
+ "tokio",
+]
+
+[[package]]
+name = "housebot-profile"
+version = "0.1.0"
+dependencies = [
+ "housebot-config",
+ "housebot-memory",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
+]
+
+[[package]]
 name = "housebot-rate-limit"
 version = "0.1.0"
+
+[[package]]
+name = "housebot-reminders"
+version = "0.1.0"
+dependencies = [
+ "housebot-config",
+ "housebot-memory",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
+]
 
 [[package]]
 name = "housebot-sandbox"
@@ -961,6 +1067,28 @@ dependencies = [
  "tracing-subscriber",
  "url",
  "uuid",
+]
+
+[[package]]
+name = "housebot-skills"
+version = "0.1.0"
+dependencies = [
+ "housebot-config",
+ "housebot-memory",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
+]
+
+[[package]]
+name = "housebot-testing"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "housebot-llm",
+ "serde_json",
 ]
 
 [[package]]

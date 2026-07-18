@@ -4,8 +4,8 @@ use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
-use crate::config;
-use crate::memory::ensure_dir;
+use housebot_config as config;
+use housebot_memory::ensure_dir;
 
 /// A pending reminder: a message to DM `user_id` once `due_ts` (unix seconds) passes.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

@@ -26,6 +26,14 @@ impl RateLimiter {
 
     fn check_at(&self, user: &str, now: Instant) -> bool {
         let mut hits = self.hits.lock().unwrap();
+        // Hits are pushed in order, so a user whose newest hit has expired has
+        // no live hits left; dropping such users keeps the map from growing
+        // without bound as one-off identities come and go.
+        hits.retain(|_, times| {
+            times
+                .last()
+                .is_some_and(|t| now.duration_since(*t) < self.window)
+        });
         let entry = hits.entry(user.to_string()).or_default();
         entry.retain(|t| now.duration_since(*t) < self.window);
         if entry.len() >= self.max {
@@ -62,6 +70,17 @@ mod tests {
         let rl = RateLimiter::new(1, Duration::from_millis(0));
         assert!(!rl.check("u"));
         assert!(!rl.check("u"));
+    }
+
+    #[test]
+    fn evicts_users_whose_hits_have_all_expired() {
+        let rl = RateLimiter::new(3, Duration::from_secs(10));
+        let t0 = Instant::now();
+        assert!(!rl.check_at("stale", t0));
+        assert!(!rl.check_at("other", t0 + Duration::from_secs(20)));
+        let hits = rl.hits.lock().unwrap();
+        assert!(!hits.contains_key("stale"));
+        assert!(hits.contains_key("other"));
     }
 
     #[test]

@@ -1,0 +1,18 @@
+[package]
+name = "housebot-reminders"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.80"
+description = "Per-user reminders persisted as a JSON array"
+license = "AGPL-3.0-or-later"
+
+[dependencies]
+housebot-config = { path = "../config" }
+housebot-memory = { path = "../memory" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["fs", "rt"] }
+
+[dev-dependencies]
+tempfile = "3"
+tokio = { version = "1", features = ["full", "test-util"] }
