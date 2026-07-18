@@ -6,9 +6,8 @@ pub struct SecretRedactor {
 }
 
 impl SecretRedactor {
-    const KEYWORDS: &'static [&'static str] = &[
-        "token", "key", "secret", "password", "dsn", "api_key", "oauth",
-    ];
+    const KEYWORDS: &'static [&'static str] =
+        &["token", "key", "secret", "password", "dsn", "oauth"];
 
     /// Build from the process environment.
     pub fn from_env() -> Self {
@@ -17,7 +16,7 @@ impl SecretRedactor {
 
     /// Build from an explicit iterator of `(name, value)` pairs.
     pub fn from_vars(vars: impl IntoIterator<Item = (String, String)>) -> Self {
-        let secrets = vars
+        let mut secrets: Vec<String> = vars
             .into_iter()
             .filter(|(name, value)| {
                 value.len() >= 8
@@ -27,6 +26,9 @@ impl SecretRedactor {
             })
             .map(|(_, value)| value)
             .collect();
+        // Longest first: when one secret is a prefix of another, replacing the
+        // shorter one first would mangle the longer and leak its tail.
+        secrets.sort_by_key(|secret| std::cmp::Reverse(secret.len()));
         Self { secrets }
     }
 
@@ -91,6 +93,20 @@ mod tests {
         let text = "]XYZAAAAXYZAAAA";
         let redacted = r.redact(text);
         assert!(!redacted.contains(secret), "secret survived: {redacted}");
+    }
+
+    #[test]
+    fn longer_secrets_are_redacted_before_their_substrings() {
+        let vars = [
+            ("API_KEY".to_string(), "12345678".to_string()),
+            ("OTHER_KEY".to_string(), "1234567890".to_string()),
+        ];
+        let r = SecretRedactor::from_vars(vars);
+        let redacted = r.redact("value: 1234567890");
+        assert!(
+            !redacted.contains("90"),
+            "longer secret tail leaked: {redacted}"
+        );
     }
 
     #[test]

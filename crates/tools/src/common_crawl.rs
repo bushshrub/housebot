@@ -1,11 +1,20 @@
 //! Common Crawl CDXJ index search exposed as a native bot tool.
 
+use std::sync::Arc;
+use std::time::Instant;
+
 use common_crawl::CommonCrawlClient;
 use serde_json::{json, Value};
+use tokio::sync::Mutex;
+
+use crate::wait_for_slot;
+
+const SEARCHES_PER_MINUTE: usize = 20;
 
 #[derive(Clone, Default)]
 pub struct CommonCrawl {
     client: CommonCrawlClient,
+    search_requests: Arc<Mutex<Vec<Instant>>>,
 }
 
 impl CommonCrawl {
@@ -16,6 +25,7 @@ impl CommonCrawl {
         match_type: &str,
         max_results: usize,
     ) -> String {
+        wait_for_slot(&self.search_requests, SEARCHES_PER_MINUTE).await;
         match self
             .client
             .search(
