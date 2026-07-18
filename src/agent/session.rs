@@ -73,6 +73,9 @@ impl Agent {
             .unwrap_or_default();
         self.record_usage(user_id, &conversation_id, completion.usage)
             .await;
+        // Discard the compact summary's in-memory token stats so they don't
+        // bleed into a newly auto-started session's counters.
+        self.session_stats.lock().await.remove(user_id);
         let summary = completion.content.unwrap_or_default();
 
         if !summary.trim().is_empty() {
