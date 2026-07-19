@@ -266,12 +266,16 @@ specification, runner requirements, and security model.
   `agent:failed`.  Do not add or remove these labels manually outside the workflow.
 - **No force-push. No auto-merge. No auto-deploy.** All PRs opened by the agent require
   a human review and explicit merge.
-- **Autonomous development workflow.** A user only needs to provide the task. For every
-  development task, the agent must: fetch `origin`, fast-forward local `master` from
-  `origin/master`, create a new task branch from that updated `master`, implement and validate the
-  work there, commit and push it, then open a normal ready-for-review (non-draft) PR against
-  `master`. Do not wait for intermediate confirmation unless new authority or a material scope
-  decision is required. Never commit directly to `master`.
+- **Autonomous development workflow.** A user only needs to provide the task. First inspect the
+  current branch. If it is `main` or `master`, fetch `origin`, fast-forward local `master` from
+  `origin/master`, and create a new task branch from that updated `master`. If the agent is
+  already on a non-`main`/non-`master` branch prepared by the dispatch workflow, keep working on
+  that branch; do not switch branches or create another one. In either case, implement and
+  validate the work, commit it, and push the task branch. Never commit directly to `main` or
+  `master`. When the dispatch workflow is responsible for opening the PR, do not run `gh pr
+  create` or create a manual fallback issue; report the completed work and let the workflow
+  create the PR. Do not wait for intermediate confirmation unless new authority or a material
+  scope decision is required.
 - **Post-PR follow-through.** After opening a PR, monitor it for review comments and requested
   changes. Address every actionable comment on the same branch, validate the fix, commit and push
   it, and resolve the corresponding review thread only after the fix is present. Continue until no
