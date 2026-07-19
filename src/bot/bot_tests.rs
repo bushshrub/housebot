@@ -100,6 +100,30 @@ async fn effort_target_requires_admin_and_saves_target_config() {
 }
 
 #[tokio::test]
+async fn progress_target_requires_admin_and_enables_final_only_mode() {
+    let temp = TempDir::new().unwrap();
+    let user_config = UserConfigStore::new(temp.path().join("user_config"));
+    let options: Vec<serenity::all::CommandDataOption> = serde_json::from_value(json!([{
+        "name": "progress",
+        "type": 1,
+        "options": [
+            {"name": "enabled", "type": 5, "value": false},
+            {"name": "user", "type": 6, "value": "99"}
+        ]
+    }]))
+    .unwrap();
+
+    let denied = handle_personalize_interaction(&user_config, &options, 42, false).await;
+    assert!(denied.contains("Only bot administrators"));
+    assert!(user_config.load(99).await.progress_updates_enabled);
+
+    let saved = handle_personalize_interaction(&user_config, &options, 42, true).await;
+    assert!(saved.contains("only final responses"));
+    assert!(!user_config.load(99).await.progress_updates_enabled);
+    assert!(user_config.load(42).await.progress_updates_enabled);
+}
+
+#[tokio::test]
 async fn storage_slash_notes_use_the_prefix_store_handler() {
     let (_temp, _skills, notes, memory, _history) = stores();
     let options: Vec<serenity::all::CommandDataOption> = serde_json::from_value(json!([{

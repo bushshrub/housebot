@@ -127,7 +127,23 @@ impl EventHandler for HouseBot {
                 .await
             }
             "personalize" => {
-                handle_personalize_interaction(&self.user_cfg, &cmd.data.options, user_id).await
+                let is_server_admin = cmd
+                    .member
+                    .as_deref()
+                    .and_then(|member| member.permissions)
+                    .is_some_and(|permissions| permissions.administrator());
+                let is_configurer = self
+                    .access
+                    .load()
+                    .await
+                    .is_configurer(user_id, config::owner_id());
+                handle_personalize_interaction(
+                    &self.user_cfg,
+                    &cmd.data.options,
+                    user_id,
+                    is_server_admin || is_configurer,
+                )
+                .await
             }
             "labs" => handle_labs_interaction(&self.user_cfg, &cmd.data.options, user_id).await,
             "effort" => {

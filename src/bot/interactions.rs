@@ -360,8 +360,13 @@ pub(crate) async fn handle_status_interaction(
         Some(p) if !p.trim().is_empty() => format!("> {}", p.trim().replace('\n', "\n> ")),
         _ => "default".to_string(),
     };
+    let progress = if cfg.progress_updates_enabled {
+        "enabled"
+    } else {
+        "disabled (final responses only)"
+    };
     format!(
-        "**Your current settings:**\n• Effort level: {effort}\n• Follow-up replies: {followup}\n• Personality: {personality}\n\nUse `/effort` to change the thinking effort level."
+        "**Your current settings:**\n• Effort level: {effort}\n• Progress updates: {progress}\n• Follow-up replies: {followup}\n• Personality: {personality}\n\nUse `/effort` to change the thinking effort level."
     )
 }
 

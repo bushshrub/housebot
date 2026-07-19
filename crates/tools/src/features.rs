@@ -19,6 +19,7 @@ pub fn features_text() -> &'static str {
 `/personalize personality [text]` — set (or clear) a personal tone/personality override
 `/personalize followup enabled [timeout]` — toggle unpinged follow-up replies in a server channel
 `/personalize proactive enabled` — opt in or out of proactive assistance
+`/personalize progress enabled [user]` — show or hide intermediate reasoning/tool progress; bot administrators may target another user
 `/config access allow|revoke|list` — manage who may configure the bot (configurers only; the owner is always allowed)
 `/config user limit|respond|show` — per-user output-token caps and respond policies (configurers only)
 `/config proactive enabled` — globally enable or disable proactive assistance for all users (configurers only)
