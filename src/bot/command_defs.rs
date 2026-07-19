@@ -677,7 +677,9 @@ pub(crate) async fn register_slash_commands(ctx: &Context, guild_ids: &[GuildId]
         },
         Err(_) => None,
     };
-    if let Some(guild_id) = guild_id {
+    // Only needed when the bot is not a member of the deployment guild;
+    // member guilds get the full command set (including /lua) below.
+    if let Some(guild_id) = guild_id.filter(|id| !guild_ids.contains(&GuildId::new(*id))) {
         if let Err(e) = GuildId::new(guild_id)
             .create_command(&ctx.http, lua_cmd)
             .await
