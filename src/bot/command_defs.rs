@@ -526,6 +526,26 @@ pub(crate) async fn register_slash_commands(ctx: &Context, guild_ids: &[GuildId]
                 )
                 .required(true),
             ),
+        )
+        .add_option(
+            CreateCommandOption::new(
+                CommandOptionType::SubCommand,
+                "progress",
+                "Control whether intermediate progress updates are shown",
+            )
+            .add_sub_option(
+                CreateCommandOption::new(
+                    CommandOptionType::Boolean,
+                    "enabled",
+                    "Show reasoning, queue, generating, and tool progress",
+                )
+                .required(true),
+            )
+            .add_sub_option(CreateCommandOption::new(
+                CommandOptionType::User,
+                "user",
+                "User to configure (bot administrators only)",
+            )),
         );
     commands.push(personalize_cmd);
     let labs_cmd = CreateCommand::new("labs")

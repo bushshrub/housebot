@@ -230,17 +230,25 @@ impl HouseBot {
             }
         }
 
-        // Check LLM queue utilization so we can show the user their position
-        // when the system is saturated (all 4 LLM slots occupied).
-        let queue_info = self.agent.llm_queue_info();
-        let progress_msg = if queue_info.is_saturated() {
-            let position = queue_info.pending + 1;
-            format!("⏳ **You are #{position} in line. Waiting for an LLM slot to open up...**")
+        let progress = if user_config.progress_updates_enabled {
+            // Check LLM queue utilization so we can show the user their position
+            // when the system is saturated (all 4 LLM slots occupied).
+            let queue_info = self.agent.llm_queue_info();
+            let progress_msg = if queue_info.is_saturated() {
+                let position = queue_info.pending + 1;
+                format!("⏳ **You are #{position} in line. Waiting for an LLM slot to open up...**")
+            } else {
+                "🧠 **Thinking...**".to_string()
+            };
+            reply_no_ping(ctx, msg, &progress_msg).await.ok()
         } else {
-            "🧠 **Thinking...**".to_string()
+            None
         };
-        let progress = reply_no_ping(ctx, msg, &progress_msg).await.ok();
-        let pending_reaction = msg.react(&ctx.http, '⏳').await.ok();
+        let pending_reaction = if user_config.progress_updates_enabled {
+            msg.react(&ctx.http, '⏳').await.ok()
+        } else {
+            None
+        };
 
         let response_hooks = progress
             .as_ref()
@@ -338,11 +346,17 @@ impl HouseBot {
         }
 
         let safe = self.redactor.redact(&result.text);
-        if let Some(notice) = &result.session_notice {
-            let _ = reply_no_ping(ctx, msg, notice).await;
+        if user_config.progress_updates_enabled {
+            if let Some(notice) = &result.session_notice {
+                let _ = reply_no_ping(ctx, msg, notice).await;
+            }
         }
         let allowed_pings = extract_mentioned_users(&safe, bot_id.get());
-        let with_tool_summary = append_tool_summary(&safe, &result.tools_called);
+        let with_tool_summary = if user_config.progress_updates_enabled {
+            append_tool_summary(&safe, &result.tools_called)
+        } else {
+            safe
+        };
         let (display, code_files) = extract_code_files(&with_tool_summary);
         let sent_id = send_final_message(
             ctx,

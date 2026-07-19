@@ -469,6 +469,7 @@ pub(crate) async fn handle_personalize_interaction(
     user_cfg: &UserConfigStore,
     options: &[serenity::all::CommandDataOption],
     author_id: u64,
+    can_manage_other_users: bool,
 ) -> String {
     let Some(top) = options.first() else {
         return "No subcommand provided.".into();
@@ -477,7 +478,17 @@ pub(crate) async fn handle_personalize_interaction(
         CommandDataOptionValue::SubCommand(opts) => opts,
         _ => return "Unexpected option structure.".into(),
     };
-    let mut cfg = user_cfg.load(author_id).await;
+    let target_id = sub_opts
+        .iter()
+        .find_map(|option| match option.value {
+            CommandDataOptionValue::User(user) if option.name == "user" => Some(user.get()),
+            _ => None,
+        })
+        .unwrap_or(author_id);
+    if target_id != author_id && !can_manage_other_users {
+        return "Only bot administrators can configure another user's settings.".into();
+    }
+    let mut cfg = user_cfg.load(target_id).await;
 
     match top.name.as_str() {
         "personality" => {
@@ -490,7 +501,7 @@ pub(crate) async fn handle_personalize_interaction(
                 })
                 .filter(|s| !s.trim().is_empty());
             cfg.personality = text.clone();
-            if user_cfg.save(author_id, &cfg).await.is_err() {
+            if user_cfg.save(target_id, &cfg).await.is_err() {
                 return "Error: failed to save config.".into();
             }
             match text {
@@ -526,7 +537,7 @@ pub(crate) async fn handle_personalize_interaction(
                 }
                 cfg.followup_timeout_secs = secs as u64;
             }
-            if user_cfg.save(author_id, &cfg).await.is_err() {
+            if user_cfg.save(target_id, &cfg).await.is_err() {
                 return "Error: failed to save config.".into();
             }
             let status = if enabled { "enabled" } else { "disabled" };
@@ -549,13 +560,39 @@ pub(crate) async fn handle_personalize_interaction(
                 return "Please specify `enabled`.".into();
             };
             cfg.proactive_assistance_enabled = enabled;
-            if user_cfg.save(author_id, &cfg).await.is_err() {
+            if user_cfg.save(target_id, &cfg).await.is_err() {
                 return "Error: failed to save config.".into();
             }
             if enabled {
                 "✅ Proactive assistance enabled — I may chime in on obvious reminder requests and help questions. Server admins and bot configurers can disable this server-wide or globally.".into()
             } else {
                 "✅ Proactive assistance disabled — I'll only respond when addressed.".into()
+            }
+        }
+
+        "progress" => {
+            let enabled = sub_opts.iter().find_map(|option| match option.value {
+                CommandDataOptionValue::Boolean(value) if option.name == "enabled" => Some(value),
+                _ => None,
+            });
+            let Some(enabled) = enabled else {
+                return "Please specify `enabled`.".into();
+            };
+            cfg.progress_updates_enabled = enabled;
+            if user_cfg.save(target_id, &cfg).await.is_err() {
+                return "Error: failed to save config.".into();
+            }
+            let target = if target_id == author_id {
+                "Your".to_string()
+            } else {
+                format!("User `{target_id}`'s")
+            };
+            if enabled {
+                format!("✅ {target} progress updates are enabled.")
+            } else {
+                format!(
+                    "✅ {target} progress updates are disabled; only final responses will be sent."
+                )
             }
         }
 

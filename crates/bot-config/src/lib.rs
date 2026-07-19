@@ -277,6 +277,9 @@ pub struct UserConfig {
     /// Reasoning budget used for this user's requests (set with `/effort`).
     #[serde(default)]
     pub thinking_mode: ThinkingMode,
+    /// Whether intermediate reasoning, queue, and tool progress is shown in Discord.
+    #[serde(default = "default_progress_updates_enabled")]
+    pub progress_updates_enabled: bool,
     /// Whether the bot may use `update_memory` and auto-save conversation summaries.
     /// When disabled, short-term conversation history still works normally.
     #[serde(default = "default_deep_memory_enabled")]
@@ -295,6 +298,10 @@ fn default_deep_memory_enabled() -> bool {
     true
 }
 
+fn default_progress_updates_enabled() -> bool {
+    true
+}
+
 impl Default for UserConfig {
     fn default() -> Self {
         Self {
@@ -303,6 +310,7 @@ impl Default for UserConfig {
             followup_timeout_secs: default_followup_timeout(),
             labs_pagination_enabled: false,
             thinking_mode: ThinkingMode::default(),
+            progress_updates_enabled: true,
             deep_memory_enabled: true,
             proactive_assistance_enabled: false,
         }
@@ -570,6 +578,24 @@ mod tests {
         let config: UserConfig =
             serde_json::from_str(r#"{"personality":null,"followup_timeout_secs":300}"#).unwrap();
         assert_eq!(config.thinking_mode, ThinkingMode::Medium);
+    }
+
+    #[test]
+    fn old_user_config_defaults_progress_updates_to_enabled() {
+        let config: UserConfig =
+            serde_json::from_str(r#"{"personality":null,"followup_timeout_secs":300}"#).unwrap();
+        assert!(config.progress_updates_enabled);
+    }
+
+    #[test]
+    fn disabled_progress_updates_persist_through_serde() {
+        let config = UserConfig {
+            progress_updates_enabled: false,
+            ..UserConfig::default()
+        };
+        let json = serde_json::to_string(&config).unwrap();
+        let restored: UserConfig = serde_json::from_str(&json).unwrap();
+        assert!(!restored.progress_updates_enabled);
     }
 
     #[test]
