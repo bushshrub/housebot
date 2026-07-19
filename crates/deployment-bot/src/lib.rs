@@ -87,8 +87,8 @@ const SANDBOXD_CONTAINER: &str = "housebot-sandboxd";
 mod docker;
 mod handler;
 use docker::{
-    cleanup_old_housebot_images, container_commands_with_env, docker_object_missing, run_docker,
-    short_sha, valid_housebot_image, DeploymentRunSummary,
+    cleanup_old_images, container_commands_with_env, docker_object_missing, run_deployment_command,
+    run_docker, short_sha, valid_housebot_image, DeploymentRunSummary,
 };
 pub use docker::{
     container_commands, deploy_commands, deploy_progress, valid_sha, DeploymentCommand,
@@ -121,12 +121,15 @@ impl DeploymentBot {
         let sandboxd = sha
             .map(|sha| format!("ghcr.io/bushshrub/housebot/sandboxd:sha-{sha}"))
             .unwrap_or_else(|| "ghcr.io/bushshrub/housebot/sandboxd:latest".into());
+        let sandbox = sha
+            .map(|sha| format!("ghcr.io/bushshrub/housebot/sandbox:sha-{sha}"))
+            .unwrap_or_else(|| "ghcr.io/bushshrub/housebot/sandbox:latest".into());
         let previous = self.previous_image.read().await.clone();
-        let mut keep = vec![main.as_str(), sandboxd.as_str()];
+        let mut keep = vec![main.as_str(), sandboxd.as_str(), sandbox.as_str()];
         if let Some(previous) = previous.as_deref() {
             keep.push(previous);
         }
-        if let Err(error) = cleanup_old_housebot_images(&keep).await {
+        if let Err(error) = cleanup_old_images(&keep).await {
             tracing::warn!(%error, "Could not clean up old housebot images");
         }
     }
@@ -142,7 +145,7 @@ impl DeploymentBot {
             container_commands_with_env(&digest, &self.docker_network, housebot_env(), false)?;
 
         for command in &commands {
-            let output = run_docker(&command.args()).await?;
+            let output = run_deployment_command(command).await?;
             if command.stage.is_health_check() && output != "true" {
                 anyhow::bail!("house-chatbot is not running after rollback");
             }
@@ -283,7 +286,7 @@ impl DeploymentBot {
                 stage = %command.stage,
                 "Update deployment stage started"
             );
-            let output = run_docker(&command.args()).await?;
+            let output = run_deployment_command(command).await?;
             if command.stage.is_health_check() && output != "true" {
                 anyhow::bail!("house-chatbot is not running after update deployment");
             }

@@ -155,6 +155,9 @@ fn deployment_starts_sandboxd_sidecar_and_shares_only_its_socket() {
         .last()
         .unwrap()
         .ends_with("/sandboxd:sha-abcdef123456"));
+    assert!(daemon.contains(
+        &"HOUSEBOT_SANDBOX_IMAGE=ghcr.io/bushshrub/housebot/sandbox:sha-abcdef123456".to_string()
+    ));
 
     let bot = args_for(DeploymentStage::StartRequestedImage);
     assert!(bot.contains(&"housebot-sandbox-socket:/run/housebot-sandbox".to_string()));

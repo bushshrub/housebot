@@ -161,7 +161,7 @@ pub(crate) fn container_commands_with_env(
         .map(|sha| format!("sha-{sha}"))
         .unwrap_or_else(|| "latest".to_string());
     let sandboxd_image = format!("ghcr.io/bushshrub/housebot/sandboxd:{sandbox_tag}");
-    let sandbox_image = "ghcr.io/bushshrub/housebot/sandbox:latest".to_string();
+    let sandbox_image = format!("ghcr.io/bushshrub/housebot/sandbox:{sandbox_tag}");
     let socket_volume = "housebot-sandbox-socket";
     let socket_mount = format!("{socket_volume}:/run/housebot-sandbox");
     let mut run = vec![
@@ -203,7 +203,7 @@ pub(crate) fn container_commands_with_env(
         ),
         DeploymentCommand::new(
             DeploymentStage::PullSandboxImage,
-            vec!["pull".into(), sandbox_image],
+            vec!["pull".into(), sandbox_image.clone()],
         ),
         DeploymentCommand::new(DeploymentStage::RunDatabaseMigrations, migrate),
         DeploymentCommand::new(
@@ -231,6 +231,8 @@ pub(crate) fn container_commands_with_env(
                 SANDBOXD_CONTAINER.into(),
                 "--restart".into(),
                 "unless-stopped".into(),
+                "--env".into(),
+                format!("HOUSEBOT_SANDBOX_IMAGE={sandbox_image}"),
                 "--volume".into(),
                 "/var/run/docker.sock:/var/run/docker.sock".into(),
                 "--volume".into(),
@@ -291,7 +293,27 @@ pub(crate) async fn run_docker(args: &[&str]) -> anyhow::Result<String> {
     Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
 }
 
-pub(crate) async fn cleanup_old_housebot_images(keep: &[&str]) -> anyhow::Result<()> {
+pub(crate) async fn run_deployment_command(command: &DeploymentCommand) -> anyhow::Result<String> {
+    const SANDBOXD_CHECK_ATTEMPTS: usize = 5;
+
+    if command.stage != DeploymentStage::CheckSandboxDaemon {
+        return run_docker(&command.args()).await;
+    }
+
+    let mut last_error = None;
+    for attempt in 1..=SANDBOXD_CHECK_ATTEMPTS {
+        match run_docker(&command.args()).await {
+            Ok(output) => return Ok(output),
+            Err(error) => last_error = Some(error),
+        }
+        if attempt < SANDBOXD_CHECK_ATTEMPTS {
+            tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+        }
+    }
+    Err(last_error.expect("sandboxd health check attempted at least once"))
+}
+
+pub(crate) async fn cleanup_old_images(keep: &[&str]) -> anyhow::Result<()> {
     let images = run_docker(&[
         "images",
         "--format={{.Repository}}:{{.Tag}}",
@@ -301,7 +323,8 @@ pub(crate) async fn cleanup_old_housebot_images(keep: &[&str]) -> anyhow::Result
     for image in images.lines().filter(|image| {
         (*image == "ghcr.io/bushshrub/housebot:latest"
             || image.starts_with("ghcr.io/bushshrub/housebot:sha-")
-            || image.starts_with("ghcr.io/bushshrub/housebot/sandboxd:sha-"))
+            || image.starts_with("ghcr.io/bushshrub/housebot/sandboxd:sha-")
+            || image.starts_with("ghcr.io/bushshrub/housebot/sandbox:sha-"))
             && !keep.contains(image)
     }) {
         run_docker(&["image", "rm", image]).await?;
