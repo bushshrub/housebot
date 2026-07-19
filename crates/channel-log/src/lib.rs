@@ -189,14 +189,14 @@ fn fuzzy_match_word(word: &str, target: &str) -> bool {
     let target_norm = normalize(target);
 
     if word_norm.is_empty() {
-        return true;
+        return false;
     }
 
     if target_norm.contains(&word_norm) {
         return true;
     }
 
-    let wlen = word_norm.len();
+    let wlen = word_norm.chars().count();
     if wlen < 4 {
         return false;
     }
@@ -207,7 +207,27 @@ fn fuzzy_match_word(word: &str, target: &str) -> bool {
     } else {
         3
     };
-    strsim::levenshtein(&word_norm, &target_norm) <= max_dist
+
+    for tw in target_norm.split_whitespace() {
+        if tw.contains(&word_norm) {
+            return true;
+        }
+        if strsim::levenshtein(&word_norm, tw) <= max_dist {
+            return true;
+        }
+    }
+
+    let tchars: Vec<char> = target_norm.chars().collect();
+    if tchars.len() >= wlen {
+        for window in tchars.windows(wlen) {
+            let substr: String = window.iter().collect();
+            if strsim::levenshtein(&word_norm, &substr) <= max_dist {
+                return true;
+            }
+        }
+    }
+
+    false
 }
 
 fn find_authors_sync(
@@ -239,16 +259,17 @@ fn find_authors_sync(
             },
         );
     }
+    let query_was_nonempty = !query.is_empty();
     let query_words: Vec<String> = query
         .split_whitespace()
-        .filter(|w| !w.is_empty())
         .map(normalize)
+        .filter(|w| !w.is_empty())
         .collect();
     let mut matches: Vec<KnownAuthor> = authors
         .into_values()
         .filter(|author| {
             if query_words.is_empty() {
-                return true;
+                return !query_was_nonempty;
             }
             query_words.iter().any(|word| {
                 fuzzy_match_word(word, &author.user_id)
@@ -446,6 +467,36 @@ mod tests {
         let results = log.find_authors(1, "katherina", 10).await.unwrap();
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].user_id, "12");
+    }
+
+    #[tokio::test]
+    async fn find_authors_fuzzy_matches_same_length_substring() {
+        let (_t, log) = store();
+        log.append(1, 10, "alice_dev", None, "hello").await;
+
+        let results = log.find_authors(1, "alicf", 10).await.unwrap();
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].user_id, "10");
+    }
+
+    #[tokio::test]
+    async fn find_authors_fuzzy_matches_individual_target_word() {
+        let (_t, log) = store();
+        log.append(1, 11, "wheat_grower", Some("Wheat Farmer"), "hi")
+            .await;
+
+        let results = log.find_authors(1, "farme", 10).await.unwrap();
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].user_id, "11");
+    }
+
+    #[tokio::test]
+    async fn find_authors_returns_empty_for_nonempty_punctuation_only_query() {
+        let (_t, log) = store();
+        log.append(1, 10, "alice_dev", None, "hello").await;
+
+        let results = log.find_authors(1, "!!!", 10).await.unwrap();
+        assert!(results.is_empty());
     }
 
     #[tokio::test]
