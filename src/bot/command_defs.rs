@@ -778,15 +778,16 @@ pub(crate) async fn register_slash_commands(ctx: &Context, guild_ids: &[GuildId]
         storage_command_definition(),
     ]);
 
-    for command in commands.clone() {
-        if let Err(e) = Command::create_global_command(&ctx.http, command).await {
-            tracing::error!("Failed to register slash command: {e}");
-        }
+    // Commands are registered per guild (below), not globally: a guild-scoped
+    // command and a global command with the same name are separate objects to
+    // Discord, so populating both makes every command show up twice in the
+    // picker. Guild registration also applies instantly, whereas global
+    // registration can take up to an hour to propagate — worth it for a bot
+    // with only a handful of guilds under active iteration.
+    if let Err(e) = Command::set_global_commands(&ctx.http, Vec::new()).await {
+        tracing::error!("Failed to clear global slash commands: {e}");
     }
 
-    // Re-apply the full command set in every guild the bot is in, so command
-    // changes take effect immediately and stale guild commands are replaced
-    // (global registration alone can take up to an hour to propagate).
     for guild_id in guild_ids {
         match guild_id.set_commands(&ctx.http, commands.clone()).await {
             Ok(registered) => tracing::info!(
