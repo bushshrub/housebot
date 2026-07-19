@@ -300,17 +300,35 @@ pub(crate) async fn run_deployment_command(command: &DeploymentCommand) -> anyho
         return run_docker(&command.args()).await;
     }
 
+    retry_with_delay(
+        SANDBOXD_CHECK_ATTEMPTS,
+        std::time::Duration::from_secs(1),
+        || async { run_docker(&command.args()).await },
+    )
+    .await
+}
+
+async fn retry_with_delay<F, Fut>(
+    attempts: usize,
+    delay: std::time::Duration,
+    mut operation: F,
+) -> anyhow::Result<String>
+where
+    F: FnMut() -> Fut,
+    Fut: std::future::Future<Output = anyhow::Result<String>>,
+{
+    assert!(attempts > 0, "retry attempts must be non-zero");
     let mut last_error = None;
-    for attempt in 1..=SANDBOXD_CHECK_ATTEMPTS {
-        match run_docker(&command.args()).await {
+    for attempt in 1..=attempts {
+        match operation().await {
             Ok(output) => return Ok(output),
             Err(error) => last_error = Some(error),
         }
-        if attempt < SANDBOXD_CHECK_ATTEMPTS {
-            tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+        if attempt < attempts {
+            tokio::time::sleep(delay).await;
         }
     }
-    Err(last_error.expect("sandboxd health check attempted at least once"))
+    Err(last_error.expect("operation attempted at least once"))
 }
 
 pub(crate) async fn cleanup_old_images(keep: &[&str]) -> anyhow::Result<()> {
@@ -330,4 +348,37 @@ pub(crate) async fn cleanup_old_images(keep: &[&str]) -> anyhow::Result<()> {
         run_docker(&["image", "rm", image]).await?;
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn readiness_retry_is_bounded_and_stops_after_success() {
+        let mut attempts = 0;
+        let output = retry_with_delay(5, std::time::Duration::ZERO, || {
+            attempts += 1;
+            async move {
+                if attempts < 3 {
+                    anyhow::bail!("not ready")
+                }
+                Ok("ready".to_string())
+            }
+        })
+        .await
+        .unwrap();
+        assert_eq!(output, "ready");
+        assert_eq!(attempts, 3);
+
+        let mut failures = 0;
+        let error = retry_with_delay(3, std::time::Duration::ZERO, || {
+            failures += 1;
+            async { anyhow::bail!("still not ready") }
+        })
+        .await
+        .unwrap_err();
+        assert_eq!(failures, 3);
+        assert!(error.to_string().contains("still not ready"));
+    }
 }
