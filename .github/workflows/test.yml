@@ -49,7 +49,7 @@ jobs:
             file: Dockerfile
           - name: sandbox
             context: ./crates/sandbox/docker
-            file: Dockerfile
+            file: crates/sandbox/docker/Dockerfile
           - name: deployment-bot
             context: .
             file: Dockerfile.deployment-bot
