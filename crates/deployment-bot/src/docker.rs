@@ -5,8 +5,14 @@ use super::*;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum DeploymentStage {
     PullHousebotImage,
+    PullSandboxDaemonImage,
+    PullSandboxImage,
     RunDatabaseMigrations,
     RemovePreviousContainer,
+    RemovePreviousSandboxDaemon,
+    CreateSandboxSocketVolume,
+    StartSandboxDaemon,
+    CheckSandboxDaemon,
     StartRequestedImage,
     CheckContainerState,
 }
@@ -15,8 +21,14 @@ impl DeploymentStage {
     pub fn progress_message(self) -> &'static str {
         match self {
             Self::PullHousebotImage => "⬇️ Pulling housebot image…",
+            Self::PullSandboxDaemonImage => "⬇️ Pulling sandbox daemon image…",
+            Self::PullSandboxImage => "⬇️ Pulling sandbox execution image…",
             Self::RunDatabaseMigrations => "🗄️ Applying database migrations…",
             Self::RemovePreviousContainer => "🛑 Removing the previous housebot container…",
+            Self::RemovePreviousSandboxDaemon => "🛑 Removing the previous sandbox daemon…",
+            Self::CreateSandboxSocketVolume => "💾 Preparing the sandbox socket volume…",
+            Self::StartSandboxDaemon => "🚀 Starting the sandbox daemon…",
+            Self::CheckSandboxDaemon => "🩺 Checking the sandbox daemon…",
             Self::StartRequestedImage => "🚀 Starting the requested housebot image…",
             Self::CheckContainerState => "🩺 Checking container state…",
         }
@@ -35,8 +47,14 @@ impl fmt::Display for DeploymentStage {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(match self {
             Self::PullHousebotImage => "pull_housebot_image",
+            Self::PullSandboxDaemonImage => "pull_sandbox_daemon_image",
+            Self::PullSandboxImage => "pull_sandbox_image",
             Self::RunDatabaseMigrations => "run_database_migrations",
             Self::RemovePreviousContainer => "remove_previous_container",
+            Self::RemovePreviousSandboxDaemon => "remove_previous_sandbox_daemon",
+            Self::CreateSandboxSocketVolume => "create_sandbox_socket_volume",
+            Self::StartSandboxDaemon => "start_sandbox_daemon",
+            Self::CheckSandboxDaemon => "check_sandbox_daemon",
             Self::StartRequestedImage => "start_requested_image",
             Self::CheckContainerState => "check_container_state",
         })
@@ -138,6 +156,14 @@ pub(crate) fn container_commands_with_env(
     {
         anyhow::bail!("invalid housebot deployment image");
     }
+    let sandbox_tag = image
+        .strip_prefix("ghcr.io/bushshrub/housebot:sha-")
+        .map(|sha| format!("sha-{sha}"))
+        .unwrap_or_else(|| "latest".to_string());
+    let sandboxd_image = format!("ghcr.io/bushshrub/housebot/sandboxd:{sandbox_tag}");
+    let sandbox_image = format!("ghcr.io/bushshrub/housebot/sandbox:{sandbox_tag}");
+    let socket_volume = "housebot-sandbox-socket";
+    let socket_mount = format!("{socket_volume}:/run/housebot-sandbox");
     let mut run = vec![
         "run".into(),
         "--detach".into(),
@@ -147,6 +173,8 @@ pub(crate) fn container_commands_with_env(
         "unless-stopped".into(),
         "--network".into(),
         docker_network.into(),
+        "--volume".into(),
+        socket_mount.clone(),
     ];
     for (name, value) in &environment {
         run.push("--env".into());
@@ -169,6 +197,14 @@ pub(crate) fn container_commands_with_env(
             DeploymentStage::PullHousebotImage,
             vec!["pull".into(), image.into()],
         ),
+        DeploymentCommand::new(
+            DeploymentStage::PullSandboxDaemonImage,
+            vec!["pull".into(), sandboxd_image.clone()],
+        ),
+        DeploymentCommand::new(
+            DeploymentStage::PullSandboxImage,
+            vec!["pull".into(), sandbox_image.clone()],
+        ),
         DeploymentCommand::new(DeploymentStage::RunDatabaseMigrations, migrate),
         DeploymentCommand::new(
             DeploymentStage::RemovePreviousContainer,
@@ -176,6 +212,42 @@ pub(crate) fn container_commands_with_env(
                 "rm".into(),
                 "--force".into(),
                 HOUSE_CHATBOT_CONTAINER.into(),
+            ],
+        ),
+        DeploymentCommand::new(
+            DeploymentStage::RemovePreviousSandboxDaemon,
+            vec!["rm".into(), "--force".into(), SANDBOXD_CONTAINER.into()],
+        ),
+        DeploymentCommand::new(
+            DeploymentStage::CreateSandboxSocketVolume,
+            vec!["volume".into(), "create".into(), socket_volume.into()],
+        ),
+        DeploymentCommand::new(
+            DeploymentStage::StartSandboxDaemon,
+            vec![
+                "run".into(),
+                "--detach".into(),
+                "--name".into(),
+                SANDBOXD_CONTAINER.into(),
+                "--restart".into(),
+                "unless-stopped".into(),
+                "--env".into(),
+                format!("HOUSEBOT_SANDBOX_IMAGE={sandbox_image}"),
+                "--volume".into(),
+                "/var/run/docker.sock:/var/run/docker.sock".into(),
+                "--volume".into(),
+                socket_mount,
+                sandboxd_image,
+            ],
+        ),
+        DeploymentCommand::new(
+            DeploymentStage::CheckSandboxDaemon,
+            vec![
+                "exec".into(),
+                SANDBOXD_CONTAINER.into(),
+                "test".into(),
+                "-S".into(),
+                "/run/housebot-sandbox/sandbox.sock".into(),
             ],
         ),
         DeploymentCommand::new(DeploymentStage::StartRequestedImage, run),
@@ -221,7 +293,45 @@ pub(crate) async fn run_docker(args: &[&str]) -> anyhow::Result<String> {
     Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
 }
 
-pub(crate) async fn cleanup_old_housebot_images(keep: &[&str]) -> anyhow::Result<()> {
+pub(crate) async fn run_deployment_command(command: &DeploymentCommand) -> anyhow::Result<String> {
+    const SANDBOXD_CHECK_ATTEMPTS: usize = 5;
+
+    if command.stage != DeploymentStage::CheckSandboxDaemon {
+        return run_docker(&command.args()).await;
+    }
+
+    retry_with_delay(
+        SANDBOXD_CHECK_ATTEMPTS,
+        std::time::Duration::from_secs(1),
+        || async { run_docker(&command.args()).await },
+    )
+    .await
+}
+
+async fn retry_with_delay<F, Fut>(
+    attempts: usize,
+    delay: std::time::Duration,
+    mut operation: F,
+) -> anyhow::Result<String>
+where
+    F: FnMut() -> Fut,
+    Fut: std::future::Future<Output = anyhow::Result<String>>,
+{
+    assert!(attempts > 0, "retry attempts must be non-zero");
+    let mut last_error = None;
+    for attempt in 1..=attempts {
+        match operation().await {
+            Ok(output) => return Ok(output),
+            Err(error) => last_error = Some(error),
+        }
+        if attempt < attempts {
+            tokio::time::sleep(delay).await;
+        }
+    }
+    Err(last_error.expect("operation attempted at least once"))
+}
+
+pub(crate) async fn cleanup_old_images(keep: &[&str]) -> anyhow::Result<()> {
     let images = run_docker(&[
         "images",
         "--format={{.Repository}}:{{.Tag}}",
@@ -230,10 +340,45 @@ pub(crate) async fn cleanup_old_housebot_images(keep: &[&str]) -> anyhow::Result
     .await?;
     for image in images.lines().filter(|image| {
         (*image == "ghcr.io/bushshrub/housebot:latest"
-            || image.starts_with("ghcr.io/bushshrub/housebot:sha-"))
+            || image.starts_with("ghcr.io/bushshrub/housebot:sha-")
+            || image.starts_with("ghcr.io/bushshrub/housebot/sandboxd:sha-")
+            || image.starts_with("ghcr.io/bushshrub/housebot/sandbox:sha-"))
             && !keep.contains(image)
     }) {
         run_docker(&["image", "rm", image]).await?;
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn readiness_retry_is_bounded_and_stops_after_success() {
+        let mut attempts = 0;
+        let output = retry_with_delay(5, std::time::Duration::ZERO, || {
+            attempts += 1;
+            async move {
+                if attempts < 3 {
+                    anyhow::bail!("not ready")
+                }
+                Ok("ready".to_string())
+            }
+        })
+        .await
+        .unwrap();
+        assert_eq!(output, "ready");
+        assert_eq!(attempts, 3);
+
+        let mut failures = 0;
+        let error = retry_with_delay(3, std::time::Duration::ZERO, || {
+            failures += 1;
+            async { anyhow::bail!("still not ready") }
+        })
+        .await
+        .unwrap_err();
+        assert_eq!(failures, 3);
+        assert!(error.to_string().contains("still not ready"));
+    }
 }

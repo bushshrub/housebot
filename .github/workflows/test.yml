@@ -17,6 +17,8 @@ jobs:
       issues: read
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
@@ -46,42 +48,53 @@ jobs:
         include:
           - name: main
             context: .
-            file: Dockerfile
+            dockerfile: Dockerfile
           - name: sandbox
             context: ./crates/sandbox/docker
-            file: crates/sandbox/docker/Dockerfile
+            dockerfile: crates/sandbox/docker/Dockerfile
           - name: deployment-bot
             context: .
-            file: Dockerfile.deployment-bot
+            dockerfile: Dockerfile.deployment-bot
+          - name: sandboxd
+            context: .
+            dockerfile: Dockerfile.sandboxd
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
 
       - name: Install Rust toolchain (musl)
-        if: matrix.name == 'main'
+        if: matrix.name != 'sandbox'
         uses: dtolnay/rust-toolchain@stable
         with:
           targets: x86_64-unknown-linux-musl
 
       - name: Install musl-tools
-        if: matrix.name == 'main'
+        if: matrix.name != 'sandbox'
         run: sudo apt-get update && sudo apt-get install -y musl-tools
 
       - name: Cache cargo artifacts
-        if: matrix.name == 'main'
+        if: matrix.name != 'sandbox'
         uses: Swatinem/rust-cache@v2
         with:
           key: musl-release
 
-      - name: Build bot binary (musl)
-        if: matrix.name == 'main'
+      - name: Build Rust binary (musl)
+        if: matrix.name != 'sandbox'
         env:
           HOUSEBOT_GIT_SHA: ${{ github.event.pull_request.head.sha }}
           CC_x86_64_unknown_linux_musl: musl-gcc
         run: |
-          cargo build --release --locked --target x86_64-unknown-linux-musl --package housebot
+          package=housebot
+          binary=housebot
+          if [ "${{ matrix.name }}" = "sandboxd" ]; then
+            package=housebot-sandbox
+            binary=sandboxd
+          fi
+          cargo build --release --locked --target x86_64-unknown-linux-musl --package "$package" --bin "$binary"
           mkdir -p dist
-          cp target/x86_64-unknown-linux-musl/release/housebot dist/housebot
-          strip dist/housebot
+          cp "target/x86_64-unknown-linux-musl/release/$binary" "dist/$binary"
+          strip "dist/$binary"
 
       - name: Set up Docker Buildx
         id: buildx
@@ -94,7 +107,7 @@ jobs:
         with:
           builder: ${{ steps.buildx.outputs.name }}
           context: ${{ matrix.context }}
-          file: ${{ matrix.file }}
+          file: ${{ matrix.dockerfile }}
           push: false
           cache-from: type=gha,scope=pr-${{ matrix.name }}
           cache-to: type=gha,mode=max,scope=pr-${{ matrix.name }}
@@ -103,6 +116,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable

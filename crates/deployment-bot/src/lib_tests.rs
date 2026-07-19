@@ -3,6 +3,26 @@
 use super::*;
 
 #[test]
+fn deployment_access_command_exposes_allow_revoke_and_list() {
+    let commands = serde_json::to_value(deployment_commands()).unwrap();
+    let access = commands
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|command| command["name"] == "deployment-access")
+        .expect("deployment access command must be registered");
+    assert_eq!(
+        access["options"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|option| option["name"].as_str().unwrap())
+            .collect::<Vec<_>>(),
+        vec!["allow", "revoke", "list"]
+    );
+}
+
+#[test]
 fn invalid_numeric_environment_value_is_rejected() {
     std::env::set_var("DEPLOYMENT_BOT_TEST_ID", "not-a-number");
     let error = env_u64("DEPLOYMENT_BOT_TEST_ID").unwrap_err().to_string();
@@ -41,34 +61,16 @@ fn deployment_webhook_text_is_classified_strictly() {
 }
 
 #[test]
-fn deployment_access_command_exposes_allow_revoke_and_list() {
-    let commands = serde_json::to_value(deployment_commands()).unwrap();
-    let access = commands
-        .as_array()
-        .unwrap()
-        .iter()
-        .find(|command| command["name"] == "deployment-access")
-        .expect("deployment access command must be registered");
-    assert_eq!(
-        access["options"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .map(|option| option["name"].as_str().unwrap())
-            .collect::<Vec<_>>(),
-        vec!["allow", "revoke", "list"]
-    );
-}
-
-#[test]
 fn rollback_plan_uses_only_the_checkpoint_digest() {
     let digest = "ghcr.io/bushshrub/housebot@sha256:abc123";
     let commands = container_commands(digest, "network").unwrap();
-    assert_eq!(commands.len(), 5);
     assert_eq!(commands[0].stage, DeploymentStage::PullHousebotImage);
     assert_eq!(commands[0].args, vec!["pull", digest]);
-    assert_eq!(commands[3].stage, DeploymentStage::StartRequestedImage);
-    assert_eq!(commands[3].args.last().unwrap(), digest);
+    let start = commands
+        .iter()
+        .find(|command| command.stage == DeploymentStage::StartRequestedImage)
+        .unwrap();
+    assert_eq!(start.args.last().unwrap(), digest);
 }
 
 #[test]
@@ -81,7 +83,6 @@ fn rollback_rejects_tags_and_unrelated_images() {
 #[test]
 fn deploy_plan_is_sha_scoped_and_rejects_injection() {
     let commands = deploy_commands(Some("abcdef123456"), "network").unwrap();
-    assert_eq!(commands.len(), 5);
     assert_eq!(
         commands
             .iter()
@@ -89,14 +90,24 @@ fn deploy_plan_is_sha_scoped_and_rejects_injection() {
             .collect::<Vec<_>>(),
         vec![
             DeploymentStage::PullHousebotImage,
+            DeploymentStage::PullSandboxDaemonImage,
+            DeploymentStage::PullSandboxImage,
             DeploymentStage::RunDatabaseMigrations,
             DeploymentStage::RemovePreviousContainer,
+            DeploymentStage::RemovePreviousSandboxDaemon,
+            DeploymentStage::CreateSandboxSocketVolume,
+            DeploymentStage::StartSandboxDaemon,
+            DeploymentStage::CheckSandboxDaemon,
             DeploymentStage::StartRequestedImage,
             DeploymentStage::CheckContainerState,
         ]
     );
     assert!(commands[0].args[1].ends_with(":sha-abcdef123456"));
-    assert!(!commands[4].args.contains(&"/deployment".to_string()));
+    assert!(!commands
+        .last()
+        .unwrap()
+        .args
+        .contains(&"/deployment".to_string()));
     assert_eq!(
         deploy_commands(None, "network").unwrap()[0].args[1],
         "ghcr.io/bushshrub/housebot:latest"
@@ -120,8 +131,15 @@ fn deployment_passes_database_url_to_migration_and_bot_containers() {
     let commands = deploy_commands(Some("abcdef123456"), "network").unwrap();
     std::env::remove_var("DATABASE_URL");
 
-    let migration_args = &commands[1].args;
-    let bot_args = &commands[3].args;
+    let args_for = |stage| {
+        &commands
+            .iter()
+            .find(|command| command.stage == stage)
+            .unwrap()
+            .args
+    };
+    let migration_args = args_for(DeploymentStage::RunDatabaseMigrations);
+    let bot_args = args_for(DeploymentStage::StartRequestedImage);
     let expected = format!("DATABASE_URL={url}");
     let has_database_url = |args: &[String]| {
         args.windows(2)
@@ -134,13 +152,56 @@ fn deployment_passes_database_url_to_migration_and_bot_containers() {
 #[test]
 fn deployment_runs_migrations_through_the_housebot_binary() {
     let commands = deploy_commands(Some("abcdef123456"), "network").unwrap();
-    let migration_args = &commands[1].args;
+    let migration_args = &commands
+        .iter()
+        .find(|command| command.stage == DeploymentStage::RunDatabaseMigrations)
+        .unwrap()
+        .args;
 
     assert!(migration_args.ends_with(&[
         "ghcr.io/bushshrub/housebot:sha-abcdef123456".into(),
         "housebot".into(),
         "migrate".into(),
     ]));
+}
+
+#[test]
+fn deployment_starts_sandboxd_sidecar_and_shares_only_its_socket() {
+    let commands = deploy_commands(Some("abcdef123456"), "network").unwrap();
+    let args_for = |stage| {
+        &commands
+            .iter()
+            .find(|command| command.stage == stage)
+            .unwrap()
+            .args
+    };
+
+    let daemon = args_for(DeploymentStage::StartSandboxDaemon);
+    assert!(daemon.contains(&"/var/run/docker.sock:/var/run/docker.sock".to_string()));
+    assert!(daemon.contains(&"housebot-sandbox-socket:/run/housebot-sandbox".to_string()));
+    assert!(daemon
+        .last()
+        .unwrap()
+        .ends_with("/sandboxd:sha-abcdef123456"));
+    assert!(daemon.contains(
+        &"HOUSEBOT_SANDBOX_IMAGE=ghcr.io/bushshrub/housebot/sandbox:sha-abcdef123456".to_string()
+    ));
+
+    let bot = args_for(DeploymentStage::StartRequestedImage);
+    assert!(bot.contains(&"housebot-sandbox-socket:/run/housebot-sandbox".to_string()));
+    assert!(!bot.iter().any(|arg| arg.contains("docker.sock")));
+
+    let check = args_for(DeploymentStage::CheckSandboxDaemon);
+    assert_eq!(
+        check,
+        &[
+            "exec",
+            "housebot-sandboxd",
+            "test",
+            "-S",
+            "/run/housebot-sandbox/sandbox.sock"
+        ]
+    );
 }
 
 #[test]

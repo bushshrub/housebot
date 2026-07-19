@@ -92,7 +92,7 @@ impl EventHandler for DeploymentBot {
                     .channel_id
                     .say(&ctx.http, command.stage.progress_message())
                     .await;
-                match run_docker(&command.args()).await {
+                match run_deployment_command(command).await {
                     Ok(output) if command.stage.is_health_check() && output != "true" => {
                         tracing::error!(
                             stage = %command.stage,
@@ -207,7 +207,7 @@ impl EventHandler for DeploymentBot {
                                 .content(command.stage.progress_message()),
                         )
                         .await?;
-                    let output = match run_docker(&command.args()).await {
+                    let output = match run_deployment_command(command).await {
                         Ok(output) => output,
                         Err(error) => {
                             tracing::error!(

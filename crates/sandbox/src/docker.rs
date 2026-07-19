@@ -1,6 +1,6 @@
 use crate::protocol::NetworkAccess;
 
-const SANDBOX_IMAGE: &str = "ghcr.io/bushshrub/housebot/sandbox:latest";
+const DEFAULT_SANDBOX_IMAGE: &str = "ghcr.io/bushshrub/housebot/sandbox:latest";
 const SANDBOX_LABEL_PREFIX: &str = "com.housebot.sandbox";
 
 pub struct ContainerConfig {
@@ -25,7 +25,8 @@ pub struct ContainerConfig {
 impl ContainerConfig {
     fn new(id: &str, network: NetworkAccess) -> Self {
         Self {
-            image: SANDBOX_IMAGE.to_string(),
+            image: std::env::var("HOUSEBOT_SANDBOX_IMAGE")
+                .unwrap_or_else(|_| DEFAULT_SANDBOX_IMAGE.to_string()),
             container_name: format!("housebot-sandbox-{id}"),
             labels: vec![
                 (format!("{SANDBOX_LABEL_PREFIX}.id"), id.to_string()),

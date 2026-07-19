@@ -49,6 +49,10 @@ jobs:
           - name: sandbox
             context: ./crates/sandbox/docker
             image-suffix: /sandbox
+          - name: sandboxd
+            context: .
+            dockerfile: Dockerfile.sandboxd
+            image-suffix: /sandboxd
 
     runs-on: ubuntu-24.04
 
@@ -57,31 +61,37 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Install Rust toolchain (musl)
-        if: matrix.name == 'main'
+        if: matrix.name != 'sandbox'
         uses: dtolnay/rust-toolchain@stable
         with:
           targets: x86_64-unknown-linux-musl
 
       - name: Install musl-tools
-        if: matrix.name == 'main'
+        if: matrix.name != 'sandbox'
         run: sudo apt-get update && sudo apt-get install -y musl-tools
 
       - name: Cache cargo artifacts
-        if: matrix.name == 'main'
+        if: matrix.name != 'sandbox'
         uses: Swatinem/rust-cache@v2
         with:
           key: musl-release
 
-      - name: Build bot binary (musl)
-        if: matrix.name == 'main'
+      - name: Build Rust binary (musl)
+        if: matrix.name != 'sandbox'
         env:
           HOUSEBOT_GIT_SHA: ${{ github.sha }}
           CC_x86_64_unknown_linux_musl: musl-gcc
         run: |
-          cargo build --release --locked --target x86_64-unknown-linux-musl --package housebot
+          package=housebot
+          binary=housebot
+          if [ "${{ matrix.name }}" = "sandboxd" ]; then
+            package=housebot-sandbox
+            binary=sandboxd
+          fi
+          cargo build --release --locked --target x86_64-unknown-linux-musl --package "$package" --bin "$binary"
           mkdir -p dist
-          cp target/x86_64-unknown-linux-musl/release/housebot dist/housebot
-          strip dist/housebot
+          cp "target/x86_64-unknown-linux-musl/release/$binary" "dist/$binary"
+          strip "dist/$binary"
 
       - name: Log in to Container Registry
         uses: docker/login-action@v3
@@ -111,6 +121,7 @@ jobs:
         with:
           builder: ${{ steps.buildx.outputs.name }}
           context: ${{ matrix.context }}
+          file: ${{ matrix.dockerfile || format('{0}/Dockerfile', matrix.context) }}
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
