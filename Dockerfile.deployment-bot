@@ -8,18 +8,45 @@ WORKDIR /app
 
 # Layer 1: Cargo manifests — changes infrequently, so this layer is cached.
 COPY Cargo.toml Cargo.lock ./
+COPY crates/bot-commands/Cargo.toml crates/bot-commands/Cargo.toml
+COPY crates/bot-config/Cargo.toml crates/bot-config/Cargo.toml
+COPY crates/bot-formatting/Cargo.toml crates/bot-formatting/Cargo.toml
+COPY crates/bot-response/Cargo.toml crates/bot-response/Cargo.toml
+COPY crates/channel-log/Cargo.toml crates/channel-log/Cargo.toml
+COPY crates/coding-agent/Cargo.toml crates/coding-agent/Cargo.toml
 COPY crates/common-crawl/Cargo.toml crates/common-crawl/Cargo.toml
-COPY crates/graph-render/Cargo.toml crates/graph-render/Cargo.toml
-COPY crates/llm/Cargo.toml crates/llm/Cargo.toml
 COPY crates/config/Cargo.toml crates/config/Cargo.toml
 COPY crates/database/Cargo.toml crates/database/Cargo.toml
 COPY crates/deployment-bot/Cargo.toml crates/deployment-bot/Cargo.toml
+COPY crates/discord-bridge/Cargo.toml crates/discord-bridge/Cargo.toml
+COPY crates/github-issues/Cargo.toml crates/github-issues/Cargo.toml
+COPY crates/graph-render/Cargo.toml crates/graph-render/Cargo.toml
+COPY crates/grocery/Cargo.toml crates/grocery/Cargo.toml
+COPY crates/history/Cargo.toml crates/history/Cargo.toml
+COPY crates/llm/Cargo.toml crates/llm/Cargo.toml
+COPY crates/llm-queue/Cargo.toml crates/llm-queue/Cargo.toml
+COPY crates/lua-engine/Cargo.toml crates/lua-engine/Cargo.toml
+COPY crates/mcp/Cargo.toml crates/mcp/Cargo.toml
+COPY crates/memory/Cargo.toml crates/memory/Cargo.toml
+COPY crates/message-log/Cargo.toml crates/message-log/Cargo.toml
+COPY crates/notes/Cargo.toml crates/notes/Cargo.toml
+COPY crates/profile/Cargo.toml crates/profile/Cargo.toml
+COPY crates/rate-limit/Cargo.toml crates/rate-limit/Cargo.toml
+COPY crates/reminders/Cargo.toml crates/reminders/Cargo.toml
+COPY crates/sandbox/Cargo.toml crates/sandbox/Cargo.toml
+COPY crates/skills/Cargo.toml crates/skills/Cargo.toml
+COPY crates/testing/Cargo.toml crates/testing/Cargo.toml
+COPY crates/token-monitor/Cargo.toml crates/token-monitor/Cargo.toml
+COPY crates/tool-permissions/Cargo.toml crates/tool-permissions/Cargo.toml
+COPY crates/tools/Cargo.toml crates/tools/Cargo.toml
 
 # Layer 2: build dependencies only (dummy source, no real code).
-RUN mkdir -p crates/deployment-bot/src crates/config/src crates/database/src \
-    && echo "fn main() {}" > crates/deployment-bot/src/main.rs \
-    && echo "" > crates/config/src/lib.rs \
-    && echo "" > crates/database/src/lib.rs
+RUN for manifest in crates/*/Cargo.toml; do \
+        dir="$(dirname "$manifest")"; \
+        mkdir -p "$dir/src"; \
+        [ "$dir" = "crates/deployment-bot" ] && echo "fn main() {}" > "$dir/src/main.rs" \
+            || echo "" > "$dir/src/lib.rs"; \
+    done
 RUN --mount=type=cache,id=deployment-bot-cargo-registry,target=/usr/local/cargo/registry \
     --mount=type=cache,id=deployment-bot-cargo-git,target=/usr/local/cargo/git \
     cargo build --release --locked --package deployment-bot
