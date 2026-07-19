@@ -98,17 +98,14 @@ impl EventHandler for DeploymentBot {
                             stage = %command.stage,
                             "Automatic deployment stage failed: house-chatbot is not running"
                         );
-                        let _ = message
-                            .channel_id
-                            .say(
-                                &ctx.http,
-                                format!(
-                                    "❌ Automatic deployment of `{}` failed at `{}`: house-chatbot is not running.",
-                                    short_sha(&sha),
-                                    command.stage
-                                ),
-                            )
-                            .await;
+                        let content = format!(
+                            "❌ Automatic deployment of `{}` failed at `{}`: house-chatbot is not running.",
+                            short_sha(&sha),
+                            command.stage
+                        );
+                        if let Err(send_error) = message.channel_id.say(&ctx.http, content).await {
+                            tracing::warn!(%send_error, "Could not report automatic deployment failure to Discord");
+                        }
                         return;
                     }
                     Ok(output) => {
@@ -125,17 +122,14 @@ impl EventHandler for DeploymentBot {
                             stage = %command.stage,
                             "Automatic deployment stage failed: {error}"
                         );
-                        let _ = message
-                            .channel_id
-                            .say(
-                                &ctx.http,
-                                format!(
-                                    "❌ Automatic deployment of `{}` failed at `{}`: {error}",
-                                    short_sha(&sha),
-                                    command.stage
-                                ),
-                            )
-                            .await;
+                        let content = truncate_for_discord(format!(
+                            "❌ Automatic deployment of `{}` failed at `{}`: {error}",
+                            short_sha(&sha),
+                            command.stage
+                        ));
+                        if let Err(send_error) = message.channel_id.say(&ctx.http, content).await {
+                            tracing::warn!(%send_error, "Could not report automatic deployment failure to Discord");
+                        }
                         return;
                     }
                 }
@@ -451,5 +445,35 @@ impl EventHandler for DeploymentBot {
         if let Err(error) = command.create_response(&ctx.http, response).await {
             tracing::warn!("Failed to respond to /rollback: {error}");
         }
+    }
+}
+
+const DISCORD_MESSAGE_LIMIT: usize = 2000;
+
+fn truncate_for_discord(content: String) -> String {
+    if content.chars().count() <= DISCORD_MESSAGE_LIMIT {
+        return content;
+    }
+    let mut truncated: String = content.chars().take(DISCORD_MESSAGE_LIMIT - 1).collect();
+    truncated.push('…');
+    truncated
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn short_content_passes_through_unchanged() {
+        let content = "❌ Automatic deployment of `abcdef1` failed at `run_database_migrations`: connection refused".to_string();
+        assert_eq!(truncate_for_discord(content.clone()), content);
+    }
+
+    #[test]
+    fn long_content_is_truncated_to_the_discord_limit() {
+        let content = "x".repeat(DISCORD_MESSAGE_LIMIT + 500);
+        let truncated = truncate_for_discord(content);
+        assert_eq!(truncated.chars().count(), DISCORD_MESSAGE_LIMIT);
+        assert!(truncated.ends_with('…'));
     }
 }
