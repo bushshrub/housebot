@@ -81,7 +81,7 @@ async fn effort_target_requires_admin_and_saves_target_config() {
     .unwrap();
 
     let denied = handle_effort_interaction(&user_config, &options, 42, false).await;
-    assert!(denied.contains("Only bot administrators"));
+    assert!(denied.contains("Only server administrators and bot configurers"));
     assert_eq!(
         user_config.load(99).await.thinking_mode,
         ThinkingMode::Medium
@@ -114,7 +114,7 @@ async fn progress_target_requires_admin_and_enables_final_only_mode() {
     .unwrap();
 
     let denied = handle_personalize_interaction(&user_config, &options, 42, false).await;
-    assert!(denied.contains("Only bot administrators"));
+    assert!(denied.contains("Only server administrators and bot configurers"));
     assert!(user_config.load(99).await.progress_updates_enabled);
 
     let saved = handle_personalize_interaction(&user_config, &options, 42, true).await;

@@ -224,7 +224,7 @@ pub(crate) fn effort_command_definition() -> CreateCommand {
         .add_option(CreateCommandOption::new(
             CommandOptionType::User,
             "user",
-            "User to configure (bot administrators only)",
+            "User to configure (server administrators and bot configurers only)",
         ))
 }
 
@@ -544,7 +544,7 @@ pub(crate) async fn register_slash_commands(ctx: &Context, guild_ids: &[GuildId]
             .add_sub_option(CreateCommandOption::new(
                 CommandOptionType::User,
                 "user",
-                "User to configure (bot administrators only)",
+                "User to configure (server administrators and bot configurers only)",
             )),
         );
     commands.push(personalize_cmd);

@@ -486,7 +486,7 @@ pub(crate) async fn handle_personalize_interaction(
         })
         .unwrap_or(author_id);
     if target_id != author_id && !can_manage_other_users {
-        return "Only bot administrators can configure another user's settings.".into();
+        return "Only server administrators and bot configurers can configure another user's settings.".into();
     }
     let mut cfg = user_cfg.load(target_id).await;
 
