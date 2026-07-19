@@ -129,6 +129,7 @@ fn detects_raw_discord_user_mentions_from_connector_messages() {
     assert!(content_mentions_user("hello <@123456>", 123456));
     assert!(content_mentions_user("hello <@!123456>", 123456));
     assert!(!content_mentions_user("hello @123456", 123456));
+    assert!(!content_mentions_user("hello <@123456", 123456));
     assert!(!content_mentions_user("hello <@1234567>", 123456));
 }
 

@@ -277,7 +277,7 @@ fn mentioned_user_ids(text: &str) -> impl Iterator<Item = u64> + '_ {
         } else {
             part.strip_prefix('@')?
         };
-        let id_str = remaining.split('>').next()?;
+        let (id_str, _) = remaining.split_once('>')?;
         id_str.parse::<u64>().ok()
     })
 }
