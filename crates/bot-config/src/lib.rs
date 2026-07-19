@@ -3,8 +3,9 @@
 //! deployments without a database fall back to JSON files under DATA_DIR.
 
 use std::collections::{HashMap, HashSet};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
 use tokio::fs;
@@ -27,18 +28,24 @@ fn json_path(dir: &std::path::Path, name: &str) -> PathBuf {
 }
 
 impl Backend {
-    async fn load(&self, name: &str, key: &str) -> Option<Vec<u8>> {
+    /// `Ok(None)` means the key genuinely has no stored value; storage
+    /// failures are propagated so callers can avoid resetting to defaults.
+    async fn load(&self, name: &str, key: &str) -> anyhow::Result<Option<Vec<u8>>> {
         match self {
-            Backend::Files(dir) => fs::read(json_path(dir, name)).await.ok(),
+            Backend::Files(dir) => match fs::read(json_path(dir, name)).await {
+                Ok(bytes) => Ok(Some(bytes)),
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+                Err(error) => Err(error.into()),
+            },
             Backend::Postgres(client) => match client
                 .query_opt("SELECT value FROM bot_config WHERE key = $1", &[&key])
                 .await
             {
-                Ok(Some(row)) => Some(row.get::<_, String>(0).into_bytes()),
-                Ok(None) => None,
+                Ok(Some(row)) => Ok(Some(row.get::<_, String>(0).into_bytes())),
+                Ok(None) => Ok(None),
                 Err(error) => {
                     tracing::error!(%error, key, "failed to load bot config");
-                    None
+                    Err(error.into())
                 }
             },
         }
@@ -96,7 +103,7 @@ pub async fn postgres_client_from_env() -> anyhow::Result<Arc<tokio_postgres::Cl
 }
 
 /// One-time, non-destructive import from the former JSON-file backend.
-async fn import_legacy_files(client: &tokio_postgres::Client, dir: &PathBuf, key_prefix: &str) {
+async fn import_legacy_files(client: &tokio_postgres::Client, dir: &Path, key_prefix: &str) {
     let mut entries = match fs::read_dir(dir).await {
         Ok(entries) => entries,
         Err(_) => return,
@@ -128,7 +135,7 @@ async fn import_legacy_files(client: &tokio_postgres::Client, dir: &PathBuf, key
 // ── server config ─────────────────────────────────────────────────────────────
 
 /// Configuration scoped to a Discord guild (server).
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ServerConfig {
     /// Channel IDs the bot is allowed to respond in. Empty means all channels.
     #[serde(default)]
@@ -143,6 +150,22 @@ pub struct ServerConfig {
     /// The bot always ignores its own pings regardless.
     #[serde(default)]
     pub respond_to_bot_pings: bool,
+    /// Whether proactive assistance is allowed in this server at all.
+    /// Users still opt in individually via `/personalize proactive`.
+    #[serde(default = "default_respond")]
+    pub proactive_allowed: bool,
+}
+
+impl Default for ServerConfig {
+    fn default() -> Self {
+        Self {
+            allowed_channel_ids: HashSet::new(),
+            leaderboard_visibility: LeaderboardVisibility::default(),
+            leaderboard_role_ids: HashSet::new(),
+            respond_to_bot_pings: false,
+            proactive_allowed: true,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -195,6 +218,8 @@ impl ServerConfigStore {
             .backend
             .load(&guild_id.to_string(), &format!("server:{guild_id}"))
             .await
+            .ok()
+            .flatten()
             .unwrap_or_default();
         serde_json::from_slice(&bytes).unwrap_or_default()
     }
@@ -315,6 +340,8 @@ impl UserConfigStore {
             .backend
             .load(&user_id.to_string(), &format!("user:{user_id}"))
             .await
+            .ok()
+            .flatten()
             .unwrap_or_default();
         serde_json::from_slice(&bytes).unwrap_or_default()
     }
@@ -407,9 +434,19 @@ impl AccessControl {
 
 const ACCESS_CONTROL_KEY: &str = "access_control";
 
+/// How long a cached access snapshot serves reads before storage is consulted
+/// again. In-process saves refresh the cache immediately.
+const ACCESS_CACHE_TTL: Duration = Duration::from_secs(30);
+
 #[derive(Clone)]
 pub struct AccessControlStore {
     backend: Backend,
+    /// Last successfully loaded snapshot; serves the hot path within the TTL
+    /// and preserves the last known policy when storage is unreachable.
+    cache: Arc<tokio::sync::RwLock<Option<(AccessControl, Instant)>>>,
+    /// Serializes read-modify-write updates so concurrent configuration
+    /// changes cannot overwrite each other.
+    write_lock: Arc<tokio::sync::Mutex<()>>,
 }
 
 impl Default for AccessControlStore {
@@ -420,14 +457,18 @@ impl Default for AccessControlStore {
 
 impl AccessControlStore {
     pub fn new(dir: PathBuf) -> Self {
-        Self {
-            backend: Backend::Files(dir),
-        }
+        Self::with_backend(Backend::Files(dir))
     }
 
     pub fn postgres(client: Arc<tokio_postgres::Client>) -> Self {
+        Self::with_backend(Backend::Postgres(client))
+    }
+
+    fn with_backend(backend: Backend) -> Self {
         Self {
-            backend: Backend::Postgres(client),
+            backend,
+            cache: Arc::new(tokio::sync::RwLock::new(None)),
+            write_lock: Arc::new(tokio::sync::Mutex::new(())),
         }
     }
 
@@ -437,19 +478,58 @@ impl AccessControlStore {
     }
 
     pub async fn load(&self) -> AccessControl {
+        if let Some((snapshot, fetched_at)) = self.cache.read().await.as_ref() {
+            if fetched_at.elapsed() < ACCESS_CACHE_TTL {
+                return snapshot.clone();
+            }
+        }
+        match self.load_fresh().await {
+            Ok(access) => {
+                *self.cache.write().await = Some((access.clone(), Instant::now()));
+                access
+            }
+            // Storage errors keep the last known policy instead of silently
+            // falling open to permissive defaults.
+            Err(_) => self
+                .cache
+                .read()
+                .await
+                .as_ref()
+                .map(|(snapshot, _)| snapshot.clone())
+                .unwrap_or_default(),
+        }
+    }
+
+    async fn load_fresh(&self) -> anyhow::Result<AccessControl> {
         let bytes = self
             .backend
             .load(ACCESS_CONTROL_KEY, ACCESS_CONTROL_KEY)
-            .await
-            .unwrap_or_default();
-        serde_json::from_slice(&bytes).unwrap_or_default()
+            .await?;
+        Ok(bytes
+            .and_then(|bytes| serde_json::from_slice(&bytes).ok())
+            .unwrap_or_default())
+    }
+
+    /// Atomically apply `mutate` to the freshly loaded state and persist the
+    /// result. Fails without saving when the current state cannot be read.
+    pub async fn update<T>(
+        &self,
+        mutate: impl FnOnce(&mut AccessControl) -> T,
+    ) -> anyhow::Result<T> {
+        let _guard = self.write_lock.lock().await;
+        let mut access = self.load_fresh().await?;
+        let outcome = mutate(&mut access);
+        self.save(&access).await?;
+        Ok(outcome)
     }
 
     pub async fn save(&self, access: &AccessControl) -> anyhow::Result<()> {
         let data = serde_json::to_string_pretty(access)?;
         self.backend
             .save(ACCESS_CONTROL_KEY, ACCESS_CONTROL_KEY, data)
-            .await
+            .await?;
+        *self.cache.write().await = Some((access.clone(), Instant::now()));
+        Ok(())
     }
 }
 
@@ -469,6 +549,7 @@ mod tests {
         assert_eq!(config.leaderboard_visibility, LeaderboardVisibility::Public);
         assert!(config.leaderboard_role_ids.is_empty());
         assert!(!config.respond_to_bot_pings);
+        assert!(config.proactive_allowed);
     }
 
     #[test]
@@ -615,5 +696,22 @@ mod tests {
         access.configurer_ids.insert(5);
         store.save(&access).await.unwrap();
         assert!(store.load().await.configurer_ids.contains(&5));
+    }
+
+    #[tokio::test]
+    async fn update_persists_mutations_and_reports_outcomes() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let store = AccessControlStore::new(tmp.path().join("bot_config"));
+        let inserted = store
+            .update(|access| access.configurer_ids.insert(7))
+            .await
+            .unwrap();
+        assert!(inserted);
+        let inserted = store
+            .update(|access| access.configurer_ids.insert(7))
+            .await
+            .unwrap();
+        assert!(!inserted);
+        assert!(store.load().await.configurer_ids.contains(&7));
     }
 }
