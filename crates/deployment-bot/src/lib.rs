@@ -67,6 +67,10 @@ pub fn rollback_allowed(
     owner_id != 0 && owner_id == requesting_user && channel == expected_channel
 }
 
+fn owner_allowed(owner_id: u64, requesting_user: u64) -> bool {
+    owner_id != 0 && owner_id == requesting_user
+}
+
 #[derive(Clone)]
 struct DeploymentBot {
     owner_id: u64,
