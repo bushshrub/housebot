@@ -120,6 +120,18 @@ fn deployment_passes_database_url_to_migration_and_bot_containers() {
 }
 
 #[test]
+fn deployment_runs_migrations_through_the_housebot_binary() {
+    let commands = deploy_commands(Some("abcdef123456"), "network").unwrap();
+    let migration_args = &commands[1].args;
+
+    assert!(migration_args.ends_with(&[
+        "ghcr.io/bushshrub/housebot:sha-abcdef123456".into(),
+        "housebot".into(),
+        "migrate".into(),
+    ]));
+}
+
+#[test]
 fn completed_deployment_message_includes_container_name_and_id() {
     let summary = DeploymentRunSummary {
         container_name: HOUSE_CHATBOT_CONTAINER.into(),

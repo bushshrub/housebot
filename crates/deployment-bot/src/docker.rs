@@ -162,7 +162,7 @@ pub(crate) fn container_commands_with_env(
         migrate.push("--env".into());
         migrate.push(format!("{name}={value}"));
     }
-    migrate.extend([image.into(), "migrate".into()]);
+    migrate.extend([image.into(), "housebot".into(), "migrate".into()]);
     run.extend(["--env".into(), "DATA_DIR=/app/data".into(), image.into()]);
     Ok(vec![
         DeploymentCommand::new(
