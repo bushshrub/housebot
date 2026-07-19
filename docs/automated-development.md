@@ -35,7 +35,7 @@ The entire dispatch can be cancelled at any point in the Discord UI before confi
 
 | Agent | CLI | Authentication | Effort |
 |---|---|---|---|
-| **Codex** | `codex` | OAuth session on runner | Single level (account default) |
+| **Codex** | `openai/codex-action@v1` | OAuth session on trusted persistent runner | Single level (account default) |
 | **Claude Code** | `claude` | OAuth session on runner | low / medium / high (via `--max-turns`) |
 | **OpenCode** | `opencode` | `NVIDIA_API_KEY` secret | low / medium / high (execution timeout) |
 
@@ -95,7 +95,7 @@ The `housebot-agent` self-hosted runner needs:
 | Requirement | Notes |
 |---|---|
 | GitHub Actions runner | Registered with the `housebot-agent` label |
-| `codex` CLI | Logged in via OAuth |
+| Node.js | Required by `openai/codex-action@v1`, which installs Codex at job runtime |
 | `claude` CLI | Logged in via OAuth (`~/.claude/`) |
 | `opencode` CLI | Installed; uses `NVIDIA_API_KEY` at runtime |
 | `python3` | For catalog validation |
