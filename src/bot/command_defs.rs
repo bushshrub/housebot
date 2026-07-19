@@ -544,7 +544,7 @@ pub(crate) async fn register_slash_commands(ctx: &Context, guild_ids: &[GuildId]
         );
     commands.push(personalize_cmd);
     let labs_cmd = CreateCommand::new("labs")
-        .description("Enable experimental bot features")
+        .description("Show experimental feature availability")
         .add_option(CreateCommandOption::new(
             CommandOptionType::SubCommand,
             "list",

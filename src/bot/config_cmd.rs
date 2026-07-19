@@ -495,9 +495,9 @@ pub(crate) async fn handle_server_config_interaction(
                     DynamicPaginationPolicy::Enabled =>
                         "all users in this server will see paginated responses.",
                     DynamicPaginationPolicy::Disabled =>
-                        "dynamic pagination is disabled for all users in this server.",
+                        "dynamic pagination is disabled for non-configurer users in this server.",
                     DynamicPaginationPolicy::Default =>
-                        "each user decides via `/personalize dynamic_pagination`.",
+                        "each non-configurer user decides via `/personalize dynamic_pagination`.",
                 }
             )
         }

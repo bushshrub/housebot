@@ -292,7 +292,7 @@ pub struct UserConfig {
     #[serde(default = "default_followup_timeout")]
     pub followup_timeout_secs: u64,
     /// Whether LLM responses are rendered as paginated embeds.
-    #[serde(default)]
+    #[serde(default, alias = "labs_pagination_enabled")]
     pub dynamic_pagination_enabled: bool,
     /// Reasoning budget used for this user's requests (set with `/effort`).
     #[serde(default)]
@@ -592,6 +592,13 @@ mod tests {
             serde_json::from_str(r#"{"personality":null,"followup_timeout_secs":300}"#).unwrap();
         assert!(!config.dynamic_pagination_enabled);
         assert!(!config.followup_enabled);
+    }
+
+    #[test]
+    fn legacy_labs_pagination_alias() {
+        let config: UserConfig =
+            serde_json::from_str(r#"{"labs_pagination_enabled":true}"#).unwrap();
+        assert!(config.dynamic_pagination_enabled);
     }
 
     #[test]
