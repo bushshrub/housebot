@@ -83,6 +83,12 @@ impl HouseBot {
             }
         };
 
+        if agent_dispatch_disabled(agent) {
+            self.pending_jobs.mark_dispatch_failed(job_id);
+            let _ = reply_no_ping(ctx, msg, &format!("❌ {AGENT_DISABLED_MESSAGE}")).await;
+            return;
+        }
+
         let reporter = self.agent.reporter();
         let mut inputs = serde_json::Map::new();
         // The workflow_dispatch API rejects non-string input values with 422,
@@ -318,6 +324,16 @@ pub(crate) fn develop_approval_components(job_id: &str) -> Vec<CreateActionRow> 
             .label("Reject")
             .style(ButtonStyle::Danger),
     ])]
+}
+
+pub(crate) const AGENT_DISABLED_MESSAGE: &str =
+    "Codex dispatch is temporarily disabled. Please choose another agent.";
+
+/// Temporary Codex disable, checked on every dispatch path — not just the
+/// interactive picker — so configured defaults and stored selections cannot
+/// bypass it.
+pub(crate) fn agent_dispatch_disabled(agent: CodingAgent) -> bool {
+    agent == CodingAgent::Codex
 }
 
 pub(crate) fn develop_agent_components(job_id: &str) -> Vec<CreateActionRow> {
