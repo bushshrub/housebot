@@ -1,6 +1,7 @@
 //! Built-in tool dispatch (the large match over tool names).
 
 use super::*;
+use crate::discord_bridge::MessageAnchor;
 
 impl Agent {
     #[allow(clippy::too_many_arguments)]
@@ -313,56 +314,92 @@ impl Agent {
                 )
                 .await,
             ),
-            "search_messages" => {
-                let query = str_arg(args, "query");
-                let max_results = u64_arg(args, "max_results", 10).clamp(1, 20) as usize;
+            "get_messages" => {
+                let mode = args.get("mode").and_then(Value::as_str).unwrap_or("recent");
                 let target_channel = args
                     .get("channel_id")
                     .and_then(Value::as_str)
                     .and_then(|s| s.parse::<u64>().ok())
                     .unwrap_or(channel_id);
-                ToolOutcome::Text(
-                    match self
-                        .channel_log
-                        .search(target_channel, query, max_results)
-                        .await
-                    {
-                        Err(e) => format!("Error: {e}"),
-                        Ok(msgs) if msgs.is_empty() => "No matching messages found.".to_string(),
-                        Ok(msgs) => msgs
-                            .iter()
-                            .map(|m| {
-                                let author = m.nick.as_deref().unwrap_or(&m.username);
-                                format!("[{}] {}: {}", m.ts, author, m.content)
-                            })
-                            .collect::<Vec<_>>()
-                            .join("\n"),
-                    },
-                )
-            }
-            "get_recent_messages" => {
-                let minutes = u64_arg(args, "minutes", 30).clamp(1, 1440) as u32;
-                let target_channel = args
-                    .get("channel_id")
-                    .and_then(Value::as_str)
-                    .and_then(|s| s.parse::<u64>().ok())
-                    .unwrap_or(channel_id);
-                ToolOutcome::Text(
-                    match self.channel_log.get_recent(target_channel, minutes).await {
-                        Err(e) => format!("Error: {e}"),
-                        Ok(msgs) if msgs.is_empty() => {
-                            format!("No messages found in the last {minutes} minutes.")
+                ToolOutcome::Text(match mode {
+                    "search" => {
+                        let pattern = str_arg(args, "pattern");
+                        let limit = u64_arg(args, "limit", 10).clamp(1, 100) as usize;
+                        match self
+                            .channel_log
+                            .search(target_channel, pattern, limit)
+                            .await
+                        {
+                            Err(e) => format!("Error: {e}"),
+                            Ok(msgs) if msgs.is_empty() => {
+                                "No matching messages found.".to_string()
+                            }
+                            Ok(msgs) => msgs
+                                .iter()
+                                .map(|m| {
+                                    let author = m.nick.as_deref().unwrap_or(&m.username);
+                                    format!("[{}] {}: {}", m.ts, author, m.content)
+                                })
+                                .collect::<Vec<_>>()
+                                .join("\n"),
                         }
-                        Ok(msgs) => msgs
-                            .iter()
-                            .map(|m| {
-                                let author = m.nick.as_deref().unwrap_or(&m.username);
-                                format!("[{}] {}: {}", m.ts, author, m.content)
-                            })
-                            .collect::<Vec<_>>()
-                            .join("\n"),
-                    },
-                )
+                    }
+                    "before" | "after" | "around" => {
+                        let message_id: Option<u64> = str_arg(args, "message_id")
+                            .parse()
+                            .ok()
+                            .filter(|&id| id != 0);
+                        match message_id {
+                            None => "Error: invalid message_id.".to_string(),
+                            Some(message_id) => {
+                                let anchor = match mode {
+                                    "before" => MessageAnchor::Before(message_id),
+                                    "after" => MessageAnchor::After(message_id),
+                                    _ => MessageAnchor::Around(message_id),
+                                };
+                                let limit = u64_arg(args, "limit", 20).clamp(1, 100) as u8;
+                                match self
+                                    .discord
+                                    .fetch_messages(target_channel, anchor, limit)
+                                    .await
+                                {
+                                    Err(e) => format!("Error: {e}"),
+                                    Ok(msgs) if msgs.is_empty() => "No messages found.".to_string(),
+                                    Ok(msgs) => msgs
+                                        .iter()
+                                        .map(|m| {
+                                            format!(
+                                                "[{}] [{}] {}: {}",
+                                                m.id, m.ts, m.author, m.content
+                                            )
+                                        })
+                                        .collect::<Vec<_>>()
+                                        .join("\n"),
+                                }
+                            }
+                        }
+                    }
+                    _ => {
+                        let minutes = u64_arg(args, "minutes", 30).clamp(1, 1440) as u32;
+                        match self
+                            .discord
+                            .fetch_messages_recent(target_channel, minutes)
+                            .await
+                        {
+                            Err(e) => format!("Error: {e}"),
+                            Ok(msgs) if msgs.is_empty() => {
+                                format!("No messages found in the last {minutes} minutes.")
+                            }
+                            Ok(msgs) => msgs
+                                .iter()
+                                .map(|m| {
+                                    format!("[{}] [{}] {}: {}", m.id, m.ts, m.author, m.content)
+                                })
+                                .collect::<Vec<_>>()
+                                .join("\n"),
+                        }
+                    }
+                })
             }
             "find_discord_users" => {
                 let query = str_arg(args, "query");

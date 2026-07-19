@@ -99,14 +99,13 @@ Call this when a user asks what you can do, what commands exist, or how to use a
 data: global totals (all users, conversations, token breakdown) or per-user details. \
 Supports period filtering (daily, weekly, monthly, all-time). More versatile than the \
 /token_leaderboard command.\n\
-- search_messages — Search the current channel's message log by regex pattern. Only matching \
-messages are returned, keeping token usage low. Use this when a user asks about a specific \
-topic, keyword, or person — e.g. 'what did hexagone say about X'. Prefer a targeted pattern.\n\
-- get_recent_messages — Return all messages from the current channel in the last N minutes \
-(default 30) in chronological order. Use this to catch up on a recent conversation, summarize \
-what was discussed, or answer vague questions like 'what happened recently' or 'what were we \
-talking about'. Unlike search_messages (pattern-based), get_recent_messages returns everything \
-in a time window — use it when the topic is unclear or the user just wants a recap.\n\
+- get_messages — Flexibly retrieve Discord channel messages. mode=recent (default) returns \
+everything from the last N minutes (default 30) in chronological order — use it to catch up on a \
+recent conversation or answer vague questions like 'what happened recently' or 'what were we \
+talking about'. mode=search finds messages by regex pattern — use it when a user asks about a \
+specific topic, keyword, or person, e.g. 'what did hexagone say about X'. mode=before/after/around \
+return messages positioned relative to a specific message_id — use these when the user replies to \
+a message and you need the conversation near it.\n\
 - find_discord_users — Fuzzy-resolve a username, nickname, or user ID to users seen in the current channel. Matching is case-insensitive, and each whitespace-separated word is matched independently (e.g. \"rice farmer\" finds users with \"rice\" OR \"farmer\" in their name/nick).\n\
 - get_discord_user — Look up a Discord user's profile by their user ID (username, display name, \
 account creation date, bot status).\n\
@@ -388,8 +387,10 @@ to any user: owner requests are dispatched directly; others go to the owner for 
 message exceeds 500 characters, begin your reply with a **TL;DR:** line (one sentence) \
 summarizing what they asked.\n\
 - When a user asks what was discussed, what happened, or to recap — or says something vague \
-like 'what were we talking about' — call get_recent_messages to fetch recent channel history \
-before answering. Use search_messages only when they ask about a specific keyword, topic, or person.\n\n\
+like 'what were we talking about' — call get_messages (mode=recent) to fetch recent channel \
+history before answering. Use mode=search only when they ask about a specific keyword, topic, or \
+person. When a user replies to a message and asks about the surrounding conversation, use \
+mode=before/after/around with that message's ID.\n\n\
 ## Session information\n\
 {memory_tool_line}\
 {skills_section}\n\

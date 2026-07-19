@@ -61,57 +61,47 @@ pub(crate) fn u64_arg(args: &Value, key: &str, default: u64) -> u64 {
     args.get(key).and_then(Value::as_u64).unwrap_or(default)
 }
 
-pub(crate) fn search_messages_tool() -> Value {
+pub(crate) fn get_messages_tool() -> Value {
     json!({
-        "name": "search_messages",
-        "description": "Search Discord channel messages by regex pattern. The pattern is matched \
-            against message content, the author's Discord username, AND the author's server \
-            nickname or display name. Use this only when searching for a specific keyword, \
-            topic, or person — e.g. to find all messages by 'hexagone', search for '(?i)hexagone' \
-            and it will match any message where that name appears as the author or in the text. \
-            For recaps or vague questions about what was discussed, use get_recent_messages instead. \
-            Supports full Rust regex syntax; case-insensitive patterns ((?i)) are common.",
+        "name": "get_messages",
+        "description": "Flexibly retrieve Discord channel messages. Modes: 'recent' (default) \
+            returns everything posted in the last N minutes, in chronological order — use it for \
+            recaps or vague/open-ended questions like 'what happened recently' or 'what did I \
+            miss'. 'before' / 'after' / 'around' return messages positioned relative to a specific \
+            message_id — use these when the user replies to a message in Discord and you need the \
+            conversation near it (the replied-to message's ID is included in the \
+            '[Message being replied to, id: ...]' context). 'search' finds messages by regex \
+            pattern matched against message content, author username, AND author nickname/display \
+            name — use it only when searching for a specific keyword, topic, or person (e.g. \
+            '(?i)hexagone' to find messages by or mentioning 'hexagone'); supports full Rust regex \
+            syntax, case-insensitive patterns ((?i)) are common.",
         "input_schema": {
             "type": "object",
             "properties": {
-                "query": {
+                "mode": {
                     "type": "string",
-                    "description": "Regex pattern matched against message content, author username, and author nickname/display name."
-                },
-                "max_results": {
-                    "type": "integer",
-                    "description": "Maximum number of matches to return (1–20, default 10). \
-                        Matches are the most recent ones in the log."
+                    "enum": ["recent", "before", "after", "around", "search"],
+                    "description": "Retrieval mode. Defaults to 'recent'."
                 },
                 "channel_id": {
                     "type": "string",
-                    "description": "Discord channel ID to search. Omit to search the current channel."
-                }
-            },
-            "required": ["query"]
-        }
-    })
-}
-
-pub(crate) fn get_recent_messages_tool() -> Value {
-    json!({
-        "name": "get_recent_messages",
-        "description": "Return all messages from the current channel posted in the last N minutes, \
-            in chronological order. Use this to catch up on a recent conversation, summarize what \
-            was discussed, or answer vague/open-ended questions like 'what happened recently', \
-            'what were we talking about', or 'what did I miss'. Unlike search_messages \
-            (pattern-based), this returns everything in a time window — prefer it when the user does \
-            not specify a keyword or person. Also use it proactively when context seems missing.",
-        "input_schema": {
-            "type": "object",
-            "properties": {
+                    "description": "Discord channel ID. Omit to use the current channel."
+                },
                 "minutes": {
                     "type": "integer",
-                    "description": "How far back to look, in minutes (1–1440, default 30)."
+                    "description": "For mode=recent: how far back to look, in minutes (1–1440, default 30)."
                 },
-                "channel_id": {
+                "message_id": {
                     "type": "string",
-                    "description": "Discord channel ID to fetch. Omit to use the current channel."
+                    "description": "For mode=before/after/around: the anchor Discord message ID, e.g. the ID of the message being replied to."
+                },
+                "limit": {
+                    "type": "integer",
+                    "description": "For mode=before/after/around/search: maximum number of messages to return (1–100, default 20)."
+                },
+                "pattern": {
+                    "type": "string",
+                    "description": "For mode=search: regex pattern matched against message content, author username, and author nickname/display name."
                 }
             },
             "required": []

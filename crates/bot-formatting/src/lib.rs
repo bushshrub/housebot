@@ -127,7 +127,7 @@ pub fn tool_status(tool_name: &str) -> String {
         "run_skill" => "🧩",
         "translate" => "🌐",
         "set_reminder" => "⏰",
-        "search_messages" | "get_recent_messages" => "💬",
+        "get_messages" => "💬",
         "find_discord_users" | "get_discord_user" => "👤",
         "get_bot_features" => "🤖",
         "create_feature_request" | "edit_feature_request" => "📝",

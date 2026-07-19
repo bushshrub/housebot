@@ -1,4 +1,5 @@
-//! Global per-channel message log used by the `search_messages` agent tool.
+//! Global per-channel message log used by the `get_messages` agent tool's
+//! search mode.
 //!
 //! Each channel has a JSONL file (`<dir>/<channel_id>.jsonl`). Every non-bot
 //! guild message is appended on arrival. The search function reads the file and

@@ -10,3 +10,6 @@ license = "AGPL-3.0-or-later"
 housebot-bot-response = { path = "../bot-response" }
 serenity = { version = "0.12", default-features = false, features = ["client", "gateway", "rustls_backend", "model", "cache"] }
 tokio = { version = "1", features = ["sync"] }
+
+[dev-dependencies]
+serde_json = "1"

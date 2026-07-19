@@ -190,7 +190,7 @@ pub struct HouseBot {
     discord: Arc<DiscordBridge>,
     /// Per-user grocery lists.
     grocery: GroceryList,
-    /// Logs all guild channel messages for the search_messages tool.
+    /// Logs all guild channel messages for the get_messages tool's search mode.
     channel_log: ChannelLog,
 }
 
