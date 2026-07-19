@@ -56,6 +56,7 @@ struct IssueResponse {
 pub struct ExistingIssue {
     pub body: Option<String>,
     pub html_url: String,
+    pub pull_request: Option<serde_json::Value>,
 }
 
 /// Files GitHub issues on behalf of the bot's GitHub App installation.

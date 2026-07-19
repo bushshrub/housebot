@@ -28,9 +28,7 @@ use crate::bot_config::{LeaderboardVisibility, ServerConfig, ServerConfigStore, 
 pub use crate::bot_response::SecretRedactor;
 use crate::channel_log::ChannelLog;
 use crate::coding_agent::catalog::{AgentCatalog, CodingAgent};
-use crate::coding_agent::issue::{
-    build_dispatch_prompt, build_issue_body, dispatch_labels, DISPATCH_WORKFLOW_FILE,
-};
+use crate::coding_agent::issue::{build_dispatch_prompt, dispatch_workflow_file};
 use crate::coding_agent::pending::{DiscordMessageRef, DispatchStage, PendingJobStore};
 use crate::config;
 use crate::discord_bridge::DiscordBridge;

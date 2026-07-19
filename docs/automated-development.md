@@ -1,6 +1,6 @@
 # Automated Feature Development
 
-Housebot can dispatch automated coding jobs to one of three agents — Codex, Claude Code, or OpenCode — by creating a structured GitHub issue and triggering a self-hosted runner workflow.
+Housebot can dispatch automated coding jobs to one of three agents — Codex, Claude Code, or OpenCode — for an existing GitHub issue by triggering the selected workflow through the GitHub App.
 
 ## Overview
 
@@ -9,9 +9,9 @@ Discord message (owner only)
   └─ LLM calls prepare_feature_development
        └─ Bot intercepts DISPATCH_FLOW:<uuid>
             └─ Discord component UI (agent → model → effort → confirm)
-                 └─ GitHub issue created with hidden metadata
-                      └─ develop-feature.yml workflow triggered
-                           └─ Agent runs on self-hosted runner
+                 └─ Existing issue validated
+                      └─ Selected workflow dispatched through GitHub App
+                           └─ Agent runs against the issue
                                 └─ PR opened for review
 ```
 
@@ -23,8 +23,8 @@ Only the configured bot owner can initiate a dispatch. The LLM cannot start a jo
 
 1. In Discord, ask the bot to develop a feature. It will call `prepare_feature_development` to draft the spec.
 2. The bot shows a component UI with four steps: choose an agent, choose a model, choose an effort level, then confirm.
-3. On confirmation, a GitHub issue is created and labeled `agent:queued`.
-4. The `develop-feature.yml` workflow picks up the issue and runs the selected agent.
+3. On confirmation, the bot validates the existing issue and dispatches the selected agent workflow through the GitHub App.
+4. The selected workflow runs the agent against that issue.
 5. If the agent produces changes, a pull request is opened. Review and merge it manually.
 
 The entire dispatch can be cancelled at any point in the Discord UI before confirmation.
@@ -77,24 +77,14 @@ Agent and model combinations are defined in `.github/agents/catalog.json`. That 
 
 ## Workflow
 
-`.github/workflows/develop-feature.yml` runs on the `housebot-agent` self-hosted runner label when an issue is labeled `agent:queued`.
+`.github/workflows/codex-dispatch.yml`, `claude-dispatch.yml`, and `opencode-dispatch.yml` are manually triggered through `workflow_dispatch` by the Housebot GitHub App.
 
 ### Steps
 
-1. Resolve issue number.
-2. Ensure required labels exist in the repo.
-3. Extract `housebot-development-job` metadata from the issue body.
-4. Transition label: `agent:queued` → `agent:running`.
-5. Checkout the repository.
-6. Validate catalog (revision + agent/model/effort combination).
-7. Configure git identity (`Housebot Agent`).
-8. Create a branch: `agent/<agent>/issue-<number>`.
-9. Run the adapter script (`run-<agent>.sh`).
-10. Detect changes (`git diff --cached`).
-11. Commit and push (if changes).
-12. Open a pull request (if changes).
-13. Transition label: `agent:running` → `agent:completed` / `agent:no-changes`.
-14. On failure: `agent:running` → `agent:failed`.
+1. Receive the existing issue number and prompt as workflow inputs.
+2. Verify the dispatch actor is a GitHub App bot.
+3. Checkout the repository and run the selected agent.
+4. Open a pull request against the existing issue.
 
 ---
 
@@ -124,11 +114,11 @@ The `housebot-agent` self-hosted runner needs:
 
 ## GitHub labels
 
-The workflow manages these labels automatically:
+New dispatches do not create, add, or remove issue labels. Existing labels remain owned by repository maintainers and workflows.
 
 | Label | Meaning |
 |---|---|
-| `agent:queued` | Issue created; job waiting for runner |
+| `agent:queued` | Legacy label-driven queue; new dispatches do not add it |
 | `agent:running` | Runner picked up the job |
 | `agent:completed` | Agent produced changes; PR opened |
 | `agent:no-changes` | Agent ran successfully but made no changes |
@@ -140,7 +130,7 @@ The workflow manages these labels automatically:
 | `agent:opencode` | Job dispatched to OpenCode |
 | `source:discord` | Job originated from the Discord bot |
 
-Labels are created automatically by the workflow on first run.
+Legacy label definitions may still exist for older jobs; new dispatches do not depend on them.
 
 ---
 

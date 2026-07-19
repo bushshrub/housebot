@@ -112,14 +112,10 @@ pub fn build_issue_body(
     Ok(body)
 }
 
-/// The issue comment that triggers the standard opencode GitHub workflow
-/// (`.github/workflows/opencode.yml`) after the issue is created.
+/// Legacy comment retained for compatibility with older issue-driven dispatches.
 pub const DISPATCH_TRIGGER_COMMENT: &str = "/oc Implement the feature described in this issue. \
      Follow the repository conventions, commit your changes, and open a pull request that \
      closes this issue.";
-
-/// The workflow file name for the dispatch-based OpenCode trigger.
-pub const DISPATCH_WORKFLOW_FILE: &str = "opencode-dispatch.yml";
 
 /// Build the prompt passed as a `workflow_dispatch` input to the
 /// `opencode-dispatch` workflow.
@@ -131,14 +127,13 @@ pub fn build_dispatch_prompt(issue_number: u64) -> String {
     )
 }
 
-/// The labels to apply when dispatching (enhancement + queue + agent + source).
-pub fn dispatch_labels(agent: CodingAgent) -> Vec<String> {
-    vec![
-        "enhancement".into(),
-        "agent:queued".into(),
-        agent.agent_label().into(),
-        "source:discord".into(),
-    ]
+/// Return the manually-dispatched workflow for the selected coding agent.
+pub fn dispatch_workflow_file(agent: CodingAgent) -> &'static str {
+    match agent {
+        CodingAgent::Codex => "codex-dispatch.yml",
+        CodingAgent::Claude => "claude-dispatch.yml",
+        CodingAgent::OpenCode => "opencode-dispatch.yml",
+    }
 }
 
 #[cfg(test)]
@@ -158,6 +153,7 @@ mod tests {
 
     fn make_spec() -> DevelopmentSpecification {
         crate::pending::DevelopmentSpecification {
+            issue_number: 1,
             title: "Add feature X".into(),
             objective: "Make X work".into(),
             context: "Currently no X".into(),
@@ -199,19 +195,19 @@ mod tests {
     }
 
     #[test]
-    fn dispatch_labels_contains_exactly_one_agent_label() {
-        let labels = dispatch_labels(CodingAgent::Claude);
-        let agent_labels: Vec<_> = labels.iter().filter(|l| l.starts_with("agent:")).collect();
-        // agent:queued and agent:claude
-        assert_eq!(agent_labels.len(), 2);
-        assert!(labels.contains(&"agent:claude".to_string()));
-        assert!(labels.contains(&"agent:queued".to_string()));
-    }
-
-    #[test]
-    fn dispatch_labels_contains_source_discord() {
-        let labels = dispatch_labels(CodingAgent::OpenCode);
-        assert!(labels.contains(&"source:discord".to_string()));
+    fn dispatch_workflow_matches_agent() {
+        assert_eq!(
+            dispatch_workflow_file(CodingAgent::Codex),
+            "codex-dispatch.yml"
+        );
+        assert_eq!(
+            dispatch_workflow_file(CodingAgent::Claude),
+            "claude-dispatch.yml"
+        );
+        assert_eq!(
+            dispatch_workflow_file(CodingAgent::OpenCode),
+            "opencode-dispatch.yml"
+        );
     }
 
     #[test]

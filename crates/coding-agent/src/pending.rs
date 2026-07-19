@@ -27,6 +27,7 @@ fn expiry_duration() -> Duration {
 /// The structured specification built from the LLM tool call.
 #[derive(Debug, Clone)]
 pub struct DevelopmentSpecification {
+    pub issue_number: u64,
     pub title: String,
     pub objective: String,
     pub context: String,

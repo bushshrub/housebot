@@ -61,7 +61,7 @@ impl HouseBot {
                 j.requester.user_id,
             ))
         });
-        let Some(Some((spec, agent, model, effort, req_name, req_id))) = job_data else {
+        let Some(Some((spec, agent, model, effort, _req_name, _req_id))) = job_data else {
             self.pending_jobs.mark_dispatch_failed(job_id);
             let _ = reply_no_ping(
                 ctx,
@@ -74,7 +74,7 @@ impl HouseBot {
             return;
         };
 
-        let selection = match self.catalog.validate_selection(agent, &model, &effort) {
+        let _selection = match self.catalog.validate_selection(agent, &model, &effort) {
             Ok(s) => s,
             Err(e) => {
                 self.pending_jobs.mark_dispatch_failed(job_id);
@@ -83,69 +83,49 @@ impl HouseBot {
             }
         };
 
-        let body = match build_issue_body(&spec, &selection, &req_name, req_id, &req_name, req_id) {
-            Ok(b) => b,
-            Err(e) => {
-                self.pending_jobs.mark_dispatch_failed(job_id);
-                let _ =
-                    reply_no_ping(ctx, msg, &format!("❌ Failed to build issue body: {e}")).await;
-                return;
-            }
-        };
-
-        let title = format!("[agent:{}] {}", agent.id_str(), spec.title);
-        let labels = dispatch_labels(agent);
-        let label_refs: Vec<&str> = labels.iter().map(String::as_str).collect();
         let reporter = self.agent.reporter();
-        match reporter.create_issue_full(&title, &body, &label_refs).await {
-            Some(issue) => {
-                self.pending_jobs.mark_dispatched(job_id);
-                tracing::info!(
-                    target: "housebot::develop",
-                    issue_number = issue.number,
-                    agent = agent.id_str(),
-                    "Owner-immediate development job dispatched"
-                );
-                let prompt = build_dispatch_prompt(issue.number);
-                let mut inputs = serde_json::Map::new();
-                inputs.insert(
-                    "issue_number".into(),
-                    serde_json::Value::Number(serde_json::Number::from(issue.number)),
-                );
-                inputs.insert("prompt".into(), serde_json::Value::String(prompt));
-                let triggered = reporter
-                    .trigger_workflow_dispatch(DISPATCH_WORKFLOW_FILE, "master", &inputs)
-                    .await;
-                let status = if triggered {
-                    "The opencode-dispatch workflow will pick this up and open a pull request."
-                } else {
-                    "⚠️ Failed to trigger the dispatch workflow. The issue has been created — \
-                     trigger the opencode-dispatch workflow manually."
-                };
-                let _ = reply_no_ping(
-                    ctx,
-                    msg,
-                    &format!(
-                        "✅ **Dispatched!**\n\
-                         Issue #{num} created: {url}\n\
+        let mut inputs = serde_json::Map::new();
+        inputs.insert(
+            "issue_number".into(),
+            serde_json::Value::Number(serde_json::Number::from(spec.issue_number)),
+        );
+        inputs.insert(
+            "prompt".into(),
+            serde_json::Value::String(build_dispatch_prompt(spec.issue_number)),
+        );
+        if reporter
+            .trigger_workflow_dispatch(dispatch_workflow_file(agent), "master", &inputs)
+            .await
+        {
+            self.pending_jobs.mark_dispatched(job_id);
+            tracing::info!(
+                target: "housebot::develop",
+                issue_number = spec.issue_number,
+                agent = agent.id_str(),
+                "Owner-immediate development job dispatched"
+            );
+            let _ = reply_no_ping(
+                ctx,
+                msg,
+                &format!(
+                    "✅ **Dispatched!**\n\
+                         Existing issue #{num}\n\
                          Agent: **{agent_name}** | Model: `{model}` | Effort: `{effort}`\n\
-                         {status}",
-                        num = issue.number,
-                        url = issue.html_url,
-                        agent_name = agent.display_name(),
-                    ),
-                )
-                .await;
-            }
-            None => {
-                self.pending_jobs.mark_dispatch_failed(job_id);
-                let _ = reply_no_ping(
-                    ctx,
-                    msg,
-                    "❌ Failed to create GitHub issue. Check bot logs for details.",
-                )
-                .await;
-            }
+                         The `{workflow}` workflow was triggered.",
+                    num = spec.issue_number,
+                    agent_name = agent.display_name(),
+                    workflow = dispatch_workflow_file(agent),
+                ),
+            )
+            .await;
+        } else {
+            self.pending_jobs.mark_dispatch_failed(job_id);
+            let _ = reply_no_ping(
+                ctx,
+                msg,
+                "❌ Failed to trigger the GitHub workflow. Check bot logs for details.",
+            )
+            .await;
         }
     }
 

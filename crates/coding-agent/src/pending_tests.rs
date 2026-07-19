@@ -21,6 +21,7 @@ fn source_msg(channel_id: u64, message_id: u64) -> DiscordMessageRef {
 
 fn spec() -> DevelopmentSpecification {
     DevelopmentSpecification {
+        issue_number: 1,
         title: "Test".into(),
         objective: "Do something".into(),
         context: String::new(),

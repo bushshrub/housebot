@@ -85,9 +85,10 @@ configured repository (GITHUB_REPO) instead of scraping the web UI.\n\
 READ ONLY — only call get_* / search_* / list_* methods; never call mutating actions.\n\
 - create_feature_request — File a GitHub feature request or bug report, including the current user's Discord username and ID.\n\
 - edit_feature_request — Edit a feature request or bug report filed by the current user; ownership is verified by the tool.\n\
-- prepare_feature_development — Prepare an automated coding-agent development job. Call this when \
-any user explicitly asks to implement, build, code, or start work on a feature (not just suggest \
-it). Owner requests are dispatched immediately; non-owner requests are queued for owner approval. \
+- prepare_feature_development — Prepare an automated coding-agent development job for an existing \
+GitHub issue. Call this when any user explicitly asks to implement, build, code, or start work on a \
+feature (not just suggest it); always include the existing issue number. Owner requests are dispatched \
+immediately; non-owner requests are queued for owner approval. \
 For ordinary feature suggestions use create_feature_request instead.\n\
 - set_reminder — Set a timed reminder; the bot will DM the user when the delay elapses.\n\
 - summarize_url — Fetch a public web URL and return a concise summary.\n\
