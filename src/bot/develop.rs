@@ -321,9 +321,13 @@ pub(crate) fn develop_approval_components(job_id: &str) -> Vec<CreateActionRow> 
 }
 
 pub(crate) fn develop_agent_components(job_id: &str) -> Vec<CreateActionRow> {
+    // Discord cannot grey out a single select option, so the disabled state is
+    // conveyed via the label/description and enforced in `develop_on_agent`.
     let options = vec![
         CreateSelectMenuOption::new("Claude Code", "claude"),
         CreateSelectMenuOption::new("OpenCode (NVIDIA)", "opencode"),
+        CreateSelectMenuOption::new("🚫 Codex (disabled)", "codex")
+            .description("Temporarily disabled — cannot be selected"),
     ];
     vec![
         CreateActionRow::SelectMenu(
