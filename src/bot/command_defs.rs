@@ -209,6 +209,7 @@ pub(crate) fn data_command_definition() -> CreateCommand {
         )
 }
 
+/// Build the `/effort` command, including administrator user targeting.
 pub(crate) fn effort_command_definition() -> CreateCommand {
     let mut level = CreateCommandOption::new(
         CommandOptionType::String,
