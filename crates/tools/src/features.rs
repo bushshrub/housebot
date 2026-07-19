@@ -19,6 +19,7 @@ pub fn features_text() -> &'static str {
 `/personalize personality [text]` — set (or clear) a personal tone/personality override
 `/personalize followup enabled [timeout]` — toggle unpinged follow-up replies in a server channel
 `/personalize proactive enabled` — opt in or out of proactive assistance
+`/personalize dynamic_pagination enabled` — toggle dynamic pagination (embed-based page splitting for long responses)
 `/config access allow|revoke|list` — manage who may configure the bot (configurers only; the owner is always allowed)
 `/config user limit|respond|show` — per-user output-token caps and respond policies (configurers only)
 `/config proactive enabled` — globally enable or disable proactive assistance for all users (configurers only)
@@ -26,7 +27,7 @@ pub fn features_text() -> &'static str {
 `/server-config leaderboard visibility|role_add|role_remove|role_list` — make leaderboard responses public, private, or role-restricted
 `/server-config bot_pings enabled` — toggle responses to other bots' @-mentions
 `/server-config proactive enabled` — allow or disallow proactive assistance in this server
-`/labs pagination enabled` — toggle paginated responses (experimental)
+`/server-config dynamic_pagination mode` — set server-wide pagination policy (server admins and configurers)
 `/commit` — show the running commit hash
 `/model` — show the current model name and context size
 `/data profile show|clear` — inspect your stored profile or clear learned profile data and memory

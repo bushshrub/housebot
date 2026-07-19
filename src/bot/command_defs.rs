@@ -457,6 +457,25 @@ pub(crate) async fn register_slash_commands(ctx: &Context, guild_ids: &[GuildId]
                 )
                 .required(true),
             ),
+        )
+        // ── dynamic_pagination subcommand ─────────────────────────────────
+        .add_option(
+            CreateCommandOption::new(
+                CommandOptionType::SubCommand,
+                "dynamic_pagination",
+                "Control dynamic pagination for long responses in this server",
+            )
+            .add_sub_option(
+                CreateCommandOption::new(
+                    CommandOptionType::String,
+                    "mode",
+                    "Pagination policy for this server",
+                )
+                .required(true)
+                .add_string_choice("Follow user preference", "default")
+                .add_string_choice("Force enable for everyone", "enabled")
+                .add_string_choice("Force disable for everyone", "disabled"),
+            ),
         );
     commands.push(server_config_cmd);
     let personalize_cmd = CreateCommand::new("personalize")
@@ -507,6 +526,21 @@ pub(crate) async fn register_slash_commands(ctx: &Context, guild_ids: &[GuildId]
                 )
                 .required(true),
             ),
+        )
+        .add_option(
+            CreateCommandOption::new(
+                CommandOptionType::SubCommand,
+                "dynamic_pagination",
+                "Toggle dynamic pagination for long responses (auto-split into embed pages)",
+            )
+            .add_sub_option(
+                CreateCommandOption::new(
+                    CommandOptionType::Boolean,
+                    "enabled",
+                    "Enable or disable dynamic pagination",
+                )
+                .required(true),
+            ),
         );
     commands.push(personalize_cmd);
     let labs_cmd = CreateCommand::new("labs")
@@ -515,22 +549,7 @@ pub(crate) async fn register_slash_commands(ctx: &Context, guild_ids: &[GuildId]
             CommandOptionType::SubCommand,
             "list",
             "List experimental features and their status",
-        ))
-        .add_option(
-            CreateCommandOption::new(
-                CommandOptionType::SubCommand,
-                "pagination",
-                "Toggle paginated LLM responses",
-            )
-            .add_sub_option(
-                CreateCommandOption::new(
-                    CommandOptionType::Boolean,
-                    "enabled",
-                    "Enable or disable paginated responses",
-                )
-                .required(true),
-            ),
-        );
+        ));
     commands.push(labs_cmd);
     let mut effort_level_option = CreateCommandOption::new(
         CommandOptionType::String,

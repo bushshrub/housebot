@@ -344,11 +344,31 @@ impl HouseBot {
         let allowed_pings = extract_mentioned_users(&safe, bot_id.get());
         let with_tool_summary = append_tool_summary(&safe, &result.tools_called);
         let (display, code_files) = extract_code_files(&with_tool_summary);
+
+        // Resolve dynamic pagination through the tiered control system:
+        //   1. Bot admins (owner/configurers) always get pagination.
+        //   2. Server policy can force-enable or force-disable.
+        //   3. Otherwise, follow the user's personal preference.
+        let is_admin = self
+            .access
+            .load()
+            .await
+            .is_configurer(msg.author.id.get(), config::owner_id());
+        let server_policy = match msg.guild_id {
+            Some(gid) => self.server_cfg.load(gid.get()).await.dynamic_pagination,
+            None => DynamicPaginationPolicy::Default,
+        };
+        let paginate = resolve_dynamic_pagination(
+            is_admin,
+            server_policy,
+            user_config.dynamic_pagination_enabled,
+        );
+
         let sent_id = send_final_message(
             ctx,
             msg,
             &display,
-            user_config.labs_pagination_enabled,
+            paginate,
             msg.author.id.get(),
             &self.paginated,
             progress.as_ref(),
@@ -403,5 +423,25 @@ impl HouseBot {
                 )
                 .await;
         }
+    }
+}
+
+/// Resolve whether to use embed pagination based on the tiered control system:
+///
+/// 1. Bot admins (owner/configurers) always get pagination.
+/// 2. Server policy can force-enable or force-disable.
+/// 3. Otherwise, follow the user's personal preference.
+fn resolve_dynamic_pagination(
+    is_admin: bool,
+    server_policy: DynamicPaginationPolicy,
+    user_pref: bool,
+) -> bool {
+    if is_admin {
+        return true;
+    }
+    match server_policy {
+        DynamicPaginationPolicy::Enabled => true,
+        DynamicPaginationPolicy::Disabled => false,
+        DynamicPaginationPolicy::Default => user_pref,
     }
 }

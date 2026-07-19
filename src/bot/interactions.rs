@@ -330,59 +330,30 @@ pub(crate) async fn handle_status_interaction(
     } else {
         "disabled".to_string()
     };
+    let dynamic_pagination = if cfg.dynamic_pagination_enabled {
+        "enabled"
+    } else {
+        "disabled"
+    };
     let personality = match &cfg.personality {
         Some(p) if !p.trim().is_empty() => format!("> {}", p.trim().replace('\n', "\n> ")),
         _ => "default".to_string(),
     };
     format!(
-        "**Your current settings:**\n• Effort level: {effort}\n• Follow-up replies: {followup}\n• Personality: {personality}\n\nUse `/effort` to change the thinking effort level."
+        "**Your current settings:**\n• Effort level: {effort}\n• Follow-up replies: {followup}\n• Dynamic pagination: {dynamic_pagination}\n• Personality: {personality}\n\nUse `/effort` to change the thinking effort level."
     )
 }
 
 pub(crate) async fn handle_labs_interaction(
-    user_cfg: &UserConfigStore,
+    _user_cfg: &UserConfigStore,
     options: &[serenity::all::CommandDataOption],
-    author_id: u64,
+    _author_id: u64,
 ) -> String {
-    let mut cfg = user_cfg.load(author_id).await;
     let Some(top) = options.first() else {
         return "Choose a labs feature. Use `/labs list` to see available features.".into();
     };
     match top.name.as_str() {
-        "list" => format!(
-            "**Labs features**\n• Pagination: {}",
-            if cfg.labs_pagination_enabled {
-                "enabled"
-            } else {
-                "disabled"
-            }
-        ),
-        "pagination" => {
-            let CommandDataOptionValue::SubCommand(sub_opts) = &top.value else {
-                return "Unexpected option structure.".into();
-            };
-            let Some(enabled) =
-                sub_opts
-                    .iter()
-                    .find(|o| o.name == "enabled")
-                    .and_then(|o| match &o.value {
-                        CommandDataOptionValue::Boolean(value) => Some(*value),
-                        _ => None,
-                    })
-            else {
-                return "Please specify `enabled`.".into();
-            };
-            cfg.labs_pagination_enabled = enabled;
-            if let Err(error) = user_cfg.save(author_id, &cfg).await {
-                tracing::error!(target: "housebot::labs::pagination", user_id = author_id, %error, "Failed to save pagination setting");
-                return "Error: failed to save labs configuration.".into();
-            }
-            tracing::info!(target: "housebot::labs::pagination", user_id = author_id, enabled, "Updated pagination setting");
-            format!(
-                "✅ Paginated responses {}.",
-                if enabled { "enabled" } else { "disabled" }
-            )
-        }
+        "list" => "**Labs features**\nNo experimental features are currently available. Pagination has moved to `/personalize dynamic_pagination`.".to_string(),
         other => format!("Unknown labs feature `{other}`. Use `/labs list`."),
     }
 }

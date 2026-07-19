@@ -460,6 +460,48 @@ pub(crate) async fn handle_server_config_interaction(
             }
         }
 
+        "dynamic_pagination" => {
+            let sub_opts = match &top.value {
+                CommandDataOptionValue::SubCommand(opts) => opts,
+                _ => return "Unexpected option structure.".into(),
+            };
+            let mode = sub_opts
+                .iter()
+                .find(|o| o.name == "mode")
+                .and_then(|o| match &o.value {
+                    CommandDataOptionValue::String(s) => Some(s.as_str()),
+                    _ => None,
+                });
+            let Some(mode) = mode else {
+                return "Please specify `mode` (default, enabled, or disabled).".into();
+            };
+            let mut cfg = server_cfg.load(gid).await;
+            cfg.dynamic_pagination = match mode {
+                "enabled" => DynamicPaginationPolicy::Enabled,
+                "disabled" => DynamicPaginationPolicy::Disabled,
+                _ => DynamicPaginationPolicy::Default,
+            };
+            if server_cfg.save(gid, &cfg).await.is_err() {
+                return "Error: failed to save config.".into();
+            }
+            format!(
+                "✅ Dynamic pagination policy set to **{}** — {}",
+                match cfg.dynamic_pagination {
+                    DynamicPaginationPolicy::Enabled => "enabled",
+                    DynamicPaginationPolicy::Disabled => "disabled",
+                    DynamicPaginationPolicy::Default => "default",
+                },
+                match cfg.dynamic_pagination {
+                    DynamicPaginationPolicy::Enabled =>
+                        "all users in this server will see paginated responses.",
+                    DynamicPaginationPolicy::Disabled =>
+                        "dynamic pagination is disabled for all users in this server.",
+                    DynamicPaginationPolicy::Default =>
+                        "each user decides via `/personalize dynamic_pagination`.",
+                }
+            )
+        }
+
         other => format!("Unknown server-config option `{other}`."),
     }
 }
@@ -556,6 +598,29 @@ pub(crate) async fn handle_personalize_interaction(
                 "✅ Proactive assistance enabled — I may chime in on obvious reminder requests and help questions. Server admins and bot configurers can disable this server-wide or globally.".into()
             } else {
                 "✅ Proactive assistance disabled — I'll only respond when addressed.".into()
+            }
+        }
+
+        "dynamic_pagination" => {
+            let enabled =
+                sub_opts
+                    .iter()
+                    .find(|o| o.name == "enabled")
+                    .and_then(|o| match &o.value {
+                        CommandDataOptionValue::Boolean(b) => Some(*b),
+                        _ => None,
+                    });
+            let Some(enabled) = enabled else {
+                return "Please specify `enabled`.".into();
+            };
+            cfg.dynamic_pagination_enabled = enabled;
+            if user_cfg.save(author_id, &cfg).await.is_err() {
+                return "Error: failed to save config.".into();
+            }
+            if enabled {
+                "✅ Dynamic pagination enabled — long responses will be split into embed pages with navigation buttons. Server admins and bot configurers can override this.".into()
+            } else {
+                "✅ Dynamic pagination disabled — long responses will be split into multiple plain messages.".into()
             }
         }
 
