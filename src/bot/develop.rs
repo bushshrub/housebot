@@ -320,7 +320,6 @@ pub(crate) fn develop_approval_components(job_id: &str) -> Vec<CreateActionRow> 
 
 pub(crate) fn develop_agent_components(job_id: &str) -> Vec<CreateActionRow> {
     let options = vec![
-        CreateSelectMenuOption::new("Codex", "codex"),
         CreateSelectMenuOption::new("Claude Code", "claude"),
         CreateSelectMenuOption::new("OpenCode (NVIDIA)", "opencode"),
     ];

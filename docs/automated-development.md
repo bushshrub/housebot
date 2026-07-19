@@ -1,6 +1,6 @@
 # Automated Feature Development
 
-Housebot can dispatch automated coding jobs to one of three agents — Codex, Claude Code, or OpenCode — for an existing GitHub issue by triggering the selected workflow through the GitHub App.
+Housebot can dispatch automated coding jobs to Claude Code or OpenCode for an existing GitHub issue by triggering the selected workflow through the GitHub App.
 
 ## Overview
 
@@ -35,7 +35,6 @@ The entire dispatch can be cancelled at any point in the Discord UI before confi
 
 | Agent | CLI | Authentication | Effort |
 |---|---|---|---|
-| **Codex** | `openai/codex-action@v1` | OAuth session on trusted persistent runner | Single level (account default) |
 | **Claude Code** | `claude` | OAuth session on runner | low / medium / high (via `--max-turns`) |
 | **OpenCode** | `opencode` | `NVIDIA_API_KEY` secret | low / medium / high (execution timeout) |
 
@@ -77,7 +76,7 @@ Agent and model combinations are defined in `.github/agents/catalog.json`. That 
 
 ## Workflow
 
-`.github/workflows/codex-dispatch.yml`, `claude-dispatch.yml`, and `opencode-dispatch.yml` are manually triggered through `workflow_dispatch` by the Housebot GitHub App.
+`.github/workflows/claude-dispatch.yml` and `.github/workflows/opencode-dispatch.yml` are manually triggered through `workflow_dispatch` by the Housebot GitHub App. Codex dispatch is temporarily disabled until a trusted self-hosted runner is available.
 
 ### Steps
 
@@ -95,7 +94,6 @@ The `housebot-agent` self-hosted runner needs:
 | Requirement | Notes |
 |---|---|
 | GitHub Actions runner | Registered with the `housebot-agent` label |
-| Node.js | Required by `openai/codex-action@v1`, which installs Codex at job runtime |
 | `claude` CLI | Logged in via OAuth (`~/.claude/`) |
 | `opencode` CLI | Installed; uses `NVIDIA_API_KEY` at runtime |
 | `python3` | For catalog validation |
@@ -125,7 +123,6 @@ New dispatches do not create, add, or remove issue labels. Existing labels remai
 | `agent:failed` | Adapter or workflow step failed |
 | `agent:failed-auth` | Auth failure (OAuth expired, API key missing) |
 | `agent:failed-config` | Configuration error (catalog mismatch, missing secret) |
-| `agent:codex` | Job dispatched to Codex |
 | `agent:claude` | Job dispatched to Claude Code |
 | `agent:opencode` | Job dispatched to OpenCode |
 | `source:discord` | Job originated from the Discord bot |
@@ -148,7 +145,7 @@ Legacy label definitions may still exist for older jobs; new dispatches do not d
 
 ## Runner health check
 
-`.github/workflows/check-agent-runner.yml` runs daily at 09:00 UTC and verifies that `codex`, `claude`, `opencode`, `python3`, and `git` are all available on the runner. Failures appear in the Actions tab.
+`.github/workflows/check-agent-runner.yml` runs daily at 09:00 UTC and verifies that `claude`, `opencode`, `python3`, and `git` are all available on the runner. Failures appear in the Actions tab.
 
 ---
 
