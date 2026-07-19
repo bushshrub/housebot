@@ -23,7 +23,7 @@ pub(crate) async fn handle_config_interaction(
     }
 
     match top.name.as_str() {
-        "followup" => {
+        "proactive" => {
             let sub_opts = match &top.value {
                 CommandDataOptionValue::SubCommand(opts) => opts,
                 _ => return "Unexpected option structure.".into(),
