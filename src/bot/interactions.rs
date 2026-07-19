@@ -6,6 +6,7 @@ pub(crate) async fn handle_effort_interaction(
     user_cfg: &UserConfigStore,
     options: &[serenity::all::CommandDataOption],
     author_id: u64,
+    can_manage_other_users: bool,
 ) -> String {
     let level = options
         .iter()
@@ -14,7 +15,23 @@ pub(crate) async fn handle_effort_interaction(
             CommandDataOptionValue::String(s) => Some(s.clone()),
             _ => None,
         });
-    let mut cfg = user_cfg.load(author_id).await;
+    let target_id = options
+        .iter()
+        .find(|o| o.name == "user")
+        .and_then(|o| match o.value {
+            CommandDataOptionValue::User(user) => Some(user.get()),
+            _ => None,
+        })
+        .unwrap_or(author_id);
+    if target_id != author_id && !can_manage_other_users {
+        return "Only bot administrators can configure another user's thinking effort.".into();
+    }
+    let mut cfg = user_cfg.load(target_id).await;
+    let whose = if target_id == author_id {
+        "Your".to_string()
+    } else {
+        format!("User `{target_id}`'s")
+    };
     let Some(level) = level else {
         let lines: Vec<String> = ThinkingMode::ALL
             .into_iter()
@@ -28,25 +45,34 @@ pub(crate) async fn handle_effort_interaction(
             })
             .collect();
         return format!(
-            "**Thinking effort:** currently **{}** ({}).\n{}\nUse `/effort level:<mode>` to change it.",
+            "**{whose} thinking effort:** currently **{}** ({}).\n{}\nUse `/effort level:<mode>` to change it.",
             cfg.thinking_mode,
             cfg.thinking_mode.budget_label(),
             lines.join("\n")
         );
     };
     let Ok(mode) = level.parse::<ThinkingMode>() else {
-        return format!("Unknown effort level `{level}`. Options: low, medium, high, xhigh, max.");
+        return format!(
+            "Unknown effort level `{level}`. Options: instant, low, medium, high, xhigh, max."
+        );
     };
     cfg.thinking_mode = mode;
-    if let Err(error) = user_cfg.save(author_id, &cfg).await {
-        tracing::error!(target: "housebot::commands", user_id = author_id, %error, "Failed to save effort setting");
+    if let Err(error) = user_cfg.save(target_id, &cfg).await {
+        tracing::error!(target: "housebot::commands", user_id = target_id, changed_by = author_id, %error, "Failed to save effort setting");
         return "Error: failed to save config.".into();
     }
-    tracing::info!(target: "housebot::commands", user_id = author_id, mode = %mode, "Thinking effort updated");
-    format!(
-        "✅ Thinking effort set to **{mode}** ({}).",
-        mode.budget_label()
-    )
+    tracing::info!(target: "housebot::commands", user_id = target_id, changed_by = author_id, mode = %mode, "Thinking effort updated");
+    if target_id == author_id {
+        format!(
+            "✅ Thinking effort set to **{mode}** ({}).",
+            mode.budget_label()
+        )
+    } else {
+        format!(
+            "✅ Thinking effort for user `{target_id}` set to **{mode}** ({}).",
+            mode.budget_label()
+        )
+    }
 }
 
 /// Handle guild-scoped `/tool_ban` proposals, votes, and status requests.

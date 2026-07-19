@@ -30,6 +30,10 @@ fn completion_budget_always_reserves_room_for_the_answer() {
 #[test]
 fn reasoning_field_is_capped_only_for_bounded_modes() {
     assert_eq!(
+        ThinkingMode::Instant.reasoning_field(),
+        serde_json::json!({"enabled": false})
+    );
+    assert_eq!(
         ThinkingMode::Low.reasoning_field(),
         serde_json::json!({"enabled": true, "max_tokens": 2048})
     );

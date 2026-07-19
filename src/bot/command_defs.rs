@@ -209,6 +209,25 @@ pub(crate) fn data_command_definition() -> CreateCommand {
         )
 }
 
+pub(crate) fn effort_command_definition() -> CreateCommand {
+    let mut level = CreateCommandOption::new(
+        CommandOptionType::String,
+        "level",
+        "Thinking effort level (omit to show the current setting)",
+    );
+    for mode in ThinkingMode::ALL {
+        level = level.add_string_choice(format!("{mode} ({})", mode.budget_label()), mode.as_str());
+    }
+    CreateCommand::new("effort")
+        .description("Set how much thinking the model does before replying")
+        .add_option(level)
+        .add_option(CreateCommandOption::new(
+            CommandOptionType::User,
+            "user",
+            "User to configure (bot administrators only)",
+        ))
+}
+
 pub(crate) async fn register_slash_commands(ctx: &Context, guild_ids: &[GuildId]) {
     let mut commands: Vec<CreateCommand> = Vec::new();
     // The /config global slash command (bot configuration, configurers only).
@@ -532,19 +551,7 @@ pub(crate) async fn register_slash_commands(ctx: &Context, guild_ids: &[GuildId]
             ),
         );
     commands.push(labs_cmd);
-    let mut effort_level_option = CreateCommandOption::new(
-        CommandOptionType::String,
-        "level",
-        "Thinking effort level (omit to show the current setting)",
-    );
-    for mode in ThinkingMode::ALL {
-        effort_level_option = effort_level_option
-            .add_string_choice(format!("{mode} ({})", mode.budget_label()), mode.as_str());
-    }
-    let effort_cmd = CreateCommand::new("effort")
-        .description("Set how much thinking the model does before replying")
-        .add_option(effort_level_option);
-    commands.push(effort_cmd);
+    commands.push(effort_command_definition());
     let tool_ban_cmd = CreateCommand::new("tool_ban")
         .description("Propose and vote on user-specific tool restrictions")
         .add_option(
