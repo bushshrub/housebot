@@ -3,21 +3,6 @@
 use super::*;
 
 #[test]
-fn rollback_is_owner_and_channel_scoped() {
-    assert!(rollback_allowed(10, 10, 20, 20));
-    assert!(!rollback_allowed(10, 11, 20, 20));
-    assert!(!rollback_allowed(10, 10, 21, 20));
-    assert!(!rollback_allowed(0, 0, 20, 20));
-}
-
-#[test]
-fn deploy_and_update_are_owner_scoped_without_webhook_channel_coupling() {
-    assert!(owner_allowed(10, 10));
-    assert!(!owner_allowed(10, 11));
-    assert!(!owner_allowed(0, 0));
-}
-
-#[test]
 fn invalid_numeric_environment_value_is_rejected() {
     std::env::set_var("DEPLOYMENT_BOT_TEST_ID", "not-a-number");
     let error = env_u64("DEPLOYMENT_BOT_TEST_ID").unwrap_err().to_string();
@@ -53,6 +38,26 @@ fn deployment_webhook_text_is_classified_strictly() {
     );
     assert_eq!(classify_deployment_text("build succeeded"), Some(true));
     assert_eq!(classify_deployment_text("tests succeeded"), None);
+}
+
+#[test]
+fn deployment_access_command_exposes_allow_revoke_and_list() {
+    let commands = serde_json::to_value(deployment_commands()).unwrap();
+    let access = commands
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|command| command["name"] == "deployment-access")
+        .expect("deployment access command must be registered");
+    assert_eq!(
+        access["options"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|option| option["name"].as_str().unwrap())
+            .collect::<Vec<_>>(),
+        vec!["allow", "revoke", "list"]
+    );
 }
 
 #[test]

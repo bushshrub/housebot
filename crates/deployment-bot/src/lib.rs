@@ -1,4 +1,4 @@
-//! Small Discord bot that observes deployment webhooks and offers owner-only deployment controls.
+//! Small Discord bot that observes deployment webhooks and offers database-backed deployment controls.
 
 use std::collections::HashMap;
 use std::fmt;
@@ -14,6 +14,9 @@ use serenity::all::{
 use serenity::Client;
 use tokio::process::Command as ProcessCommand;
 use tokio::sync::{Mutex, RwLock};
+
+mod permissions;
+use permissions::DeploymentPermissions;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct DeploymentEvent {
@@ -58,19 +61,6 @@ pub fn deployment_event(message: &Message) -> Option<DeploymentEvent> {
     Some(DeploymentEvent { succeeded, commit })
 }
 
-pub fn rollback_allowed(
-    owner_id: u64,
-    requesting_user: u64,
-    channel: u64,
-    expected_channel: u64,
-) -> bool {
-    owner_id != 0 && owner_id == requesting_user && channel == expected_channel
-}
-
-fn owner_allowed(owner_id: u64, requesting_user: u64) -> bool {
-    owner_id != 0 && owner_id == requesting_user
-}
-
 #[derive(Clone)]
 struct DeploymentBot {
     owner_id: u64,
@@ -83,6 +73,7 @@ struct DeploymentBot {
     github_branch: String,
     github_token: Option<String>,
     docker_network: String,
+    permissions: DeploymentPermissions,
 }
 
 const HOUSE_CHATBOT_CONTAINER: &str = "house-chatbot";
@@ -117,6 +108,19 @@ struct GitHubComparison {
 }
 
 impl DeploymentBot {
+    async fn deployment_allowed(&self, user_id: u64) -> bool {
+        if self.owner_id != 0 && user_id == self.owner_id {
+            return true;
+        }
+        match self.permissions.contains(user_id).await {
+            Ok(allowed) => allowed,
+            Err(error) => {
+                tracing::error!(%error, user_id, "Could not check deployment permission");
+                false
+            }
+        }
+    }
+
     async fn cleanup_old_images(&self, sha: Option<&str>) {
         let main = sha
             .map(|sha| format!("ghcr.io/bushshrub/housebot:sha-{sha}"))
@@ -459,6 +463,7 @@ pub async fn run() -> anyhow::Result<()> {
     let owner_id = env_u64("OWNER_DISCORD_ID")?;
     let channel_id = env_u64("DEPLOYMENT_CHANNEL_ID")?;
     let guild_id = optional_env_u64("DEPLOYMENT_GUILD_ID")?;
+    let permissions = DeploymentPermissions::connect().await?;
     let handler = DeploymentBot {
         owner_id,
         channel_id,
@@ -471,6 +476,7 @@ pub async fn run() -> anyhow::Result<()> {
         github_token: std::env::var("GITHUB_TOKEN").ok(),
         docker_network: std::env::var("DOCKER_NETWORK")
             .unwrap_or_else(|_| "house-chatbot_default".into()),
+        permissions,
     };
     let intents = GatewayIntents::non_privileged() | GatewayIntents::MESSAGE_CONTENT;
     let mut client = Client::builder(token, intents)
@@ -544,6 +550,35 @@ fn deployment_commands() -> Vec<CreateCommand> {
                 CreateCommandOption::new(CommandOptionType::String, "sha", "Git commit SHA")
                     .required(false),
             ),
+        CreateCommand::new("deployment-access")
+            .description("Manage users allowed to deploy and roll back")
+            .add_option(
+                CreateCommandOption::new(
+                    CommandOptionType::SubCommand,
+                    "allow",
+                    "Allow a user to deploy and roll back",
+                )
+                .add_sub_option(
+                    CreateCommandOption::new(CommandOptionType::User, "user", "User to allow")
+                        .required(true),
+                ),
+            )
+            .add_option(
+                CreateCommandOption::new(
+                    CommandOptionType::SubCommand,
+                    "revoke",
+                    "Revoke a user's deployment permission",
+                )
+                .add_sub_option(
+                    CreateCommandOption::new(CommandOptionType::User, "user", "User to revoke")
+                        .required(true),
+                ),
+            )
+            .add_option(CreateCommandOption::new(
+                CommandOptionType::SubCommand,
+                "list",
+                "List users allowed to deploy and roll back",
+            )),
     ]
 }
 
@@ -557,7 +592,10 @@ async fn remove_global_deployment_commands(ctx: &Context) {
     };
 
     for command in commands.into_iter().filter(|command| {
-        command.name == "deploy" || command.name == "rollback" || command.name == "update"
+        command.name == "deploy"
+            || command.name == "rollback"
+            || command.name == "update"
+            || command.name == "deployment-access"
     }) {
         if let Err(error) = Command::delete_global_command(&ctx.http, command.id).await {
             tracing::error!(name = %command.name, "Failed to remove global deployment slash command: {error}");
