@@ -328,7 +328,18 @@ pub(crate) fn attachment_context<'a>(
 }
 
 pub(crate) fn referenced_message_context(msg: &Message) -> Option<String> {
-    let text = msg.content.trim();
+    let content = msg.content.trim();
+    let embed_text = msg
+        .embeds
+        .first()
+        .and_then(|embed| embed.description.as_deref())
+        .map(str::trim)
+        .unwrap_or_default();
+    let text = if content.is_empty() {
+        embed_text
+    } else {
+        content
+    };
     let urls: Vec<&str> = URL.find_iter(text).map(|m| m.as_str()).collect();
     let attachment_context = message_attachment_context(msg);
     if text.is_empty() && attachment_context.is_none() {
@@ -479,6 +490,36 @@ mod media_tests {
         let context = referenced_message_context(&m).unwrap();
         assert!(context.contains("report.pdf"));
         assert!(context.contains("already available"));
+    }
+
+    #[test]
+    fn referenced_context_falls_back_to_embed_for_paginated_replies() {
+        let m: Message = serde_json::from_value(serde_json::json!({
+            "id": "4",
+            "channel_id": "1",
+            "author": {
+                "id": "1",
+                "username": "tester",
+                "discriminator": "0000",
+                "avatar": null
+            },
+            "content": "",
+            "timestamp": "2026-01-01T00:00:00+00:00",
+            "tts": false,
+            "mention_everyone": false,
+            "mentions": [],
+            "mention_roles": [],
+            "attachments": [],
+            "embeds": [{
+                "type": "rich",
+                "description": "Page one of the paginated reply"
+            }],
+            "pinned": false,
+            "type": 0
+        }))
+        .unwrap();
+        let context = referenced_message_context(&m).unwrap();
+        assert!(context.contains("Page one of the paginated reply"));
     }
 
     #[test]
