@@ -181,6 +181,12 @@ impl HouseBot {
         // Load per-user settings (personality, thinking effort, and privacy).
         let personality = user_config.personality.clone();
         let thinking = user_config.thinking_mode;
+        let max_output_tokens = self
+            .access
+            .load()
+            .await
+            .policy(msg.author.id.get())
+            .max_output_tokens;
 
         // Refresh user profile from Discord and persist learned data.
         let mut profile = self.profile_store.load(msg.author.id.get()).await;
@@ -286,6 +292,7 @@ impl HouseBot {
                             guild_id: msg.guild_id.map(|guild| guild.get()),
                             proactive,
                             record_profile_usage: !proactive,
+                            max_output_tokens,
                         },
                         response_hooks
                             .as_ref()

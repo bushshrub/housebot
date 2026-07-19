@@ -949,6 +949,8 @@ dependencies = [
  "serde_json",
  "tempfile",
  "tokio",
+ "tokio-postgres",
+ "tracing",
 ]
 
 [[package]]

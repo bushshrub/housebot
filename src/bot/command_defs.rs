@@ -314,7 +314,133 @@ pub(crate) async fn register_slash_commands(ctx: &Context) {
                 "List roles allowed to use the leaderboard",
             )),
         )
-        // ── personality subcommand ───────────────────────────────────────
+        // ── followup subcommand (global proactive kill-switch) ───────────
+        .add_option(
+            CreateCommandOption::new(
+                CommandOptionType::SubCommand,
+                "followup",
+                "Enable or disable proactive assistance for all users (configurers only)",
+            )
+            .add_sub_option(
+                CreateCommandOption::new(
+                    CommandOptionType::Boolean,
+                    "enabled",
+                    "Whether proactive assistance is available to anyone",
+                )
+                .required(true),
+            ),
+        )
+        // ── bot_pings subcommand ───────────────────────────────────────────
+        .add_option(
+            CreateCommandOption::new(
+                CommandOptionType::SubCommand,
+                "bot_pings",
+                "Control whether the bot responds to @-mentions from other bots",
+            )
+            .add_sub_option(
+                CreateCommandOption::new(
+                    CommandOptionType::Boolean,
+                    "enabled",
+                    "Enable or disable responses to other bots",
+                )
+                .required(true),
+            ),
+        )
+        // ── access subcommand group ──────────────────────────────────────
+        .add_option(
+            CreateCommandOption::new(
+                CommandOptionType::SubCommandGroup,
+                "access",
+                "Manage which users are allowed to configure the bot (owner is always allowed)",
+            )
+            .add_sub_option(
+                CreateCommandOption::new(
+                    CommandOptionType::SubCommand,
+                    "allow",
+                    "Allow a user to configure the bot",
+                )
+                .add_sub_option(
+                    CreateCommandOption::new(CommandOptionType::User, "user", "User to allow")
+                        .required(true),
+                ),
+            )
+            .add_sub_option(
+                CreateCommandOption::new(
+                    CommandOptionType::SubCommand,
+                    "revoke",
+                    "Revoke a user's permission to configure the bot",
+                )
+                .add_sub_option(
+                    CreateCommandOption::new(CommandOptionType::User, "user", "User to revoke")
+                        .required(true),
+                ),
+            )
+            .add_sub_option(CreateCommandOption::new(
+                CommandOptionType::SubCommand,
+                "list",
+                "List the users allowed to configure the bot",
+            )),
+        )
+        // ── user policy subcommand group ─────────────────────────────────
+        .add_option(
+            CreateCommandOption::new(
+                CommandOptionType::SubCommandGroup,
+                "user",
+                "Per-user bot policies (configurers only)",
+            )
+            .add_sub_option(
+                CreateCommandOption::new(
+                    CommandOptionType::SubCommand,
+                    "limit",
+                    "Cap a user's maximum output tokens (omit max_tokens to remove the cap)",
+                )
+                .add_sub_option(
+                    CreateCommandOption::new(CommandOptionType::User, "user", "User to limit")
+                        .required(true),
+                )
+                .add_sub_option(CreateCommandOption::new(
+                    CommandOptionType::Integer,
+                    "max_tokens",
+                    "Maximum output tokens per response (omit to remove the cap)",
+                )),
+            )
+            .add_sub_option(
+                CreateCommandOption::new(
+                    CommandOptionType::SubCommand,
+                    "respond",
+                    "Control whether the bot responds to a user at all",
+                )
+                .add_sub_option(
+                    CreateCommandOption::new(CommandOptionType::User, "user", "Target user")
+                        .required(true),
+                )
+                .add_sub_option(
+                    CreateCommandOption::new(
+                        CommandOptionType::Boolean,
+                        "enabled",
+                        "Whether the bot responds to this user",
+                    )
+                    .required(true),
+                ),
+            )
+            .add_sub_option(
+                CreateCommandOption::new(
+                    CommandOptionType::SubCommand,
+                    "show",
+                    "Show a user's current bot policy",
+                )
+                .add_sub_option(
+                    CreateCommandOption::new(CommandOptionType::User, "user", "Target user")
+                        .required(true),
+                ),
+            ),
+        );
+
+    if let Err(e) = Command::create_global_command(&ctx.http, config_cmd).await {
+        tracing::error!("Failed to register /config slash command: {e}");
+    }
+    let personalize_cmd = CreateCommand::new("personalize")
+        .description("Personal bot settings any user can change")
         .add_option(
             CreateCommandOption::new(
                 CommandOptionType::SubCommand,
@@ -327,7 +453,6 @@ pub(crate) async fn register_slash_commands(ctx: &Context) {
                 "Personality description (omit to clear your override)",
             )),
         )
-        // ── followup subcommand ──────────────────────────────────────────
         .add_option(
             CreateCommandOption::new(
                 CommandOptionType::SubCommand,
@@ -348,25 +473,23 @@ pub(crate) async fn register_slash_commands(ctx: &Context) {
                 "Seconds to keep the conversation open without a ping (default 300)",
             )),
         )
-        // ── bot_pings subcommand ───────────────────────────────────────────
         .add_option(
             CreateCommandOption::new(
                 CommandOptionType::SubCommand,
-                "bot_pings",
-                "Control whether the bot responds to @-mentions from other bots",
+                "proactive",
+                "Control whether the bot may respond to your messages unprompted",
             )
             .add_sub_option(
                 CreateCommandOption::new(
                     CommandOptionType::Boolean,
                     "enabled",
-                    "Enable or disable responses to other bots",
+                    "Enable or disable proactive assistance",
                 )
                 .required(true),
             ),
         );
-
-    if let Err(e) = Command::create_global_command(&ctx.http, config_cmd).await {
-        tracing::error!("Failed to register /config slash command: {e}");
+    if let Err(e) = Command::create_global_command(&ctx.http, personalize_cmd).await {
+        tracing::error!("Failed to register /personalize slash command: {e}");
     }
     let labs_cmd = CreateCommand::new("labs")
         .description("Enable experimental bot features")

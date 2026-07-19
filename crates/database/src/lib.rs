@@ -18,6 +18,10 @@ const MIGRATIONS: &[(&str, &str)] = &[
         "002_create_token_monitor",
         include_str!("../../../db/migrations/002_create_token_monitor.sql"),
     ),
+    (
+        "003_create_bot_config",
+        include_str!("../../../db/migrations/003_create_bot_config.sql"),
+    ),
 ];
 const MIGRATION_LOCK_ID: i64 = 1_593_778_914;
 const DEFAULT_DATABASE_URL: &str = "postgres://housebot:housebot@postgres/housebot";
