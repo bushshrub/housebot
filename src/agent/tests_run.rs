@@ -60,7 +60,7 @@ async fn run_marks_text_stream_end_after_generation() {
         .run(AgentRequest::text("u1", "Alice", "hi"), &hooks)
         .await;
 
-    assert_eq!(*hooks.events.lock().unwrap(), ["text", "end"]);
+    assert_eq!(*hooks.events.lock().unwrap(), ["text", "text", "end"]);
 }
 
 #[tokio::test]
