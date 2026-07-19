@@ -135,6 +135,19 @@ impl HouseBot {
                 .await;
             return;
         };
+        if agent_dispatch_disabled(agent) {
+            let _ = component
+                .create_response(
+                    &ctx.http,
+                    CreateInteractionResponse::Message(
+                        CreateInteractionResponseMessage::new()
+                            .content(AGENT_DISABLED_MESSAGE)
+                            .ephemeral(true),
+                    ),
+                )
+                .await;
+            return;
+        }
         self.pending_jobs.with_job_mut(job_id, |j| {
             j.selection.agent = Some(agent);
             j.selection.model = None;

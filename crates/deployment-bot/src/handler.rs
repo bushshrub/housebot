@@ -145,12 +145,7 @@ impl EventHandler for DeploymentBot {
             let Some(sha) = component.data.custom_id.strip_prefix("deploy_confirm:") else {
                 return;
             };
-            if !rollback_allowed(
-                self.owner_id,
-                component.user.id.get(),
-                component.channel_id.get(),
-                self.channel_id,
-            ) {
+            if !self.deployment_allowed(component.user.id.get()).await {
                 let response = CreateInteractionResponse::Message(
                     CreateInteractionResponseMessage::new()
                         .content("You are not allowed to deploy.")
@@ -240,16 +235,79 @@ impl EventHandler for DeploymentBot {
         let Interaction::Command(command) = interaction else {
             return;
         };
+        if command.data.name == "deployment-access" {
+            let content = if command.user.id.get() != self.owner_id || self.owner_id == 0 {
+                "Only the configured owner can manage deployment access.".to_string()
+            } else {
+                let option = command.data.options.first();
+                match option.map(|option| (option.name.as_str(), &option.value)) {
+                    Some(("allow", CommandDataOptionValue::SubCommand(options)))
+                    | Some(("revoke", CommandDataOptionValue::SubCommand(options))) => {
+                        let user_id = options.iter().find_map(|option| match option.value {
+                            CommandDataOptionValue::User(user) => Some(user.get()),
+                            _ => None,
+                        });
+                        match (option.map(|option| option.name.as_str()), user_id) {
+                            (Some("allow"), Some(user_id)) => {
+                                match self.permissions.allow(user_id, self.owner_id).await {
+                                    Ok(()) => {
+                                        format!("✅ <@{user_id}> can now deploy and roll back.")
+                                    }
+                                    Err(error) => {
+                                        format!("Could not grant deployment access: {error}")
+                                    }
+                                }
+                            }
+                            (Some("revoke"), Some(user_id)) if user_id == self.owner_id => {
+                                "The configured owner always has deployment access.".into()
+                            }
+                            (Some("revoke"), Some(user_id)) => {
+                                match self.permissions.revoke(user_id).await {
+                                    Ok(()) => {
+                                        format!("✅ Revoked deployment access from <@{user_id}>.")
+                                    }
+                                    Err(error) => {
+                                        format!("Could not revoke deployment access: {error}")
+                                    }
+                                }
+                            }
+                            _ => "Please specify a user.".into(),
+                        }
+                    }
+                    Some(("list", CommandDataOptionValue::SubCommand(_))) => {
+                        match self.permissions.list().await {
+                            Ok(users) => {
+                                let mut mentions = vec![format!("<@{}> (owner)", self.owner_id)];
+                                mentions.extend(
+                                    users
+                                        .into_iter()
+                                        .filter(|user_id| *user_id != self.owner_id)
+                                        .map(|user_id| format!("<@{user_id}>")),
+                                );
+                                format!(
+                                    "Users allowed to deploy and roll back:\n{}",
+                                    mentions.join("\n")
+                                )
+                            }
+                            Err(error) => format!("Could not list deployment access: {error}"),
+                        }
+                    }
+                    _ => "Choose `allow`, `revoke`, or `list`.".into(),
+                }
+            };
+            let response = CreateInteractionResponse::Message(
+                CreateInteractionResponseMessage::new()
+                    .content(content)
+                    .ephemeral(true),
+            );
+            let _ = command.create_response(&ctx.http, response).await;
+            return;
+        }
         if command.data.name == "deploy" {
-            if !rollback_allowed(
-                self.owner_id,
-                command.user.id.get(),
-                command.channel_id.get(),
-                self.channel_id,
-            ) {
+            if !self.deployment_allowed(command.user.id.get()).await {
                 let response = CreateInteractionResponse::Message(
                     CreateInteractionResponseMessage::new()
-                        .content("Only the configured owner can deploy from this channel.")
+                        .content("You are not allowed to deploy.")
                         .ephemeral(true),
                 );
                 let _ = command.create_response(&ctx.http, response).await;
@@ -324,15 +382,10 @@ impl EventHandler for DeploymentBot {
             return;
         }
         if command.data.name == "update" {
-            if !rollback_allowed(
-                self.owner_id,
-                command.user.id.get(),
-                command.channel_id.get(),
-                self.channel_id,
-            ) {
+            if !self.deployment_allowed(command.user.id.get()).await {
                 let response = CreateInteractionResponse::Message(
                     CreateInteractionResponseMessage::new()
-                        .content("Only the configured owner can update from this channel.")
+                        .content("You are not allowed to update deployments.")
                         .ephemeral(true),
                 );
                 let _ = command.create_response(&ctx.http, response).await;
@@ -358,14 +411,9 @@ impl EventHandler for DeploymentBot {
         if command.data.name != "rollback" {
             return;
         }
-        let allowed = rollback_allowed(
-            self.owner_id,
-            command.user.id.get(),
-            command.channel_id.get(),
-            self.channel_id,
-        );
+        let allowed = self.deployment_allowed(command.user.id.get()).await;
         let reply = if !allowed {
-            "Only the configured owner can roll back from the deployment channel.".to_string()
+            "You are not allowed to roll back deployments.".to_string()
         } else {
             let _deployment_guard = self.deployment_lock.lock().await;
             match self.rollback().await {

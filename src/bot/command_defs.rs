@@ -209,10 +209,122 @@ pub(crate) fn data_command_definition() -> CreateCommand {
         )
 }
 
-pub(crate) async fn register_slash_commands(ctx: &Context) {
-    // Register the /config global slash command.
+pub(crate) async fn register_slash_commands(ctx: &Context, guild_ids: &[GuildId]) {
+    let mut commands: Vec<CreateCommand> = Vec::new();
+    // The /config global slash command (bot configuration, configurers only).
     let config_cmd = CreateCommand::new("config")
-        .description("Configure bot settings")
+        .description("Configure the bot (authorized configurers only)")
+        // ── proactive subcommand (global proactive kill-switch) ──────────
+        .add_option(
+            CreateCommandOption::new(
+                CommandOptionType::SubCommand,
+                "proactive",
+                "Enable or disable proactive assistance for all users (configurers only)",
+            )
+            .add_sub_option(
+                CreateCommandOption::new(
+                    CommandOptionType::Boolean,
+                    "enabled",
+                    "Whether proactive assistance is available to anyone",
+                )
+                .required(true),
+            ),
+        )
+        // ── access subcommand group ──────────────────────────────────────
+        .add_option(
+            CreateCommandOption::new(
+                CommandOptionType::SubCommandGroup,
+                "access",
+                "Manage which users are allowed to configure the bot (owner is always allowed)",
+            )
+            .add_sub_option(
+                CreateCommandOption::new(
+                    CommandOptionType::SubCommand,
+                    "allow",
+                    "Allow a user to configure the bot",
+                )
+                .add_sub_option(
+                    CreateCommandOption::new(CommandOptionType::User, "user", "User to allow")
+                        .required(true),
+                ),
+            )
+            .add_sub_option(
+                CreateCommandOption::new(
+                    CommandOptionType::SubCommand,
+                    "revoke",
+                    "Revoke a user's permission to configure the bot",
+                )
+                .add_sub_option(
+                    CreateCommandOption::new(CommandOptionType::User, "user", "User to revoke")
+                        .required(true),
+                ),
+            )
+            .add_sub_option(CreateCommandOption::new(
+                CommandOptionType::SubCommand,
+                "list",
+                "List the users allowed to configure the bot",
+            )),
+        )
+        // ── user policy subcommand group ─────────────────────────────────
+        .add_option(
+            CreateCommandOption::new(
+                CommandOptionType::SubCommandGroup,
+                "user",
+                "Per-user bot policies (configurers only)",
+            )
+            .add_sub_option(
+                CreateCommandOption::new(
+                    CommandOptionType::SubCommand,
+                    "limit",
+                    "Cap a user's maximum output tokens (omit max_tokens to remove the cap)",
+                )
+                .add_sub_option(
+                    CreateCommandOption::new(CommandOptionType::User, "user", "User to limit")
+                        .required(true),
+                )
+                .add_sub_option(CreateCommandOption::new(
+                    CommandOptionType::Integer,
+                    "max_tokens",
+                    "Maximum output tokens per response (omit to remove the cap)",
+                )),
+            )
+            .add_sub_option(
+                CreateCommandOption::new(
+                    CommandOptionType::SubCommand,
+                    "respond",
+                    "Control whether the bot responds to a user at all",
+                )
+                .add_sub_option(
+                    CreateCommandOption::new(CommandOptionType::User, "user", "Target user")
+                        .required(true),
+                )
+                .add_sub_option(
+                    CreateCommandOption::new(
+                        CommandOptionType::Boolean,
+                        "enabled",
+                        "Whether the bot responds to this user",
+                    )
+                    .required(true),
+                ),
+            )
+            .add_sub_option(
+                CreateCommandOption::new(
+                    CommandOptionType::SubCommand,
+                    "show",
+                    "Show a user's current bot policy",
+                )
+                .add_sub_option(
+                    CreateCommandOption::new(CommandOptionType::User, "user", "Target user")
+                        .required(true),
+                ),
+            ),
+        );
+
+    commands.push(config_cmd);
+    // The /server-config global slash command (server administrators and bot
+    // configurers).
+    let server_config_cmd = CreateCommand::new("server-config")
+        .description("Configure server-scoped bot settings (server administrators and configurers)")
         // ── channel subcommand group ─────────────────────────────────────
         .add_option(
             CreateCommandOption::new(
@@ -266,7 +378,7 @@ pub(crate) async fn register_slash_commands(ctx: &Context) {
             CreateCommandOption::new(
                 CommandOptionType::SubCommandGroup,
                 "leaderboard",
-                "Configure token leaderboard access (administrators only)",
+                "Configure token leaderboard access",
             )
             .add_sub_option(
                 CreateCommandOption::new(
@@ -314,7 +426,41 @@ pub(crate) async fn register_slash_commands(ctx: &Context) {
                 "List roles allowed to use the leaderboard",
             )),
         )
-        // ── personality subcommand ───────────────────────────────────────
+        // ── bot_pings subcommand ─────────────────────────────────────────
+        .add_option(
+            CreateCommandOption::new(
+                CommandOptionType::SubCommand,
+                "bot_pings",
+                "Control whether the bot responds to @-mentions from other bots",
+            )
+            .add_sub_option(
+                CreateCommandOption::new(
+                    CommandOptionType::Boolean,
+                    "enabled",
+                    "Enable or disable responses to other bots",
+                )
+                .required(true),
+            ),
+        )
+        // ── proactive subcommand ─────────────────────────────────────────
+        .add_option(
+            CreateCommandOption::new(
+                CommandOptionType::SubCommand,
+                "proactive",
+                "Control whether proactive assistance is allowed in this server",
+            )
+            .add_sub_option(
+                CreateCommandOption::new(
+                    CommandOptionType::Boolean,
+                    "enabled",
+                    "Whether users may enable proactive assistance here",
+                )
+                .required(true),
+            ),
+        );
+    commands.push(server_config_cmd);
+    let personalize_cmd = CreateCommand::new("personalize")
+        .description("Personal bot settings any user can change")
         .add_option(
             CreateCommandOption::new(
                 CommandOptionType::SubCommand,
@@ -327,7 +473,6 @@ pub(crate) async fn register_slash_commands(ctx: &Context) {
                 "Personality description (omit to clear your override)",
             )),
         )
-        // ── followup subcommand ──────────────────────────────────────────
         .add_option(
             CreateCommandOption::new(
                 CommandOptionType::SubCommand,
@@ -348,26 +493,22 @@ pub(crate) async fn register_slash_commands(ctx: &Context) {
                 "Seconds to keep the conversation open without a ping (default 300)",
             )),
         )
-        // ── bot_pings subcommand ───────────────────────────────────────────
         .add_option(
             CreateCommandOption::new(
                 CommandOptionType::SubCommand,
-                "bot_pings",
-                "Control whether the bot responds to @-mentions from other bots",
+                "proactive",
+                "Control whether the bot may respond to your messages unprompted",
             )
             .add_sub_option(
                 CreateCommandOption::new(
                     CommandOptionType::Boolean,
                     "enabled",
-                    "Enable or disable responses to other bots",
+                    "Enable or disable proactive assistance",
                 )
                 .required(true),
             ),
         );
-
-    if let Err(e) = Command::create_global_command(&ctx.http, config_cmd).await {
-        tracing::error!("Failed to register /config slash command: {e}");
-    }
+    commands.push(personalize_cmd);
     let labs_cmd = CreateCommand::new("labs")
         .description("Enable experimental bot features")
         .add_option(CreateCommandOption::new(
@@ -390,9 +531,7 @@ pub(crate) async fn register_slash_commands(ctx: &Context) {
                 .required(true),
             ),
         );
-    if let Err(e) = Command::create_global_command(&ctx.http, labs_cmd).await {
-        tracing::error!(target: "housebot::labs::registration", "Failed to register /labs slash command: {e}");
-    }
+    commands.push(labs_cmd);
     let mut effort_level_option = CreateCommandOption::new(
         CommandOptionType::String,
         "level",
@@ -405,9 +544,7 @@ pub(crate) async fn register_slash_commands(ctx: &Context) {
     let effort_cmd = CreateCommand::new("effort")
         .description("Set how much thinking the model does before replying")
         .add_option(effort_level_option);
-    if let Err(e) = Command::create_global_command(&ctx.http, effort_cmd).await {
-        tracing::error!("Failed to register /effort slash command: {e}");
-    }
+    commands.push(effort_cmd);
     let tool_ban_cmd = CreateCommand::new("tool_ban")
         .description("Propose and vote on user-specific tool restrictions")
         .add_option(
@@ -458,9 +595,7 @@ pub(crate) async fn register_slash_commands(ctx: &Context) {
             "status",
             "Show active bans and open proposals",
         ));
-    if let Err(error) = Command::create_global_command(&ctx.http, tool_ban_cmd).await {
-        tracing::error!(%error, "Failed to register /tool_ban slash command");
-    }
+    commands.push(tool_ban_cmd);
     let tool_restore_cmd = CreateCommand::new("tool_restore")
         .description("Propose and vote on restoring tool access for a restricted user")
         .add_option(
@@ -511,9 +646,7 @@ pub(crate) async fn register_slash_commands(ctx: &Context) {
             "status",
             "Show active bans and open restore proposals",
         ));
-    if let Err(error) = Command::create_global_command(&ctx.http, tool_restore_cmd).await {
-        tracing::error!(%error, "Failed to register /tool_restore slash command");
-    }
+    commands.push(tool_restore_cmd);
     let lua_cmd = CreateCommand::new("lua")
             .description(
                 "Run a sandboxed Lua script; use graph.node/edge to render a diagram (requires the Scripting role)",
@@ -526,9 +659,7 @@ pub(crate) async fn register_slash_commands(ctx: &Context) {
                 )
                 .required(true),
             );
-    if let Err(e) = Command::create_global_command(&ctx.http, lua_cmd.clone()).await {
-        tracing::error!("Failed to register /lua slash command: {e}");
-    }
+    commands.push(lua_cmd.clone());
     let guild_id = match std::env::var("DEPLOYMENT_GUILD_ID") {
         Ok(value) => match value.parse::<u64>() {
             Ok(id) if id != 0 => Some(id),
@@ -546,7 +677,9 @@ pub(crate) async fn register_slash_commands(ctx: &Context) {
         },
         Err(_) => None,
     };
-    if let Some(guild_id) = guild_id {
+    // Only needed when the bot is not a member of the deployment guild;
+    // member guilds get the full command set (including /lua) below.
+    if let Some(guild_id) = guild_id.filter(|id| !guild_ids.contains(&GuildId::new(*id))) {
         if let Err(e) = GuildId::new(guild_id)
             .create_command(&ctx.http, lua_cmd)
             .await
@@ -560,7 +693,7 @@ pub(crate) async fn register_slash_commands(ctx: &Context) {
         }
     }
 
-    for command in [
+    commands.extend([
         CreateCommand::new("help").description("Show all available commands"),
         CreateCommand::new("commit").description("Show the bot's running commit hash"),
         CreateCommand::new("model").description("Show information about the current model"),
@@ -613,26 +746,31 @@ pub(crate) async fn register_slash_commands(ctx: &Context) {
                     )
                     .required(true),
                 ),
-            )
-            .add_option(
-                CreateCommandOption::new(
-                    CommandOptionType::SubCommand,
-                    "proactive",
-                    "Toggle proactive assistance",
-                )
-                .add_sub_option(
-                    CreateCommandOption::new(
-                        CommandOptionType::Boolean,
-                        "enabled",
-                        "Enable or disable proactive assistance",
-                    )
-                    .required(true),
-                ),
             ),
         storage_command_definition(),
-    ] {
+    ]);
+
+    for command in commands.clone() {
         if let Err(e) = Command::create_global_command(&ctx.http, command).await {
             tracing::error!("Failed to register slash command: {e}");
+        }
+    }
+
+    // Re-apply the full command set in every guild the bot is in, so command
+    // changes take effect immediately and stale guild commands are replaced
+    // (global registration alone can take up to an hour to propagate).
+    for guild_id in guild_ids {
+        match guild_id.set_commands(&ctx.http, commands.clone()).await {
+            Ok(registered) => tracing::info!(
+                guild_id = guild_id.get(),
+                commands = registered.len(),
+                "Reinitialized guild slash commands"
+            ),
+            Err(error) => tracing::error!(
+                guild_id = guild_id.get(),
+                %error,
+                "Failed to reinitialize guild slash commands"
+            ),
         }
     }
 

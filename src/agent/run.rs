@@ -24,6 +24,7 @@ impl Agent {
             guild_id,
             proactive,
             record_profile_usage,
+            max_output_tokens,
         } = request;
         let run_started = std::time::Instant::now();
         tracing::info!(
@@ -91,7 +92,14 @@ impl Agent {
         messages.push(new_user_message.clone());
 
         let is_owner = user_id.parse::<u64>().unwrap_or(0) == config::owner_id();
-        let tools = self.build_tools(deep_memory_enabled, is_owner).await;
+        let is_configurer = self
+            .access_control
+            .load()
+            .await
+            .is_configurer(user_id.parse::<u64>().unwrap_or(0), config::owner_id());
+        let tools = self
+            .build_tools(deep_memory_enabled, is_owner, is_configurer)
+            .await;
         let sandbox = LazySandbox::new(self.sandbox_client.clone());
         let mut turn_messages: Vec<Value> = Vec::new();
         let mut tools_called = Vec::new();
@@ -110,7 +118,7 @@ impl Agent {
                 break "I had to stop because this request required too many tool calls in a row. Please try a more specific request.".to_string();
             }
             let text_sink = TextStreamAdapter(hooks);
-            let completion = match self
+            let completion_result = self
                 .client
                 .chat_stream(
                     &self.model,
@@ -118,10 +126,12 @@ impl Agent {
                     &tools,
                     None,
                     thinking,
+                    max_output_tokens,
                     Some(&text_sink),
                 )
-                .await
-            {
+                .await;
+            hooks.on_text_stream_end().await;
+            let completion = match completion_result {
                 Ok(c) => c,
                 Err(e) => {
                     tracing::error!("LLM error: {e}");
@@ -269,6 +279,7 @@ impl Agent {
         &self,
         deep_memory_enabled: bool,
         sandbox_allowed: bool,
+        configurer: bool,
     ) -> Vec<Value> {
         let mut tools = Vec::new();
         for server in self.mcp_servers.iter() {
@@ -307,6 +318,11 @@ impl Agent {
         // Include sandbox tools only for the owner.
         if sandbox_allowed {
             defs.extend(tools::sandbox::all_definitions());
+        }
+        // Configuration control is only offered to authorized configurers
+        // (re-checked at dispatch as a defence-in-depth measure).
+        if configurer {
+            defs.push(configure_bot_tool());
         }
         // Conditionally include memory tools based on user's privacy setting.
         if deep_memory_enabled {
@@ -443,6 +459,7 @@ impl Agent {
                                 &tools,
                                 None,
                                 ThinkingMode::default(),
+                                None,
                                 None,
                             )
                             .await

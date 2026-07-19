@@ -518,11 +518,14 @@ name = "deployment-bot"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "housebot-config",
+ "housebot-database",
  "reqwest",
  "serde",
  "serde_json",
  "serenity",
  "tokio",
+ "tokio-postgres",
  "tracing",
  "tracing-subscriber",
 ]
@@ -949,6 +952,8 @@ dependencies = [
  "serde_json",
  "tempfile",
  "tokio",
+ "tokio-postgres",
+ "tracing",
 ]
 
 [[package]]

@@ -81,12 +81,25 @@ impl HouseBot {
             }
         };
 
+        if agent_dispatch_disabled(agent) {
+            self.pending_jobs.mark_dispatch_failed(job_id);
+            let _ = component
+                .edit_response(
+                    &ctx.http,
+                    EditInteractionResponse::new().content(format!("❌ {AGENT_DISABLED_MESSAGE}")),
+                )
+                .await;
+            return;
+        }
+
         // Get the reporter from the agent.
         let reporter = self.agent.reporter();
         let mut inputs = serde_json::Map::new();
+        // The workflow_dispatch API rejects non-string input values with 422,
+        // even for inputs declared `type: number` in the workflow.
         inputs.insert(
             "issue_number".into(),
-            serde_json::Value::Number(serde_json::Number::from(spec.issue_number)),
+            serde_json::Value::String(spec.issue_number.to_string()),
         );
         inputs.insert(
             "prompt".into(),
@@ -206,11 +219,24 @@ impl HouseBot {
             }
         };
 
+        if agent_dispatch_disabled(agent) {
+            self.pending_jobs.mark_dispatch_failed(job_id);
+            let _ = component
+                .edit_response(
+                    &ctx.http,
+                    EditInteractionResponse::new().content(format!("❌ {AGENT_DISABLED_MESSAGE}")),
+                )
+                .await;
+            return;
+        }
+
         let reporter = self.agent.reporter();
         let mut inputs = serde_json::Map::new();
+        // The workflow_dispatch API rejects non-string input values with 422,
+        // even for inputs declared `type: number` in the workflow.
         inputs.insert(
             "issue_number".into(),
-            serde_json::Value::Number(serde_json::Number::from(spec.issue_number)),
+            serde_json::Value::String(spec.issue_number.to_string()),
         );
         inputs.insert(
             "prompt".into(),

@@ -253,7 +253,7 @@ impl QueuedChatClient {
         self.queue
             .execute(priority, move || async move {
                 inner
-                    .chat_stream(&model, &messages, &tools, tool_choice, thinking, None)
+                    .chat_stream(&model, &messages, &tools, tool_choice, thinking, None, None)
                     .await
             })
             .await
@@ -273,6 +273,7 @@ impl ChatClient for QueuedChatClient {
         tools: &[Value],
         tool_choice: Option<Value>,
         thinking: ThinkingMode,
+        max_completion_tokens: Option<u32>,
         sink: Option<&dyn TextSink>,
     ) -> anyhow::Result<ChatCompletion> {
         let inner = Arc::clone(&self.inner);
@@ -282,7 +283,15 @@ impl ChatClient for QueuedChatClient {
         self.queue
             .execute(LlmPriority::Normal, move || async move {
                 inner
-                    .chat_stream(&model, &messages, &tools, tool_choice, thinking, sink)
+                    .chat_stream(
+                        &model,
+                        &messages,
+                        &tools,
+                        tool_choice,
+                        thinking,
+                        max_completion_tokens,
+                        sink,
+                    )
                     .await
             })
             .await

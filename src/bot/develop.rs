@@ -83,11 +83,19 @@ impl HouseBot {
             }
         };
 
+        if agent_dispatch_disabled(agent) {
+            self.pending_jobs.mark_dispatch_failed(job_id);
+            let _ = reply_no_ping(ctx, msg, &format!("❌ {AGENT_DISABLED_MESSAGE}")).await;
+            return;
+        }
+
         let reporter = self.agent.reporter();
         let mut inputs = serde_json::Map::new();
+        // The workflow_dispatch API rejects non-string input values with 422,
+        // even for inputs declared `type: number` in the workflow.
         inputs.insert(
             "issue_number".into(),
-            serde_json::Value::Number(serde_json::Number::from(spec.issue_number)),
+            serde_json::Value::String(spec.issue_number.to_string()),
         );
         inputs.insert(
             "prompt".into(),
@@ -318,10 +326,24 @@ pub(crate) fn develop_approval_components(job_id: &str) -> Vec<CreateActionRow> 
     ])]
 }
 
+pub(crate) const AGENT_DISABLED_MESSAGE: &str =
+    "Codex dispatch is temporarily disabled. Please choose another agent.";
+
+/// Temporary Codex disable, checked on every dispatch path — not just the
+/// interactive picker — so configured defaults and stored selections cannot
+/// bypass it.
+pub(crate) fn agent_dispatch_disabled(agent: CodingAgent) -> bool {
+    agent == CodingAgent::Codex
+}
+
 pub(crate) fn develop_agent_components(job_id: &str) -> Vec<CreateActionRow> {
+    // Discord cannot grey out a single select option, so the disabled state is
+    // conveyed via the label/description and enforced in `develop_on_agent`.
     let options = vec![
         CreateSelectMenuOption::new("Claude Code", "claude"),
         CreateSelectMenuOption::new("OpenCode (NVIDIA)", "opencode"),
+        CreateSelectMenuOption::new("🚫 Codex (disabled)", "codex")
+            .description("Temporarily disabled — cannot be selected"),
     ];
     vec![
         CreateActionRow::SelectMenu(

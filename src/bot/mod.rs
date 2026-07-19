@@ -24,7 +24,9 @@ use uuid::Uuid;
 use crate::agent::{
     Agent, AgentControlAction, AgentHooks, AgentRequest, AgentResult, MediaData, NoHooks,
 };
-use crate::bot_config::{LeaderboardVisibility, ServerConfig, ServerConfigStore, UserConfigStore};
+use crate::bot_config::{
+    AccessControlStore, LeaderboardVisibility, ServerConfig, ServerConfigStore, UserConfigStore,
+};
 pub use crate::bot_response::SecretRedactor;
 use crate::channel_log::ChannelLog;
 use crate::coding_agent::catalog::{AgentCatalog, CodingAgent};
@@ -169,6 +171,8 @@ pub struct HouseBot {
     message_log: MessageLog,
     server_cfg: ServerConfigStore,
     user_cfg: UserConfigStore,
+    /// Shared with `Agent` — configurer allowlist and per-user policies.
+    access: AccessControlStore,
     conversations: Mutex<ConversationTracker>,
     processing: Mutex<HashSet<u64>>,
     responded: Mutex<VecDeque<u64>>,
@@ -192,13 +196,24 @@ pub struct HouseBot {
 
 impl HouseBot {
     /// Build the bot from environment configuration.
-    pub fn new(agent: Arc<Agent>, discord: Arc<DiscordBridge>) -> Self {
+    pub async fn new(agent: Arc<Agent>, discord: Arc<DiscordBridge>) -> Self {
         let idle = Duration::from_secs(config::env_parse("CONVERSATION_IDLE_TIMEOUT", 300));
         let chat_rate_max: usize = config::env_parse("CHAT_RATE_LIMIT_MAX", 20);
         let chat_rate_window =
             Duration::from_secs(config::env_parse("CHAT_RATE_LIMIT_WINDOW_SECS", 60u64));
         let pending_jobs = agent.pending_jobs();
         let memory = agent.memory();
+        let access = agent.access_control();
+        let (server_cfg, user_cfg) = match crate::bot_config::postgres_client_from_env().await {
+            Ok(client) => (
+                ServerConfigStore::postgres(Arc::clone(&client)).await,
+                UserConfigStore::postgres(client).await,
+            ),
+            Err(error) => {
+                tracing::warn!(%error, "PostgreSQL bot config unavailable, falling back to file-based server/user config");
+                (ServerConfigStore::default(), UserConfigStore::default())
+            }
+        };
         Self {
             agent,
             redactor: Arc::new(SecretRedactor::from_env()),
@@ -208,8 +223,9 @@ impl HouseBot {
             history: History::default(),
             profile_store: ProfileStore::default(),
             message_log: MessageLog::default(),
-            server_cfg: ServerConfigStore::default(),
-            user_cfg: UserConfigStore::default(),
+            server_cfg,
+            user_cfg,
+            access,
             conversations: Mutex::new(ConversationTracker::new(idle)),
             processing: Mutex::new(HashSet::new()),
             responded: Mutex::new(VecDeque::with_capacity(200)),
@@ -263,6 +279,13 @@ impl HouseBot {
         format!("New conversation started, {name}. Your previous conversation history has been cleared.")
     }
 
+    pub(crate) async fn server_proactive_allowed(&self, guild_id: Option<u64>) -> bool {
+        match guild_id {
+            Some(gid) => self.server_cfg.load(gid).await.proactive_allowed,
+            None => false,
+        }
+    }
+
     pub(crate) async fn proactive_cooldown_allows(&self, channel_id: u64, user_id: u64) -> bool {
         let now = Instant::now();
         let cooldown = Duration::from_secs(config::env_parse(
@@ -291,7 +314,7 @@ pub async fn run() -> anyhow::Result<()> {
         .map_err(|_| anyhow::anyhow!("DISCORD_BOT_TOKEN is not set"))?;
     let discord = Arc::new(DiscordBridge::default());
     let agent = Arc::new(Agent::from_env(discord.clone()).await?);
-    let bot = HouseBot::new(agent, discord);
+    let bot = HouseBot::new(agent, discord).await;
 
     let intents = GatewayIntents::non_privileged() | GatewayIntents::MESSAGE_CONTENT;
     let mut client = Client::builder(&token, intents).event_handler(bot).await?;

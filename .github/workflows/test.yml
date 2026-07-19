@@ -48,8 +48,13 @@ jobs:
         include:
           - name: main
             context: .
+            dockerfile: Dockerfile
           - name: sandbox
             context: ./crates/sandbox/docker
+            dockerfile: crates/sandbox/docker/Dockerfile
+          - name: deployment-bot
+            context: .
+            dockerfile: Dockerfile.deployment-bot
           - name: sandboxd
             context: .
             dockerfile: Dockerfile.sandboxd
@@ -102,7 +107,7 @@ jobs:
         with:
           builder: ${{ steps.buildx.outputs.name }}
           context: ${{ matrix.context }}
-          file: ${{ matrix.dockerfile || format('{0}/Dockerfile', matrix.context) }}
+          file: ${{ matrix.dockerfile }}
           push: false
           cache-from: type=gha,scope=pr-${{ matrix.name }}
           cache-to: type=gha,mode=max,scope=pr-${{ matrix.name }}

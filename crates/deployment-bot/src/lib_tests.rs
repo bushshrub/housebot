@@ -3,11 +3,23 @@
 use super::*;
 
 #[test]
-fn rollback_is_owner_and_channel_scoped() {
-    assert!(rollback_allowed(10, 10, 20, 20));
-    assert!(!rollback_allowed(10, 11, 20, 20));
-    assert!(!rollback_allowed(10, 10, 21, 20));
-    assert!(!rollback_allowed(0, 0, 20, 20));
+fn deployment_access_command_exposes_allow_revoke_and_list() {
+    let commands = serde_json::to_value(deployment_commands()).unwrap();
+    let access = commands
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|command| command["name"] == "deployment-access")
+        .expect("deployment access command must be registered");
+    assert_eq!(
+        access["options"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|option| option["name"].as_str().unwrap())
+            .collect::<Vec<_>>(),
+        vec!["allow", "revoke", "list"]
+    );
 }
 
 #[test]
@@ -135,6 +147,22 @@ fn deployment_passes_database_url_to_migration_and_bot_containers() {
     };
     assert!(has_database_url(migration_args));
     assert!(has_database_url(bot_args));
+}
+
+#[test]
+fn deployment_runs_migrations_through_the_housebot_binary() {
+    let commands = deploy_commands(Some("abcdef123456"), "network").unwrap();
+    let migration_args = &commands
+        .iter()
+        .find(|command| command.stage == DeploymentStage::RunDatabaseMigrations)
+        .unwrap()
+        .args;
+
+    assert!(migration_args.ends_with(&[
+        "ghcr.io/bushshrub/housebot:sha-abcdef123456".into(),
+        "housebot".into(),
+        "migrate".into(),
+    ]));
 }
 
 #[test]

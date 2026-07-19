@@ -8,7 +8,8 @@ impl EventHandler for HouseBot {
         tracing::info!("Logged in as {} (ID: {})", ready.user.name, ready.user.id);
         self.discord.set_http(ctx.http.clone()).await;
 
-        register_slash_commands(&ctx).await;
+        let guild_ids: Vec<GuildId> = ready.guilds.iter().map(|guild| guild.id).collect();
+        register_slash_commands(&ctx, &guild_ids).await;
 
         if self.reminder_started.swap(true, Ordering::SeqCst) {
             return;
@@ -104,22 +105,29 @@ impl EventHandler for HouseBot {
             return;
         }
         let reply = match cmd.data.name.as_str() {
-            "config" => {
-                let is_admin = (config::owner_id() != 0 && config::owner_id() == user_id)
-                    || cmd
-                        .member
-                        .as_deref()
-                        .and_then(|member| member.permissions)
-                        .is_some_and(|permissions| permissions.administrator());
-                handle_config_interaction(
+            "config" => handle_config_interaction(&self.access, &cmd.data.options, user_id).await,
+            "server-config" => {
+                let is_server_admin = cmd
+                    .member
+                    .as_deref()
+                    .and_then(|member| member.permissions)
+                    .is_some_and(|permissions| permissions.administrator());
+                let authorized = is_server_admin
+                    || self
+                        .access
+                        .load()
+                        .await
+                        .is_configurer(user_id, config::owner_id());
+                handle_server_config_interaction(
                     &self.server_cfg,
-                    &self.user_cfg,
                     &cmd.data.options,
-                    user_id,
                     guild_id,
-                    is_admin,
+                    authorized,
                 )
                 .await
+            }
+            "personalize" => {
+                handle_personalize_interaction(&self.user_cfg, &cmd.data.options, user_id).await
             }
             "labs" => handle_labs_interaction(&self.user_cfg, &cmd.data.options, user_id).await,
             "effort" => handle_effort_interaction(&self.user_cfg, &cmd.data.options, user_id).await,
@@ -359,6 +367,13 @@ impl EventHandler for HouseBot {
         let channel_id = msg.channel_id.get();
         let user_id = msg.author.id.get();
 
+        // Configurers (and the owner) always get through; other users can be
+        // silenced entirely by a configurer-set policy.
+        let access = self.access.load().await;
+        if !access.should_respond(user_id, config::owner_id()) {
+            return;
+        }
+
         // ── commands ──
         if msg.content.starts_with("!skill") {
             tracing::info!(target: "housebot::commands", user_id, "!skill command received");
@@ -446,11 +461,13 @@ impl EventHandler for HouseBot {
         };
 
         let proactive = !is_dm
+            && access.proactive_enabled
             && user_config.proactive_assistance_enabled
             && !is_mentioned
             && !is_reply_to_bot
             && !is_reply_to_attachment
             && is_proactive_candidate(&content)
+            && self.server_proactive_allowed(guild_id).await
             && self.proactive_cooldown_allows(channel_id, user_id).await;
         if !(is_dm
             || is_mentioned
