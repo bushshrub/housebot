@@ -205,16 +205,21 @@ fn find_authors_sync(
             },
         );
     }
+    let query_words: Vec<&str> = query.split_whitespace().filter(|w| !w.is_empty()).collect();
     let mut matches: Vec<KnownAuthor> = authors
         .into_values()
         .filter(|author| {
-            query.is_empty()
-                || author.user_id.contains(query)
-                || author.username.to_lowercase().contains(query)
-                || author
-                    .nick
-                    .as_deref()
-                    .is_some_and(|nick| nick.to_lowercase().contains(query))
+            if query_words.is_empty() {
+                return true;
+            }
+            query_words.iter().any(|word| {
+                author.user_id.contains(*word)
+                    || author.username.to_lowercase().contains(word)
+                    || author
+                        .nick
+                        .as_deref()
+                        .is_some_and(|nick| nick.to_lowercase().contains(word))
+            })
         })
         .collect();
     matches.sort_by(|left, right| {
@@ -342,6 +347,22 @@ mod tests {
             "alice_dev"
         );
         assert!(log.find_authors(1, "outside", 10).await.unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn find_authors_fuzzy_matches_any_word() {
+        let (_t, log) = store();
+        log.append(1, 10, "rice_grower", Some("Rice Man"), "hello")
+            .await;
+        log.append(1, 11, "wheat_farmer", Some("Wheat Hands"), "hi")
+            .await;
+        log.append(1, 12, "corn_king", Some("Corn"), "hey").await;
+
+        // "rice farmer" should match both users 10 (username has "rice") and 11 (nick has "farmer")
+        let results = log.find_authors(1, "rice farmer", 10).await.unwrap();
+        assert_eq!(results.len(), 2);
+        assert!(results.iter().any(|a| a.user_id == "10"));
+        assert!(results.iter().any(|a| a.user_id == "11"));
     }
 
     #[tokio::test]
