@@ -64,6 +64,29 @@ async fn run_marks_text_stream_end_after_generation() {
 }
 
 #[tokio::test]
+async fn run_emits_text_stream_event_for_tool_only_completions() {
+    let client = Arc::new(MockChatClient::new());
+    // Tool-call-only completion (no text delta) — the model responds with
+    // only a tool request, no streaming text. The proactive text event at
+    // the start of the loop must still fire so the typing indicator appears.
+    client.push_tool_call("c1", "get_lua_docs", "{}");
+    client.push_text("Here are the docs.");
+    let (_t, agent) = test_agent(client);
+    let hooks = StreamLifecycleHooks::default();
+
+    agent
+        .run(AgentRequest::text("u_tool", "Alice", "list tools"), &hooks)
+        .await;
+
+    let events = hooks.events.lock().unwrap().clone();
+    // Round 1 (tool call, content=None → sink not called):
+    //   proactive "text", then "end"
+    // Round 2 (text completion → sink pushes "text"):
+    //   proactive "text", sink "text", then "end"
+    assert_eq!(events, ["text", "end", "text", "text", "end"]);
+}
+
+#[tokio::test]
 async fn lua_analysis_allows_safe_tool_call() {
     let client = Arc::new(MockChatClient::new());
     client.push_tool_call(
