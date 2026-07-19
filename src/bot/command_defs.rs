@@ -230,7 +230,24 @@ pub(crate) fn effort_command_definition() -> CreateCommand {
 }
 
 pub(crate) async fn register_slash_commands(ctx: &Context, guild_ids: &[GuildId]) {
-    let mut commands: Vec<CreateCommand> = Vec::new();
+    // Stable commands are global-only: a global command is visible in every
+    // guild *and* in DMs, which most of the bot's commands rely on (e.g.
+    // /config and /effort are meant to work from a DM with the bot). Global
+    // registration can take up to an hour to propagate, which is fine for
+    // commands that aren't changing.
+    //
+    // guild_only_commands are commands that only make sense inside a guild
+    // (they already refuse to run from a DM) — registering them per guild
+    // instead of globally means they never need to appear in DMs at all.
+    //
+    // /labs is the one deliberate exception: any new command in active
+    // development ships as a /labs subcommand first (see AGENTS.md), so it is
+    // registered in *both* scopes — per guild for instant availability while
+    // iterating, and globally (slower to propagate) so it still eventually
+    // reaches DMs. This means /labs itself always appears twice in a guild's
+    // command picker; every other command stays in exactly one scope.
+    let mut global_commands: Vec<CreateCommand> = Vec::new();
+    let mut guild_only_commands: Vec<CreateCommand> = Vec::new();
     // The /config global slash command (bot configuration, configurers only).
     let config_cmd = CreateCommand::new("config")
         .description("Configure the bot (authorized configurers only)")
@@ -340,9 +357,9 @@ pub(crate) async fn register_slash_commands(ctx: &Context, guild_ids: &[GuildId]
             ),
         );
 
-    commands.push(config_cmd);
-    // The /server-config global slash command (server administrators and bot
-    // configurers).
+    global_commands.push(config_cmd);
+    // The /server-config slash command (server administrators and bot
+    // configurers). Guild-only: it refuses to run from a DM anyway.
     let server_config_cmd = CreateCommand::new("server-config")
         .description("Configure server-scoped bot settings (server administrators and configurers)")
         // ── channel subcommand group ─────────────────────────────────────
@@ -478,7 +495,7 @@ pub(crate) async fn register_slash_commands(ctx: &Context, guild_ids: &[GuildId]
                 .required(true),
             ),
         );
-    commands.push(server_config_cmd);
+    guild_only_commands.push(server_config_cmd);
     let personalize_cmd = CreateCommand::new("personalize")
         .description("Personal bot settings any user can change")
         .add_option(
@@ -548,7 +565,10 @@ pub(crate) async fn register_slash_commands(ctx: &Context, guild_ids: &[GuildId]
                 "User to configure (server administrators and bot configurers only)",
             )),
         );
-    commands.push(personalize_cmd);
+    global_commands.push(personalize_cmd);
+    // /labs: every new experimental feature lands here first (see AGENTS.md),
+    // then gets promoted into its own command once stable. Registered in both
+    // scopes below — see the comment at the top of this function.
     let labs_cmd = CreateCommand::new("labs")
         .description("Enable experimental bot features")
         .add_option(CreateCommandOption::new(
@@ -571,8 +591,7 @@ pub(crate) async fn register_slash_commands(ctx: &Context, guild_ids: &[GuildId]
                 .required(true),
             ),
         );
-    commands.push(labs_cmd);
-    commands.push(effort_command_definition());
+    global_commands.push(effort_command_definition());
     let tool_ban_cmd = CreateCommand::new("tool_ban")
         .description("Propose and vote on user-specific tool restrictions")
         .add_option(
@@ -623,7 +642,7 @@ pub(crate) async fn register_slash_commands(ctx: &Context, guild_ids: &[GuildId]
             "status",
             "Show active bans and open proposals",
         ));
-    commands.push(tool_ban_cmd);
+    guild_only_commands.push(tool_ban_cmd);
     let tool_restore_cmd = CreateCommand::new("tool_restore")
         .description("Propose and vote on restoring tool access for a restricted user")
         .add_option(
@@ -674,7 +693,7 @@ pub(crate) async fn register_slash_commands(ctx: &Context, guild_ids: &[GuildId]
             "status",
             "Show active bans and open restore proposals",
         ));
-    commands.push(tool_restore_cmd);
+    guild_only_commands.push(tool_restore_cmd);
     let lua_cmd = CreateCommand::new("lua")
             .description(
                 "Run a sandboxed Lua script; use graph.node/edge to render a diagram (requires the Scripting role)",
@@ -687,7 +706,7 @@ pub(crate) async fn register_slash_commands(ctx: &Context, guild_ids: &[GuildId]
                 )
                 .required(true),
             );
-    commands.push(lua_cmd.clone());
+    global_commands.push(lua_cmd.clone());
     let guild_id = match std::env::var("DEPLOYMENT_GUILD_ID") {
         Ok(value) => match value.parse::<u64>() {
             Ok(id) if id != 0 => Some(id),
@@ -721,7 +740,7 @@ pub(crate) async fn register_slash_commands(ctx: &Context, guild_ids: &[GuildId]
         }
     }
 
-    commands.extend([
+    global_commands.extend([
         CreateCommand::new("help").description("Show all available commands"),
         CreateCommand::new("commit").description("Show the bot's running commit hash"),
         CreateCommand::new("model").description("Show information about the current model"),
@@ -778,17 +797,27 @@ pub(crate) async fn register_slash_commands(ctx: &Context, guild_ids: &[GuildId]
         storage_command_definition(),
     ]);
 
-    for command in commands.clone() {
+    // Global scope: stable commands plus /labs (slower to reach DMs, but it
+    // gets there eventually). A plain per-command upsert, not a bulk
+    // overwrite, so a transient failure here can't wipe out commands that
+    // registered fine; the retired-command sweep below cleans up stale names.
+    for command in global_commands.iter().cloned().chain([labs_cmd.clone()]) {
         if let Err(e) = Command::create_global_command(&ctx.http, command).await {
             tracing::error!("Failed to register slash command: {e}");
         }
     }
 
-    // Re-apply the full command set in every guild the bot is in, so command
-    // changes take effect immediately and stale guild commands are replaced
-    // (global registration alone can take up to an hour to propagate).
+    // Guild scope: only commands that don't belong globally (guild_only_commands
+    // already refuse to run from a DM) plus /labs, so /labs updates instantly
+    // while a new feature is under active iteration. Bulk overwrite so stale
+    // guild commands from a previous run are atomically replaced.
+    let mut per_guild_commands = guild_only_commands;
+    per_guild_commands.push(labs_cmd);
     for guild_id in guild_ids {
-        match guild_id.set_commands(&ctx.http, commands.clone()).await {
+        match guild_id
+            .set_commands(&ctx.http, per_guild_commands.clone())
+            .await
+        {
             Ok(registered) => tracing::info!(
                 guild_id = guild_id.get(),
                 commands = registered.len(),

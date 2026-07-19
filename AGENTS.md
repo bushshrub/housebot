@@ -309,6 +309,30 @@ specification, runner requirements, and security model.
 3. Add a match arm in `Agent::dispatch_tool`.
 4. Mention the tool in `build_system_prompt`.
 
+## Adding a new Discord slash command
+
+Command registration lives in `src/bot/command_defs.rs::register_slash_commands`. Commands
+are split into two Discord scopes and must not exist in both, except `/labs`:
+
+- **Global commands** (`global_commands`) are visible in every guild *and* in DMs, but a
+  registration change can take up to an hour to propagate.
+- **Guild-only commands** (`guild_only_commands`) are re-registered per guild on every ready
+  event, so changes are instant — but they never appear in DMs. Only put a command here if it
+  is inherently guild-scoped (it would have to refuse to run from a DM anyway, like
+  `/server-config`, `/tool_ban`, `/tool_restore`).
+- **`/labs`** is registered in *both* scopes on purpose: guild-scoped for instant iteration,
+  global so it eventually reaches DMs too. It is the only command allowed to exist in both
+  scopes — registering any other command in both places makes it show up twice in the guild
+  command picker (see the duplicate-command incident this split fixed).
+
+**New commands ship under `/labs` first.** If a user asks to add a new Discord slash command,
+add it as a new `/labs` subcommand (not a new top-level `CreateCommand`) so it's live in every
+guild immediately without waiting on global propagation. Once the feature is stable and being
+kept, promote it: move it out of `/labs` into its own top-level command (or fold it into an
+existing one) in `global_commands`, and drop the `/labs` subcommand. Do this promotion as part
+of the same round of work that adds the next new feature — don't let `/labs` accumulate
+subcommands that have already proven out.
+
 ## Adding a new MCP server
 
 Add an entry in `agent::start_mcp_servers`:
