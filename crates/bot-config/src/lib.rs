@@ -132,6 +132,21 @@ async fn import_legacy_files(client: &tokio_postgres::Client, dir: &Path, key_pr
     }
 }
 
+// ── dynamic pagination policy ──────────────────────────────────────────────────
+
+/// Server-level policy for dynamic pagination (embed-based response splitting).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DynamicPaginationPolicy {
+    /// Follow each user's personal preference (`dynamic_pagination_enabled`).
+    #[default]
+    Default,
+    /// Force-enable dynamic pagination for all users in this server.
+    Enabled,
+    /// Force-disable dynamic pagination for all users in this server.
+    Disabled,
+}
+
 // ── server config ─────────────────────────────────────────────────────────────
 
 /// Configuration scoped to a Discord guild (server).
@@ -154,6 +169,10 @@ pub struct ServerConfig {
     /// Users still opt in individually via `/personalize proactive`.
     #[serde(default = "default_respond")]
     pub proactive_allowed: bool,
+    /// Server-level policy for dynamic pagination (embed-based response splitting).
+    /// See `DynamicPaginationPolicy` for variants.
+    #[serde(default)]
+    pub dynamic_pagination: DynamicPaginationPolicy,
 }
 
 impl Default for ServerConfig {
@@ -164,6 +183,7 @@ impl Default for ServerConfig {
             leaderboard_role_ids: HashSet::new(),
             respond_to_bot_pings: false,
             proactive_allowed: true,
+            dynamic_pagination: DynamicPaginationPolicy::default(),
         }
     }
 }
@@ -272,8 +292,8 @@ pub struct UserConfig {
     #[serde(default = "default_followup_timeout")]
     pub followup_timeout_secs: u64,
     /// Whether LLM responses are rendered as paginated embeds.
-    #[serde(default)]
-    pub labs_pagination_enabled: bool,
+    #[serde(default, alias = "labs_pagination_enabled")]
+    pub dynamic_pagination_enabled: bool,
     /// Reasoning budget used for this user's requests (set with `/effort`).
     #[serde(default)]
     pub thinking_mode: ThinkingMode,
@@ -301,7 +321,7 @@ impl Default for UserConfig {
             personality: None,
             followup_enabled: false,
             followup_timeout_secs: default_followup_timeout(),
-            labs_pagination_enabled: false,
+            dynamic_pagination_enabled: false,
             thinking_mode: ThinkingMode::default(),
             deep_memory_enabled: true,
             proactive_assistance_enabled: false,
@@ -538,8 +558,16 @@ mod tests {
     use super::*;
 
     #[test]
-    fn labs_pagination_is_off_by_default() {
-        assert!(!UserConfig::default().labs_pagination_enabled);
+    fn dynamic_pagination_is_off_by_default() {
+        assert!(!UserConfig::default().dynamic_pagination_enabled);
+    }
+
+    #[test]
+    fn dynamic_pagination_policy_defaults_to_default() {
+        assert_eq!(
+            ServerConfig::default().dynamic_pagination,
+            DynamicPaginationPolicy::Default
+        );
     }
 
     #[test]
@@ -550,6 +578,7 @@ mod tests {
         assert!(config.leaderboard_role_ids.is_empty());
         assert!(!config.respond_to_bot_pings);
         assert!(config.proactive_allowed);
+        assert_eq!(config.dynamic_pagination, DynamicPaginationPolicy::Default);
     }
 
     #[test]
@@ -558,11 +587,18 @@ mod tests {
     }
 
     #[test]
-    fn old_user_config_defaults_labs_pagination_to_off() {
+    fn old_user_config_defaults_dynamic_pagination_to_off() {
         let config: UserConfig =
             serde_json::from_str(r#"{"personality":null,"followup_timeout_secs":300}"#).unwrap();
-        assert!(!config.labs_pagination_enabled);
+        assert!(!config.dynamic_pagination_enabled);
         assert!(!config.followup_enabled);
+    }
+
+    #[test]
+    fn legacy_labs_pagination_alias() {
+        let config: UserConfig =
+            serde_json::from_str(r#"{"labs_pagination_enabled":true}"#).unwrap();
+        assert!(config.dynamic_pagination_enabled);
     }
 
     #[test]

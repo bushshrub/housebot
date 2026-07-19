@@ -25,7 +25,8 @@ use crate::agent::{
     Agent, AgentControlAction, AgentHooks, AgentRequest, AgentResult, MediaData, NoHooks,
 };
 use crate::bot_config::{
-    AccessControlStore, LeaderboardVisibility, ServerConfig, ServerConfigStore, UserConfigStore,
+    AccessControlStore, DynamicPaginationPolicy, LeaderboardVisibility, ServerConfig,
+    ServerConfigStore, UserConfigStore,
 };
 pub use crate::bot_response::SecretRedactor;
 use crate::channel_log::ChannelLog;
@@ -56,7 +57,7 @@ pub use crate::bot_formatting::{extract_code_files, lang_ext, split_text, tool_h
 
 const MAX_MESSAGE_LENGTH: usize = 2000;
 const EMBED_DESCRIPTION_LIMIT: usize = 4096;
-const PAGINATION_PREFIX: &str = "housebot_labs_page:";
+const PAGINATION_PREFIX: &str = "housebot_page:";
 const DEVELOP_PREFIX: &str = "develop:";
 /// How often, and past what age, stray `/lua` graph scratch files are swept
 /// from the temp dir. Normal renders clean up immediately (see
