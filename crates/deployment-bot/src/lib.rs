@@ -463,7 +463,7 @@ pub async fn run() -> anyhow::Result<()> {
     let owner_id = env_u64("OWNER_DISCORD_ID")?;
     let channel_id = env_u64("DEPLOYMENT_CHANNEL_ID")?;
     let guild_id = optional_env_u64("DEPLOYMENT_GUILD_ID")?;
-    let permissions = DeploymentPermissions::connect().await?;
+    let permissions = DeploymentPermissions::connect().await;
     let handler = DeploymentBot {
         owner_id,
         channel_id,
