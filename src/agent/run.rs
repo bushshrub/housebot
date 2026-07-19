@@ -117,6 +117,9 @@ impl Agent {
                 tracing::warn!(target: "housebot::agent", user_id, "Tool loop exceeded {MAX_TOOL_ROUNDS} rounds — stopping");
                 break "I had to stop because this request required too many tool calls in a row. Please try a more specific request.".to_string();
             }
+            // Start the typing indicator proactively so it appears even when
+            // the model responds with only tool calls (no text deltas).
+            hooks.on_text_stream("").await;
             let text_sink = TextStreamAdapter(hooks);
             let completion_result = self
                 .client
