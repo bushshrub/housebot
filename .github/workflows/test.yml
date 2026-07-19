@@ -46,8 +46,13 @@ jobs:
         include:
           - name: main
             context: .
+            file: Dockerfile
           - name: sandbox
             context: ./crates/sandbox/docker
+            file: Dockerfile
+          - name: deployment-bot
+            context: .
+            file: Dockerfile.deployment-bot
     steps:
       - uses: actions/checkout@v4
 
@@ -89,6 +94,7 @@ jobs:
         with:
           builder: ${{ steps.buildx.outputs.name }}
           context: ${{ matrix.context }}
+          file: ${{ matrix.file }}
           push: false
           cache-from: type=gha,scope=pr-${{ matrix.name }}
           cache-to: type=gha,mode=max,scope=pr-${{ matrix.name }}
