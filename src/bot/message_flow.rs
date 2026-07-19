@@ -240,7 +240,6 @@ impl HouseBot {
             "🧠 **Thinking...**".to_string()
         };
         let progress = reply_no_ping(ctx, msg, &progress_msg).await.ok();
-        let pending_reaction = msg.react(&ctx.http, '⏳').await.ok();
 
         let response_hooks = progress
             .as_ref()
@@ -309,9 +308,6 @@ impl HouseBot {
 
         // Handle structured development control actions before displaying text.
         if let Some(action) = result.control_action {
-            if let Some(reaction) = pending_reaction {
-                let _ = reaction.delete(&ctx.http).await;
-            }
             if let Some(progress) = progress.as_ref() {
                 let _ = progress.delete(&ctx.http).await;
             }
@@ -344,7 +340,7 @@ impl HouseBot {
         let allowed_pings = extract_mentioned_users(&safe, bot_id.get());
         let with_tool_summary = append_tool_summary(&safe, &result.tools_called);
         let (display, code_files) = extract_code_files(&with_tool_summary);
-        let sent_id = send_final_message(
+        let _sent_id = send_final_message(
             ctx,
             msg,
             &display,
@@ -356,20 +352,6 @@ impl HouseBot {
         )
         .await;
 
-        // Add dynamic emoji reactions to the response based on content
-        if let Some(reply_id) = sent_id {
-            let emojis = crate::bot::emoji_reactions::select_reactions(&with_tool_summary);
-            for emoji in emojis {
-                let _ = msg
-                    .channel_id
-                    .create_reaction(&ctx.http, reply_id, emoji)
-                    .await;
-            }
-        }
-
-        if let Some(reaction) = pending_reaction {
-            let _ = reaction.delete(&ctx.http).await;
-        }
         // Upload files returned by guarded agent tools.
         for attachment in result.attachments {
             if let Err(error) = msg

@@ -75,7 +75,6 @@ mod config_cmd;
 mod develop;
 mod develop_actions;
 mod develop_component;
-pub(crate) mod emoji_reactions;
 mod handler;
 mod helpers;
 mod interactions;
