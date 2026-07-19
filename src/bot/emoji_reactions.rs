@@ -3,7 +3,7 @@
 use serenity::all::ReactionType;
 
 /// Pick contextually relevant emoji reactions for a given text.
-/// Returns at most 2 reactions to keep messages uncluttered.
+/// Returns all matching reactions without limit.
 pub fn select_reactions(text: &str) -> Vec<ReactionType> {
     let lower = text.to_ascii_lowercase();
     let mut selected = Vec::new();
@@ -12,10 +12,11 @@ pub fn select_reactions(text: &str) -> Vec<ReactionType> {
     for &(keywords, emoji) in RULES {
         if keywords.iter().any(|kw| lower.contains(kw)) && seen.insert(emoji) {
             selected.push(ReactionType::Unicode(emoji.to_string()));
-            if selected.len() >= 2 {
-                return selected;
-            }
         }
+    }
+
+    if selected.is_empty() {
+        selected.push(ReactionType::Unicode("\u{1F44D}".to_string()));
     }
 
     selected
@@ -23,8 +24,7 @@ pub fn select_reactions(text: &str) -> Vec<ReactionType> {
 
 type Rule = (&'static [&'static str], &'static str);
 
-/// Ordered keyword → emoji mappings. More specific patterns should come
-/// before general ones so they take priority when we limit the result count.
+/// Ordered keyword → emoji mappings.
 const RULES: &[Rule] = &[
     (&["thank", "thanks", "thx"], "\u{1F64F}"),
     (&["good morning", "good evening", "gm"], "\u{1F305}"),
