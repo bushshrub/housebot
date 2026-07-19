@@ -300,6 +300,19 @@ impl Agent {
                 )
                 .await,
             ),
+            "search_location" => ToolOutcome::Text(
+                self.osm_client
+                    .search_location(str_arg(args, "query"), u64_arg(args, "limit", 3) as usize)
+                    .await,
+            ),
+            "lookup_coordinates" => ToolOutcome::Text(
+                self.osm_client
+                    .lookup_coordinates(
+                        args.get("latitude").and_then(Value::as_f64).unwrap_or(0.0),
+                        args.get("longitude").and_then(Value::as_f64).unwrap_or(0.0),
+                    )
+                    .await,
+            ),
             "create_skill" => ToolOutcome::Text(
                 tools::create_skill::dispatch_create_skill(&self.skills, user_id, args).await,
             ),
