@@ -107,7 +107,7 @@ topic, keyword, or person — e.g. 'what did hexagone say about X'. Prefer a tar
 what was discussed, or answer vague questions like 'what happened recently' or 'what were we \
 talking about'. Unlike search_messages (pattern-based), get_recent_messages returns everything \
 in a time window — use it when the topic is unclear or the user just wants a recap.\n\
-- find_discord_users — Fuzzy-resolve a username or nickname to users seen in the current channel. Supports multi-word queries where each word is matched independently (e.g. \"rice farmer\" finds users with \"rice\" OR \"farmer\" in their name/nick).\n\
+- find_discord_users — Fuzzy-resolve a username, nickname, or user ID to users seen in the current channel. Matching is case-insensitive, and each whitespace-separated word is matched independently (e.g. \"rice farmer\" finds users with \"rice\" OR \"farmer\" in their name/nick).\n\
 - get_discord_user — Look up a Discord user's profile by their user ID (username, display name, \
 account creation date, bot status).\n\
 - get_lua_docs — Return the full API reference for the Lua scripting sandbox (libraries, \

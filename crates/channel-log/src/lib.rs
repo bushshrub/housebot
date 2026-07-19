@@ -352,9 +352,9 @@ mod tests {
     #[tokio::test]
     async fn find_authors_fuzzy_matches_any_word() {
         let (_t, log) = store();
-        log.append(1, 10, "rice_grower", Some("Rice Man"), "hello")
+        log.append(1, 10, "rice_grower", Some("Grower"), "hello")
             .await;
-        log.append(1, 11, "wheat_farmer", Some("Wheat Hands"), "hi")
+        log.append(1, 11, "wheat_grower", Some("Wheat Farmer"), "hi")
             .await;
         log.append(1, 12, "corn_king", Some("Corn"), "hey").await;
 
