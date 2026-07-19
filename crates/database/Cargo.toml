@@ -9,6 +9,9 @@ license = "AGPL-3.0-or-later"
 [dependencies]
 anyhow = "1"
 housebot-config = { path = "../config" }
-tokio = { version = "1", features = ["rt"] }
+tokio = { version = "1", features = ["rt", "time"] }
 tokio-postgres = "0.7"
 tracing = "0.1"
+
+[dev-dependencies]
+tokio = { version = "1", features = ["full", "test-util"] }
