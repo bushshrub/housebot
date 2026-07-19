@@ -8,7 +8,8 @@ impl EventHandler for HouseBot {
         tracing::info!("Logged in as {} (ID: {})", ready.user.name, ready.user.id);
         self.discord.set_http(ctx.http.clone()).await;
 
-        register_slash_commands(&ctx).await;
+        let guild_ids: Vec<GuildId> = ready.guilds.iter().map(|guild| guild.id).collect();
+        register_slash_commands(&ctx, &guild_ids).await;
 
         if self.reminder_started.swap(true, Ordering::SeqCst) {
             return;
