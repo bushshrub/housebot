@@ -356,8 +356,9 @@ impl HouseBot {
         )
         .await;
 
-        // Add dynamic emoji reactions to the response based on content
+        // Add context-relevant emoji reactions to the bot's response.
         if let Some(reply_id) = sent_id {
+            // Fast keyword-based reactions (instant, no LLM overhead).
             let emojis = crate::bot::emoji_reactions::select_reactions(&with_tool_summary);
             for emoji in emojis {
                 let _ = msg
@@ -365,6 +366,20 @@ impl HouseBot {
                     .create_reaction(&ctx.http, reply_id, emoji)
                     .await;
             }
+
+            // Background LLM-based emoji reaction (lowest queue priority, cheap
+            // model, no thinking). Runs asynchronously so the main reply is not
+            // delayed by a potentially saturated LLM queue.
+            let agent = Arc::clone(&self.agent);
+            let text = with_tool_summary.clone();
+            let http = ctx.http.clone();
+            let channel_id = msg.channel_id;
+            tokio::spawn(async move {
+                if let Some(emoji) = agent.select_emoji(&text).await {
+                    let reaction = serenity::all::ReactionType::Unicode(emoji);
+                    let _ = channel_id.create_reaction(&http, reply_id, reaction).await;
+                }
+            });
         }
 
         if let Some(reaction) = pending_reaction {
