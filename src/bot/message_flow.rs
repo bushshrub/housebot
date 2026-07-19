@@ -128,11 +128,11 @@ impl HouseBot {
 
         let referenced_text = {
             if let Some(referenced) = msg.referenced_message.as_deref() {
-                referenced_message_context(referenced)
+                referenced_message_context(referenced, Some(bot_id))
             } else if let Some(msg_ref) = msg.message_reference.as_ref() {
                 if let Some(msg_id) = msg_ref.message_id {
                     match msg_ref.channel_id.message(&ctx.http, msg_id).await {
-                        Ok(fetched) => referenced_message_context(&fetched),
+                        Ok(fetched) => referenced_message_context(&fetched, Some(bot_id)),
                         Err(error) => {
                             tracing::debug!(
                                 target: "housebot::message_flow",

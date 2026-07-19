@@ -327,7 +327,8 @@ pub(crate) fn attachment_context<'a>(
     Some(context)
 }
 
-pub(crate) fn referenced_message_context(msg: &Message) -> Option<String> {
+pub(crate) fn referenced_message_context(msg: &Message, bot_id: Option<UserId>) -> Option<String> {
+    let is_assistant = bot_id.is_some_and(|id| msg.author.id == id);
     let text = msg.content.trim();
     let urls: Vec<&str> = URL.find_iter(text).map(|m| m.as_str()).collect();
     let attachment_context = message_attachment_context(msg);
@@ -336,13 +337,18 @@ pub(crate) fn referenced_message_context(msg: &Message) -> Option<String> {
     }
 
     let mut context = String::from("[Message being replied to]\n");
-    if !text.is_empty() {
+    if is_assistant {
+        context.push_str("[Assistant's previous message — see conversation history above]");
+    } else if !text.is_empty() {
         context.push_str(text);
     }
     if !urls.is_empty() {
-        context.push_str(
-            "\n\nThe message above contains URL(s). Use the web fetch tool on these URL(s) before answering: ",
-        );
+        let prefix = if is_assistant {
+            "\n\nThe assistant's previous message contains URL(s). Use the web fetch tool on these URL(s) before answering: "
+        } else {
+            "\n\nThe message above contains URL(s). Use the web fetch tool on these URL(s) before answering: "
+        };
+        context.push_str(prefix);
         context.push_str(&urls.join(", "));
     }
     if let Some(attachments) = attachment_context {
@@ -366,7 +372,7 @@ mod media_tests {
         attachment_context, convert_gif_to_video, extract_gif_from_text, is_pdf, is_safe_url,
         media_type, pdf_render_arguments, referenced_message_context,
     };
-    use serenity::all::Message;
+    use serenity::all::{Message, UserId};
 
     fn msg(content: &str) -> Message {
         serde_json::from_value(serde_json::json!({
@@ -426,7 +432,7 @@ mod media_tests {
 
     #[test]
     fn referenced_context_with_content() {
-        let context = referenced_message_context(&msg("Hello world")).unwrap();
+        let context = referenced_message_context(&msg("Hello world"), None).unwrap();
         assert!(context.contains("Hello world"));
         assert!(context.starts_with("[Message being replied to]"));
         assert!(context.ends_with("[End message being replied to]"));
@@ -434,12 +440,13 @@ mod media_tests {
 
     #[test]
     fn referenced_context_empty_content_no_attachments() {
-        assert!(referenced_message_context(&msg("")).is_none());
+        assert!(referenced_message_context(&msg(""), None).is_none());
     }
 
     #[test]
     fn referenced_context_with_urls() {
-        let context = referenced_message_context(&msg("Check https://example.com/page")).unwrap();
+        let context =
+            referenced_message_context(&msg("Check https://example.com/page"), None).unwrap();
         assert!(context.contains("URL(s)"));
         assert!(context.contains("https://example.com/page"));
     }
@@ -476,7 +483,7 @@ mod media_tests {
             "type": 0
         }))
         .unwrap();
-        let context = referenced_message_context(&m).unwrap();
+        let context = referenced_message_context(&m, None).unwrap();
         assert!(context.contains("report.pdf"));
         assert!(context.contains("already available"));
     }
@@ -513,9 +520,79 @@ mod media_tests {
             "type": 0
         }))
         .unwrap();
-        let context = referenced_message_context(&m).unwrap();
+        let context = referenced_message_context(&m, None).unwrap();
         assert!(context.contains("See attached file"));
         assert!(context.contains("data.csv"));
+    }
+
+    #[test]
+    fn referenced_context_bot_message_uses_placeholder() {
+        let bot_id = UserId::new(42);
+        let m: Message = serde_json::from_value(serde_json::json!({
+            "id": "4",
+            "channel_id": "1",
+            "author": {
+                "id": "42",
+                "username": "housebot",
+                "discriminator": "0000",
+                "avatar": null
+            },
+            "content": "Here is the weather forecast for today: sunny and 75°F.",
+            "timestamp": "2026-01-01T00:00:00+00:00",
+            "tts": false,
+            "mention_everyone": false,
+            "mentions": [],
+            "mention_roles": [],
+            "attachments": [],
+            "embeds": [],
+            "pinned": false,
+            "type": 0
+        }))
+        .unwrap();
+        let context = referenced_message_context(&m, Some(bot_id)).unwrap();
+        assert!(context.contains("Assistant's previous message"));
+        assert!(!context.contains("weather forecast"));
+        assert!(context.starts_with("[Message being replied to]"));
+        assert!(context.ends_with("[End message being replied to]"));
+    }
+
+    #[test]
+    fn referenced_context_bot_message_other_author_shows_full_content() {
+        let bot_id = UserId::new(42);
+        let m = msg("Hello world");
+        let context = referenced_message_context(&m, Some(bot_id)).unwrap();
+        assert!(context.contains("Hello world"));
+        assert!(!context.contains("Assistant's previous message"));
+    }
+
+    #[test]
+    fn referenced_context_bot_message_with_urls_includes_web_fetch_hint() {
+        let bot_id = UserId::new(42);
+        let m: Message = serde_json::from_value(serde_json::json!({
+            "id": "5",
+            "channel_id": "1",
+            "author": {
+                "id": "42",
+                "username": "housebot",
+                "discriminator": "0000",
+                "avatar": null
+            },
+            "content": "Check out https://example.com for details",
+            "timestamp": "2026-01-01T00:00:00+00:00",
+            "tts": false,
+            "mention_everyone": false,
+            "mentions": [],
+            "mention_roles": [],
+            "attachments": [],
+            "embeds": [],
+            "pinned": false,
+            "type": 0
+        }))
+        .unwrap();
+        let context = referenced_message_context(&m, Some(bot_id)).unwrap();
+        assert!(context.contains("Assistant's previous message"));
+        assert!(context.contains("URL(s)"));
+        assert!(context.contains("https://example.com"));
     }
 
     #[test]
