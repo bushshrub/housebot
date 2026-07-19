@@ -1,6 +1,6 @@
 name: Check Agent Runner Health
 
-# Daily check that the self-hosted runner and all three agent CLIs are healthy.
+# Daily check that the self-hosted runner and available agent CLIs are healthy.
 # Failures surface in the Actions tab and can be watched via branch protection
 # or status checks.
 
@@ -14,11 +14,6 @@ jobs:
     runs-on: [self-hosted, housebot-agent]
 
     steps:
-      - name: Check Codex action prerequisites
-        id: codex
-        run: node --version
-        continue-on-error: true
-
       - name: Check claude CLI
         id: claude
         run: claude --version
@@ -42,14 +37,12 @@ jobs:
       - name: Report and fail if any agent is unavailable
         run: |
           echo "=== Agent Runner Health ==="
-          printf '  %-12s %s\n' "codex action:" "${{ steps.codex.outcome }}"
           printf '  %-12s %s\n' "claude:"   "${{ steps.claude.outcome }}"
           printf '  %-12s %s\n' "opencode:" "${{ steps.opencode.outcome }}"
           printf '  %-12s %s\n' "python3:"  "${{ steps.python3.outcome }}"
           printf '  %-12s %s\n' "git:"      "${{ steps.git.outcome }}"
 
           FAIL=0
-          [[ "${{ steps.codex.outcome }}"    != "success" ]] && { echo "::error::Node.js unavailable for the Codex action"; FAIL=1; }
           [[ "${{ steps.claude.outcome }}"   != "success" ]] && { echo "::error::claude CLI unavailable";   FAIL=1; }
           [[ "${{ steps.opencode.outcome }}" != "success" ]] && { echo "::error::opencode CLI unavailable"; FAIL=1; }
           [[ "${{ steps.python3.outcome }}"  != "success" ]] && { echo "::error::python3 unavailable";      FAIL=1; }
