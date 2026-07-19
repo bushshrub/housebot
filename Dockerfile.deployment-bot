@@ -11,11 +11,15 @@ COPY Cargo.toml Cargo.lock ./
 COPY crates/common-crawl/Cargo.toml crates/common-crawl/Cargo.toml
 COPY crates/graph-render/Cargo.toml crates/graph-render/Cargo.toml
 COPY crates/llm/Cargo.toml crates/llm/Cargo.toml
+COPY crates/config/Cargo.toml crates/config/Cargo.toml
+COPY crates/database/Cargo.toml crates/database/Cargo.toml
 COPY crates/deployment-bot/Cargo.toml crates/deployment-bot/Cargo.toml
 
 # Layer 2: build dependencies only (dummy source, no real code).
-RUN mkdir -p crates/deployment-bot/src \
-    && echo "fn main() {}" > crates/deployment-bot/src/main.rs
+RUN mkdir -p crates/deployment-bot/src crates/config/src crates/database/src \
+    && echo "fn main() {}" > crates/deployment-bot/src/main.rs \
+    && echo "" > crates/config/src/lib.rs \
+    && echo "" > crates/database/src/lib.rs
 RUN --mount=type=cache,id=deployment-bot-cargo-registry,target=/usr/local/cargo/registry \
     --mount=type=cache,id=deployment-bot-cargo-git,target=/usr/local/cargo/git \
     cargo build --release --locked --package deployment-bot
@@ -24,7 +28,10 @@ RUN --mount=type=cache,id=deployment-bot-cargo-registry,target=/usr/local/cargo/
 COPY crates/common-crawl/src/ crates/common-crawl/src/
 COPY crates/graph-render/src/ crates/graph-render/src/
 COPY crates/llm/src/ crates/llm/src/
+COPY crates/config/src/ crates/config/src/
+COPY crates/database/src/ crates/database/src/
 COPY crates/deployment-bot/src/ crates/deployment-bot/src/
+COPY db/ db/
 
 # Layer 4: build the real binary. The touch is load-bearing: COPY preserves
 # the build context's mtimes, which predate Layer 2's dummy build, so without

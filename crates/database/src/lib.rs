@@ -22,6 +22,10 @@ const MIGRATIONS: &[(&str, &str)] = &[
         "003_create_bot_config",
         include_str!("../../../db/migrations/003_create_bot_config.sql"),
     ),
+    (
+        "004_create_deployment_permissions",
+        include_str!("../../../db/migrations/004_create_deployment_permissions.sql"),
+    ),
 ];
 const MIGRATION_LOCK_ID: i64 = 1_593_778_914;
 const DEFAULT_DATABASE_URL: &str = "postgres://housebot:housebot@postgres/housebot";
@@ -132,5 +136,15 @@ mod tests {
                 "index statement must contain ON: {index}"
             );
         }
+    }
+
+    #[test]
+    fn deployment_permissions_are_created_by_an_ordered_migration() {
+        let (_, sql) = MIGRATIONS
+            .iter()
+            .find(|(version, _)| *version == "004_create_deployment_permissions")
+            .expect("deployment permissions migration must exist");
+        assert!(sql.contains("CREATE TABLE IF NOT EXISTS deployment_permissions"));
+        assert!(sql.contains("user_id BIGINT PRIMARY KEY"));
     }
 }
