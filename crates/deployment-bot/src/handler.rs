@@ -98,6 +98,17 @@ impl EventHandler for DeploymentBot {
                             stage = %command.stage,
                             "Automatic deployment stage failed: house-chatbot is not running"
                         );
+                        let _ = message
+                            .channel_id
+                            .say(
+                                &ctx.http,
+                                format!(
+                                    "❌ Automatic deployment of `{}` failed at `{}`: house-chatbot is not running.",
+                                    short_sha(&sha),
+                                    command.stage
+                                ),
+                            )
+                            .await;
                         return;
                     }
                     Ok(output) => {
@@ -114,6 +125,17 @@ impl EventHandler for DeploymentBot {
                             stage = %command.stage,
                             "Automatic deployment stage failed: {error}"
                         );
+                        let _ = message
+                            .channel_id
+                            .say(
+                                &ctx.http,
+                                format!(
+                                    "❌ Automatic deployment of `{}` failed at `{}`: {error}",
+                                    short_sha(&sha),
+                                    command.stage
+                                ),
+                            )
+                            .await;
                         return;
                     }
                 }
