@@ -346,7 +346,7 @@ pub(crate) fn referenced_message_context(msg: &Message) -> Option<String> {
         return None;
     }
 
-    let mut context = String::from("[Message being replied to]\n");
+    let mut context = format!("[Message being replied to, id: {}]\n", msg.id);
     if !text.is_empty() {
         context.push_str(text);
     }
@@ -439,7 +439,7 @@ mod media_tests {
     fn referenced_context_with_content() {
         let context = referenced_message_context(&msg("Hello world")).unwrap();
         assert!(context.contains("Hello world"));
-        assert!(context.starts_with("[Message being replied to]"));
+        assert!(context.starts_with("[Message being replied to, id: 1]"));
         assert!(context.ends_with("[End message being replied to]"));
     }
 
