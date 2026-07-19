@@ -64,6 +64,7 @@ fn owner_immediate_returns_dispatch_ready() {
         42,
         owner_requester(42),
         source(),
+        1,
         "Title",
         "Obj",
         "",
@@ -88,6 +89,7 @@ fn owner_interactive_returns_config_required() {
         42,
         owner_requester(42),
         source(),
+        1,
         "Title",
         "Obj",
         "",
@@ -112,6 +114,7 @@ fn non_owner_creates_approval_request() {
         42,
         non_owner_requester(),
         source(),
+        1,
         "Title",
         "Obj",
         "",
@@ -136,6 +139,7 @@ fn missing_owner_id_rejected() {
         0,
         owner_requester(0),
         source(),
+        1,
         "Title",
         "Obj",
         "",
@@ -163,6 +167,7 @@ fn non_owner_limiter_applies_before_notification() {
         42,
         non_owner_requester(),
         source(),
+        1,
         "Title",
         "Obj",
         "",
@@ -190,6 +195,7 @@ fn existing_pending_request_blocks_another() {
         42,
         non_owner_requester(),
         source(),
+        1,
         "Title",
         "Obj",
         "",
@@ -212,6 +218,7 @@ fn existing_pending_request_blocks_another() {
             channel_id: 1,
             message_id: 11,
         },
+        1,
         "Different title",
         "Obj",
         "",
@@ -251,6 +258,7 @@ fn global_pending_limit_enforced() {
             42,
             req,
             src,
+            1,
             "Title",
             "Obj",
             "",
@@ -267,6 +275,7 @@ fn global_pending_limit_enforced() {
         42,
         non_owner_requester(),
         source(),
+        1,
         "Title",
         "Obj",
         "",
@@ -291,6 +300,7 @@ fn duplicate_request_suppressed() {
         42,
         non_owner_requester(),
         source(),
+        1,
         "Title",
         "Obj",
         "",
@@ -311,6 +321,7 @@ fn duplicate_request_suppressed() {
     // the duplicate check is about same requester+fingerprint currently pending. Since we
     // rejected it, a new one is allowed. This test verifies the fingerprint mechanism itself.
     let fp = DevelopmentSpecification {
+        issue_number: 1,
         title: "Title".into(),
         objective: "Obj".into(),
         context: String::new(),
@@ -331,6 +342,7 @@ fn invalid_specification_rejected_before_job_insertion() {
         42,
         owner_requester(42),
         source(),
+        1,
         "", // empty title
         "Obj",
         "",
@@ -359,4 +371,8 @@ fn definition_has_required_fields() {
         .as_array()
         .unwrap()
         .contains(&serde_json::json!("objective")));
+    assert!(required
+        .as_array()
+        .unwrap()
+        .contains(&serde_json::json!("issue_number")));
 }

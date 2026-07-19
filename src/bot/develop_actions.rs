@@ -31,7 +31,7 @@ impl HouseBot {
                 &ctx.http,
                 CreateInteractionResponse::UpdateMessage(
                     CreateInteractionResponseMessage::new()
-                        .content("⏳ **Dispatching...** Creating GitHub issue...")
+                        .content("⏳ **Dispatching...** Triggering the GitHub workflow...")
                         .components(vec![]),
                 ),
             )
@@ -51,7 +51,8 @@ impl HouseBot {
                 j.requester.user_id,
             ))
         });
-        let Some(Some((spec, agent, model, effort, requester_name, requester_user_id))) = job_data
+        let Some(Some((spec, agent, model, effort, _requester_name, _requester_user_id))) =
+            job_data
         else {
             self.pending_jobs.mark_dispatch_failed(job_id);
             let _ = component
@@ -65,7 +66,7 @@ impl HouseBot {
             return;
         };
 
-        let selection = match self.catalog.validate_selection(agent, &model, &effort) {
+        let _selection = match self.catalog.validate_selection(agent, &model, &effort) {
             Ok(s) => s,
             Err(e) => {
                 self.pending_jobs.mark_dispatch_failed(job_id);
@@ -80,89 +81,52 @@ impl HouseBot {
             }
         };
 
-        let approver_name = component.user.name.clone();
-        let approver_id = component.user.id.get();
-
-        let body = match build_issue_body(
-            &spec,
-            &selection,
-            &requester_name,
-            requester_user_id,
-            &approver_name,
-            approver_id,
-        ) {
-            Ok(b) => b,
-            Err(e) => {
-                self.pending_jobs.mark_dispatch_failed(job_id);
-                let _ = component
-                    .edit_response(
-                        &ctx.http,
-                        EditInteractionResponse::new()
-                            .content(format!("❌ Failed to build issue body: {e}")),
-                    )
-                    .await;
-                return;
-            }
-        };
-
-        let title = format!("[agent:{}] {}", agent.id_str(), spec.title);
-        let labels = dispatch_labels(agent);
-        let label_refs: Vec<&str> = labels.iter().map(String::as_str).collect();
-
         // Get the reporter from the agent.
         let reporter = self.agent.reporter();
-        match reporter.create_issue_full(&title, &body, &label_refs).await {
-            Some(issue) => {
-                self.pending_jobs.mark_dispatched(job_id);
-                tracing::info!(
-                    target: "housebot::develop",
-                    issue_number = issue.number,
-                    agent = agent.id_str(),
-                    "Development job dispatched"
-                );
-                let prompt = build_dispatch_prompt(issue.number);
-                let mut inputs = serde_json::Map::new();
-                inputs.insert(
-                    "issue_number".into(),
-                    serde_json::Value::Number(serde_json::Number::from(issue.number)),
-                );
-                inputs.insert("prompt".into(), serde_json::Value::String(prompt));
-                let triggered = reporter
-                    .trigger_workflow_dispatch(DISPATCH_WORKFLOW_FILE, "master", &inputs)
-                    .await;
-                let status = if triggered {
-                    "The opencode-dispatch workflow will pick this up and open a pull request."
-                } else {
-                    "⚠️ Failed to trigger the dispatch workflow. The issue has been created — \
-                     trigger the opencode-dispatch workflow manually."
-                };
-                let _ = component
+        let mut inputs = serde_json::Map::new();
+        inputs.insert(
+            "issue_number".into(),
+            serde_json::Value::Number(serde_json::Number::from(spec.issue_number)),
+        );
+        inputs.insert(
+            "prompt".into(),
+            serde_json::Value::String(build_dispatch_prompt(spec.issue_number)),
+        );
+        if reporter
+            .trigger_workflow_dispatch(dispatch_workflow_file(agent), "master", &inputs)
+            .await
+        {
+            self.pending_jobs.mark_dispatched(job_id);
+            tracing::info!(
+                target: "housebot::develop",
+                issue_number = spec.issue_number,
+                agent = agent.id_str(),
+                "Development job dispatched"
+            );
+            let _ = component
                             .edit_response(
                                 &ctx.http,
                                 EditInteractionResponse::new().content(format!(
                                     "✅ **Dispatched!**\n\
-                                     Issue #{num} created: {url}\n\
+                                     Existing issue #{num}\n\
                                      Agent: **{agent_name}** | Model: `{model}` | Effort: `{effort}`\n\
-                                     {status}",
-                                    num = issue.number,
-                                    url = issue.html_url,
+                                     The `{workflow}` workflow was triggered.",
+                                    num = spec.issue_number,
                                     agent_name = agent.display_name(),
+                                    workflow = dispatch_workflow_file(agent),
                                 )),
                             )
                             .await;
-            }
-            None => {
-                self.pending_jobs.mark_dispatch_failed(job_id);
-                let _ = component
-                            .edit_response(
-                                &ctx.http,
-                                EditInteractionResponse::new().content(
-                                    "❌ Failed to create GitHub issue. Check bot logs for details.\n\
-                                     The job has been reset to the confirmation stage — click Dispatch to retry.",
-                                ),
-                            )
-                            .await;
-            }
+        } else {
+            self.pending_jobs.mark_dispatch_failed(job_id);
+            let _ = component
+                .edit_response(
+                    &ctx.http,
+                    EditInteractionResponse::new().content(
+                        "❌ Failed to trigger the GitHub workflow. The job has been reset — click Dispatch to retry.",
+                    ),
+                )
+                .await;
         }
     }
 
@@ -195,7 +159,7 @@ impl HouseBot {
                 &ctx.http,
                 CreateInteractionResponse::UpdateMessage(
                     CreateInteractionResponseMessage::new()
-                        .content("⏳ **Approving...** Creating GitHub issue...")
+                        .content("⏳ **Approving...** Triggering the GitHub workflow...")
                         .components(vec![]),
                 ),
             )
@@ -215,7 +179,7 @@ impl HouseBot {
                 j.requester.channel_id,
             ))
         });
-        let Some(Some((spec, agent, model, effort, req_name, req_id, req_channel))) = job_data
+        let Some(Some((spec, agent, model, effort, _req_name, req_id, req_channel))) = job_data
         else {
             self.pending_jobs.mark_dispatch_failed(job_id);
             let _ = component
@@ -227,7 +191,7 @@ impl HouseBot {
             return;
         };
 
-        let selection = match self.catalog.validate_selection(agent, &model, &effort) {
+        let _selection = match self.catalog.validate_selection(agent, &model, &effort) {
             Ok(s) => s,
             Err(e) => {
                 self.pending_jobs.mark_dispatch_failed(job_id);
@@ -242,101 +206,68 @@ impl HouseBot {
             }
         };
 
-        let approver_name = component.user.name.clone();
-        let approver_id = component.user.id.get();
-        let body = match build_issue_body(
-            &spec,
-            &selection,
-            &req_name,
-            req_id,
-            &approver_name,
-            approver_id,
-        ) {
-            Ok(b) => b,
-            Err(e) => {
-                self.pending_jobs.mark_dispatch_failed(job_id);
-                let _ = component
-                    .edit_response(
-                        &ctx.http,
-                        EditInteractionResponse::new()
-                            .content(format!("❌ Failed to build issue body: {e}")),
-                    )
-                    .await;
-                return;
-            }
-        };
-
-        let title = format!("[agent:{}] {}", agent.id_str(), spec.title);
-        let labels = dispatch_labels(agent);
-        let label_refs: Vec<&str> = labels.iter().map(String::as_str).collect();
         let reporter = self.agent.reporter();
-        match reporter.create_issue_full(&title, &body, &label_refs).await {
-            Some(issue) => {
-                self.pending_jobs.mark_dispatched(job_id);
-                tracing::info!(
-                    target: "housebot::develop",
-                    issue_number = issue.number,
-                    agent = agent.id_str(),
-                    "Non-owner development job approved and dispatched"
-                );
-                let prompt = build_dispatch_prompt(issue.number);
-                let mut inputs = serde_json::Map::new();
-                inputs.insert(
-                    "issue_number".into(),
-                    serde_json::Value::Number(serde_json::Number::from(issue.number)),
-                );
-                inputs.insert("prompt".into(), serde_json::Value::String(prompt));
-                let triggered = reporter
-                    .trigger_workflow_dispatch(DISPATCH_WORKFLOW_FILE, "master", &inputs)
-                    .await;
-                let status = if triggered {
-                    "The opencode-dispatch workflow will pick this up and open a pull request."
-                } else {
-                    "⚠️ Failed to trigger the dispatch workflow. The issue has been created — \
-                     trigger the opencode-dispatch workflow manually."
-                };
-                let success_msg = format!(
-                    "✅ **Dispatched!**\n\
-                             Issue #{num} created: {url}\n\
+        let mut inputs = serde_json::Map::new();
+        inputs.insert(
+            "issue_number".into(),
+            serde_json::Value::Number(serde_json::Number::from(spec.issue_number)),
+        );
+        inputs.insert(
+            "prompt".into(),
+            serde_json::Value::String(build_dispatch_prompt(spec.issue_number)),
+        );
+        if reporter
+            .trigger_workflow_dispatch(dispatch_workflow_file(agent), "master", &inputs)
+            .await
+        {
+            self.pending_jobs.mark_dispatched(job_id);
+            tracing::info!(
+                target: "housebot::develop",
+                issue_number = spec.issue_number,
+                agent = agent.id_str(),
+                "Non-owner development job approved and dispatched"
+            );
+            let success_msg = format!(
+                "✅ **Dispatched!**\n\
+                             Existing issue #{num}\n\
                              Agent: **{agent_name}** | Model: `{model}` | Effort: `{effort}`\n\
-                             {status}",
-                    num = issue.number,
-                    url = issue.html_url,
-                    agent_name = agent.display_name(),
-                );
-                let _ = component
-                    .edit_response(
-                        &ctx.http,
-                        EditInteractionResponse::new().content(&success_msg),
-                    )
-                    .await;
-                // Notify original requester.
-                let channel = serenity::all::ChannelId::new(req_channel);
-                let _ = channel
+                             The `{workflow}` workflow was triggered.",
+                num = spec.issue_number,
+                agent_name = agent.display_name(),
+                workflow = dispatch_workflow_file(agent),
+            );
+            let _ = component
+                .edit_response(
+                    &ctx.http,
+                    EditInteractionResponse::new().content(&success_msg),
+                )
+                .await;
+            // Notify original requester.
+            let channel = serenity::all::ChannelId::new(req_channel);
+            let _ = channel
                             .say(
                                 &ctx.http,
                                 format!(
                                     "✅ <@{req_id}> The bot owner approved your development request. \
                                      Development has started using {agent_name}, `{model}`, `{effort}`.\n\
-                                     Issue: {url}\n\
-                                     {status}",
+                                     Existing issue: #{issue_number}\n\
+                                     The `{workflow}` workflow was triggered.",
                                     agent_name = agent.display_name(),
-                                    url = issue.html_url,
+                                    issue_number = spec.issue_number,
+                                    workflow = dispatch_workflow_file(agent),
                                 ),
                             )
                             .await;
-            }
-            None => {
-                self.pending_jobs.mark_dispatch_failed(job_id);
-                let _ = component
+        } else {
+            self.pending_jobs.mark_dispatch_failed(job_id);
+            let _ = component
                             .edit_response(
                                 &ctx.http,
                                 EditInteractionResponse::new().content(
-                                    "❌ Failed to create GitHub issue. The job has been reset — click Start Work to retry.",
+                                    "❌ Failed to trigger the GitHub workflow. The job has been reset — click Start Work to retry.",
                                 ),
                             )
                             .await;
-            }
         }
     }
 

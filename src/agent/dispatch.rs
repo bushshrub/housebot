@@ -171,6 +171,22 @@ impl Agent {
 
                 let owner_id = config::owner_id();
                 let requester_user_id: u64 = user_id.parse().unwrap_or(0);
+                let issue_number = u64_arg(args, "issue_number", 0);
+                if issue_number == 0 {
+                    return ToolOutcome::Text(
+                        "Error: an existing GitHub issue_number is required.".to_string(),
+                    );
+                }
+                let Some(issue) = self.reporter.fetch_issue(issue_number).await else {
+                    return ToolOutcome::Text(format!(
+                        "Error: GitHub issue #{issue_number} could not be found in the configured repository."
+                    ));
+                };
+                if issue.pull_request.is_some() {
+                    return ToolOutcome::Text(format!(
+                        "Error: #{issue_number} is a pull request; feature development requires an existing issue."
+                    ));
+                }
                 let interactive = args
                     .get("interactive")
                     .and_then(Value::as_bool)
@@ -223,6 +239,7 @@ impl Agent {
                     owner_id,
                     requester,
                     source_message,
+                    issue_number,
                     str_arg(args, "title"),
                     str_arg(args, "objective"),
                     str_arg(args, "context"),

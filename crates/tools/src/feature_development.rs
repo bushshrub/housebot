@@ -108,6 +108,11 @@ pub fn definition() -> Value {
                     "type": "string",
                     "description": "Concise feature title under 100 characters."
                 },
+                "issue_number": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "description": "Existing GitHub issue number to implement."
+                },
                 "objective": {
                     "type": "string",
                     "description": "The desired final behavior in clear terms."
@@ -131,7 +136,7 @@ pub fn definition() -> Value {
                     "description": "Set to true when the owner explicitly asks to choose the coding agent interactively."
                 }
             },
-            "required": ["title", "objective", "requirements", "acceptance_criteria"]
+            "required": ["issue_number", "title", "objective", "requirements", "acceptance_criteria"]
         }
     })
 }
@@ -185,6 +190,7 @@ pub fn prepare_feature_development(
     owner_id: u64,
     requester: DevelopmentRequester,
     source_message: DiscordMessageRef,
+    issue_number: u64,
     title: &str,
     objective: &str,
     context: &str,
@@ -212,6 +218,7 @@ pub fn prepare_feature_development(
     }
 
     let spec = DevelopmentSpecification {
+        issue_number,
         title: title.to_string(),
         objective: objective.to_string(),
         context: context.to_string(),
