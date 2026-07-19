@@ -135,13 +135,13 @@ impl HouseBot {
                 .await;
             return;
         };
-        if agent == CodingAgent::Codex {
+        if agent_dispatch_disabled(agent) {
             let _ = component
                 .create_response(
                     &ctx.http,
                     CreateInteractionResponse::Message(
                         CreateInteractionResponseMessage::new()
-                            .content("Codex dispatch is temporarily disabled. Please choose another agent.")
+                            .content(AGENT_DISABLED_MESSAGE)
                             .ephemeral(true),
                     ),
                 )
