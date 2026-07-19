@@ -15,6 +15,7 @@ use serde_json::Value;
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum ThinkingMode {
+    Instant,
     Low,
     #[default]
     Medium,
@@ -24,7 +25,8 @@ pub enum ThinkingMode {
 }
 
 impl ThinkingMode {
-    pub const ALL: [ThinkingMode; 5] = [
+    pub const ALL: [ThinkingMode; 6] = [
+        ThinkingMode::Instant,
         ThinkingMode::Low,
         ThinkingMode::Medium,
         ThinkingMode::High,
@@ -38,6 +40,7 @@ impl ThinkingMode {
     /// Thinking-token budget; `None` means unlimited.
     pub fn budget_tokens(self) -> Option<u32> {
         match self {
+            ThinkingMode::Instant => Some(0),
             ThinkingMode::Low => Some(2_048),
             ThinkingMode::Medium => Some(4_096),
             ThinkingMode::High => Some(8_192),
@@ -49,6 +52,7 @@ impl ThinkingMode {
     /// Human-readable budget for command replies.
     pub fn budget_label(self) -> &'static str {
         match self {
+            ThinkingMode::Instant => "no thinking",
             ThinkingMode::Low => "2k thinking tokens",
             ThinkingMode::Medium => "4k thinking tokens",
             ThinkingMode::High => "8k thinking tokens",
@@ -68,6 +72,9 @@ impl ThinkingMode {
     /// The `reasoning` request field sent to the backend (OpenRouter-style;
     /// servers that don't support it ignore unknown fields).
     pub fn reasoning_field(self) -> Value {
+        if self == ThinkingMode::Instant {
+            return serde_json::json!({"enabled": false});
+        }
         match self.budget_tokens() {
             Some(budget) => serde_json::json!({"enabled": true, "max_tokens": budget}),
             None => serde_json::json!({"enabled": true}),
@@ -76,6 +83,7 @@ impl ThinkingMode {
 
     pub fn as_str(self) -> &'static str {
         match self {
+            ThinkingMode::Instant => "instant",
             ThinkingMode::Low => "low",
             ThinkingMode::Medium => "medium",
             ThinkingMode::High => "high",
@@ -540,6 +548,7 @@ mod tests {
 
     #[test]
     fn thinking_mode_budgets_match_spec() {
+        assert_eq!(ThinkingMode::Instant.budget_tokens(), Some(0));
         assert_eq!(ThinkingMode::Low.budget_tokens(), Some(2_048));
         assert_eq!(ThinkingMode::Medium.budget_tokens(), Some(4_096));
         assert_eq!(ThinkingMode::High.budget_tokens(), Some(8_192));
@@ -570,12 +579,17 @@ mod tests {
 
     #[test]
     fn thinking_mode_max_tokens_leave_room_for_answer() {
+        assert_eq!(ThinkingMode::Instant.max_completion_tokens(), 4_096);
         assert_eq!(ThinkingMode::Low.max_completion_tokens(), 2_048 + 4_096);
         assert_eq!(ThinkingMode::Max.max_completion_tokens(), 32_768);
     }
 
     #[test]
     fn reasoning_field_caps_bounded_modes_only() {
+        assert_eq!(
+            ThinkingMode::Instant.reasoning_field(),
+            serde_json::json!({"enabled": false})
+        );
         assert_eq!(
             ThinkingMode::Medium.reasoning_field(),
             serde_json::json!({"enabled": true, "max_tokens": 4096})

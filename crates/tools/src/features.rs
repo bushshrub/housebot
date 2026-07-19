@@ -15,7 +15,7 @@ pub fn features_text() -> &'static str {
 `/token_leaderboard [timeframe] [metric]` — rank token usage daily, weekly, monthly, or all-time by total tokens or cache efficiency; also shows your rank
 `/tool_ban propose|vote|status` — vote on server-specific user restrictions for individual tools
 `/status` — show your current settings at a glance (effort, follow-up, personality)
-`/effort [level]` — set thinking depth: `low` (2k tokens) · `medium` (4k, default) · `high` (8k) · `xhigh` (16k) · `max` (unlimited)
+`/effort [level] [user]` — set thinking depth: `instant` (off) · `low` (2k tokens) · `medium` (4k, default) · `high` (8k) · `xhigh` (16k) · `max` (unlimited); bot administrators may target another user
 `/personalize personality [text]` — set (or clear) a personal tone/personality override
 `/personalize followup enabled [timeout]` — toggle unpinged follow-up replies in a server channel
 `/personalize proactive enabled` — opt in or out of proactive assistance
