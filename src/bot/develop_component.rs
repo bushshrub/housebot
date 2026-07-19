@@ -135,6 +135,19 @@ impl HouseBot {
                 .await;
             return;
         };
+        if agent == CodingAgent::Codex {
+            let _ = component
+                .create_response(
+                    &ctx.http,
+                    CreateInteractionResponse::Message(
+                        CreateInteractionResponseMessage::new()
+                            .content("Codex dispatch is temporarily disabled. Please choose another agent.")
+                            .ephemeral(true),
+                    ),
+                )
+                .await;
+            return;
+        }
         self.pending_jobs.with_job_mut(job_id, |j| {
             j.selection.agent = Some(agent);
             j.selection.model = None;
