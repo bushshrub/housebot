@@ -209,8 +209,9 @@ pub(crate) fn data_command_definition() -> CreateCommand {
         )
 }
 
-pub(crate) async fn register_slash_commands(ctx: &Context) {
-    // Register the /config global slash command (bot configuration, configurers only).
+pub(crate) async fn register_slash_commands(ctx: &Context, guild_ids: &[GuildId]) {
+    let mut commands: Vec<CreateCommand> = Vec::new();
+    // The /config global slash command (bot configuration, configurers only).
     let config_cmd = CreateCommand::new("config")
         .description("Configure the bot (authorized configurers only)")
         // ── followup subcommand (global proactive kill-switch) ───────────
@@ -319,11 +320,9 @@ pub(crate) async fn register_slash_commands(ctx: &Context) {
             ),
         );
 
-    if let Err(e) = Command::create_global_command(&ctx.http, config_cmd).await {
-        tracing::error!("Failed to register /config slash command: {e}");
-    }
-    // Register the /server-config global slash command (server administrators
-    // and bot configurers).
+    commands.push(config_cmd);
+    // The /server-config global slash command (server administrators and bot
+    // configurers).
     let server_config_cmd = CreateCommand::new("server-config")
         .description("Configure server-scoped bot settings (server administrators and configurers)")
         // ── channel subcommand group ─────────────────────────────────────
@@ -459,9 +458,7 @@ pub(crate) async fn register_slash_commands(ctx: &Context) {
                 .required(true),
             ),
         );
-    if let Err(e) = Command::create_global_command(&ctx.http, server_config_cmd).await {
-        tracing::error!("Failed to register /server-config slash command: {e}");
-    }
+    commands.push(server_config_cmd);
     let personalize_cmd = CreateCommand::new("personalize")
         .description("Personal bot settings any user can change")
         .add_option(
@@ -511,9 +508,7 @@ pub(crate) async fn register_slash_commands(ctx: &Context) {
                 .required(true),
             ),
         );
-    if let Err(e) = Command::create_global_command(&ctx.http, personalize_cmd).await {
-        tracing::error!("Failed to register /personalize slash command: {e}");
-    }
+    commands.push(personalize_cmd);
     let labs_cmd = CreateCommand::new("labs")
         .description("Enable experimental bot features")
         .add_option(CreateCommandOption::new(
@@ -536,9 +531,7 @@ pub(crate) async fn register_slash_commands(ctx: &Context) {
                 .required(true),
             ),
         );
-    if let Err(e) = Command::create_global_command(&ctx.http, labs_cmd).await {
-        tracing::error!(target: "housebot::labs::registration", "Failed to register /labs slash command: {e}");
-    }
+    commands.push(labs_cmd);
     let mut effort_level_option = CreateCommandOption::new(
         CommandOptionType::String,
         "level",
@@ -551,9 +544,7 @@ pub(crate) async fn register_slash_commands(ctx: &Context) {
     let effort_cmd = CreateCommand::new("effort")
         .description("Set how much thinking the model does before replying")
         .add_option(effort_level_option);
-    if let Err(e) = Command::create_global_command(&ctx.http, effort_cmd).await {
-        tracing::error!("Failed to register /effort slash command: {e}");
-    }
+    commands.push(effort_cmd);
     let tool_ban_cmd = CreateCommand::new("tool_ban")
         .description("Propose and vote on user-specific tool restrictions")
         .add_option(
@@ -604,9 +595,7 @@ pub(crate) async fn register_slash_commands(ctx: &Context) {
             "status",
             "Show active bans and open proposals",
         ));
-    if let Err(error) = Command::create_global_command(&ctx.http, tool_ban_cmd).await {
-        tracing::error!(%error, "Failed to register /tool_ban slash command");
-    }
+    commands.push(tool_ban_cmd);
     let tool_restore_cmd = CreateCommand::new("tool_restore")
         .description("Propose and vote on restoring tool access for a restricted user")
         .add_option(
@@ -657,9 +646,7 @@ pub(crate) async fn register_slash_commands(ctx: &Context) {
             "status",
             "Show active bans and open restore proposals",
         ));
-    if let Err(error) = Command::create_global_command(&ctx.http, tool_restore_cmd).await {
-        tracing::error!(%error, "Failed to register /tool_restore slash command");
-    }
+    commands.push(tool_restore_cmd);
     let lua_cmd = CreateCommand::new("lua")
             .description(
                 "Run a sandboxed Lua script; use graph.node/edge to render a diagram (requires the Scripting role)",
@@ -672,9 +659,7 @@ pub(crate) async fn register_slash_commands(ctx: &Context) {
                 )
                 .required(true),
             );
-    if let Err(e) = Command::create_global_command(&ctx.http, lua_cmd.clone()).await {
-        tracing::error!("Failed to register /lua slash command: {e}");
-    }
+    commands.push(lua_cmd.clone());
     let guild_id = match std::env::var("DEPLOYMENT_GUILD_ID") {
         Ok(value) => match value.parse::<u64>() {
             Ok(id) if id != 0 => Some(id),
@@ -706,7 +691,7 @@ pub(crate) async fn register_slash_commands(ctx: &Context) {
         }
     }
 
-    for command in [
+    commands.extend([
         CreateCommand::new("help").description("Show all available commands"),
         CreateCommand::new("commit").description("Show the bot's running commit hash"),
         CreateCommand::new("model").description("Show information about the current model"),
@@ -761,9 +746,29 @@ pub(crate) async fn register_slash_commands(ctx: &Context) {
                 ),
             ),
         storage_command_definition(),
-    ] {
+    ]);
+
+    for command in commands.clone() {
         if let Err(e) = Command::create_global_command(&ctx.http, command).await {
             tracing::error!("Failed to register slash command: {e}");
+        }
+    }
+
+    // Re-apply the full command set in every guild the bot is in, so command
+    // changes take effect immediately and stale guild commands are replaced
+    // (global registration alone can take up to an hour to propagate).
+    for guild_id in guild_ids {
+        match guild_id.set_commands(&ctx.http, commands.clone()).await {
+            Ok(registered) => tracing::info!(
+                guild_id = guild_id.get(),
+                commands = registered.len(),
+                "Reinitialized guild slash commands"
+            ),
+            Err(error) => tracing::error!(
+                guild_id = guild_id.get(),
+                %error,
+                "Failed to reinitialize guild slash commands"
+            ),
         }
     }
 
