@@ -106,7 +106,7 @@ talking about'. mode=search finds messages by regex pattern — use it when a us
 specific topic, keyword, or person, e.g. 'what did hexagone say about X'. mode=before/after/around \
 return messages positioned relative to a specific message_id — use these when the user replies to \
 a message and you need the conversation near it.\n\
-- find_discord_users — Fuzzy-resolve a username, nickname, or user ID to users seen in the current channel. Matching is case-insensitive, and each whitespace-separated word is matched independently (e.g. \"rice farmer\" finds users with \"rice\" OR \"farmer\" in their name/nick).\n\
+- find_discord_users — Fuzzy-resolve a username, nickname, or user ID to users seen in the current channel. Matching is case-insensitive, ignores punctuation, and tolerates minor typos via Levenshtein distance. Each whitespace-separated word is matched independently (e.g. \"rice farmer\" finds users with \"rice\" OR \"farmer\" in their name/nick).\n\
 - get_discord_user — Look up a Discord user's profile by their user ID (username, display name, \
 account creation date, bot status).\n\
 - get_lua_docs — Return the full API reference for the Lua scripting sandbox (libraries, \

@@ -177,6 +177,39 @@ impl ChannelLog {
     }
 }
 
+fn normalize(s: &str) -> String {
+    s.chars()
+        .filter(|c| c.is_alphanumeric() || c.is_whitespace())
+        .collect::<String>()
+        .to_lowercase()
+}
+
+fn fuzzy_match_word(word: &str, target: &str) -> bool {
+    let word_norm = normalize(word);
+    let target_norm = normalize(target);
+
+    if word_norm.is_empty() {
+        return true;
+    }
+
+    if target_norm.contains(&word_norm) {
+        return true;
+    }
+
+    let wlen = word_norm.len();
+    if wlen < 4 {
+        return false;
+    }
+    let max_dist = if wlen < 6 {
+        1
+    } else if wlen < 8 {
+        2
+    } else {
+        3
+    };
+    strsim::levenshtein(&word_norm, &target_norm) <= max_dist
+}
+
 fn find_authors_sync(
     path: &Path,
     query: &str,
@@ -206,7 +239,11 @@ fn find_authors_sync(
             },
         );
     }
-    let query_words: Vec<&str> = query.split_whitespace().filter(|w| !w.is_empty()).collect();
+    let query_words: Vec<String> = query
+        .split_whitespace()
+        .filter(|w| !w.is_empty())
+        .map(normalize)
+        .collect();
     let mut matches: Vec<KnownAuthor> = authors
         .into_values()
         .filter(|author| {
@@ -214,12 +251,12 @@ fn find_authors_sync(
                 return true;
             }
             query_words.iter().any(|word| {
-                author.user_id.contains(*word)
-                    || author.username.to_lowercase().contains(word)
+                fuzzy_match_word(word, &author.user_id)
+                    || fuzzy_match_word(word, &author.username)
                     || author
                         .nick
                         .as_deref()
-                        .is_some_and(|nick| nick.to_lowercase().contains(word))
+                        .is_some_and(|nick| fuzzy_match_word(word, nick))
             })
         })
         .collect();
@@ -375,6 +412,57 @@ mod tests {
         assert_eq!(authors.len(), 1);
         assert_eq!(authors[0].username, "alice_new");
         assert_eq!(authors[0].nick.as_deref(), Some("Ali"));
+    }
+
+    #[tokio::test]
+    async fn find_authors_ignores_punctuation_in_query() {
+        let (_t, log) = store();
+        log.append(1, 10, "alice_dev", Some("Alice"), "hello").await;
+        log.append(1, 11, "bob_builder", Some("Bob"), "hi").await;
+
+        // Query with punctuation should still match
+        let results = log.find_authors(1, "alice!", 10).await.unwrap();
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].user_id, "10");
+
+        let results = log.find_authors(1, "bob?", 10).await.unwrap();
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].user_id, "11");
+    }
+
+    #[tokio::test]
+    async fn find_authors_handles_typos_via_levenshtein() {
+        let (_t, log) = store();
+        log.append(1, 10, "alice_dev", Some("Alice"), "hello").await;
+        log.append(1, 11, "jonathan", Some("Jon"), "hi").await;
+        log.append(1, 12, "katherine", Some("Kat"), "hey").await;
+
+        // "jonathin" is 1 edit from "jonathan" (username)
+        let results = log.find_authors(1, "jonathin", 10).await.unwrap();
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].user_id, "11");
+
+        // "katherina" is 1 edit from "katherine" (username)
+        let results = log.find_authors(1, "katherina", 10).await.unwrap();
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].user_id, "12");
+    }
+
+    #[tokio::test]
+    async fn find_authors_ignores_punctuation_in_stored_names() {
+        let (_t, log) = store();
+        log.append(1, 10, "alice.dev", Some("Alice"), "hello").await;
+        log.append(1, 11, "bob_smith", Some("Bob-Smith"), "hi")
+            .await;
+
+        // Query without punctuation should match stored names that have punctuation
+        let results = log.find_authors(1, "alicedev", 10).await.unwrap();
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].user_id, "10");
+
+        let results = log.find_authors(1, "bobsmith", 10).await.unwrap();
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].user_id, "11");
     }
 
     #[tokio::test]
