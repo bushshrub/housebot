@@ -23,8 +23,14 @@ fn deploy_plan_is_scoped_to_a_valid_sha() {
         stages,
         vec![
             DeploymentStage::PullHousebotImage,
+            DeploymentStage::PullSandboxDaemonImage,
+            DeploymentStage::PullSandboxImage,
             DeploymentStage::RunDatabaseMigrations,
             DeploymentStage::RemovePreviousContainer,
+            DeploymentStage::RemovePreviousSandboxDaemon,
+            DeploymentStage::CreateSandboxSocketVolume,
+            DeploymentStage::StartSandboxDaemon,
+            DeploymentStage::CheckSandboxDaemon,
             DeploymentStage::StartRequestedImage,
             DeploymentStage::CheckContainerState,
         ]

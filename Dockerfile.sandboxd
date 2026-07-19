@@ -1,0 +1,7 @@
+# sandboxd is a separate sidecar: it owns Docker access and shares only its
+# Unix socket with the main Housebot container.
+FROM docker:27-cli
+
+COPY dist/sandboxd /usr/local/bin/sandboxd
+
+CMD ["sandboxd"]

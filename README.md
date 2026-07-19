@@ -86,6 +86,11 @@ Housebot  →  typed request  →  sandboxd  →  docker run --runtime=runsc  �
 The bot starts and operates normally when `sandboxd` is unavailable; only the
 sandbox tools return an error.
 
+Production deployments do not require an extra Compose service. The deployment
+bot pulls and starts the `sandboxd` sidecar, creates a named volume for its Unix
+socket, and mounts only that socket volume into Housebot. Disposable code
+containers continue to run with `HOUSEBOT_SANDBOX_RUNTIME=runsc` by default.
+
 The crate is split into small, individually unit-tested modules:
 
 ```

@@ -82,6 +82,7 @@ struct DeploymentBot {
 }
 
 const HOUSE_CHATBOT_CONTAINER: &str = "house-chatbot";
+const SANDBOXD_CONTAINER: &str = "housebot-sandboxd";
 
 mod docker;
 mod handler;
@@ -117,8 +118,11 @@ impl DeploymentBot {
         let main = sha
             .map(|sha| format!("ghcr.io/bushshrub/housebot:sha-{sha}"))
             .unwrap_or_else(|| "ghcr.io/bushshrub/housebot:latest".into());
+        let sandboxd = sha
+            .map(|sha| format!("ghcr.io/bushshrub/housebot/sandboxd:sha-{sha}"))
+            .unwrap_or_else(|| "ghcr.io/bushshrub/housebot/sandboxd:latest".into());
         let previous = self.previous_image.read().await.clone();
-        let mut keep = vec![main.as_str()];
+        let mut keep = vec![main.as_str(), sandboxd.as_str()];
         if let Some(previous) = previous.as_deref() {
             keep.push(previous);
         }
@@ -500,14 +504,16 @@ async fn shutdown_signal() {
 }
 
 async fn shutdown_main_bot() {
-    tracing::info!("Stopping main house-chatbot container");
-    if let Err(error) = run_docker(&["stop", "--time", "10", HOUSE_CHATBOT_CONTAINER]).await {
-        tracing::warn!("Could not stop main house-chatbot container: {error}");
+    tracing::info!("Stopping managed housebot containers");
+    for container in [HOUSE_CHATBOT_CONTAINER, SANDBOXD_CONTAINER] {
+        if let Err(error) = run_docker(&["stop", "--time", "10", container]).await {
+            tracing::warn!(container, "Could not stop managed container: {error}");
+        }
+        if let Err(error) = run_docker(&["rm", "--force", container]).await {
+            tracing::warn!(container, "Could not remove managed container: {error}");
+        }
     }
-    if let Err(error) = run_docker(&["rm", "--force", HOUSE_CHATBOT_CONTAINER]).await {
-        tracing::warn!("Could not remove main house-chatbot container: {error}");
-    }
-    tracing::info!("Main house-chatbot container stopped");
+    tracing::info!("Managed housebot containers stopped");
 }
 
 fn env_u64(name: &str) -> anyhow::Result<u64> {
