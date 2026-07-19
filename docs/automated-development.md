@@ -87,26 +87,17 @@ Agent and model combinations are defined in `.github/agents/catalog.json`. That 
 
 ---
 
-## Runner requirements
+## Dispatch environment
 
-The `housebot-agent` self-hosted runner needs:
+The Claude Code and OpenCode dispatch workflows run on GitHub-hosted
+`ubuntu-latest` runners. They do not depend on the `housebot-agent` self-hosted
+runner, locally installed agent CLIs, or persisted OAuth state.
 
 | Requirement | Notes |
 |---|---|
-| GitHub Actions runner | Registered with the `housebot-agent` label |
-| `claude` CLI | Logged in via OAuth (`~/.claude/`) |
-| `opencode` CLI | Installed; uses `NVIDIA_API_KEY` at runtime |
-| `python3` | For catalog validation |
-| `git` | Standard |
-| `gh` | GitHub CLI, authenticated |
-
-**The runner account must NOT have access to:**
-- Housebot production `.env` / `docker-compose.yml`
-- Discord bot token
-- Housebot GitHub App private key
-- Production Docker socket
-- Deployment SSH keys
-- Any unrelated household infrastructure credentials
+| `CLAUDE_CODE_OAUTH_TOKEN` | Repository secret consumed by the Claude Code action |
+| `CONTEXT7_API_KEY` | Repository secret consumed by the OpenCode action when configured |
+| `GITHUB_TOKEN` | Built-in workflow token used to access the repository and open the PR |
 
 ---
 
@@ -143,9 +134,12 @@ Legacy label definitions may still exist for older jobs; new dispatches do not d
 
 ---
 
-## Runner health check
+## Self-hosted runner health check
 
-`.github/workflows/check-agent-runner.yml` runs daily at 09:00 UTC and verifies that `claude`, `opencode`, `python3`, and `git` are all available on the runner. Failures appear in the Actions tab.
+`.github/workflows/check-agent-runner.yml` is a separate diagnostic for the
+optional `housebot-agent` self-hosted runner. It is not used by the Claude Code
+or OpenCode dispatch workflows and only verifies tools installed on that
+runner.
 
 ---
 
