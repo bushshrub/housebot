@@ -48,6 +48,7 @@ jobs:
           issue_number: ${{ inputs.issue_number }}
           prompt: ${{ inputs.prompt }}
         env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           CONTEXT7_API_KEY: ${{ secrets.CONTEXT7_API_KEY }}
           OPENCODE_CONFIG_CONTENT: |
             {
