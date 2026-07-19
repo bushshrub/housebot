@@ -85,9 +85,11 @@ impl HouseBot {
 
         let reporter = self.agent.reporter();
         let mut inputs = serde_json::Map::new();
+        // The workflow_dispatch API rejects non-string input values with 422,
+        // even for inputs declared `type: number` in the workflow.
         inputs.insert(
             "issue_number".into(),
-            serde_json::Value::Number(serde_json::Number::from(spec.issue_number)),
+            serde_json::Value::String(spec.issue_number.to_string()),
         );
         inputs.insert(
             "prompt".into(),
