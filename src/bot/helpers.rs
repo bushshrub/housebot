@@ -256,20 +256,30 @@ pub(crate) async fn respond_ephemeral(
 /// Scan text for Discord mention patterns (`<@ID>`) and return unique user IDs,
 /// excluding the bot's own ID.
 pub(crate) fn extract_mentioned_users(text: &str, bot_id: u64) -> Vec<u64> {
-    text.split('<')
-        .filter_map(|part| {
-            let remaining = if let Some(stripped) = part.strip_prefix("@!") {
-                stripped
-            } else {
-                part.strip_prefix('@')?
-            };
-            let id_str = remaining.split('>').next()?;
-            id_str.parse::<u64>().ok()
-        })
+    mentioned_user_ids(text)
         .filter(|id| *id != bot_id)
         .collect::<std::collections::HashSet<_>>()
         .into_iter()
         .collect()
+}
+
+/// Check raw message content for a specific Discord user mention. This is a
+/// fallback for connector-originated events that omit the structured mentions
+/// array while preserving the canonical `<@ID>` token in message content.
+pub(crate) fn content_mentions_user(text: &str, user_id: u64) -> bool {
+    mentioned_user_ids(text).any(|id| id == user_id)
+}
+
+fn mentioned_user_ids(text: &str) -> impl Iterator<Item = u64> + '_ {
+    text.split('<').filter_map(|part| {
+        let remaining = if let Some(stripped) = part.strip_prefix("@!") {
+            stripped
+        } else {
+            part.strip_prefix('@')?
+        };
+        let id_str = remaining.split('>').next()?;
+        id_str.parse::<u64>().ok()
+    })
 }
 
 pub(crate) const RETIRED_SLASH_COMMANDS: &[&str] = &[

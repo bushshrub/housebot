@@ -328,7 +328,9 @@ impl EventHandler for HouseBot {
 
     async fn message(&self, ctx: Context, msg: Message) {
         let bot_id = ctx.cache.current_user().id;
-        let is_mentioned = msg.mentions.iter().any(|u| u.id == bot_id);
+        let structured_mention = msg.mentions.iter().any(|u| u.id == bot_id);
+        let raw_mention = content_mentions_user(&msg.content, bot_id.get());
+        let is_mentioned = structured_mention || raw_mention;
         if msg.author.bot && msg.author.id != bot_id {
             // Other bots must explicitly @-mention us; unmentioned bot
             // messages are always ignored regardless of configuration.
@@ -343,6 +345,15 @@ impl EventHandler for HouseBot {
             if !respond {
                 return;
             }
+            tracing::info!(
+                target: "housebot::bot_mentions",
+                author_id = msg.author.id.get(),
+                guild_id = msg.guild_id.map(|id| id.get()),
+                channel_id = msg.channel_id.get(),
+                structured_mention,
+                raw_mention,
+                "Accepted explicit mention from another bot"
+            );
         }
         let content = msg.content.trim().to_string();
         let channel_id = msg.channel_id.get();

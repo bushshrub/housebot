@@ -125,6 +125,14 @@ fn lua_reply_fits_discord_limit() {
 }
 
 #[test]
+fn detects_raw_discord_user_mentions_from_connector_messages() {
+    assert!(content_mentions_user("hello <@123456>", 123456));
+    assert!(content_mentions_user("hello <@!123456>", 123456));
+    assert!(!content_mentions_user("hello @123456", 123456));
+    assert!(!content_mentions_user("hello <@1234567>", 123456));
+}
+
+#[test]
 fn global_history_combines_profile_and_channel_context() {
     let profile = UserProfile {
         nickname: "Ali".to_string(),
