@@ -548,7 +548,7 @@ impl Agent {
         }
     }
 
-    async fn handle_configure_bot(&self, args: &Value, mut access: AccessControl) -> String {
+    async fn handle_configure_bot(&self, args: &Value, access: AccessControl) -> String {
         let action = str_arg(args, "action");
         if action == "show" {
             let mut lines = vec![format!(
@@ -593,58 +593,91 @@ impl Agent {
         if target == 0 {
             return "Error: a valid user_id is required for this action.".to_string();
         }
-        let reply = match action {
+        // Validate inputs first, then apply each change through the store's
+        // serialized update so concurrent configuration changes are not lost.
+        let updated = match action {
             "allow_configurer" => {
                 if target == config::owner_id() {
-                    "The bot owner is always allowed to configure the bot.".to_string()
-                } else if access.configurer_ids.insert(target) {
-                    format!("<@{target}> can now configure the bot.")
-                } else {
-                    format!("<@{target}> is already allowed to configure the bot.")
+                    return "The bot owner is always allowed to configure the bot.".to_string();
                 }
+                self.access_control
+                    .update(|access| {
+                        if access.configurer_ids.insert(target) {
+                            format!("<@{target}> can now configure the bot.")
+                        } else {
+                            format!("<@{target}> is already allowed to configure the bot.")
+                        }
+                    })
+                    .await
             }
             "revoke_configurer" => {
                 if target == config::owner_id() {
                     return "Error: the bot owner is always allowed to configure the bot."
                         .to_string();
-                } else if access.configurer_ids.remove(&target) {
-                    format!("<@{target}> can no longer configure the bot.")
-                } else {
-                    format!("<@{target}> was not allowed to configure the bot.")
                 }
+                self.access_control
+                    .update(|access| {
+                        if access.configurer_ids.remove(&target) {
+                            format!("<@{target}> can no longer configure the bot.")
+                        } else {
+                            format!("<@{target}> was not allowed to configure the bot.")
+                        }
+                    })
+                    .await
             }
             "set_user_limit" => {
-                let cap = args
+                let cap = match args
                     .get("max_output_tokens")
                     .and_then(Value::as_u64)
                     .filter(|cap| *cap > 0)
-                    .map(|cap| cap as u32);
-                access
-                    .user_policies
-                    .entry(target)
-                    .or_default()
-                    .max_output_tokens = cap;
-                match cap {
-                    Some(cap) => format!("<@{target}>'s output is now capped at {cap} tokens."),
-                    None => format!("<@{target}>'s output token cap was removed."),
-                }
+                {
+                    None => None,
+                    Some(cap) => match u32::try_from(cap) {
+                        Ok(cap) => Some(cap),
+                        Err(_) => {
+                            return format!(
+                                "Error: max_output_tokens must be at most {}.",
+                                u32::MAX
+                            )
+                        }
+                    },
+                };
+                self.access_control
+                    .update(|access| {
+                        access
+                            .user_policies
+                            .entry(target)
+                            .or_default()
+                            .max_output_tokens = cap;
+                        match cap {
+                            Some(cap) => {
+                                format!("<@{target}>'s output is now capped at {cap} tokens.")
+                            }
+                            None => format!("<@{target}>'s output token cap was removed."),
+                        }
+                    })
+                    .await
             }
             "set_user_respond" => {
                 let Some(respond) = args.get("respond").and_then(Value::as_bool) else {
                     return "Error: 'respond' (true/false) is required for set_user_respond."
                         .to_string();
                 };
-                access.user_policies.entry(target).or_default().respond = respond;
-                if respond {
-                    format!("The bot will respond to <@{target}> again.")
-                } else {
-                    format!("The bot will no longer respond to <@{target}>.")
-                }
+                self.access_control
+                    .update(|access| {
+                        access.user_policies.entry(target).or_default().respond = respond;
+                        if respond {
+                            format!("The bot will respond to <@{target}> again.")
+                        } else {
+                            format!("The bot will no longer respond to <@{target}>.")
+                        }
+                    })
+                    .await
             }
             other => return format!("Error: unknown configure_bot action `{other}`."),
         };
-        match self.access_control.save(&access).await {
-            Ok(()) => reply,
+        match updated {
+            Ok(reply) => reply,
             Err(error) => {
                 tracing::error!(%error, "failed to save bot access control");
                 "Error: failed to save the bot configuration.".to_string()

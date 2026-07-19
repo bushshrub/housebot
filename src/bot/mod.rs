@@ -279,6 +279,13 @@ impl HouseBot {
         format!("New conversation started, {name}. Your previous conversation history has been cleared.")
     }
 
+    pub(crate) async fn server_proactive_allowed(&self, guild_id: Option<u64>) -> bool {
+        match guild_id {
+            Some(gid) => self.server_cfg.load(gid).await.proactive_allowed,
+            None => false,
+        }
+    }
+
     pub(crate) async fn proactive_cooldown_allows(&self, channel_id: u64, user_id: u64) -> bool {
         let now = Instant::now();
         let cooldown = Duration::from_secs(config::env_parse(

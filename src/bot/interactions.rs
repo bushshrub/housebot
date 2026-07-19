@@ -562,13 +562,8 @@ pub(crate) async fn handle_privacy_interaction(
             } else {
                 "disabled".to_string()
             };
-            let proactive = if cfg.proactive_assistance_enabled {
-                "enabled"
-            } else {
-                "disabled"
-            };
             format!(
-                "**Privacy settings:**\n• Deep memory: {deep_memory} (persistent facts across sessions)\n• Proactive assistance: {proactive} (bot may respond without ping)\n\nUse `/privacy deep_memory enabled:true` or `/privacy proactive enabled:false` to change."
+                "**Privacy settings:**\n• Deep memory: {deep_memory} (persistent facts across sessions)\n\nUse `/privacy deep_memory enabled:true` to change. Proactive assistance moved to `/personalize proactive`."
             )
         }
         Some("deep_memory") => {
@@ -599,30 +594,7 @@ pub(crate) async fn handle_privacy_interaction(
             }
         }
         Some("proactive") => {
-            let sub_opts = match &options[0].value {
-                serenity::all::CommandDataOptionValue::SubCommand(opts) => opts,
-                _ => return "Unexpected option structure.".into(),
-            };
-            let enabled =
-                sub_opts
-                    .iter()
-                    .find(|o| o.name == "enabled")
-                    .and_then(|o| match &o.value {
-                        serenity::all::CommandDataOptionValue::Boolean(b) => Some(*b),
-                        _ => None,
-                    });
-            let Some(enabled) = enabled else {
-                return "Please specify `enabled`.".into();
-            };
-            let mut cfg = user_cfg.load(author_id).await;
-            cfg.proactive_assistance_enabled = enabled;
-            if user_cfg.save(author_id, &cfg).await.is_err() {
-                return "Error: failed to save config.".into();
-            }
-            format!(
-                "✅ Proactive assistance {}.",
-                if enabled { "enabled" } else { "disabled" }
-            )
+            "Proactive assistance moved to `/personalize proactive enabled:<true|false>`.".into()
         }
         other => {
             format!("Unknown privacy option `{other:?}`. Use `/privacy` to see available options.")

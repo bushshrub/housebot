@@ -280,13 +280,14 @@ impl Agent {
                 Memory::default()
             }
         };
-        let access_control = match AccessControlStore::from_env().await {
-            Ok(store) => store,
-            Err(error) => {
-                tracing::warn!(%error, "PostgreSQL bot config unavailable, falling back to file-based access control");
-                AccessControlStore::default()
-            }
-        };
+        // Unlike memory, access control must not silently fall back to an
+        // empty volatile store — that would forget configurers and per-user
+        // policies (fail-open), so refuse to start instead.
+        let access_control = AccessControlStore::from_env().await.map_err(|error| {
+            anyhow::anyhow!(
+                "persistent access control initialization failed; refusing volatile fallback: {error}"
+            )
+        })?;
         let token_monitor = TokenMonitor::from_env().await.map_err(|error| {
             anyhow::anyhow!(
                 "persistent token monitor initialization failed; refusing volatile fallback: {error}"

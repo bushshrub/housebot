@@ -104,13 +104,24 @@ impl EventHandler for HouseBot {
             return;
         }
         let reply = match cmd.data.name.as_str() {
-            "config" => {
-                handle_config_interaction(
+            "config" => handle_config_interaction(&self.access, &cmd.data.options, user_id).await,
+            "server-config" => {
+                let is_server_admin = cmd
+                    .member
+                    .as_deref()
+                    .and_then(|member| member.permissions)
+                    .is_some_and(|permissions| permissions.administrator());
+                let authorized = is_server_admin
+                    || self
+                        .access
+                        .load()
+                        .await
+                        .is_configurer(user_id, config::owner_id());
+                handle_server_config_interaction(
                     &self.server_cfg,
-                    &self.access,
                     &cmd.data.options,
-                    user_id,
                     guild_id,
+                    authorized,
                 )
                 .await
             }
@@ -455,6 +466,7 @@ impl EventHandler for HouseBot {
             && !is_reply_to_bot
             && !is_reply_to_attachment
             && is_proactive_candidate(&content)
+            && self.server_proactive_allowed(guild_id).await
             && self.proactive_cooldown_allows(channel_id, user_id).await;
         if !(is_dm
             || is_mentioned

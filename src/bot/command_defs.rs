@@ -210,110 +210,9 @@ pub(crate) fn data_command_definition() -> CreateCommand {
 }
 
 pub(crate) async fn register_slash_commands(ctx: &Context) {
-    // Register the /config global slash command.
+    // Register the /config global slash command (bot configuration, configurers only).
     let config_cmd = CreateCommand::new("config")
-        .description("Configure bot settings")
-        // ── channel subcommand group ─────────────────────────────────────
-        .add_option(
-            CreateCommandOption::new(
-                CommandOptionType::SubCommandGroup,
-                "channel",
-                "Manage which channels the bot responds in (server-wide)",
-            )
-            .add_sub_option(CreateCommandOption::new(
-                CommandOptionType::SubCommand,
-                "list",
-                "Show the current channel allowlist",
-            ))
-            .add_sub_option(
-                CreateCommandOption::new(
-                    CommandOptionType::SubCommand,
-                    "add",
-                    "Add a channel to the allowlist",
-                )
-                .add_sub_option(
-                    CreateCommandOption::new(
-                        CommandOptionType::Channel,
-                        "channel",
-                        "The channel to allow",
-                    )
-                    .required(true),
-                ),
-            )
-            .add_sub_option(
-                CreateCommandOption::new(
-                    CommandOptionType::SubCommand,
-                    "remove",
-                    "Remove a channel from the allowlist",
-                )
-                .add_sub_option(
-                    CreateCommandOption::new(
-                        CommandOptionType::Channel,
-                        "channel",
-                        "The channel to remove",
-                    )
-                    .required(true),
-                ),
-            )
-            .add_sub_option(CreateCommandOption::new(
-                CommandOptionType::SubCommand,
-                "clear",
-                "Remove all channel restrictions (bot responds everywhere)",
-            )),
-        )
-        // ── leaderboard subcommand group ────────────────────────────────
-        .add_option(
-            CreateCommandOption::new(
-                CommandOptionType::SubCommandGroup,
-                "leaderboard",
-                "Configure token leaderboard access (administrators only)",
-            )
-            .add_sub_option(
-                CreateCommandOption::new(
-                    CommandOptionType::SubCommand,
-                    "visibility",
-                    "Set whether leaderboard responses are public, private, or restricted",
-                )
-                .add_sub_option(
-                    CreateCommandOption::new(
-                        CommandOptionType::String,
-                        "mode",
-                        "Leaderboard visibility mode",
-                    )
-                    .required(true)
-                    .add_string_choice("Public channel response", "public")
-                    .add_string_choice("Private response", "private")
-                    .add_string_choice("Restricted to roles", "restricted"),
-                ),
-            )
-            .add_sub_option(
-                CreateCommandOption::new(
-                    CommandOptionType::SubCommand,
-                    "role_add",
-                    "Allow a role to use the leaderboard in restricted mode",
-                )
-                .add_sub_option(
-                    CreateCommandOption::new(CommandOptionType::Role, "role", "Role to allow")
-                        .required(true),
-                ),
-            )
-            .add_sub_option(
-                CreateCommandOption::new(
-                    CommandOptionType::SubCommand,
-                    "role_remove",
-                    "Remove a role from restricted leaderboard access",
-                )
-                .add_sub_option(
-                    CreateCommandOption::new(CommandOptionType::Role, "role", "Role to remove")
-                        .required(true),
-                ),
-            )
-            .add_sub_option(CreateCommandOption::new(
-                CommandOptionType::SubCommand,
-                "role_list",
-                "List roles allowed to use the leaderboard",
-            )),
-        )
+        .description("Configure the bot (authorized configurers only)")
         // ── followup subcommand (global proactive kill-switch) ───────────
         .add_option(
             CreateCommandOption::new(
@@ -326,22 +225,6 @@ pub(crate) async fn register_slash_commands(ctx: &Context) {
                     CommandOptionType::Boolean,
                     "enabled",
                     "Whether proactive assistance is available to anyone",
-                )
-                .required(true),
-            ),
-        )
-        // ── bot_pings subcommand ───────────────────────────────────────────
-        .add_option(
-            CreateCommandOption::new(
-                CommandOptionType::SubCommand,
-                "bot_pings",
-                "Control whether the bot responds to @-mentions from other bots",
-            )
-            .add_sub_option(
-                CreateCommandOption::new(
-                    CommandOptionType::Boolean,
-                    "enabled",
-                    "Enable or disable responses to other bots",
                 )
                 .required(true),
             ),
@@ -438,6 +321,146 @@ pub(crate) async fn register_slash_commands(ctx: &Context) {
 
     if let Err(e) = Command::create_global_command(&ctx.http, config_cmd).await {
         tracing::error!("Failed to register /config slash command: {e}");
+    }
+    // Register the /server-config global slash command (server administrators
+    // and bot configurers).
+    let server_config_cmd = CreateCommand::new("server-config")
+        .description("Configure server-scoped bot settings (server administrators and configurers)")
+        // ── channel subcommand group ─────────────────────────────────────
+        .add_option(
+            CreateCommandOption::new(
+                CommandOptionType::SubCommandGroup,
+                "channel",
+                "Manage which channels the bot responds in (server-wide)",
+            )
+            .add_sub_option(CreateCommandOption::new(
+                CommandOptionType::SubCommand,
+                "list",
+                "Show the current channel allowlist",
+            ))
+            .add_sub_option(
+                CreateCommandOption::new(
+                    CommandOptionType::SubCommand,
+                    "add",
+                    "Add a channel to the allowlist",
+                )
+                .add_sub_option(
+                    CreateCommandOption::new(
+                        CommandOptionType::Channel,
+                        "channel",
+                        "The channel to allow",
+                    )
+                    .required(true),
+                ),
+            )
+            .add_sub_option(
+                CreateCommandOption::new(
+                    CommandOptionType::SubCommand,
+                    "remove",
+                    "Remove a channel from the allowlist",
+                )
+                .add_sub_option(
+                    CreateCommandOption::new(
+                        CommandOptionType::Channel,
+                        "channel",
+                        "The channel to remove",
+                    )
+                    .required(true),
+                ),
+            )
+            .add_sub_option(CreateCommandOption::new(
+                CommandOptionType::SubCommand,
+                "clear",
+                "Remove all channel restrictions (bot responds everywhere)",
+            )),
+        )
+        // ── leaderboard subcommand group ────────────────────────────────
+        .add_option(
+            CreateCommandOption::new(
+                CommandOptionType::SubCommandGroup,
+                "leaderboard",
+                "Configure token leaderboard access",
+            )
+            .add_sub_option(
+                CreateCommandOption::new(
+                    CommandOptionType::SubCommand,
+                    "visibility",
+                    "Set whether leaderboard responses are public, private, or restricted",
+                )
+                .add_sub_option(
+                    CreateCommandOption::new(
+                        CommandOptionType::String,
+                        "mode",
+                        "Leaderboard visibility mode",
+                    )
+                    .required(true)
+                    .add_string_choice("Public channel response", "public")
+                    .add_string_choice("Private response", "private")
+                    .add_string_choice("Restricted to roles", "restricted"),
+                ),
+            )
+            .add_sub_option(
+                CreateCommandOption::new(
+                    CommandOptionType::SubCommand,
+                    "role_add",
+                    "Allow a role to use the leaderboard in restricted mode",
+                )
+                .add_sub_option(
+                    CreateCommandOption::new(CommandOptionType::Role, "role", "Role to allow")
+                        .required(true),
+                ),
+            )
+            .add_sub_option(
+                CreateCommandOption::new(
+                    CommandOptionType::SubCommand,
+                    "role_remove",
+                    "Remove a role from restricted leaderboard access",
+                )
+                .add_sub_option(
+                    CreateCommandOption::new(CommandOptionType::Role, "role", "Role to remove")
+                        .required(true),
+                ),
+            )
+            .add_sub_option(CreateCommandOption::new(
+                CommandOptionType::SubCommand,
+                "role_list",
+                "List roles allowed to use the leaderboard",
+            )),
+        )
+        // ── bot_pings subcommand ─────────────────────────────────────────
+        .add_option(
+            CreateCommandOption::new(
+                CommandOptionType::SubCommand,
+                "bot_pings",
+                "Control whether the bot responds to @-mentions from other bots",
+            )
+            .add_sub_option(
+                CreateCommandOption::new(
+                    CommandOptionType::Boolean,
+                    "enabled",
+                    "Enable or disable responses to other bots",
+                )
+                .required(true),
+            ),
+        )
+        // ── proactive subcommand ─────────────────────────────────────────
+        .add_option(
+            CreateCommandOption::new(
+                CommandOptionType::SubCommand,
+                "proactive",
+                "Control whether proactive assistance is allowed in this server",
+            )
+            .add_sub_option(
+                CreateCommandOption::new(
+                    CommandOptionType::Boolean,
+                    "enabled",
+                    "Whether users may enable proactive assistance here",
+                )
+                .required(true),
+            ),
+        );
+    if let Err(e) = Command::create_global_command(&ctx.http, server_config_cmd).await {
+        tracing::error!("Failed to register /server-config slash command: {e}");
     }
     let personalize_cmd = CreateCommand::new("personalize")
         .description("Personal bot settings any user can change")
@@ -733,21 +756,6 @@ pub(crate) async fn register_slash_commands(ctx: &Context) {
                         CommandOptionType::Boolean,
                         "enabled",
                         "Enable or disable deep memory",
-                    )
-                    .required(true),
-                ),
-            )
-            .add_option(
-                CreateCommandOption::new(
-                    CommandOptionType::SubCommand,
-                    "proactive",
-                    "Toggle proactive assistance",
-                )
-                .add_sub_option(
-                    CreateCommandOption::new(
-                        CommandOptionType::Boolean,
-                        "enabled",
-                        "Enable or disable proactive assistance",
                     )
                     .required(true),
                 ),
