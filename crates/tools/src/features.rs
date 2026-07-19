@@ -16,17 +16,23 @@ pub fn features_text() -> &'static str {
 `/tool_ban propose|vote|status` — vote on server-specific user restrictions for individual tools
 `/status` — show your current settings at a glance (effort, follow-up, personality)
 `/effort [level]` — set thinking depth: `low` (2k tokens) · `medium` (4k, default) · `high` (8k) · `xhigh` (16k) · `max` (unlimited)
-`/config personality [text]` — set (or clear) a personal tone/personality override
-`/config followup enabled [timeout]` — toggle unpinged follow-up replies in a server channel
-`/config channel add|remove|list|clear` — restrict which channels the bot responds in
-`/config leaderboard visibility|role_add|role_remove|role_list` — administrators can make leaderboard responses public, private, or role-restricted
+`/personalize personality [text]` — set (or clear) a personal tone/personality override
+`/personalize followup enabled [timeout]` — toggle unpinged follow-up replies in a server channel
+`/personalize proactive enabled` — opt in or out of proactive assistance
+`/config access allow|revoke|list` — manage who may configure the bot (configurers only; the owner is always allowed)
+`/config user limit|respond|show` — per-user output-token caps and respond policies (configurers only)
+`/config proactive enabled` — globally enable or disable proactive assistance for all users (configurers only)
+`/server-config channel add|remove|list|clear` — restrict which channels the bot responds in (server admins and configurers)
+`/server-config leaderboard visibility|role_add|role_remove|role_list` — make leaderboard responses public, private, or role-restricted
+`/server-config bot_pings enabled` — toggle responses to other bots' @-mentions
+`/server-config proactive enabled` — allow or disallow proactive assistance in this server
 `/labs pagination enabled` — toggle paginated responses (experimental)
 `/commit` — show the running commit hash
 `/model` — show the current model name and context size
 `/data profile show|clear` — inspect your stored profile or clear learned profile data and memory
 `/data history show|clear` — inspect or clear your global conversation history
 `/data erase confirm:true` — permanently delete all your stored data, including archived conversations and token statistics
-`/privacy status|deep_memory|proactive` — view or change privacy and proactive-assistance settings
+`/privacy status|deep_memory` — view or change privacy settings
 `/storage memory show|search|clear` — inspect or clear persistent memory about you
 `/storage notes list|get|save|delete` — manage your named personal notes
 `/lua <script>` — run a sandboxed Lua script with `discord.send_message`, `discord.web_search`, `discord.jellyfin_search`, and `graph.node`/`graph.edge`/`graph.title` to render a flowchart or network diagram as an image (requires the Scripting role or higher, or guild administrator / bot owner)

@@ -214,11 +214,11 @@ pub(crate) async fn register_slash_commands(ctx: &Context, guild_ids: &[GuildId]
     // The /config global slash command (bot configuration, configurers only).
     let config_cmd = CreateCommand::new("config")
         .description("Configure the bot (authorized configurers only)")
-        // ── followup subcommand (global proactive kill-switch) ───────────
+        // ── proactive subcommand (global proactive kill-switch) ──────────
         .add_option(
             CreateCommandOption::new(
                 CommandOptionType::SubCommand,
-                "followup",
+                "proactive",
                 "Enable or disable proactive assistance for all users (configurers only)",
             )
             .add_sub_option(
