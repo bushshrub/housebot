@@ -145,12 +145,7 @@ impl EventHandler for DeploymentBot {
             let Some(sha) = component.data.custom_id.strip_prefix("deploy_confirm:") else {
                 return;
             };
-            if !rollback_allowed(
-                self.owner_id,
-                component.user.id.get(),
-                component.channel_id.get(),
-                self.channel_id,
-            ) {
+            if !owner_allowed(self.owner_id, component.user.id.get()) {
                 let response = CreateInteractionResponse::Message(
                     CreateInteractionResponseMessage::new()
                         .content("You are not allowed to deploy.")
@@ -241,15 +236,10 @@ impl EventHandler for DeploymentBot {
             return;
         };
         if command.data.name == "deploy" {
-            if !rollback_allowed(
-                self.owner_id,
-                command.user.id.get(),
-                command.channel_id.get(),
-                self.channel_id,
-            ) {
+            if !owner_allowed(self.owner_id, command.user.id.get()) {
                 let response = CreateInteractionResponse::Message(
                     CreateInteractionResponseMessage::new()
-                        .content("Only the configured owner can deploy from this channel.")
+                        .content("Only the configured owner can deploy.")
                         .ephemeral(true),
                 );
                 let _ = command.create_response(&ctx.http, response).await;
@@ -324,15 +314,10 @@ impl EventHandler for DeploymentBot {
             return;
         }
         if command.data.name == "update" {
-            if !rollback_allowed(
-                self.owner_id,
-                command.user.id.get(),
-                command.channel_id.get(),
-                self.channel_id,
-            ) {
+            if !owner_allowed(self.owner_id, command.user.id.get()) {
                 let response = CreateInteractionResponse::Message(
                     CreateInteractionResponseMessage::new()
-                        .content("Only the configured owner can update from this channel.")
+                        .content("Only the configured owner can update.")
                         .ephemeral(true),
                 );
                 let _ = command.create_response(&ctx.http, response).await;

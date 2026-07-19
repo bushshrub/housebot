@@ -11,6 +11,13 @@ fn rollback_is_owner_and_channel_scoped() {
 }
 
 #[test]
+fn deploy_and_update_are_owner_scoped_without_webhook_channel_coupling() {
+    assert!(owner_allowed(10, 10));
+    assert!(!owner_allowed(10, 11));
+    assert!(!owner_allowed(0, 0));
+}
+
+#[test]
 fn invalid_numeric_environment_value_is_rejected() {
     std::env::set_var("DEPLOYMENT_BOT_TEST_ID", "not-a-number");
     let error = env_u64("DEPLOYMENT_BOT_TEST_ID").unwrap_err().to_string();
