@@ -336,10 +336,15 @@ impl EventHandler for HouseBot {
 
     async fn message(&self, ctx: Context, msg: Message) {
         let bot_id = ctx.cache.current_user().id;
+        if msg.author.id == bot_id {
+            // Never respond to our own messages, e.g. a reply chain off our
+            // own "Thinking..." progress updates would otherwise loop forever.
+            return;
+        }
         let structured_mention = msg.mentions.iter().any(|u| u.id == bot_id);
         let raw_mention = content_mentions_user(&msg.content, bot_id.get());
         let is_mentioned = structured_mention || raw_mention;
-        if msg.author.bot && msg.author.id != bot_id {
+        if msg.author.bot {
             // Other bots must explicitly @-mention us; unmentioned bot
             // messages are always ignored regardless of configuration.
             if !is_mentioned {
