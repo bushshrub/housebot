@@ -214,8 +214,14 @@ impl Agent {
                 messages.push(tool_msg.clone());
                 turn_messages.push(tool_msg);
 
-                if matches!(tc.name.as_str(), "web_search" | "deep_research" | "run_lua")
-                    && search_rate_limited(&content)
+                if matches!(
+                    tc.name.as_str(),
+                    "web_search"
+                        | "deep_research"
+                        | "run_lua"
+                        | "search_location"
+                        | "lookup_coordinates"
+                ) && search_rate_limited(&content)
                 {
                     rate_limited = true;
                 }
@@ -500,6 +506,7 @@ impl Agent {
                         }
 
                         let gid = guild_id.unwrap_or(0);
+                        let mut skill_rate_limited = false;
                         for tc in &completion.tool_calls {
                             let tc_args: Value =
                                 serde_json::from_str(&tc.arguments).unwrap_or(json!({}));
@@ -554,11 +561,26 @@ impl Agent {
                                     text.clone()
                                 }
                             };
+                            if matches!(
+                                tc.name.as_str(),
+                                "web_search"
+                                    | "deep_research"
+                                    | "run_lua"
+                                    | "search_location"
+                                    | "lookup_coordinates"
+                            ) && search_rate_limited(&content)
+                            {
+                                skill_rate_limited = true;
+                            }
                             messages.push(json!({
                                 "role": "tool",
                                 "tool_call_id": tc.id,
                                 "content": content,
                             }));
+                        }
+                        if skill_rate_limited {
+                            break "A search or geocoding service returned a rate-limit error. Please try again in a few minutes."
+                                .to_string();
                         }
                     };
 

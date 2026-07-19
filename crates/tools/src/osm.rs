@@ -32,7 +32,9 @@ impl Default for OsmClient {
 
 impl OsmClient {
     /// Enforce the 1-request-per-second Nominatim policy.
-    async fn rate_limit(&self) {
+    /// Returns a guard held for the caller's request lifetime so that the
+    /// ordering is preserved even if a task is stalled before `.send().await`.
+    async fn rate_limit(&self) -> tokio::sync::MutexGuard<'_, Option<Instant>> {
         let mut last = self.last_request.lock().await;
         if let Some(t) = *last {
             let elapsed = t.elapsed();
@@ -41,11 +43,12 @@ impl OsmClient {
             }
         }
         *last = Some(Instant::now());
+        last
     }
 
     /// Search for a location by name (forward geocoding).
     pub async fn search_location(&self, query: &str, limit: usize) -> String {
-        self.rate_limit().await;
+        let _guard = self.rate_limit().await;
         let limit = limit.clamp(1, MAX_SEARCH_LIMIT);
         let limit_str = limit.to_string();
         let url = Url::parse_with_params(
@@ -74,7 +77,7 @@ impl OsmClient {
 
     /// Reverse geocode coordinates to an address.
     pub async fn lookup_coordinates(&self, lat: f64, lon: f64) -> String {
-        self.rate_limit().await;
+        let _guard = self.rate_limit().await;
         let lat_str = lat.to_string();
         let lon_str = lon.to_string();
         let url = Url::parse_with_params(

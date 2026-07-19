@@ -305,14 +305,29 @@ impl Agent {
                     .search_location(str_arg(args, "query"), u64_arg(args, "limit", 3) as usize)
                     .await,
             ),
-            "lookup_coordinates" => ToolOutcome::Text(
-                self.osm_client
-                    .lookup_coordinates(
-                        args.get("latitude").and_then(Value::as_f64).unwrap_or(0.0),
-                        args.get("longitude").and_then(Value::as_f64).unwrap_or(0.0),
-                    )
-                    .await,
-            ),
+            "lookup_coordinates" => {
+                let Some(latitude) = args
+                    .get("latitude")
+                    .and_then(Value::as_f64)
+                    .filter(|value| (-90.0..=90.0).contains(value))
+                else {
+                    return ToolOutcome::Text("Error: latitude must be between -90 and 90.".into());
+                };
+                let Some(longitude) = args
+                    .get("longitude")
+                    .and_then(Value::as_f64)
+                    .filter(|value| (-180.0..=180.0).contains(value))
+                else {
+                    return ToolOutcome::Text(
+                        "Error: longitude must be between -180 and 180.".into(),
+                    );
+                };
+                ToolOutcome::Text(
+                    self.osm_client
+                        .lookup_coordinates(latitude, longitude)
+                        .await,
+                )
+            }
             "create_skill" => ToolOutcome::Text(
                 tools::create_skill::dispatch_create_skill(&self.skills, user_id, args).await,
             ),
