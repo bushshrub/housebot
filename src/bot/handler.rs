@@ -105,21 +105,17 @@ impl EventHandler for HouseBot {
         }
         let reply = match cmd.data.name.as_str() {
             "config" => {
-                let is_admin = (config::owner_id() != 0 && config::owner_id() == user_id)
-                    || cmd
-                        .member
-                        .as_deref()
-                        .and_then(|member| member.permissions)
-                        .is_some_and(|permissions| permissions.administrator());
                 handle_config_interaction(
                     &self.server_cfg,
-                    &self.user_cfg,
+                    &self.access,
                     &cmd.data.options,
                     user_id,
                     guild_id,
-                    is_admin,
                 )
                 .await
+            }
+            "personalize" => {
+                handle_personalize_interaction(&self.user_cfg, &cmd.data.options, user_id).await
             }
             "labs" => handle_labs_interaction(&self.user_cfg, &cmd.data.options, user_id).await,
             "effort" => handle_effort_interaction(&self.user_cfg, &cmd.data.options, user_id).await,
@@ -359,6 +355,13 @@ impl EventHandler for HouseBot {
         let channel_id = msg.channel_id.get();
         let user_id = msg.author.id.get();
 
+        // Configurers (and the owner) always get through; other users can be
+        // silenced entirely by a configurer-set policy.
+        let access = self.access.load().await;
+        if !access.should_respond(user_id, config::owner_id()) {
+            return;
+        }
+
         // ── commands ──
         if msg.content.starts_with("!skill") {
             tracing::info!(target: "housebot::commands", user_id, "!skill command received");
@@ -446,6 +449,7 @@ impl EventHandler for HouseBot {
         };
 
         let proactive = !is_dm
+            && access.proactive_enabled
             && user_config.proactive_assistance_enabled
             && !is_mentioned
             && !is_reply_to_bot

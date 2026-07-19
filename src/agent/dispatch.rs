@@ -452,6 +452,19 @@ impl Agent {
                 }
             }
             "get_lua_docs" => ToolOutcome::Text(LUA_DOCS.to_string()),
+            // Offered only to configurers at the tool-definition layer, but
+            // re-checked here as a defence-in-depth measure.
+            "configure_bot" => {
+                let caller = user_id.parse::<u64>().unwrap_or(0);
+                let access = self.access_control.load().await;
+                if !access.is_configurer(caller, config::owner_id()) {
+                    return ToolOutcome::Text(
+                        "Error: permission denied — only users authorized to configure the bot can use this tool."
+                            .into(),
+                    );
+                }
+                ToolOutcome::Text(self.handle_configure_bot(args, access).await)
+            }
             // ── Sandbox tools (owner-only; enforced at the tool-definition
             //    layer, but re-checked here as a defence-in-depth measure) ──
             name if name.starts_with("sandbox_") => {
@@ -532,6 +545,110 @@ impl Agent {
                 ToolOutcome::Text(format!("Unknown tool: {name}"))
             }
             _ => ToolOutcome::Text(format!("Unknown tool: {name}")),
+        }
+    }
+
+    async fn handle_configure_bot(&self, args: &Value, mut access: AccessControl) -> String {
+        let action = str_arg(args, "action");
+        if action == "show" {
+            let mut lines = vec![format!(
+                "Owner (always allowed): {}",
+                match config::owner_id() {
+                    0 => "not configured".to_string(),
+                    id => format!("<@{id}>"),
+                }
+            )];
+            if access.configurer_ids.is_empty() {
+                lines.push("Additional configurers: none".to_string());
+            } else {
+                let mut ids: Vec<_> = access.configurer_ids.iter().collect();
+                ids.sort_unstable();
+                lines.push(format!(
+                    "Additional configurers: {}",
+                    ids.iter()
+                        .map(|id| format!("<@{id}>"))
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                ));
+            }
+            if access.user_policies.is_empty() {
+                lines.push("User policies: none".to_string());
+            } else {
+                let mut policies: Vec<_> = access.user_policies.iter().collect();
+                policies.sort_unstable_by_key(|(id, _)| **id);
+                for (id, policy) in policies {
+                    let limit = policy
+                        .max_output_tokens
+                        .map_or("no limit".to_string(), |cap| format!("{cap} tokens"));
+                    lines.push(format!(
+                        "<@{id}>: max output {limit}, responds: {}",
+                        policy.respond
+                    ));
+                }
+            }
+            return lines.join("\n");
+        }
+
+        let target: u64 = str_arg(args, "user_id").parse().unwrap_or(0);
+        if target == 0 {
+            return "Error: a valid user_id is required for this action.".to_string();
+        }
+        let reply = match action {
+            "allow_configurer" => {
+                if target == config::owner_id() {
+                    "The bot owner is always allowed to configure the bot.".to_string()
+                } else if access.configurer_ids.insert(target) {
+                    format!("<@{target}> can now configure the bot.")
+                } else {
+                    format!("<@{target}> is already allowed to configure the bot.")
+                }
+            }
+            "revoke_configurer" => {
+                if target == config::owner_id() {
+                    return "Error: the bot owner is always allowed to configure the bot."
+                        .to_string();
+                } else if access.configurer_ids.remove(&target) {
+                    format!("<@{target}> can no longer configure the bot.")
+                } else {
+                    format!("<@{target}> was not allowed to configure the bot.")
+                }
+            }
+            "set_user_limit" => {
+                let cap = args
+                    .get("max_output_tokens")
+                    .and_then(Value::as_u64)
+                    .filter(|cap| *cap > 0)
+                    .map(|cap| cap as u32);
+                access
+                    .user_policies
+                    .entry(target)
+                    .or_default()
+                    .max_output_tokens = cap;
+                match cap {
+                    Some(cap) => format!("<@{target}>'s output is now capped at {cap} tokens."),
+                    None => format!("<@{target}>'s output token cap was removed."),
+                }
+            }
+            "set_user_respond" => {
+                let Some(respond) = args.get("respond").and_then(Value::as_bool) else {
+                    return "Error: 'respond' (true/false) is required for set_user_respond."
+                        .to_string();
+                };
+                access.user_policies.entry(target).or_default().respond = respond;
+                if respond {
+                    format!("The bot will respond to <@{target}> again.")
+                } else {
+                    format!("The bot will no longer respond to <@{target}>.")
+                }
+            }
+            other => return format!("Error: unknown configure_bot action `{other}`."),
+        };
+        match self.access_control.save(&access).await {
+            Ok(()) => reply,
+            Err(error) => {
+                tracing::error!(%error, "failed to save bot access control");
+                "Error: failed to save the bot configuration.".to_string()
+            }
         }
     }
 }

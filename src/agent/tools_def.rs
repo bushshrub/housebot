@@ -200,6 +200,41 @@ pub(crate) fn get_lua_docs_tool() -> Value {
     })
 }
 
+pub(crate) fn configure_bot_tool() -> Value {
+    json!({
+        "name": "configure_bot",
+        "description": "View or change the bot's configuration. Only available to authorized \
+            configurers (the bot owner plus users granted access). Actions: 'show' lists the \
+            configurers and per-user policies; 'allow_configurer' / 'revoke_configurer' manage \
+            who may configure the bot; 'set_user_limit' caps a user's maximum output tokens \
+            (omit max_output_tokens to remove the cap); 'set_user_respond' controls whether the \
+            bot responds to a user's messages at all.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "action": {
+                    "type": "string",
+                    "enum": ["show", "allow_configurer", "revoke_configurer", "set_user_limit", "set_user_respond"],
+                    "description": "The configuration action to perform."
+                },
+                "user_id": {
+                    "type": "string",
+                    "description": "Discord user ID the action applies to (required for every action except 'show')."
+                },
+                "max_output_tokens": {
+                    "type": "integer",
+                    "description": "Maximum output tokens for set_user_limit. Omit to remove the cap."
+                },
+                "respond": {
+                    "type": "boolean",
+                    "description": "Whether the bot responds to the user, for set_user_respond."
+                }
+            },
+            "required": ["action"]
+        }
+    })
+}
+
 pub(crate) fn search_rate_limited(content: &str) -> bool {
     let content = content.to_ascii_lowercase();
     content.contains("returned http 429")

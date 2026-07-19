@@ -510,12 +510,13 @@ async fn history_turn_contains_discord_context_metadata() {
 async fn build_tools_excludes_code_execution() {
     let client = Arc::new(MockChatClient::new());
     let (_t, agent) = test_agent(client);
-    let tools = agent.build_tools(true, false).await;
+    let tools = agent.build_tools(true, false, false).await;
     let names: Vec<&str> = tools
         .iter()
         .filter_map(|t| t["function"]["name"].as_str())
         .collect();
     assert!(!names.contains(&"code_tool"));
+    assert!(!names.contains(&"configure_bot"));
     assert!(names.contains(&"translate"));
     assert!(names.contains(&"update_memory"));
     assert!(names.contains(&"common_crawl__search"));
@@ -531,7 +532,7 @@ async fn build_tools_excludes_code_execution() {
 async fn build_tools_includes_sandbox_tools_for_owner() {
     let client = Arc::new(MockChatClient::new());
     let (_t, agent) = test_agent(client);
-    let tools = agent.build_tools(true, true).await;
+    let tools = agent.build_tools(true, true, false).await;
     let names: Vec<&str> = tools
         .iter()
         .filter_map(|t| t["function"]["name"].as_str())
@@ -542,6 +543,18 @@ async fn build_tools_includes_sandbox_tools_for_owner() {
     assert!(names.contains(&"sandbox_read_file"));
     assert!(names.contains(&"sandbox_run"));
     assert!(names.contains(&"translate"));
+}
+
+#[tokio::test]
+async fn build_tools_includes_configure_bot_only_for_configurers() {
+    let client = Arc::new(MockChatClient::new());
+    let (_t, agent) = test_agent(client);
+    let tools = agent.build_tools(true, false, true).await;
+    let names: Vec<&str> = tools
+        .iter()
+        .filter_map(|t| t["function"]["name"].as_str())
+        .collect();
+    assert!(names.contains(&"configure_bot"));
 }
 
 #[test]

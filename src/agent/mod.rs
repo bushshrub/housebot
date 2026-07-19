@@ -8,6 +8,7 @@ use async_trait::async_trait;
 use chrono::{Local, Utc};
 use serde_json::{json, Value};
 
+use crate::bot_config::{AccessControl, AccessControlStore};
 use crate::channel_log::ChannelLog;
 use crate::coding_agent::pending::PendingJobStore;
 use crate::config;
@@ -67,6 +68,8 @@ pub struct AgentRequest<'a> {
     pub guild_id: Option<u64>,
     pub proactive: bool,
     pub record_profile_usage: bool,
+    /// Per-user cap on completion output tokens, set by the bot's configurers.
+    pub max_output_tokens: Option<u32>,
 }
 
 impl<'a> AgentRequest<'a> {
@@ -89,6 +92,7 @@ impl<'a> AgentRequest<'a> {
             guild_id: None,
             proactive: false,
             record_profile_usage: true,
+            max_output_tokens: None,
         }
     }
 }
@@ -208,6 +212,7 @@ pub struct Agent {
     token_monitor: TokenMonitor,
     active_conversations: tokio::sync::Mutex<HashMap<String, String>>,
     tool_permissions: ToolPermissions,
+    access_control: AccessControlStore,
     discord: Arc<DiscordBridge>,
     channel_log: ChannelLog,
     sandbox_client: housebot_sandbox::SandboxClient,
@@ -275,6 +280,13 @@ impl Agent {
                 Memory::default()
             }
         };
+        let access_control = match AccessControlStore::from_env().await {
+            Ok(store) => store,
+            Err(error) => {
+                tracing::warn!(%error, "PostgreSQL bot config unavailable, falling back to file-based access control");
+                AccessControlStore::default()
+            }
+        };
         let token_monitor = TokenMonitor::from_env().await.map_err(|error| {
             anyhow::anyhow!(
                 "persistent token monitor initialization failed; refusing volatile fallback: {error}"
@@ -305,6 +317,7 @@ impl Agent {
             token_monitor,
             active_conversations: tokio::sync::Mutex::new(HashMap::new()),
             tool_permissions: ToolPermissions::default(),
+            access_control,
             discord,
             channel_log: ChannelLog::default(),
             sandbox_client: housebot_sandbox::SandboxClient::from_env(),
@@ -330,6 +343,11 @@ impl Agent {
     /// Shared guild-scoped tool permission store used by Discord commands.
     pub fn tool_permissions(&self) -> ToolPermissions {
         self.tool_permissions.clone()
+    }
+
+    /// Shared bot-configuration access-control store (configurers + user policies).
+    pub fn access_control(&self) -> AccessControlStore {
+        self.access_control.clone()
     }
 
     /// Shared pending-job store; also held by `HouseBot` to drive the Discord component UI.
@@ -438,6 +456,7 @@ impl Agent {
             token_monitor: TokenMonitor::default(),
             active_conversations: tokio::sync::Mutex::new(HashMap::new()),
             tool_permissions: ToolPermissions::default(),
+            access_control: AccessControlStore::default(),
             discord: Arc::new(DiscordBridge::default()),
             channel_log: ChannelLog::default(),
             sandbox_client: housebot_sandbox::SandboxClient::new("/dev/null"),

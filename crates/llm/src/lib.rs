@@ -148,11 +148,13 @@ pub trait ChatClient: Send + Sync {
     async fn context_window_tokens(&self) -> anyhow::Result<Option<u64>>;
 
     /// Stream a completion, forwarding each cumulative text snapshot to `sink`.
-    /// `thinking` sets the reasoning budget and the overall token ceiling.
-    /// `tool_choice` overrides the default `"auto"` tool selection; pass
-    /// `Some(json!("required"))` to force a tool call or
+    /// `thinking` sets the reasoning budget and the overall token ceiling;
+    /// `max_completion_tokens` further lowers that ceiling when set (per-user
+    /// output caps). `tool_choice` overrides the default `"auto"` tool
+    /// selection; pass `Some(json!("required"))` to force a tool call or
     /// `Some(json!({"type":"function","function":{"name":"…"}}))` to force a
     /// specific function. `None` keeps the default `"auto"` behavior.
+    #[allow(clippy::too_many_arguments)]
     async fn chat_stream(
         &self,
         model: &str,
@@ -160,6 +162,7 @@ pub trait ChatClient: Send + Sync {
         tools: &[Value],
         tool_choice: Option<Value>,
         thinking: ThinkingMode,
+        max_completion_tokens: Option<u32>,
         sink: Option<&dyn TextSink>,
     ) -> anyhow::Result<ChatCompletion>;
 
@@ -373,12 +376,15 @@ impl ChatClient for OpenAiClient {
         tools: &[Value],
         tool_choice: Option<Value>,
         thinking: ThinkingMode,
+        max_completion_tokens: Option<u32>,
         sink: Option<&dyn TextSink>,
     ) -> anyhow::Result<ChatCompletion> {
+        let ceiling = thinking.max_completion_tokens();
+        let max_tokens = max_completion_tokens.map_or(ceiling, |cap| cap.min(ceiling));
         let mut body = serde_json::json!({
             "model": model,
             "messages": messages,
-            "max_tokens": thinking.max_completion_tokens(),
+            "max_tokens": max_tokens,
             "reasoning": thinking.reasoning_field(),
             "stream": true,
             "stream_options": {"include_usage": true},

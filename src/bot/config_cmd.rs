@@ -2,25 +2,29 @@
 
 use super::*;
 
+const NOT_CONFIGURER: &str = "Only users authorized to configure the bot can change this setting. \
+     Ask the bot owner for access via `/config access allow`.";
+
 pub(crate) async fn handle_config_interaction(
     server_cfg: &ServerConfigStore,
-    user_cfg: &UserConfigStore,
+    access_store: &AccessControlStore,
     options: &[serenity::all::CommandDataOption],
     author_id: u64,
     guild_id: Option<u64>,
-    is_admin: bool,
 ) -> String {
     let Some(top) = options.first() else {
         return "No subcommand provided.".into();
     };
+    let access = access_store.load().await;
+    let is_configurer = access.is_configurer(author_id, config::owner_id());
 
     match top.name.as_str() {
         "leaderboard" => {
             let Some(gid) = guild_id else {
                 return "Leaderboard configuration is only available in servers.".into();
             };
-            if !is_admin {
-                return "Only server administrators can configure leaderboard visibility.".into();
+            if !is_configurer {
+                return NOT_CONFIGURER.into();
             }
             let sub_opts = match &top.value {
                 CommandDataOptionValue::SubCommandGroup(options) => options,
@@ -111,6 +115,9 @@ pub(crate) async fn handle_config_interaction(
             let Some(gid) = guild_id else {
                 return "Channel configuration is only available in servers, not DMs.".into();
             };
+            if !is_configurer {
+                return NOT_CONFIGURER.into();
+            }
             let sub_opts = match &top.value {
                 CommandDataOptionValue::SubCommandGroup(opts) => opts,
                 _ => return "Unexpected option structure.".into(),
@@ -179,50 +186,12 @@ pub(crate) async fn handle_config_interaction(
             }
         }
 
-        "personality" => {
-            let sub_opts = match &top.value {
-                CommandDataOptionValue::SubCommand(opts) => opts,
-                _ => return "Unexpected option structure.".into(),
-            };
-            let text = sub_opts
-                .iter()
-                .find(|o| o.name == "text")
-                .and_then(|o| match &o.value {
-                    CommandDataOptionValue::String(s) => Some(s.clone()),
-                    _ => None,
-                });
-            let mut cfg = user_cfg.load(author_id).await;
-            match text {
-                None => {
-                    cfg.personality = None;
-                    if user_cfg.save(author_id, &cfg).await.is_err() {
-                        return "Error: failed to save config.".into();
-                    }
-                    "✅ Personality cleared — I'll use my default behaviour.".into()
-                }
-                Some(ref s) if s.trim().is_empty() => {
-                    cfg.personality = None;
-                    if user_cfg.save(author_id, &cfg).await.is_err() {
-                        return "Error: failed to save config.".into();
-                    }
-                    "✅ Personality cleared — I'll use my default behaviour.".into()
-                }
-                Some(s) => {
-                    cfg.personality = Some(s.clone());
-                    if user_cfg.save(author_id, &cfg).await.is_err() {
-                        return "Error: failed to save config.".into();
-                    }
-                    format!("✅ Personality set:\n> {}", s.replace('\n', "\n> "))
-                }
-            }
-        }
-
         "bot_pings" => {
             let Some(gid) = guild_id else {
                 return "This setting is only available in servers.".into();
             };
-            if !is_admin {
-                return "Only server administrators can configure this.".into();
+            if !is_configurer {
+                return NOT_CONFIGURER.into();
             }
             let sub_opts = match &top.value {
                 CommandDataOptionValue::SubCommand(opts) => opts,
@@ -251,10 +220,238 @@ pub(crate) async fn handle_config_interaction(
         }
 
         "followup" => {
+            if !is_configurer {
+                return NOT_CONFIGURER.into();
+            }
             let sub_opts = match &top.value {
                 CommandDataOptionValue::SubCommand(opts) => opts,
                 _ => return "Unexpected option structure.".into(),
             };
+            let enabled =
+                sub_opts
+                    .iter()
+                    .find(|o| o.name == "enabled")
+                    .and_then(|o| match &o.value {
+                        CommandDataOptionValue::Boolean(b) => Some(*b),
+                        _ => None,
+                    });
+            let Some(enabled) = enabled else {
+                return "Please specify `enabled`.".into();
+            };
+            let mut access = access;
+            access.proactive_enabled = enabled;
+            if access_store.save(&access).await.is_err() {
+                return "Error: failed to save config.".into();
+            }
+            if enabled {
+                "✅ Proactive assistance is enabled again; users' `/personalize proactive` settings apply.".into()
+            } else {
+                "✅ Proactive assistance is now disabled for everyone, regardless of personal settings.".into()
+            }
+        }
+
+        "access" => {
+            if !is_configurer {
+                return NOT_CONFIGURER.into();
+            }
+            let sub_opts = match &top.value {
+                CommandDataOptionValue::SubCommandGroup(opts) => opts,
+                _ => return "Unexpected option structure.".into(),
+            };
+            let Some(sub) = sub_opts.first() else {
+                return "No access subcommand provided.".into();
+            };
+            let mut access = access;
+            match sub.name.as_str() {
+                "list" => {
+                    let owner = match config::owner_id() {
+                        0 => "not configured".to_string(),
+                        id => format!("<@{id}>"),
+                    };
+                    if access.configurer_ids.is_empty() {
+                        format!("Owner (always allowed): {owner}\nAdditional configurers: none")
+                    } else {
+                        let mut ids: Vec<_> = access.configurer_ids.iter().collect();
+                        ids.sort_unstable();
+                        let list = ids
+                            .iter()
+                            .map(|id| format!("<@{id}>"))
+                            .collect::<Vec<_>>()
+                            .join(", ");
+                        format!("Owner (always allowed): {owner}\nAdditional configurers: {list}")
+                    }
+                }
+                action @ ("allow" | "revoke") => {
+                    let options = match &sub.value {
+                        CommandDataOptionValue::SubCommand(opts) => opts,
+                        _ => return "Unexpected option structure.".into(),
+                    };
+                    let target = options.iter().find_map(|option| match option.value {
+                        CommandDataOptionValue::User(user) if option.name == "user" => {
+                            Some(user.get())
+                        }
+                        _ => None,
+                    });
+                    let Some(target) = target else {
+                        return "Please provide a valid user.".into();
+                    };
+                    if target == config::owner_id() {
+                        return "The bot owner is always allowed to configure the bot.".into();
+                    }
+                    let changed = if action == "allow" {
+                        access.configurer_ids.insert(target)
+                    } else {
+                        access.configurer_ids.remove(&target)
+                    };
+                    if access_store.save(&access).await.is_err() {
+                        return "Error: failed to save config.".into();
+                    }
+                    match (action, changed) {
+                        ("allow", true) => format!("✅ <@{target}> can now configure the bot."),
+                        ("revoke", true) => {
+                            format!("✅ <@{target}> can no longer configure the bot.")
+                        }
+                        ("allow", false) => {
+                            format!("<@{target}> is already allowed to configure the bot.")
+                        }
+                        _ => format!("<@{target}> was not allowed to configure the bot."),
+                    }
+                }
+                other => format!("Unknown access subcommand `{other}`."),
+            }
+        }
+
+        "user" => {
+            if !is_configurer {
+                return NOT_CONFIGURER.into();
+            }
+            let sub_opts = match &top.value {
+                CommandDataOptionValue::SubCommandGroup(opts) => opts,
+                _ => return "Unexpected option structure.".into(),
+            };
+            let Some(sub) = sub_opts.first() else {
+                return "No user subcommand provided.".into();
+            };
+            let options = match &sub.value {
+                CommandDataOptionValue::SubCommand(opts) => opts,
+                _ => return "Unexpected option structure.".into(),
+            };
+            let target = options.iter().find_map(|option| match option.value {
+                CommandDataOptionValue::User(user) if option.name == "user" => Some(user.get()),
+                _ => None,
+            });
+            let Some(target) = target else {
+                return "Please provide a valid user.".into();
+            };
+            let mut access = access;
+            match sub.name.as_str() {
+                "show" => {
+                    let policy = access.policy(target);
+                    let limit = policy
+                        .max_output_tokens
+                        .map_or("no limit".to_string(), |cap| format!("{cap} tokens"));
+                    format!(
+                        "<@{target}>: max output {limit}, responds: {}",
+                        policy.respond
+                    )
+                }
+                "limit" => {
+                    let cap = options.iter().find_map(|option| match option.value {
+                        CommandDataOptionValue::Integer(value) if option.name == "max_tokens" => {
+                            Some(value)
+                        }
+                        _ => None,
+                    });
+                    let cap = match cap {
+                        Some(value) if value < 1 => {
+                            return "The token limit must be at least 1 (omit it to remove the cap)."
+                                .into()
+                        }
+                        Some(value) => Some(value as u32),
+                        None => None,
+                    };
+                    access
+                        .user_policies
+                        .entry(target)
+                        .or_default()
+                        .max_output_tokens = cap;
+                    if access_store.save(&access).await.is_err() {
+                        return "Error: failed to save config.".into();
+                    }
+                    match cap {
+                        Some(cap) => {
+                            format!("✅ <@{target}>'s output is now capped at {cap} tokens.")
+                        }
+                        None => format!("✅ <@{target}>'s output token cap was removed."),
+                    }
+                }
+                "respond" => {
+                    let enabled = options.iter().find_map(|option| match option.value {
+                        CommandDataOptionValue::Boolean(value) if option.name == "enabled" => {
+                            Some(value)
+                        }
+                        _ => None,
+                    });
+                    let Some(enabled) = enabled else {
+                        return "Please specify `enabled`.".into();
+                    };
+                    access.user_policies.entry(target).or_default().respond = enabled;
+                    if access_store.save(&access).await.is_err() {
+                        return "Error: failed to save config.".into();
+                    }
+                    if enabled {
+                        format!("✅ The bot will respond to <@{target}> again.")
+                    } else {
+                        format!(
+                            "✅ The bot will no longer respond to <@{target}>. \
+                             Configurers are exempt from this policy."
+                        )
+                    }
+                }
+                other => format!("Unknown user subcommand `{other}`."),
+            }
+        }
+
+        other => format!("Unknown config option `{other}`."),
+    }
+}
+
+/// The /personalize slash-command handler: per-user settings any user may change.
+pub(crate) async fn handle_personalize_interaction(
+    user_cfg: &UserConfigStore,
+    options: &[serenity::all::CommandDataOption],
+    author_id: u64,
+) -> String {
+    let Some(top) = options.first() else {
+        return "No subcommand provided.".into();
+    };
+    let sub_opts = match &top.value {
+        CommandDataOptionValue::SubCommand(opts) => opts,
+        _ => return "Unexpected option structure.".into(),
+    };
+    let mut cfg = user_cfg.load(author_id).await;
+
+    match top.name.as_str() {
+        "personality" => {
+            let text = sub_opts
+                .iter()
+                .find(|o| o.name == "text")
+                .and_then(|o| match &o.value {
+                    CommandDataOptionValue::String(s) => Some(s.clone()),
+                    _ => None,
+                })
+                .filter(|s| !s.trim().is_empty());
+            cfg.personality = text.clone();
+            if user_cfg.save(author_id, &cfg).await.is_err() {
+                return "Error: failed to save config.".into();
+            }
+            match text {
+                None => "✅ Personality cleared — I'll use my default behaviour.".into(),
+                Some(s) => format!("✅ Personality set:\n> {}", s.replace('\n', "\n> ")),
+            }
+        }
+
+        "followup" => {
             let enabled =
                 sub_opts
                     .iter()
@@ -274,7 +471,6 @@ pub(crate) async fn handle_config_interaction(
             let Some(enabled) = enabled else {
                 return "Please specify `enabled`.".into();
             };
-            let mut cfg = user_cfg.load(author_id).await;
             cfg.followup_enabled = enabled;
             if let Some(secs) = timeout {
                 if secs < 1 {
@@ -292,6 +488,29 @@ pub(crate) async fn handle_config_interaction(
             )
         }
 
-        other => format!("Unknown config option `{other}`."),
+        "proactive" => {
+            let enabled =
+                sub_opts
+                    .iter()
+                    .find(|o| o.name == "enabled")
+                    .and_then(|o| match &o.value {
+                        CommandDataOptionValue::Boolean(b) => Some(*b),
+                        _ => None,
+                    });
+            let Some(enabled) = enabled else {
+                return "Please specify `enabled`.".into();
+            };
+            cfg.proactive_assistance_enabled = enabled;
+            if user_cfg.save(author_id, &cfg).await.is_err() {
+                return "Error: failed to save config.".into();
+            }
+            if enabled {
+                "✅ Proactive assistance enabled — I may chime in on obvious reminder requests and help questions. Bot configurers can disable this globally.".into()
+            } else {
+                "✅ Proactive assistance disabled — I'll only respond when addressed.".into()
+            }
+        }
+
+        other => format!("Unknown personalize option `{other}`."),
     }
 }
