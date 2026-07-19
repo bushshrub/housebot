@@ -141,13 +141,13 @@ pub(crate) fn get_discord_user_tool() -> Value {
 pub(crate) fn find_discord_users_tool() -> Value {
     json!({
         "name": "find_discord_users",
-        "description": "Find Discord users previously seen in the current channel by username, nickname, or user ID. Use this before get_discord_user when a person is named but their numeric ID is unknown. Results are limited to the selected channel's message history.",
+        "description": "Fuzzy-find Discord users previously seen in the current channel by username, nickname, or user ID. Supports multi-word queries — each word is matched independently, so searching for \"rice farmer\" will match users whose username or nickname contains \"rice\" OR \"farmer\". Use this before get_discord_user when a person is named but their numeric ID is unknown. Results are limited to the selected channel's message history.",
         "input_schema": {
             "type": "object",
             "properties": {
                 "query": {
                     "type": "string",
-                    "description": "Case-insensitive username, nickname, or user ID substring."
+                    "description": "Case-insensitive fuzzy search — matches if any whitespace-separated word is a substring of username, nickname, or user ID."
                 },
                 "max_results": {
                     "type": "integer",
