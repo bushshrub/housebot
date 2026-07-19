@@ -52,6 +52,7 @@ pub(crate) struct ResponseProgressHooks {
     channel_id: serenity::all::ChannelId,
     message_id: serenity::all::MessageId,
     generating: AtomicBool,
+    typing_task: Mutex<Option<tokio::task::JoinHandle<()>>>,
     tool_calls: Mutex<String>,
 }
 
@@ -62,7 +63,37 @@ impl ResponseProgressHooks {
             channel_id: progress.channel_id,
             message_id: progress.id,
             generating: AtomicBool::new(false),
+            typing_task: Mutex::new(None),
             tool_calls: Mutex::new(String::new()),
+        }
+    }
+
+    fn start_typing(&self) {
+        let mut task = self.typing_task.lock().unwrap();
+        if task.is_some() {
+            return;
+        }
+        let http = self.ctx.http.clone();
+        let channel_id = self.channel_id;
+        *task = Some(tokio::spawn(async move {
+            loop {
+                let _ = channel_id.broadcast_typing(&http).await;
+                tokio::time::sleep(Duration::from_secs(8)).await;
+            }
+        }));
+    }
+
+    fn stop_typing(&self) {
+        if let Some(task) = self.typing_task.lock().unwrap().take() {
+            task.abort();
+        }
+    }
+}
+
+impl Drop for ResponseProgressHooks {
+    fn drop(&mut self) {
+        if let Some(task) = self.typing_task.get_mut().unwrap().take() {
+            task.abort();
         }
     }
 }
@@ -70,6 +101,7 @@ impl ResponseProgressHooks {
 #[async_trait]
 impl AgentHooks for ResponseProgressHooks {
     async fn on_text_stream(&self, _partial: &str) {
+        self.start_typing();
         if self.generating.swap(true, Ordering::AcqRel) {
             return;
         }
@@ -94,7 +126,12 @@ impl AgentHooks for ResponseProgressHooks {
         }
     }
 
+    async fn on_text_stream_end(&self) {
+        self.stop_typing();
+    }
+
     async fn on_tool_called(&self, tool: &str, _args: &serde_json::Value) {
+        self.stop_typing();
         self.generating.store(false, Ordering::Release);
         let content = {
             let mut calls = self.tool_calls.lock().unwrap();

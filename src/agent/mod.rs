@@ -149,6 +149,8 @@ pub struct SessionInfo {
 pub trait AgentHooks: Send + Sync {
     /// Cumulative assistant text as it streams in.
     async fn on_text_stream(&self, _partial: &str) {}
+    /// The current assistant text stream has ended.
+    async fn on_text_stream_end(&self) {}
     /// A tool is about to run.
     async fn on_tool_called(&self, _tool: &str, _args: &Value) {}
     /// A progress update from a long-running operation.

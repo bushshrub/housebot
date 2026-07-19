@@ -118,7 +118,7 @@ impl Agent {
                 break "I had to stop because this request required too many tool calls in a row. Please try a more specific request.".to_string();
             }
             let text_sink = TextStreamAdapter(hooks);
-            let completion = match self
+            let completion_result = self
                 .client
                 .chat_stream(
                     &self.model,
@@ -129,8 +129,9 @@ impl Agent {
                     max_output_tokens,
                     Some(&text_sink),
                 )
-                .await
-            {
+                .await;
+            hooks.on_text_stream_end().await;
+            let completion = match completion_result {
                 Ok(c) => c,
                 Err(e) => {
                     tracing::error!("LLM error: {e}");
