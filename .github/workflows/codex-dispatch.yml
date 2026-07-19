@@ -44,9 +44,10 @@ jobs:
           git checkout -b "$BRANCH"
           echo "name=$BRANCH" >> "$GITHUB_OUTPUT"
       - name: Run Codex
+        # The self-hosted runner has the user's ChatGPT/Codex OAuth session
+        # provisioned. Do not inject OPENAI_API_KEY; that would bypass the
+        # subscription-backed login and expose an unrelated credential path.
         run: codex --approval-mode full-auto "${{ inputs.prompt }}"
-        env:
-          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
       - name: Commit and push changes
         run: |
           git add -A
