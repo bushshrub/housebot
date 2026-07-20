@@ -31,6 +31,7 @@ use crate::tool_permissions::ToolPermissions;
 use crate::tools;
 use crate::tools::common_crawl::CommonCrawl;
 use crate::tools::file_download::FileDownloader;
+use crate::tools::osm::OsmClient;
 use crate::tools::sandbox::LazySandbox;
 use crate::tools::searxng::SearxNg;
 use crate::tools::web_fetch::WebFetch;
@@ -206,6 +207,7 @@ pub struct Agent {
     owner_dispatch_limiter: RateLimiter,
     pending_jobs: Arc<PendingJobStore>,
     searxng: Arc<SearxNg>,
+    osm_client: Arc<OsmClient>,
     web_fetch: WebFetch,
     file_downloader: FileDownloader,
     common_crawl: CommonCrawl,
@@ -312,6 +314,7 @@ impl Agent {
             owner_dispatch_limiter: tools::feature_development::owner_dispatch_limiter(),
             pending_jobs: Arc::new(PendingJobStore::default()),
             searxng: Arc::new(SearxNg::from_env()),
+            osm_client: Arc::new(OsmClient::default()),
             web_fetch: WebFetch::default(),
             file_downloader: FileDownloader::default(),
             common_crawl: CommonCrawl::default(),
@@ -451,6 +454,7 @@ impl Agent {
             owner_dispatch_limiter: tools::feature_development::owner_dispatch_limiter(),
             pending_jobs: Arc::new(PendingJobStore::default()),
             searxng: Arc::new(SearxNg::from_env()),
+            osm_client: Arc::new(OsmClient::default()),
             web_fetch: WebFetch::default(),
             file_downloader: FileDownloader::default(),
             common_crawl: CommonCrawl::default(),

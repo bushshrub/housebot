@@ -217,14 +217,20 @@ impl Agent {
                 messages.push(tool_msg.clone());
                 turn_messages.push(tool_msg);
 
-                if matches!(tc.name.as_str(), "web_search" | "deep_research" | "run_lua")
-                    && search_rate_limited(&content)
+                if matches!(
+                    tc.name.as_str(),
+                    "web_search"
+                        | "deep_research"
+                        | "run_lua"
+                        | "search_location"
+                        | "lookup_coordinates"
+                ) && search_rate_limited(&content)
                 {
                     rate_limited = true;
                 }
             }
             if rate_limited {
-                break "Web search is temporarily rate-limited. Please try again in a few minutes."
+                break "A search or geocoding service returned a rate-limit error. Please try again in a few minutes."
                     .to_string();
             }
         };
@@ -310,6 +316,8 @@ impl Agent {
             tools::summarize_url::definition(),
             tools::token_metrics::definition(),
             tools::translate::definition(),
+            tools::osm::search_definition(),
+            tools::osm::lookup_definition(),
             tools::features::definition(),
             get_messages_tool(),
             find_discord_users_tool(),
@@ -369,6 +377,8 @@ impl Agent {
             tools::summarize_url::definition(),
             tools::token_metrics::definition(),
             tools::translate::definition(),
+            tools::osm::search_definition(),
+            tools::osm::lookup_definition(),
             tools::features::definition(),
             get_messages_tool(),
             find_discord_users_tool(),
@@ -497,6 +507,7 @@ impl Agent {
                         }
 
                         let gid = guild_id.unwrap_or(0);
+                        let mut skill_rate_limited = false;
                         for tc in &completion.tool_calls {
                             let tc_args: Value =
                                 serde_json::from_str(&tc.arguments).unwrap_or(json!({}));
@@ -551,11 +562,26 @@ impl Agent {
                                     text.clone()
                                 }
                             };
+                            if matches!(
+                                tc.name.as_str(),
+                                "web_search"
+                                    | "deep_research"
+                                    | "run_lua"
+                                    | "search_location"
+                                    | "lookup_coordinates"
+                            ) && search_rate_limited(&content)
+                            {
+                                skill_rate_limited = true;
+                            }
                             messages.push(json!({
                                 "role": "tool",
                                 "tool_call_id": tc.id,
                                 "content": content,
                             }));
+                        }
+                        if skill_rate_limited {
+                            break "A search or geocoding service returned a rate-limit error. Please try again in a few minutes."
+                                .to_string();
                         }
                     };
 

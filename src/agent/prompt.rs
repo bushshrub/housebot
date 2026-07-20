@@ -93,6 +93,8 @@ For ordinary feature suggestions use create_feature_request instead.\n\
 - set_reminder — Set a timed reminder; the bot will DM the user when the delay elapses.\n\
 - summarize_url — Fetch a public web URL and return a concise summary.\n\
 - translate — Translate text to any language using the LLM.\n\
+- search_location — Search for a location or place by name using OpenStreetMap (Nominatim). Returns coordinates, place type, and address details. Free, no API key required.\n\
+- lookup_coordinates — Reverse-geocode latitude/longitude coordinates to a human-readable address using OpenStreetMap (Nominatim). Free, no API key required.\n\
 - get_bot_features — Return the full list of this bot's commands and capabilities. \
 Call this when a user asks what you can do, what commands exist, or how to use any feature.\n\
 - get_token_metrics — Fetch token usage metrics. Use this for structured token-usage \

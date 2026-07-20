@@ -13,6 +13,7 @@ pub mod feature_request;
 pub mod features;
 pub mod file_download;
 pub mod github_api;
+pub mod osm;
 pub mod remind;
 pub mod sandbox;
 pub mod searxng;
@@ -37,6 +38,8 @@ pub fn all_tool_names() -> &'static [&'static str] {
         "create_feature_request",
         "edit_feature_request",
         "prepare_feature_development",
+        "search_location",
+        "lookup_coordinates",
         "github_api",
         "set_reminder",
         "summarize_url",
