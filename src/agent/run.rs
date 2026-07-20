@@ -227,7 +227,7 @@ impl Agent {
                 }
             }
             if rate_limited {
-                break "Web search is temporarily rate-limited. Please try again in a few minutes."
+                break "A search or geocoding service returned a rate-limit error. Please try again in a few minutes."
                     .to_string();
             }
         };

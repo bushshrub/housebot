@@ -222,4 +222,60 @@ mod tests {
         assert!(out.contains("Somewhere"));
         assert!(!out.contains("/"));
     }
+
+    // ── Live integration tests against the real Nominatim API ──────────────
+    // These require outbound network access and are ignored by default.
+    // Run with: cargo test --package housebot-tools -- --include-ignored
+    //
+    // Both tests target Apple Inc.'s headquarters (Apple Park).
+
+    /// Search for Apple Park via forward geocoding.
+    #[tokio::test]
+    #[ignore = "requires live Nominatim API"]
+    async fn live_search_apple_park() {
+        let client = OsmClient::default();
+        let result = client.search_location("Apple Park, Cupertino", 3).await;
+        assert!(!result.starts_with("Error:"), "got error: {result}");
+        assert!(
+            result.to_lowercase().contains("apple"),
+            "expected 'Apple' in result: {result}"
+        );
+        assert!(
+            result.contains("Lat:"),
+            "expected coordinates in result: {result}"
+        );
+    }
+
+    /// Reverse-geocode Apple Park's coordinates.
+    #[tokio::test]
+    #[ignore = "requires live Nominatim API"]
+    async fn live_reverse_geocode_apple_park() {
+        let client = OsmClient::default();
+        // Apple Park, Cupertino, CA
+        let result = client.lookup_coordinates(37.3368, -122.0074).await;
+        assert!(!result.starts_with("Error:"), "got error: {result}");
+        assert!(
+            result.to_lowercase().contains("apple"),
+            "expected 'Apple' in result: {result}"
+        );
+        assert!(
+            result.contains("Coordinates:"),
+            "expected Coordinates line in result: {result}"
+        );
+    }
+
+    /// Ensure both tools handle missing/invalid data gracefully (no crash).
+    #[tokio::test]
+    #[ignore = "requires live Nominatim API"]
+    async fn live_search_nonexistent() {
+        let client = OsmClient::default();
+        let result = client
+            .search_location("xzxyzxxynonexistentcity999999", 1)
+            .await;
+        // Nominatim returns no results gracefully
+        assert!(
+            result.contains("No results found"),
+            "expected no-results message: {result}"
+        );
+    }
 }
