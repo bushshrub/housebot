@@ -317,12 +317,6 @@ impl HouseBot {
 
         // Handle structured development control actions before displaying text.
         if let Some(action) = result.control_action {
-            if let Some(reaction) = pending_reaction {
-                let _ = reaction.delete(&ctx.http).await;
-            }
-            if let Some(progress) = progress.as_ref() {
-                let _ = progress.delete(&ctx.http).await;
-            }
             match action {
                 AgentControlAction::OwnerDispatchReady { job_id } => {
                     self.dispatch_owner_job_immediately(ctx, msg, job_id).await;
