@@ -49,6 +49,7 @@ RUN for manifest in crates/*/Cargo.toml; do \
     done
 RUN --mount=type=cache,id=deployment-bot-cargo-registry,target=/usr/local/cargo/registry \
     --mount=type=cache,id=deployment-bot-cargo-git,target=/usr/local/cargo/git \
+    --mount=type=cache,id=deployment-bot-cargo-target,target=/app/target \
     cargo build --release --locked --package deployment-bot
 
 # Layer 3: real source files.
@@ -65,6 +66,7 @@ COPY db/ db/
 # it cargo considers the dummy artifacts fresh and ships the dummy binary.
 RUN --mount=type=cache,id=deployment-bot-cargo-registry,target=/usr/local/cargo/registry \
     --mount=type=cache,id=deployment-bot-cargo-git,target=/usr/local/cargo/git \
+    --mount=type=cache,id=deployment-bot-cargo-target,target=/app/target \
     find crates -name '*.rs' -exec touch {} + \
     && cargo build --release --locked --package deployment-bot \
     && cp /app/target/release/deployment-bot /app/deployment-bot \
