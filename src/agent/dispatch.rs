@@ -248,9 +248,6 @@ impl Agent {
 
                 let text = outcome.tool_response();
                 let action = match &outcome {
-                    FeatureDevelopmentOutcome::OwnerDispatchReady { job_id } => {
-                        Some(AgentControlAction::OwnerDispatchReady { job_id: *job_id })
-                    }
                     FeatureDevelopmentOutcome::OwnerConfigurationRequired { job_id } => {
                         Some(AgentControlAction::OwnerConfigurationRequired { job_id: *job_id })
                     }

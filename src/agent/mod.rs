@@ -100,8 +100,6 @@ impl<'a> AgentRequest<'a> {
 /// Structured bot-control action extracted from a tool call, carried alongside text.
 #[derive(Debug, Clone)]
 pub enum AgentControlAction {
-    /// Owner immediate dispatch is ready.
-    OwnerDispatchReady { job_id: uuid::Uuid },
     /// Owner wants to configure interactively.
     OwnerConfigurationRequired { job_id: uuid::Uuid },
     /// Non-owner request created; owner must approve.

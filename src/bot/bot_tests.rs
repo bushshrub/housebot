@@ -639,3 +639,38 @@ fn dev_notify_footer_rejects_unrelated_text() {
         None
     );
 }
+
+#[test]
+fn dev_notify_footer_rejects_missing_requester_id() {
+    // requester_id absent even though issue and status are present.
+    assert_eq!(
+        parse_dev_notify_footer("housebot-dev-notify issue=42 status=success"),
+        None
+    );
+}
+
+#[test]
+fn dev_notify_footer_rejects_empty_status() {
+    assert_eq!(
+        parse_dev_notify_footer("housebot-dev-notify requester_id=1 issue=42 status="),
+        None
+    );
+}
+
+#[test]
+fn dev_notify_footer_rejects_zero_requester_id() {
+    assert_eq!(
+        parse_dev_notify_footer("housebot-dev-notify requester_id=0 issue=42 status=success"),
+        None
+    );
+}
+
+#[test]
+fn dev_notify_footer_allows_equals_in_value() {
+    // split_once splits on the *first* '=', so values may safely contain '='.
+    let footer = "housebot-dev-notify requester_id=1 issue=42 status=error=timeout";
+    assert_eq!(
+        parse_dev_notify_footer(footer),
+        Some((1, 42, "error=timeout".to_string()))
+    );
+}

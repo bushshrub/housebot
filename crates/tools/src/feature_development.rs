@@ -1,9 +1,8 @@
 //! Tool for preparing an automated coding-agent development job.
 //!
-//! The LLM calls this to build a structured spec. For owner and configurer requests
-//! the job may be dispatched immediately (OwnerDispatchReady) or enter the interactive
-//! selection flow (OwnerConfigurationRequired). For all other requesters the owner must
-//! approve first (OwnerApprovalRequired).
+//! The LLM calls this to build a structured spec. Owner and configurer requests
+//! enter the interactive agent/model/effort selection flow (OwnerConfigurationRequired).
+//! For all other requesters the owner must approve first (OwnerApprovalRequired).
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -49,9 +48,7 @@ pub fn owner_dispatch_limiter() -> RateLimiter {
 /// take the appropriate action without parsing magic strings.
 #[derive(Debug)]
 pub enum FeatureDevelopmentOutcome {
-    /// Owner-direct request with defaults; ready to dispatch immediately.
-    OwnerDispatchReady { job_id: Uuid },
-    /// Owner requested interactive agent/model/effort selection.
+    /// Owner/configurer requested interactive agent/model/effort selection.
     OwnerConfigurationRequired { job_id: Uuid },
     /// Non-owner request; owner must approve before execution.
     OwnerApprovalRequired { job_id: Uuid },
@@ -63,9 +60,6 @@ impl FeatureDevelopmentOutcome {
     /// The text to return to the LLM for each outcome variant.
     pub fn tool_response(&self) -> String {
         match self {
-            Self::OwnerDispatchReady { job_id } => {
-                format!("OWNER_DISPATCH_READY:{job_id}")
-            }
             Self::OwnerConfigurationRequired { job_id } => {
                 format!("OWNER_CONFIG_REQUIRED:{job_id}")
             }
@@ -83,9 +77,7 @@ impl FeatureDevelopmentOutcome {
 /// How the caller expects dispatch to proceed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DispatchMode {
-    /// Owner wants immediate dispatch using defaults.
-    Immediate,
-    /// Owner wants to interactively choose agent/model/effort.
+    /// Owner/configurer wants to interactively choose agent/model/effort.
     Interactive,
     /// Non-owner: must await owner approval.
     RequireOwnerApproval,
@@ -223,35 +215,18 @@ pub fn prepare_feature_development(
         acceptance_criteria,
     };
 
-    if dispatch_mode != DispatchMode::RequireOwnerApproval {
-        // Owner/configurer path: no per-user rate limiting, immediate or interactive dispatch.
-        match dispatch_mode {
-            DispatchMode::Interactive => {
-                let job = PendingDevelopmentJob::new(
-                    owner_id,
-                    requester,
-                    source_message,
-                    spec,
-                    DispatchStage::ChoosingAgent,
-                    PartialAgentSelection::default(),
-                );
-                let job_id = store.insert(job);
-                FeatureDevelopmentOutcome::OwnerConfigurationRequired { job_id }
-            }
-            _ => {
-                // Immediate: pre-fill from defaults so approve_with_defaults can transition directly.
-                let job = PendingDevelopmentJob::new(
-                    owner_id,
-                    requester,
-                    source_message,
-                    spec,
-                    DispatchStage::Confirming,
-                    defaults.clone(),
-                );
-                let job_id = store.insert(job);
-                FeatureDevelopmentOutcome::OwnerDispatchReady { job_id }
-            }
-        }
+    if dispatch_mode == DispatchMode::Interactive {
+        // Owner/configurer path: no per-user rate limiting, interactive dispatch.
+        let job = PendingDevelopmentJob::new(
+            owner_id,
+            requester,
+            source_message,
+            spec,
+            DispatchStage::ChoosingAgent,
+            PartialAgentSelection::default(),
+        );
+        let job_id = store.insert(job);
+        FeatureDevelopmentOutcome::OwnerConfigurationRequired { job_id }
     } else {
         // Non-owner path: apply rate limits and anti-spam before creating any state.
         let pending_global_max: usize =

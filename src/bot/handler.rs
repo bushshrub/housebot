@@ -375,10 +375,10 @@ impl EventHandler for HouseBot {
             // own "Thinking..." progress updates would otherwise loop forever.
             return;
         }
-        if msg.webhook_id.is_some() {
-            // Incoming webhook messages (e.g. the dev-dispatch completion
-            // notification) are never conversational input.
-            self.handle_dev_notify_webhook(&ctx, &msg).await;
+        if msg.webhook_id.is_some() && self.handle_dev_notify_webhook(&ctx, &msg).await {
+            // Only short-circuit for the configured dev-notify channel; other
+            // webhook messages (e.g. from other bots) still flow through the
+            // normal pipeline below, same as before this feature existed.
             return;
         }
         let structured_mention = msg.mentions.iter().any(|u| u.id == bot_id);
