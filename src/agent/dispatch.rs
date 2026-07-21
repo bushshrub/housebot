@@ -188,7 +188,12 @@ impl Agent {
                         "Error: #{issue_number} is a pull request; feature development requires an existing issue."
                     ));
                 }
-                let dispatch_mode = if requester_user_id == owner_id {
+                let is_configurer = self
+                    .access_control
+                    .load()
+                    .await
+                    .is_configurer(requester_user_id, owner_id);
+                let dispatch_mode = if is_configurer {
                     DispatchMode::Interactive
                 } else {
                     DispatchMode::RequireOwnerApproval

@@ -1,9 +1,9 @@
 //! Tool for preparing an automated coding-agent development job.
 //!
-//! The LLM calls this to build a structured spec. For owner requests the job may be
-//! dispatched immediately (OwnerDispatchReady) or enter the interactive selection flow
-//! (OwnerConfigurationRequired). For non-owner requests the owner must approve first
-//! (OwnerApprovalRequired).
+//! The LLM calls this to build a structured spec. For owner and configurer requests
+//! the job may be dispatched immediately (OwnerDispatchReady) or enter the interactive
+//! selection flow (OwnerConfigurationRequired). For all other requesters the owner must
+//! approve first (OwnerApprovalRequired).
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -223,8 +223,8 @@ pub fn prepare_feature_development(
         acceptance_criteria,
     };
 
-    if requester.user_id == owner_id {
-        // Owner path: no per-user rate limiting, immediate or interactive dispatch.
+    if dispatch_mode != DispatchMode::RequireOwnerApproval {
+        // Owner/configurer path: no per-user rate limiting, immediate or interactive dispatch.
         match dispatch_mode {
             DispatchMode::Interactive => {
                 let job = PendingDevelopmentJob::new(
