@@ -352,11 +352,17 @@ impl HouseBot {
             safe
         };
         let (display, code_files) = extract_code_files(&with_tool_summary);
+        // Server-level embed toggle overrides the user's pagination preference.
+        let render_embeds = match msg.guild_id {
+            Some(gid) => self.server_cfg.load(gid.get()).await.render_embeds,
+            None => true,
+        };
+        let paginate = user_config.labs_pagination_enabled && render_embeds;
         let sent_id = send_final_message(
             ctx,
             msg,
             &display,
-            user_config.labs_pagination_enabled,
+            paginate,
             msg.author.id.get(),
             &self.paginated,
             progress.as_ref(),

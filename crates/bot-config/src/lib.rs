@@ -154,6 +154,11 @@ pub struct ServerConfig {
     /// Users still opt in individually via `/personalize proactive`.
     #[serde(default = "default_respond")]
     pub proactive_allowed: bool,
+    /// Whether embed-rendered responses (e.g. paginated LLM output) are
+    /// allowed in this server. When disabled, all bot responses fall back
+    /// to plain text even if a user has pagination enabled.
+    #[serde(default = "default_respond")]
+    pub render_embeds: bool,
 }
 
 impl Default for ServerConfig {
@@ -164,6 +169,7 @@ impl Default for ServerConfig {
             leaderboard_role_ids: HashSet::new(),
             respond_to_bot_pings: false,
             proactive_allowed: true,
+            render_embeds: true,
         }
     }
 }
@@ -558,6 +564,13 @@ mod tests {
         assert!(config.leaderboard_role_ids.is_empty());
         assert!(!config.respond_to_bot_pings);
         assert!(config.proactive_allowed);
+    }
+
+    #[test]
+    fn old_server_config_defaults_render_embeds_to_true() {
+        let config: ServerConfig =
+            serde_json::from_str(r#"{"allowed_channel_ids":[123]}"#).unwrap();
+        assert!(config.render_embeds);
     }
 
     #[test]

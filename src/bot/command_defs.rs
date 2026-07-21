@@ -494,6 +494,22 @@ pub(crate) async fn register_slash_commands(ctx: &Context, guild_ids: &[GuildId]
                 )
                 .required(true),
             ),
+        )
+        // ── embeds subcommand ───────────────────────────────────────────────
+        .add_option(
+            CreateCommandOption::new(
+                CommandOptionType::SubCommand,
+                "embeds",
+                "Control whether embed-rendered responses are shown in this server",
+            )
+            .add_sub_option(
+                CreateCommandOption::new(
+                    CommandOptionType::Boolean,
+                    "enabled",
+                    "Whether bot responses may use embeds",
+                )
+                .required(true),
+            ),
         );
     guild_only_commands.push(server_config_cmd);
     let personalize_cmd = CreateCommand::new("personalize")

@@ -460,6 +460,34 @@ pub(crate) async fn handle_server_config_interaction(
             }
         }
 
+        "embeds" => {
+            let sub_opts = match &top.value {
+                CommandDataOptionValue::SubCommand(opts) => opts,
+                _ => return "Unexpected option structure.".into(),
+            };
+            let enabled =
+                sub_opts
+                    .iter()
+                    .find(|o| o.name == "enabled")
+                    .and_then(|o| match &o.value {
+                        CommandDataOptionValue::Boolean(b) => Some(*b),
+                        _ => None,
+                    });
+            let Some(enabled) = enabled else {
+                return "Please specify `enabled`.".into();
+            };
+            let mut cfg = server_cfg.load(gid).await;
+            cfg.render_embeds = enabled;
+            if server_cfg.save(gid, &cfg).await.is_err() {
+                return "Error: failed to save config.".into();
+            }
+            if enabled {
+                "✅ Embed-rendered responses are enabled in this server; users still control pagination individually via `/labs pagination`.".into()
+            } else {
+                "✅ Embed-rendered responses are disabled in this server; all bot responses will use plain text.".into()
+            }
+        }
+
         other => format!("Unknown server-config option `{other}`."),
     }
 }
