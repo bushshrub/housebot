@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "catalog_revision": "2026-07-15-2",
+  "catalog_revision": "2026-07-21-1",
   "cli_versions": {
     "codex": "0.1.0",
     "claude": "1.0.0",
@@ -67,7 +67,7 @@
           "id": "opencode/deepseek-v4-flash-free",
           "display_name": "DeepSeek V4 Flash (free)",
           "description": "DeepSeek V4 Flash via OpenCode free tier. No API key required.",
-          "default_effort": "medium",
+          "default_effort": "high",
           "efforts": [
             {
               "id": "low",
