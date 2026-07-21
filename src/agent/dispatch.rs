@@ -301,8 +301,27 @@ impl Agent {
                 )
                 .await,
             ),
+            "use_skill" => {
+                let skill_name = str_arg(args, "name");
+                match self.skills.get(skill_name).await {
+                    None => ToolOutcome::Text(format!("Error: Skill '{skill_name}' not found.")),
+                    Some(skill) => {
+                        let instructions = skill.effective_instructions();
+                        ToolOutcome::Text(build_loaded_skill_content(&skill, instructions))
+                    }
+                }
+            }
             "create_skill" => ToolOutcome::Text(
                 tools::create_skill::dispatch_create_skill(&self.skills, user_id, args).await,
+            ),
+            "list_skills" => {
+                ToolOutcome::Text(tools::manage_skills::dispatch_list_skills(&self.skills).await)
+            }
+            "skill_info" => ToolOutcome::Text(
+                tools::manage_skills::dispatch_skill_info(&self.skills, args).await,
+            ),
+            "delete_skill" => ToolOutcome::Text(
+                tools::manage_skills::dispatch_delete_skill(&self.skills, user_id, args).await,
             ),
             "get_bot_features" => ToolOutcome::Text(tools::features::features_text().to_string()),
             "get_token_metrics" => ToolOutcome::Text(

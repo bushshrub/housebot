@@ -159,6 +159,21 @@ impl Skill {
     pub fn has_triggers(&self) -> bool {
         !self.triggers.is_empty()
     }
+
+    /// Whether this skill's triggers fire for `message`.
+    ///
+    /// Only deterministically matchable trigger types participate: `always`
+    /// always fires and `keyword` fires on a case-insensitive substring match.
+    /// `intent` and `context` are advisory — they are surfaced to the agent for
+    /// its own judgement rather than matched here.
+    pub fn matches_message(&self, message: &str) -> bool {
+        let lower = message.to_lowercase();
+        self.triggers.iter().any(|t| match t.trigger_type.as_str() {
+            "always" => true,
+            "keyword" => lower.contains(&t.value.to_lowercase()),
+            _ => false,
+        })
+    }
 }
 
 fn now_secs() -> u64 {
@@ -469,6 +484,49 @@ mod tests {
     fn has_triggers_false_when_empty() {
         let sk = skill("x", None, "instructions");
         assert!(!sk.has_triggers());
+    }
+
+    fn skill_with_triggers(triggers: Vec<(&str, &str)>) -> Skill {
+        let mut sk = skill("x", None, "instructions");
+        sk.triggers = triggers
+            .into_iter()
+            .map(|(trigger_type, value)| SkillTrigger {
+                trigger_type: trigger_type.into(),
+                value: value.into(),
+            })
+            .collect();
+        sk
+    }
+
+    #[test]
+    fn matches_message_keyword_case_insensitive() {
+        let sk = skill_with_triggers(vec![("keyword", "Standup")]);
+        assert!(sk.matches_message("time for the daily standup"));
+        assert!(sk.matches_message("STANDUP now"));
+    }
+
+    #[test]
+    fn matches_message_keyword_miss() {
+        let sk = skill_with_triggers(vec![("keyword", "standup")]);
+        assert!(!sk.matches_message("what's for lunch"));
+    }
+
+    #[test]
+    fn matches_message_always_fires() {
+        let sk = skill_with_triggers(vec![("always", "")]);
+        assert!(sk.matches_message("anything at all"));
+    }
+
+    #[test]
+    fn matches_message_intent_is_advisory() {
+        let sk = skill_with_triggers(vec![("intent", "user wants a summary")]);
+        assert!(!sk.matches_message("user wants a summary"));
+    }
+
+    #[test]
+    fn matches_message_no_triggers() {
+        let sk = skill("x", None, "instructions");
+        assert!(!sk.matches_message("standup"));
     }
 
     // ── permission tests ─────────────────────────────────────────────────

@@ -13,6 +13,7 @@ pub mod feature_request;
 pub mod features;
 pub mod file_download;
 pub mod github_api;
+pub mod manage_skills;
 pub mod remind;
 pub mod sandbox;
 pub mod searxng;
@@ -33,7 +34,10 @@ pub fn all_tool_names() -> &'static [&'static str] {
         "download_file",
         "common_crawl__search",
         "create_skill",
-        "run_skill",
+        "use_skill",
+        "list_skills",
+        "skill_info",
+        "delete_skill",
         "create_feature_request",
         "edit_feature_request",
         "prepare_feature_development",

@@ -183,6 +183,7 @@ fn system_prompt_includes_usage_profile() {
         "media, reminders",
         "media (4), reminders (2)",
         "2026-07-17 12:00",
+        "",
     );
     assert!(p.contains("Relevant usage tags: media, reminders"));
     assert!(p.contains("Frequently used actions: media (4), reminders (2)"));
@@ -206,6 +207,7 @@ fn system_prompt_includes_profile_avatar_with_safety_guidance() {
         "",
         "",
         "2026-07-17 12:00",
+        "",
     );
     assert!(p.contains("Avatar URL: https://cdn.discordapp.com/avatars/123/avatar.png"));
     assert!(p.contains("Never infer sensitive traits, identity, or intent from a user's avatar."));
@@ -353,6 +355,7 @@ fn prompt_stable_prefix_unchanged_by_dynamic_content() {
                 "",
                 "",
                 "2026-07-17 12:00",
+                "",
             ),
         ),
         (
@@ -370,6 +373,7 @@ fn prompt_stable_prefix_unchanged_by_dynamic_content() {
                 "",
                 "",
                 "2026-07-18 08:30",
+                "",
             ),
         ),
         (
@@ -387,6 +391,7 @@ fn prompt_stable_prefix_unchanged_by_dynamic_content() {
                 "",
                 "",
                 "2026-07-17 12:00",
+                "",
             ),
         ),
         (
@@ -404,6 +409,7 @@ fn prompt_stable_prefix_unchanged_by_dynamic_content() {
                 "tags",
                 "actions",
                 "2026-07-17 12:00",
+                "",
             ),
         ),
         (
@@ -421,6 +427,7 @@ fn prompt_stable_prefix_unchanged_by_dynamic_content() {
                 "",
                 "",
                 "2026-07-17 12:00",
+                "",
             ),
         ),
         (
@@ -438,6 +445,7 @@ fn prompt_stable_prefix_unchanged_by_dynamic_content() {
                 "",
                 "",
                 "2026-07-17 12:00",
+                "",
             ),
         ),
         (
@@ -455,6 +463,7 @@ fn prompt_stable_prefix_unchanged_by_dynamic_content() {
                 "media",
                 "search",
                 "2026-07-17 12:00",
+                "",
             ),
         ),
     ];
@@ -509,6 +518,7 @@ fn prompt_static_base_present_regardless_of_deep_memory_or_skills() {
             "",
             "",
             "2026-07-17 12:00",
+            "",
         ),
         // deep_memory disabled, no skills
         build_system_prompt_with_profile(
@@ -524,6 +534,7 @@ fn prompt_static_base_present_regardless_of_deep_memory_or_skills() {
             "",
             "",
             "2026-07-17 12:00",
+            "",
         ),
         // deep_memory enabled, with skills
         build_system_prompt_with_profile(
@@ -539,6 +550,7 @@ fn prompt_static_base_present_regardless_of_deep_memory_or_skills() {
             "",
             "",
             "2026-07-17 12:00",
+            "",
         ),
         // deep_memory disabled, with skills
         build_system_prompt_with_profile(
@@ -554,6 +566,7 @@ fn prompt_static_base_present_regardless_of_deep_memory_or_skills() {
             "",
             "",
             "2026-07-17 12:00",
+            "",
         ),
     ];
 
@@ -598,6 +611,7 @@ fn prompt_regression_dynamic_markers_after_guidelines_minimal() {
         "",
         "",
         "2026-07-17 12:00",
+        "",
     );
     let guidelines_pos = p
         .find("## Guidelines")
@@ -647,6 +661,7 @@ fn prompt_regression_dynamic_markers_after_guidelines_maximal() {
         "tags",
         "actions",
         "2026-07-17 12:00",
+        "",
     );
     let guidelines_pos = p
         .find("## Guidelines")
@@ -684,6 +699,7 @@ fn prompt_memory_tools_separated_from_preceding_guidelines_bullet() {
         "",
         "",
         "2026-07-17 12:00",
+        "",
     );
     assert!(
         p.contains("summarizing what they asked.\n- When a user asks what was discussed"),
@@ -729,6 +745,7 @@ fn prompt_config_content_ordered_between_guidelines_and_dynamic() {
         "tags",
         "actions",
         "2026-07-17 12:00",
+        "",
     );
     let last_stable_pos = p
         .find("summarizing what they asked.")
@@ -736,7 +753,7 @@ fn prompt_config_content_ordered_between_guidelines_and_dynamic() {
     let memory_tool_pos = p
         .find("- update_memory —")
         .expect("memory tool present with deep_memory enabled");
-    let run_skill_pos = p.find("- run_skill —").expect("run_skill tool present");
+    let run_skill_pos = p.find("- use_skill —").expect("use_skill tool present");
     let memory_guidance_pos = p
         .find("Actively use memory:")
         .expect("memory guidance present");
@@ -797,8 +814,11 @@ fn all_tool_names_matches_built_in_definitions() {
         crate::tools::web_fetch::definition(),
         crate::tools::file_download::definition(),
         crate::tools::common_crawl::definition(),
-        run_skill_tool(),
+        use_skill_tool(),
         create_skill_tool(),
+        crate::tools::manage_skills::list_definition(),
+        crate::tools::manage_skills::info_definition(),
+        crate::tools::manage_skills::delete_definition(),
         crate::tools::feature_request::definition(),
         crate::tools::edit_feature_request::definition(),
         crate::tools::feature_development::definition(),

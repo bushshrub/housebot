@@ -2,19 +2,19 @@
 
 use super::*;
 
-pub(crate) fn run_skill_tool() -> Value {
+pub(crate) fn use_skill_tool() -> Value {
     json!({
-        "name": "run_skill",
-        "description": "Execute a named custom skill — a packaged capability with instructions, \
-            optional tool access, and examples. Pass the skill name and text input. Skills with \
-            enabled tools will automatically have those tools available during execution.",
+        "name": "use_skill",
+        "description": "Load a named custom skill into your context — a packaged set of \
+            instructions, recommended tools, and examples for handling a particular kind of \
+            request. This returns the skill's full instructions; follow them yourself using your \
+            normal tools. Call it when a skill listed in the session information looks relevant.",
         "input_schema": {
             "type": "object",
             "properties": {
-                "name": {"type": "string", "description": "The skill name to execute."},
-                "input": {"type": "string", "description": "The text input to pass to the skill."}
+                "name": {"type": "string", "description": "The skill name to load."}
             },
-            "required": ["name", "input"]
+            "required": ["name"]
         }
     })
 }

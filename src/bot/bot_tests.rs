@@ -309,18 +309,14 @@ fn split_custom_limit() {
 
 // ── tool_hint ──
 #[test]
-fn hint_run_skill_with_name_and_input() {
-    let h = tool_hint(
-        "run_skill",
-        &json!({"name": "summarize", "input": "some text"}),
-    );
+fn hint_use_skill_with_name() {
+    let h = tool_hint("use_skill", &json!({"name": "summarize"}));
     assert!(h.contains("summarize"));
-    assert!(h.contains("some text"));
 }
 
 #[test]
-fn hint_run_skill_no_name() {
-    assert_eq!(tool_hint("run_skill", &json!({"input": "some text"})), "");
+fn hint_use_skill_no_name() {
+    assert_eq!(tool_hint("use_skill", &json!({})), "");
 }
 
 #[test]
