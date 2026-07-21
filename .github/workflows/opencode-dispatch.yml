@@ -41,6 +41,7 @@ jobs:
           persist-credentials: false
 
       - name: Run opencode
+        id: run_agent
         uses: anomalyco/opencode/github@77fc88c8ade8e5a620ebbe1197f3a572d29ae91a
         with:
           model: opencode/deepseek-v4-flash-free
@@ -55,3 +56,44 @@ jobs:
               "$schema": "https://opencode.ai/config.json",
               "permission": "allow"
             }
+
+      - name: Notify Discord of completion
+        if: always()
+        env:
+          WEBHOOK: ${{ secrets.DISCORD_DEPLOYMENT_WEBHOOK }}
+          OWNER_ID: ${{ secrets.OWNER_DISCORD_ID }}
+          OUTCOME: ${{ steps.run_agent.outcome }}
+          ISSUE_NUMBER: ${{ inputs.issue_number }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          if [ -z "$WEBHOOK" ]; then
+            echo "DISCORD_DEPLOYMENT_WEBHOOK is not configured; skipping notification."
+            exit 0
+          fi
+
+          if [ "$OUTCOME" = "success" ]; then
+            STATUS_LINE="✅ OpenCode finished issue #${ISSUE_NUMBER}."
+          else
+            STATUS_LINE="❌ OpenCode run for issue #${ISSUE_NUMBER} did not complete successfully (${OUTCOME})."
+          fi
+          CONTENT=""
+          if [ -n "$OWNER_ID" ]; then
+            CONTENT="<@${OWNER_ID}>"
+          fi
+
+          jq -n \
+            --arg content "$CONTENT" \
+            --arg status "$STATUS_LINE" \
+            --arg url "$RUN_URL" \
+            '{
+              content: $content,
+              embeds: [{
+                title: "Feature development finished",
+                url: $url,
+                description: $status,
+                color: 5814783
+              }]
+            }' \
+            | curl --fail --silent --show-error -X POST "$WEBHOOK" \
+                -H "Content-Type: application/json" \
+                --data-binary @-

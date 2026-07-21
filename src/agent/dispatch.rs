@@ -188,17 +188,8 @@ impl Agent {
                         "Error: #{issue_number} is a pull request; feature development requires an existing issue."
                     ));
                 }
-                let interactive = args
-                    .get("interactive")
-                    .and_then(Value::as_bool)
-                    .unwrap_or(false);
-
                 let dispatch_mode = if requester_user_id == owner_id {
-                    if interactive {
-                        DispatchMode::Interactive
-                    } else {
-                        DispatchMode::Immediate
-                    }
+                    DispatchMode::Interactive
                 } else {
                     DispatchMode::RequireOwnerApproval
                 };

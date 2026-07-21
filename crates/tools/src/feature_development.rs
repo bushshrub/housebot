@@ -97,7 +97,8 @@ pub fn definition() -> Value {
         "name": "prepare_feature_development",
         "description": "Prepare an automated feature-development request.\n\
             When the configured owner explicitly says to start, implement, build, or begin work, \
-            call this and treat the request as authorized for immediate dispatch.\n\
+            call this; the owner will be presented with a Discord selector to choose the coding \
+            agent, model, and effort level before dispatch.\n\
             When another user requests implementation, call this so the owner can approve it.\n\
             Do not claim that work has started until the dispatch succeeds.\n\
             Use create_feature_request for suggestions that do not ask to begin implementation.",
@@ -130,10 +131,6 @@ pub fn definition() -> Value {
                     "type": "array",
                     "items": {"type": "string"},
                     "description": "Conditions that must be true for the feature to be complete."
-                },
-                "interactive": {
-                    "type": "boolean",
-                    "description": "Set to true when the owner explicitly asks to choose the coding agent interactively."
                 }
             },
             "required": ["issue_number", "title", "objective", "requirements", "acceptance_criteria"]
