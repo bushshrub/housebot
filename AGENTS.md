@@ -150,7 +150,8 @@ Discord message
                  ├─ if tool_calls → dispatch_tool()
                  │    ├─ web_search → SearXNG / fetch_webpage → guarded HTTP fetch
                  │    ├─ update_memory → memory.save()
-                 │    ├─ set_reminder / summarize_url / translate / create_feature_request / run_skill
+                 │    ├─ set_reminder / summarize_url / translate / create_feature_request
+                 │    ├─ use_skill (loads a skill's instructions into context) / create_skill / list_skills / skill_info / delete_skill
                  │    ├─ prepare_feature_development → PendingJobStore (owner-only; returns DISPATCH_FLOW:<uuid>)
                  │    └─ prefix__tool → McpServer::call_tool()
                  └─ repeat until finish_reason == "stop"

@@ -753,7 +753,7 @@ fn prompt_config_content_ordered_between_guidelines_and_dynamic() {
     let memory_tool_pos = p
         .find("- update_memory —")
         .expect("memory tool present with deep_memory enabled");
-    let run_skill_pos = p.find("- use_skill —").expect("use_skill tool present");
+    let use_skill_pos = p.find("- use_skill —").expect("use_skill tool present");
     let memory_guidance_pos = p
         .find("Actively use memory:")
         .expect("memory guidance present");
@@ -773,12 +773,12 @@ fn prompt_config_content_ordered_between_guidelines_and_dynamic() {
     );
     // Config suffix: memory tools before skills
     assert!(
-        memory_tool_pos < run_skill_pos,
+        memory_tool_pos < use_skill_pos,
         "memory tools must precede skills section"
     );
     // Config content before memory_guidance
     assert!(
-        run_skill_pos < memory_guidance_pos,
+        use_skill_pos < memory_guidance_pos,
         "skills section must precede memory guidance"
     );
     // memory_guidance before dynamic suffix
