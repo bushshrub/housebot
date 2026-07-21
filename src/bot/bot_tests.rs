@@ -624,10 +624,10 @@ async fn stats_reports_counts() {
 
 #[test]
 fn dev_notify_footer_parses_valid_text() {
-    let footer = "housebot-dev-notify requester_id=123456789 issue=42 status=success";
+    let footer = "housebot-dev-notify requester_id=123456789 issue=42 status=success sig=ab12";
     assert_eq!(
         parse_dev_notify_footer(footer),
-        Some((123456789, 42, "success".to_string()))
+        Some((123456789, 42, "success".to_string(), "ab12".to_string()))
     );
 }
 
@@ -644,7 +644,7 @@ fn dev_notify_footer_rejects_unrelated_text() {
 fn dev_notify_footer_rejects_missing_requester_id() {
     // requester_id absent even though issue and status are present.
     assert_eq!(
-        parse_dev_notify_footer("housebot-dev-notify issue=42 status=success"),
+        parse_dev_notify_footer("housebot-dev-notify issue=42 status=success sig=ab12"),
         None
     );
 }
@@ -652,7 +652,7 @@ fn dev_notify_footer_rejects_missing_requester_id() {
 #[test]
 fn dev_notify_footer_rejects_empty_status() {
     assert_eq!(
-        parse_dev_notify_footer("housebot-dev-notify requester_id=1 issue=42 status="),
+        parse_dev_notify_footer("housebot-dev-notify requester_id=1 issue=42 status= sig=ab12"),
         None
     );
 }
@@ -660,7 +660,17 @@ fn dev_notify_footer_rejects_empty_status() {
 #[test]
 fn dev_notify_footer_rejects_zero_requester_id() {
     assert_eq!(
-        parse_dev_notify_footer("housebot-dev-notify requester_id=0 issue=42 status=success"),
+        parse_dev_notify_footer(
+            "housebot-dev-notify requester_id=0 issue=42 status=success sig=ab12"
+        ),
+        None
+    );
+}
+
+#[test]
+fn dev_notify_footer_rejects_missing_sig() {
+    assert_eq!(
+        parse_dev_notify_footer("housebot-dev-notify requester_id=1 issue=42 status=success"),
         None
     );
 }
@@ -668,9 +678,9 @@ fn dev_notify_footer_rejects_zero_requester_id() {
 #[test]
 fn dev_notify_footer_allows_equals_in_value() {
     // split_once splits on the *first* '=', so values may safely contain '='.
-    let footer = "housebot-dev-notify requester_id=1 issue=42 status=error=timeout";
+    let footer = "housebot-dev-notify requester_id=1 issue=42 status=error=timeout sig=ab12";
     assert_eq!(
         parse_dev_notify_footer(footer),
-        Some((1, 42, "error=timeout".to_string()))
+        Some((1, 42, "error=timeout".to_string(), "ab12".to_string()))
     );
 }
