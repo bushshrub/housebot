@@ -50,14 +50,14 @@ jobs:
       - name: Notify Discord of completion
         if: always()
         env:
-          WEBHOOK: ${{ secrets.DISCORD_DEV_NOTIFY_WEBHOOK }}
+          WEBHOOK: ${{ secrets.DISCORD_DEPLOYMENT_WEBHOOK }}
           OUTCOME: ${{ steps.run_agent.outcome }}
           ISSUE_NUMBER: ${{ inputs.issue_number }}
           REQUESTER_ID: ${{ inputs.requester_id }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
           if [ -z "$WEBHOOK" ]; then
-            echo "DISCORD_DEV_NOTIFY_WEBHOOK is not configured; skipping notification."
+            echo "DISCORD_DEPLOYMENT_WEBHOOK is not configured; skipping notification."
             exit 0
           fi
 
