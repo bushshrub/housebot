@@ -40,16 +40,25 @@ impl HouseBot {
             return;
         };
 
-        // Only the bot owner (who approves/rejects requests) or the original
-        // requester (configuring their own job) may interact.
+        // Approval decisions on someone else's request (approve/reject/configure,
+        // shown only on AwaitingOwnerApproval cards) are owner-only. The
+        // requester's own interactive selection (agent/model/effort/confirm/
+        // back/cancel) may be driven by either the owner or the requester.
         let caller = component.user.id.get();
-        if caller != owner_id && caller != requester_id {
+        let owner_only_action = matches!(action, "approve" | "reject" | "configure");
+        let authorized = caller == owner_id || (!owner_only_action && caller == requester_id);
+        if !authorized {
+            let message = if owner_only_action {
+                "Only the bot owner can approve, reject, or reconfigure this request."
+            } else {
+                "Only the bot owner or the requester can use these controls."
+            };
             let _ = component
                 .create_response(
                     &ctx.http,
                     CreateInteractionResponse::Message(
                         CreateInteractionResponseMessage::new()
-                            .content("Only the bot owner or the requester can use these controls.")
+                            .content(message)
                             .ephemeral(true),
                     ),
                 )

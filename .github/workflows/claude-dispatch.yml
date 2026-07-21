@@ -48,7 +48,7 @@ jobs:
           CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       - name: Notify Discord of completion
-        if: always()
+        if: always() && steps.run_agent.outcome != 'skipped'
         env:
           WEBHOOK: ${{ secrets.DISCORD_DEPLOYMENT_WEBHOOK }}
           OUTCOME: ${{ steps.run_agent.outcome }}

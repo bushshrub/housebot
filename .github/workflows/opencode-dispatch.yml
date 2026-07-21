@@ -62,7 +62,7 @@ jobs:
             }
 
       - name: Notify Discord of completion
-        if: always()
+        if: always() && steps.run_agent.outcome != 'skipped'
         env:
           WEBHOOK: ${{ secrets.DISCORD_DEPLOYMENT_WEBHOOK }}
           OUTCOME: ${{ steps.run_agent.outcome }}

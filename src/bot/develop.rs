@@ -30,117 +30,6 @@ impl HouseBot {
         }
     }
 
-    /// Immediately dispatch an owner-direct job without interactive confirmation.
-    pub(crate) async fn dispatch_owner_job_immediately(
-        &self,
-        ctx: &Context,
-        msg: &Message,
-        job_id: Uuid,
-    ) {
-        // Atomically transition Confirming → Dispatching.
-        if !self.pending_jobs.try_start_dispatch(job_id) {
-            let _ = reply_no_ping(
-                ctx,
-                msg,
-                "❌ Failed to dispatch: job is not in a dispatchable state.",
-            )
-            .await;
-            return;
-        }
-
-        let job_data = self.pending_jobs.with_job(job_id, |j| {
-            let agent = j.selection.agent?;
-            let model = j.selection.model.clone()?;
-            let effort = j.selection.effort.clone()?;
-            Some((
-                j.specification.clone(),
-                agent,
-                model,
-                effort,
-                j.requester.username.clone(),
-                j.requester.user_id,
-            ))
-        });
-        let Some(Some((spec, agent, model, effort, _req_name, req_id))) = job_data else {
-            self.pending_jobs.mark_dispatch_failed(job_id);
-            let _ = reply_no_ping(
-                ctx,
-                msg,
-                "❌ Failed to dispatch: incomplete agent/model/effort selection. \
-                 Please set DEVELOPMENT_DEFAULT_AGENT, DEVELOPMENT_DEFAULT_MODEL, \
-                 and DEVELOPMENT_DEFAULT_EFFORT, or use the interactive flow.",
-            )
-            .await;
-            return;
-        };
-
-        let _selection = match self.catalog.validate_selection(agent, &model, &effort) {
-            Ok(s) => s,
-            Err(e) => {
-                self.pending_jobs.mark_dispatch_failed(job_id);
-                let _ = reply_no_ping(ctx, msg, &format!("❌ Configuration error: {e}")).await;
-                return;
-            }
-        };
-
-        if agent_dispatch_disabled(agent) {
-            self.pending_jobs.mark_dispatch_failed(job_id);
-            let _ = reply_no_ping(ctx, msg, &format!("❌ {AGENT_DISABLED_MESSAGE}")).await;
-            return;
-        }
-
-        let reporter = self.agent.reporter();
-        let mut inputs = serde_json::Map::new();
-        // The workflow_dispatch API rejects non-string input values with 422,
-        // even for inputs declared `type: number` in the workflow.
-        inputs.insert(
-            "issue_number".into(),
-            serde_json::Value::String(spec.issue_number.to_string()),
-        );
-        inputs.insert(
-            "prompt".into(),
-            serde_json::Value::String(build_dispatch_prompt(spec.issue_number)),
-        );
-        inputs.insert(
-            "requester_id".into(),
-            serde_json::Value::String(req_id.to_string()),
-        );
-        if reporter
-            .trigger_workflow_dispatch(dispatch_workflow_file(agent), "master", &inputs)
-            .await
-        {
-            self.pending_jobs.mark_dispatched(job_id);
-            tracing::info!(
-                target: "housebot::develop",
-                issue_number = spec.issue_number,
-                agent = agent.id_str(),
-                "Owner-immediate development job dispatched"
-            );
-            let _ = reply_no_ping(
-                ctx,
-                msg,
-                &format!(
-                    "✅ **Dispatched!**\n\
-                         Existing issue #{num}\n\
-                         Agent: **{agent_name}** | Model: `{model}` | Effort: `{effort}`\n\
-                         The `{workflow}` workflow was triggered.",
-                    num = spec.issue_number,
-                    agent_name = agent.display_name(),
-                    workflow = dispatch_workflow_file(agent),
-                ),
-            )
-            .await;
-        } else {
-            self.pending_jobs.mark_dispatch_failed(job_id);
-            let _ = reply_no_ping(
-                ctx,
-                msg,
-                "❌ Failed to trigger the GitHub workflow. Check bot logs for details.",
-            )
-            .await;
-        }
-    }
-
     /// DM the configured owner about a non-owner approval request.
     pub(crate) async fn notify_owner_for_approval(
         &self,
@@ -261,10 +150,14 @@ impl HouseBot {
     /// Watch the configured dev-notify channel (`/config dev_notify_channel`) for
     /// the completion webhook posted by `claude-dispatch.yml`/`opencode-dispatch.yml`,
     /// and DM the requester encoded in the embed footer.
-    pub(crate) async fn handle_dev_notify_webhook(&self, ctx: &Context, msg: &Message) {
+    ///
+    /// Returns `true` if the message was in the configured channel (and so should
+    /// not fall through to normal message handling), regardless of whether a DM
+    /// was actually sent.
+    pub(crate) async fn handle_dev_notify_webhook(&self, ctx: &Context, msg: &Message) -> bool {
         let notify_channel = self.access.load().await.dev_notify_channel_id;
         if notify_channel != Some(msg.channel_id.get()) {
-            return;
+            return false;
         }
         let Some((requester_id, issue_number, status)) = msg
             .embeds
@@ -272,18 +165,20 @@ impl HouseBot {
             .and_then(|e| e.footer.as_ref())
             .and_then(|f| parse_dev_notify_footer(&f.text))
         else {
-            return;
+            return true;
         };
         let emoji = if status == "success" { "✅" } else { "❌" };
-        let content =
-            format!("{emoji} Feature development for issue #{issue_number} finished (`{status}`).");
+        let content = self.redactor.redact(&format!(
+            "{emoji} Feature development for issue #{issue_number} finished (`{status}`)."
+        ));
         let Ok(user) = UserId::new(requester_id).to_user(&ctx.http).await else {
-            return;
+            return true;
         };
         let Ok(dm) = user.create_dm_channel(&ctx.http).await else {
-            return;
+            return true;
         };
         let _ = dm.say(&ctx.http, content).await;
+        true
     }
 
     /// Handle a Discord component interaction for the develop flow.
@@ -352,13 +247,13 @@ pub(crate) fn parse_dev_notify_footer(text: &str) -> Option<(u64, u64, String)> 
     for kv in rest.split_whitespace() {
         let (key, value) = kv.split_once('=')?;
         match key {
-            "requester_id" => requester_id = value.parse::<u64>().ok(),
+            "requester_id" => requester_id = value.parse::<u64>().ok().filter(|id| *id != 0),
             "issue" => issue = value.parse::<u64>().ok(),
-            "status" => status = Some(value.to_string()),
+            "status" => status = Some(value).filter(|s| !s.is_empty()),
             _ => {}
         }
     }
-    Some((requester_id?, issue?, status?))
+    Some((requester_id?, issue?, status?.to_string()))
 }
 
 // ── develop flow component builders ──────────────────────────────────────────

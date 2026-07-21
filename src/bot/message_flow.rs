@@ -318,9 +318,6 @@ impl HouseBot {
         // Handle structured development control actions before displaying text.
         if let Some(action) = result.control_action {
             match action {
-                AgentControlAction::OwnerDispatchReady { job_id } => {
-                    self.dispatch_owner_job_immediately(ctx, msg, job_id).await;
-                }
                 AgentControlAction::OwnerConfigurationRequired { job_id } => {
                     self.start_develop_flow(ctx, msg, job_id).await;
                 }

@@ -55,31 +55,6 @@ fn defaults() -> PartialAgentSelection {
 }
 
 #[test]
-fn owner_immediate_returns_dispatch_ready() {
-    let store = make_store();
-    let rl = make_limiter();
-    let outcome = prepare_feature_development(
-        &store,
-        &rl,
-        42,
-        owner_requester(42),
-        source(),
-        1,
-        "Title",
-        "Obj",
-        "",
-        valid_reqs(),
-        valid_ac(),
-        DispatchMode::Immediate,
-        &defaults(),
-    );
-    assert!(matches!(
-        outcome,
-        FeatureDevelopmentOutcome::OwnerDispatchReady { .. }
-    ));
-}
-
-#[test]
 fn owner_interactive_returns_config_required() {
     let store = make_store();
     let rl = make_limiter();
@@ -145,7 +120,7 @@ fn missing_owner_id_rejected() {
         "",
         valid_reqs(),
         valid_ac(),
-        DispatchMode::Immediate,
+        DispatchMode::Interactive,
         &defaults(),
     );
     assert!(matches!(
@@ -348,7 +323,7 @@ fn invalid_specification_rejected_before_job_insertion() {
         "",
         valid_reqs(),
         valid_ac(),
-        DispatchMode::Immediate,
+        DispatchMode::Interactive,
         &defaults(),
     );
     assert!(matches!(
