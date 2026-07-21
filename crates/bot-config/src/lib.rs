@@ -288,6 +288,10 @@ pub struct UserConfig {
     /// Only narrow cases are handled (obvious reminder requests, help questions).
     #[serde(default)]
     pub proactive_assistance_enabled: bool,
+    /// Names of global marketplace skills this user has enabled. Only enabled
+    /// skills are listed in the user's prompt and executable via `use_skill`.
+    #[serde(default)]
+    pub enabled_skills: Vec<String>,
 }
 
 fn default_followup_timeout() -> u64 {
@@ -313,6 +317,7 @@ impl Default for UserConfig {
             progress_updates_enabled: true,
             deep_memory_enabled: true,
             proactive_assistance_enabled: false,
+            enabled_skills: Vec::new(),
         }
     }
 }

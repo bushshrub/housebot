@@ -70,11 +70,7 @@ pub fn split_text(text: &str, limit: usize) -> Vec<String> {
 pub fn tool_hint(tool_name: &str, args: &Value) -> String {
     let get = |key| args.get(key).and_then(Value::as_str).unwrap_or("");
     match tool_name {
-        "run_skill" if !get("name").is_empty() => format!(
-            " — {}: {}",
-            get("name"),
-            truncate(get("input"), 60).replace('\n', " ")
-        ),
+        "use_skill" if !get("name").is_empty() => format!(" — {}", get("name")),
         "set_reminder" if !get("message").is_empty() => format!(
             " — in {}m: {}",
             args.get("delay_minutes")
@@ -87,7 +83,7 @@ pub fn tool_hint(tool_name: &str, args: &Value) -> String {
             get("target_language"),
             truncate(get("text"), 40).replace('\n', " ")
         ),
-        "run_skill" | "set_reminder" | "translate" => String::new(),
+        "use_skill" | "set_reminder" | "translate" => String::new(),
         _ => ["query", "task", "repo_url", "memory_content", "url"]
             .into_iter()
             .map(get)
@@ -124,7 +120,7 @@ pub fn tool_status(tool_name: &str) -> String {
         "download_file" => "📥",
         "run_lua" => "⚙️",
         "get_lua_docs" => "📖",
-        "run_skill" => "🧩",
+        "use_skill" => "🧩",
         "translate" => "🌐",
         "set_reminder" => "⏰",
         "get_messages" => "💬",

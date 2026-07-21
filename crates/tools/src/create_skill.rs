@@ -8,12 +8,13 @@ use housebot_skills::{Skill, SkillExample, SkillTrigger, Skills};
 pub fn definition() -> Value {
     json!({
         "name": "create_skill",
-        "description": "Create or update a custom skill — a packaged unit of capability with \
-            trigger conditions, instructions, authorized tools, and few-shot examples. \
-            Gather requirements from the user through conversation, then present the final \
-            draft to the user and obtain their explicit approval before calling this tool. \
-            When updating an existing skill, provide the correct version number to trigger \
-            automatic version archiving.",
+        "description": "Create or update a custom skill — a packaged set of instructions with \
+            trigger conditions, recommended tools, and few-shot examples. The skill is loaded \
+            into your context on demand via `use_skill`; you then follow its instructions using \
+            your normal tools. Gather requirements from the user through conversation, then \
+            present the final draft to the user and obtain their explicit approval before calling \
+            this tool. When updating an existing skill, provide the correct version number to \
+            trigger automatic version archiving.",
         "input_schema": {
             "type": "object",
             "properties": {
@@ -54,8 +55,9 @@ pub fn definition() -> Value {
                 },
                 "enabled_tools": {
                     "type": "array",
-                    "description": "Tool names this skill is authorized to call during execution (e.g. \
-                        'web_search', 'fetch_webpage'). Leave empty to restrict the skill to text-only responses.",
+                    "description": "Tool names this skill is expected to use (e.g. 'web_search', \
+                        'fetch_webpage'), surfaced as recommendations when the skill is loaded. \
+                        Leave empty for a text-only skill.",
                     "items": {"type": "string"}
                 },
                 "examples": {

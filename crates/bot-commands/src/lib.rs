@@ -36,6 +36,7 @@ fn parse_mention(raw: &str) -> &str {
 
 pub async fn skill_command(
     skills: &Skills,
+    user_config: &UserConfigStore,
     first_line: &str,
     rest: &str,
     author_id: u64,
@@ -48,6 +49,7 @@ pub async fn skill_command(
     if parts.len() < 2 {
         return "Usage: `!skill list` | `!skill add <name>` | `!skill edit <name>` \
                 | `!skill delete <name>` | `!skill info <name>` \
+                | `!skill enable <name>` | `!skill disable <name>` \
                 | `!skill grant <name> <@user>` | `!skill revoke <name> <@user>`"
             .into();
     }
@@ -55,23 +57,62 @@ pub async fn skill_command(
         "list" => {
             let all = skills.load_all().await;
             if all.is_empty() {
-                return "No skills defined yet. Use `!skill add <name>` (with the prompt on the next line).".into();
+                return "No skills in the marketplace yet. Use `!skill add <name>` (with the prompt on the next line).".into();
             }
-            let mut lines = vec!["**Skills:**".to_string()];
+            let enabled = user_config.load(author_id).await.enabled_skills;
+            let mut lines = vec!["**Marketplace skills** (✓ = enabled for you):".to_string()];
             for skill in all.values() {
+                let mark = if enabled.iter().any(|n| n == &skill.name) {
+                    "✓"
+                } else {
+                    "•"
+                };
                 let author = skill
                     .created_by
                     .as_deref()
                     .map(|id| format!(" <@{id}>"))
                     .unwrap_or_default();
                 lines.push(format!(
-                    "• **{}** — {}{}",
+                    "{} **{}** — {}{}",
+                    mark,
                     skill.name,
                     truncate_chars(skill.description_or_name(), 80),
                     author,
                 ));
             }
             lines.join("\n")
+        }
+        "enable" => {
+            let Some(name) = parts.get(2).map(|s| s.to_lowercase()) else {
+                return "Usage: `!skill enable <name>`".into();
+            };
+            if skills.get(&name).await.is_none() {
+                return format!("Skill `{name}` not found in the marketplace.");
+            }
+            let mut cfg = user_config.load(author_id).await;
+            if cfg.enabled_skills.iter().any(|n| n == &name) {
+                return format!("Skill **{name}** is already enabled.");
+            }
+            cfg.enabled_skills.push(name.clone());
+            if user_config.save(author_id, &cfg).await.is_err() {
+                return "Error: failed to save your configuration.".into();
+            }
+            format!("✅ Skill **{name}** enabled.")
+        }
+        "disable" => {
+            let Some(name) = parts.get(2).map(|s| s.to_lowercase()) else {
+                return "Usage: `!skill disable <name>`".into();
+            };
+            let mut cfg = user_config.load(author_id).await;
+            let before = cfg.enabled_skills.len();
+            cfg.enabled_skills.retain(|n| n != &name);
+            if cfg.enabled_skills.len() == before {
+                return format!("Skill **{name}** was not enabled.");
+            }
+            if user_config.save(author_id, &cfg).await.is_err() {
+                return "Error: failed to save your configuration.".into();
+            }
+            format!("✅ Skill **{name}** disabled.")
         }
         "info" => {
             let Some(name) = parts.get(2).map(|s| s.to_lowercase()) else {
@@ -292,7 +333,7 @@ pub async fn skill_command(
         }
         other => {
             format!(
-                "Unknown subcommand `{other}`. Options: `list`, `add`, `edit`, `delete`, `info`, `grant`, `revoke`"
+                "Unknown subcommand `{other}`. Options: `list`, `add`, `edit`, `delete`, `info`, `enable`, `disable`, `grant`, `revoke`"
             )
         }
     }
