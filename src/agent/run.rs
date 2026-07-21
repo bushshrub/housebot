@@ -67,7 +67,13 @@ impl Agent {
             .current_conversation_id(user_id, display_name, channel_id)
             .await;
 
-        let all_skills = self.skills.load_all().await;
+        let enabled_skills = self
+            .user_config
+            .load(user_id.parse().unwrap_or(0))
+            .await
+            .enabled_skills;
+        let mut all_skills = self.skills.load_all().await;
+        all_skills.retain(|name, _| enabled_skills.iter().any(|n| n == name));
         let now = Local::now().format("%Y-%m-%d %H:%M").to_string();
         let system = json!({
             "role": "system",
@@ -306,6 +312,8 @@ impl Agent {
             tools::manage_skills::list_definition(),
             tools::manage_skills::info_definition(),
             tools::manage_skills::delete_definition(),
+            tools::manage_skills::enable_definition(),
+            tools::manage_skills::disable_definition(),
             tools::feature_request::definition(),
             tools::edit_feature_request::definition(),
             tools::feature_development::definition(),

@@ -635,6 +635,7 @@ pub(crate) async fn handle_privacy_interaction(
 
 pub(crate) async fn handle_skill_interaction(
     skills: &Skills,
+    user_cfg: &UserConfigStore,
     options: &[serenity::all::CommandDataOption],
     author_id: u64,
 ) -> String {
@@ -646,7 +647,7 @@ pub(crate) async fn handle_skill_interaction(
         _ => return "Unexpected option structure.".into(),
     };
     match command.name.as_str() {
-        "list" => skill_command(skills, "!skill list", "", author_id).await,
+        "list" => skill_command(skills, user_cfg, "!skill list", "", author_id).await,
         "info" => {
             let name = sub_opts
                 .iter()
@@ -656,7 +657,14 @@ pub(crate) async fn handle_skill_interaction(
                     _ => None,
                 })
                 .unwrap_or_default();
-            skill_command(skills, &format!("!skill info {name}"), "", author_id).await
+            skill_command(
+                skills,
+                user_cfg,
+                &format!("!skill info {name}"),
+                "",
+                author_id,
+            )
+            .await
         }
         "add" => {
             let name = sub_opts
@@ -675,7 +683,14 @@ pub(crate) async fn handle_skill_interaction(
                     _ => None,
                 })
                 .unwrap_or_default();
-            skill_command(skills, &format!("!skill add {name}"), &prompt, author_id).await
+            skill_command(
+                skills,
+                user_cfg,
+                &format!("!skill add {name}"),
+                &prompt,
+                author_id,
+            )
+            .await
         }
         "delete" => {
             let name = sub_opts
@@ -686,7 +701,14 @@ pub(crate) async fn handle_skill_interaction(
                     _ => None,
                 })
                 .unwrap_or_default();
-            skill_command(skills, &format!("!skill delete {name}"), "", author_id).await
+            skill_command(
+                skills,
+                user_cfg,
+                &format!("!skill delete {name}"),
+                "",
+                author_id,
+            )
+            .await
         }
         other => format!("Unknown subcommand `{other}`. Options: list, info, add, delete"),
     }

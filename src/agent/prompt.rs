@@ -225,9 +225,9 @@ impl ConfigSuffix {
             ""
         };
         let skills_section = if all_skills.is_empty() {
-            "\n- use_skill — Load a custom skill's instructions into your context by name. No skills \
-              are defined yet; users can add them through conversation (describe what you want the \
-              skill to do)."
+            "\n- use_skill — Load a custom skill's instructions into your context by name. You have \
+              no skills enabled yet; browse the marketplace with list_skills and enable one with \
+              enable_skill (or `!skill enable <name>`), or create one through conversation."
                 .to_string()
         } else {
             // Only skill names appear here — user-authored descriptions must not

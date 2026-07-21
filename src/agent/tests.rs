@@ -104,7 +104,7 @@ fn system_prompt_lists_skills() {
 fn system_prompt_placeholder_without_skills() {
     assert!(
         build_system_prompt("Alice", "123", "Alice", "", "", &empty_skills(), None, true)
-            .contains("No skills are defined yet")
+            .contains("no skills enabled yet")
     );
 }
 
@@ -819,6 +819,8 @@ fn all_tool_names_matches_built_in_definitions() {
         crate::tools::manage_skills::list_definition(),
         crate::tools::manage_skills::info_definition(),
         crate::tools::manage_skills::delete_definition(),
+        crate::tools::manage_skills::enable_definition(),
+        crate::tools::manage_skills::disable_definition(),
         crate::tools::feature_request::definition(),
         crate::tools::edit_feature_request::definition(),
         crate::tools::feature_development::definition(),

@@ -9,8 +9,9 @@ fn truncate_chars(value: &str, limit: usize) -> String {
 pub fn list_definition() -> Value {
     json!({
         "name": "list_skills",
-        "description": "List every custom skill with its description and author. Use this to see \
-            what skills exist before loading one with use_skill or before creating a new one.",
+        "description": "Browse the global skill marketplace: every skill with its description and \
+            author, marked with whether the current user has enabled it. Use this to find a skill \
+            to enable (enable_skill) before loading it with use_skill.",
         "input_schema": {"type": "object", "properties": {}}
     })
 }
@@ -45,20 +46,57 @@ pub fn delete_definition() -> Value {
     })
 }
 
-pub async fn dispatch_list_skills(skills: &Skills) -> String {
+pub fn enable_definition() -> Value {
+    json!({
+        "name": "enable_skill",
+        "description": "Enable a marketplace skill for the current user so it is listed and can be \
+            loaded with use_skill. Each user chooses which skills to load; nothing is available \
+            until enabled.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "name": {"type": "string", "description": "The marketplace skill name to enable."}
+            },
+            "required": ["name"]
+        }
+    })
+}
+
+pub fn disable_definition() -> Value {
+    json!({
+        "name": "disable_skill",
+        "description": "Disable a previously enabled skill for the current user so it no longer \
+            loads. Does not delete the skill from the marketplace.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "name": {"type": "string", "description": "The skill name to disable."}
+            },
+            "required": ["name"]
+        }
+    })
+}
+
+pub async fn dispatch_list_skills(skills: &Skills, enabled: &[String]) -> String {
     let all = skills.load_all().await;
     if all.is_empty() {
-        return "No skills defined yet.".into();
+        return "No skills exist in the marketplace yet.".into();
     }
-    let mut lines = vec!["Skills:".to_string()];
+    let mut lines = vec!["Marketplace skills (✓ = enabled for you):".to_string()];
     for skill in all.values() {
+        let mark = if enabled.iter().any(|n| n == &skill.name) {
+            "✓"
+        } else {
+            "•"
+        };
         let author = skill
             .created_by
             .as_deref()
             .map(|id| format!(" (by <@{id}>)"))
             .unwrap_or_default();
         lines.push(format!(
-            "• {} — {}{}",
+            "{} {} — {}{}",
+            mark,
             skill.name,
             truncate_chars(skill.description_or_name(), 80),
             author,
@@ -176,16 +214,22 @@ mod tests {
     #[tokio::test]
     async fn list_empty() {
         let (_t, skills) = test_skills();
-        assert!(dispatch_list_skills(&skills).await.contains("No skills"));
+        assert!(dispatch_list_skills(&skills, &[])
+            .await
+            .contains("No skills"));
     }
 
     #[tokio::test]
-    async fn list_populated() {
+    async fn list_populated_marks_enabled() {
         let (_t, skills) = test_skills();
         skills.save(skill("greet", "1")).await.unwrap();
-        let out = dispatch_list_skills(&skills).await;
+        skills.save(skill("recap", "1")).await.unwrap();
+        let out = dispatch_list_skills(&skills, &["greet".to_string()]).await;
         assert!(out.contains("greet"));
         assert!(out.contains("desc of greet"));
+        // enabled skill marked, un-enabled skill not marked
+        assert!(out.contains("✓ greet"));
+        assert!(out.contains("• recap"));
     }
 
     #[tokio::test]

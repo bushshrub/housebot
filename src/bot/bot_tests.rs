@@ -559,26 +559,72 @@ fn stores() -> (TempDir, Skills, Notes, Memory, History) {
 
 #[tokio::test]
 async fn skill_add_and_list() {
-    let (_t, skills, _n, _m, _h) = stores();
-    let add = skill_command(&skills, "!skill add greeter", "You greet people", 7).await;
+    let (t, skills, _n, _m, _h) = stores();
+    let user_config = UserConfigStore::new(t.path().join("user_config"));
+    let add = skill_command(
+        &skills,
+        &user_config,
+        "!skill add greeter",
+        "You greet people",
+        7,
+    )
+    .await;
     assert!(add.contains("saved"));
-    let list = skill_command(&skills, "!skill list", "", 7).await;
+    let list = skill_command(&skills, &user_config, "!skill list", "", 7).await;
     assert!(list.contains("greeter"));
 }
 
 #[tokio::test]
+async fn skill_enable_then_disable() {
+    let (t, skills, _n, _m, _h) = stores();
+    let user_config = UserConfigStore::new(t.path().join("user_config"));
+    skill_command(
+        &skills,
+        &user_config,
+        "!skill add greeter",
+        "You greet people",
+        7,
+    )
+    .await;
+    let enable = skill_command(&skills, &user_config, "!skill enable greeter", "", 7).await;
+    assert!(enable.contains("enabled"));
+    assert!(user_config
+        .load(7)
+        .await
+        .enabled_skills
+        .contains(&"greeter".to_string()));
+    let list = skill_command(&skills, &user_config, "!skill list", "", 7).await;
+    assert!(list.contains("✓ **greeter**"));
+    let disable = skill_command(&skills, &user_config, "!skill disable greeter", "", 7).await;
+    assert!(disable.contains("disabled"));
+    assert!(user_config.load(7).await.enabled_skills.is_empty());
+}
+
+#[tokio::test]
+async fn skill_enable_missing_rejected() {
+    let (t, skills, _n, _m, _h) = stores();
+    let user_config = UserConfigStore::new(t.path().join("user_config"));
+    let out = skill_command(&skills, &user_config, "!skill enable nope", "", 7).await;
+    assert!(out.contains("not found"));
+}
+
+#[tokio::test]
 async fn skill_invalid_name_rejected() {
-    let (_t, skills, _n, _m, _h) = stores();
-    let out = skill_command(&skills, "!skill add Bad-Name", "prompt", 1).await;
+    let (t, skills, _n, _m, _h) = stores();
+    let user_config = UserConfigStore::new(t.path().join("user_config"));
+    let out = skill_command(&skills, &user_config, "!skill add Bad-Name", "prompt", 1).await;
     assert!(out.contains("lowercase"));
 }
 
 #[tokio::test]
 async fn skill_delete_missing() {
-    let (_t, skills, _n, _m, _h) = stores();
-    assert!(skill_command(&skills, "!skill delete nope", "", 1)
-        .await
-        .contains("not found"));
+    let (t, skills, _n, _m, _h) = stores();
+    let user_config = UserConfigStore::new(t.path().join("user_config"));
+    assert!(
+        skill_command(&skills, &user_config, "!skill delete nope", "", 1)
+            .await
+            .contains("not found")
+    );
 }
 
 #[tokio::test]

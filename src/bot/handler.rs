@@ -341,7 +341,10 @@ impl EventHandler for HouseBot {
                 handle_storage_interaction(&self.memory, &self.notes, &cmd.data.options, user_id)
                     .await
             }
-            "skill" => handle_skill_interaction(&self.skills, &cmd.data.options, user_id).await,
+            "skill" => {
+                handle_skill_interaction(&self.skills, &self.user_cfg, &cmd.data.options, user_id)
+                    .await
+            }
             "stats" => {
                 handle_stats_interaction(
                     &self.history,
@@ -417,7 +420,7 @@ impl EventHandler for HouseBot {
         if msg.content.starts_with("!skill") {
             tracing::info!(target: "housebot::commands", user_id, "!skill command received");
             let (first, rest) = split_command(&msg.content);
-            let reply = skill_command(&self.skills, &first, &rest, user_id).await;
+            let reply = skill_command(&self.skills, &self.user_cfg, &first, &rest, user_id).await;
             let reply = self.redactor.redact(&reply);
             self.respond(&ctx, &msg, &reply).await;
             return;
