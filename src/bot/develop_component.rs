@@ -21,8 +21,10 @@ impl HouseBot {
             return;
         };
 
-        let owner_id = self.pending_jobs.with_job(job_id, |j| j.owner_id);
-        let Some(owner_id) = owner_id else {
+        let ids = self
+            .pending_jobs
+            .with_job(job_id, |j| (j.owner_id, j.requester.user_id));
+        let Some((owner_id, requester_id)) = ids else {
             let _ = component
                 .create_response(
                     &ctx.http,
@@ -38,14 +40,16 @@ impl HouseBot {
             return;
         };
 
-        // Only the owner may interact.
-        if component.user.id.get() != owner_id {
+        // Only the bot owner (who approves/rejects requests) or the original
+        // requester (configuring their own job) may interact.
+        let caller = component.user.id.get();
+        if caller != owner_id && caller != requester_id {
             let _ = component
                 .create_response(
                     &ctx.http,
                     CreateInteractionResponse::Message(
                         CreateInteractionResponseMessage::new()
-                            .content("Only the configured bot owner can use these controls.")
+                            .content("Only the bot owner or the requester can use these controls.")
                             .ephemeral(true),
                     ),
                 )

@@ -375,6 +375,12 @@ impl EventHandler for HouseBot {
             // own "Thinking..." progress updates would otherwise loop forever.
             return;
         }
+        if msg.webhook_id.is_some() {
+            // Incoming webhook messages (e.g. the dev-dispatch completion
+            // notification) are never conversational input.
+            self.handle_dev_notify_webhook(&ctx, &msg).await;
+            return;
+        }
         let structured_mention = msg.mentions.iter().any(|u| u.id == bot_id);
         let raw_mention = content_mentions_user(&msg.content, bot_id.get());
         let is_mentioned = structured_mention || raw_mention;

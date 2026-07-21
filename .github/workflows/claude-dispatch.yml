@@ -11,6 +11,10 @@ on:
         description: Prompt for Claude Code
         required: true
         type: string
+      requester_id:
+        description: Discord user ID to notify when the run finishes
+        required: true
+        type: string
 
 concurrency:
   group: claude-dispatch-${{ inputs.issue_number }}
@@ -46,14 +50,14 @@ jobs:
       - name: Notify Discord of completion
         if: always()
         env:
-          WEBHOOK: ${{ secrets.DISCORD_DEPLOYMENT_WEBHOOK }}
-          OWNER_ID: ${{ secrets.OWNER_DISCORD_ID }}
+          WEBHOOK: ${{ secrets.DISCORD_DEV_NOTIFY_WEBHOOK }}
           OUTCOME: ${{ steps.run_agent.outcome }}
           ISSUE_NUMBER: ${{ inputs.issue_number }}
+          REQUESTER_ID: ${{ inputs.requester_id }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
           if [ -z "$WEBHOOK" ]; then
-            echo "DISCORD_DEPLOYMENT_WEBHOOK is not configured; skipping notification."
+            echo "DISCORD_DEV_NOTIFY_WEBHOOK is not configured; skipping notification."
             exit 0
           fi
 
@@ -62,22 +66,21 @@ jobs:
           else
             STATUS_LINE="❌ Claude Code run for issue #${ISSUE_NUMBER} did not complete successfully (${OUTCOME})."
           fi
-          CONTENT=""
-          if [ -n "$OWNER_ID" ]; then
-            CONTENT="<@${OWNER_ID}>"
-          fi
+          # Machine-readable footer the bot parses to know who to DM; kept out
+          # of the visible description since it's not meant to be read.
+          FOOTER="housebot-dev-notify requester_id=${REQUESTER_ID} issue=${ISSUE_NUMBER} status=${OUTCOME}"
 
           jq -n \
-            --arg content "$CONTENT" \
             --arg status "$STATUS_LINE" \
             --arg url "$RUN_URL" \
+            --arg footer "$FOOTER" \
             '{
-              content: $content,
               embeds: [{
                 title: "Feature development finished",
                 url: $url,
                 description: $status,
-                color: 5814783
+                color: 5814783,
+                footer: {text: $footer}
               }]
             }' \
             | curl --fail --silent --show-error -X POST "$WEBHOOK" \

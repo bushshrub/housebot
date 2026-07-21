@@ -621,3 +621,21 @@ async fn stats_reports_counts() {
     assert!(out.contains("Stats for Alice"));
     assert!(out.contains("Saved notes: 1"));
 }
+
+#[test]
+fn dev_notify_footer_parses_valid_text() {
+    let footer = "housebot-dev-notify requester_id=123456789 issue=42 status=success";
+    assert_eq!(
+        parse_dev_notify_footer(footer),
+        Some((123456789, 42, "success".to_string()))
+    );
+}
+
+#[test]
+fn dev_notify_footer_rejects_unrelated_text() {
+    assert_eq!(parse_dev_notify_footer("some other footer text"), None);
+    assert_eq!(
+        parse_dev_notify_footer("housebot-dev-notify issue=42"),
+        None
+    );
+}

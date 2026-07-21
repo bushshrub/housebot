@@ -61,7 +61,7 @@ impl HouseBot {
                 j.requester.user_id,
             ))
         });
-        let Some(Some((spec, agent, model, effort, _req_name, _req_id))) = job_data else {
+        let Some(Some((spec, agent, model, effort, _req_name, req_id))) = job_data else {
             self.pending_jobs.mark_dispatch_failed(job_id);
             let _ = reply_no_ping(
                 ctx,
@@ -100,6 +100,10 @@ impl HouseBot {
         inputs.insert(
             "prompt".into(),
             serde_json::Value::String(build_dispatch_prompt(spec.issue_number)),
+        );
+        inputs.insert(
+            "requester_id".into(),
+            serde_json::Value::String(req_id.to_string()),
         );
         if reporter
             .trigger_workflow_dispatch(dispatch_workflow_file(agent), "master", &inputs)
@@ -254,6 +258,35 @@ impl HouseBot {
         }
     }
 
+    /// Watch the configured dev-notify channel for the completion webhook posted
+    /// by `claude-dispatch.yml`/`opencode-dispatch.yml`, and DM the requester
+    /// encoded in the embed footer. No-op unless `DEVELOPMENT_NOTIFY_CHANNEL_ID`
+    /// matches and the message carries a recognizable footer.
+    pub(crate) async fn handle_dev_notify_webhook(&self, ctx: &Context, msg: &Message) {
+        let notify_channel: u64 = config::env_parse("DEVELOPMENT_NOTIFY_CHANNEL_ID", 0);
+        if notify_channel == 0 || msg.channel_id.get() != notify_channel {
+            return;
+        }
+        let Some((requester_id, issue_number, status)) = msg
+            .embeds
+            .first()
+            .and_then(|e| e.footer.as_ref())
+            .and_then(|f| parse_dev_notify_footer(&f.text))
+        else {
+            return;
+        };
+        let emoji = if status == "success" { "✅" } else { "❌" };
+        let content =
+            format!("{emoji} Feature development for issue #{issue_number} finished (`{status}`).");
+        let Ok(user) = UserId::new(requester_id).to_user(&ctx.http).await else {
+            return;
+        };
+        let Ok(dm) = user.create_dm_channel(&ctx.http).await else {
+            return;
+        };
+        let _ = dm.say(&ctx.http, content).await;
+    }
+
     /// Handle a Discord component interaction for the develop flow.
     pub(crate) async fn handle_pagination_component(
         &self,
@@ -308,6 +341,25 @@ impl HouseBot {
         );
         let _ = component.create_response(&ctx.http, response).await;
     }
+}
+
+/// Parse the `housebot-dev-notify requester_id=<id> issue=<n> status=<s>` footer
+/// text posted by the dispatch workflows' completion-notify step.
+pub(crate) fn parse_dev_notify_footer(text: &str) -> Option<(u64, u64, String)> {
+    let rest = text.strip_prefix("housebot-dev-notify ")?;
+    let mut requester_id = None;
+    let mut issue = None;
+    let mut status = None;
+    for kv in rest.split_whitespace() {
+        let (key, value) = kv.split_once('=')?;
+        match key {
+            "requester_id" => requester_id = value.parse::<u64>().ok(),
+            "issue" => issue = value.parse::<u64>().ok(),
+            "status" => status = Some(value.to_string()),
+            _ => {}
+        }
+    }
+    Some((requester_id?, issue?, status?))
 }
 
 // ── develop flow component builders ──────────────────────────────────────────
