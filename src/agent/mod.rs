@@ -188,6 +188,9 @@ pub struct Agent {
     client: Arc<dyn ChatClient>,
     queued_client: Arc<QueuedChatClient>,
     model: String,
+    /// Separate (cheaper) client + model for low-priority emoji-reaction tasks.
+    emoji_client: Arc<QueuedChatClient>,
+    emoji_model: String,
     context_window_tokens: usize,
     history: History,
     memory: Memory,
@@ -273,8 +276,23 @@ impl Agent {
             config::env_parse("MAX_CONTEXT_TOKENS", 200_000)
         });
         let queue = Arc::new(LlmRequestQueue::default());
-        let queued_client = Arc::new(QueuedChatClient::new(raw_client, queue));
+        let queued_client = Arc::new(QueuedChatClient::new(raw_client, Arc::clone(&queue)));
         let client: Arc<dyn ChatClient> = queued_client.clone();
+
+        // A separate client for cheap, low-priority emoji-reaction queries.
+        // It shares the same LlmRequestQueue so the priority ordering works
+        // across all LLM request types.
+        let emoji_raw_client: Arc<dyn ChatClient> = Arc::new(OpenAiClient::new(
+            config::env_or(
+                "EMOJI_BASE_URL",
+                &config::env_or("LLM_BASE_URL", "http://server-slop:8080/v1"),
+            ),
+            config::env_or(
+                "EMOJI_API_KEY",
+                &config::env_or("LLM_API_KEY", "not-required"),
+            ),
+        ));
+        let emoji_client = Arc::new(QueuedChatClient::new(emoji_raw_client, queue));
         let memory = match Memory::from_env().await {
             Ok(memory) => memory,
             Err(error) => {
@@ -299,6 +317,8 @@ impl Agent {
             client,
             queued_client,
             model: config::env_or("LLM_MODEL", "gemma-4-12b-qat-q4kxl"),
+            emoji_client,
+            emoji_model: config::env_or("EMOJI_MODEL", "gemma-4-12b-qat-q4kxl"),
             context_window_tokens,
             history: History::default(),
             memory,
@@ -387,6 +407,85 @@ impl Agent {
             Err(e) => format!("Error: {e}"),
         }
     }
+
+    /// Accessor for the emoji-dedicated LLM client (shared queue, cheap model).
+    pub fn emoji_client(&self) -> Arc<QueuedChatClient> {
+        Arc::clone(&self.emoji_client)
+    }
+
+    /// The model name configured for emoji-reaction queries.
+    pub fn emoji_model(&self) -> &str {
+        &self.emoji_model
+    }
+
+    /// Ask the cheap emoji model (no thinking, lowest queue priority) to pick a
+    /// single contextually relevant emoji reaction for the given text.
+    /// Returns `None` when the model is unreachable or the response is empty.
+    pub async fn select_emoji(&self, text: &str) -> Option<String> {
+        let prompt = format!(
+            "Pick a single emoji that best captures the sentiment or topic of this message. \
+             Respond with ONLY the emoji character, no text, no punctuation.\n\nMessage:\n{text}"
+        );
+        let messages = vec![
+            json!({"role": "system", "content": "You are an emoji selector. Return only the emoji, nothing else."}),
+            json!({"role": "user", "content": prompt}),
+        ];
+        let start = std::time::Instant::now();
+        let result = self
+            .emoji_client
+            .chat_once_with_priority(
+                LlmPriority::EmojiReaction,
+                &self.emoji_model,
+                &messages,
+                128,
+            )
+            .await;
+        match result {
+            Ok(completion) => {
+                let elapsed = start.elapsed();
+                let emoji = completion
+                    .content
+                    .as_deref()
+                    .unwrap_or("")
+                    .trim()
+                    .chars()
+                    .next()
+                    .filter(|c| is_emoji(*c))
+                    .map(String::from);
+                tracing::debug!(
+                    target: "housebot::emoji",
+                    text_chars = text.chars().count(),
+                    selected = ?emoji,
+                    elapsed_ms = elapsed.as_millis() as u64,
+                    "Emoji selection complete"
+                );
+                emoji
+            }
+            Err(error) => {
+                tracing::warn!(
+                    target: "housebot::emoji",
+                    %error,
+                    "Emoji selection LLM call failed"
+                );
+                None
+            }
+        }
+    }
+}
+
+/// Heuristic: returns true for characters in the Unicode emoji ranges.
+fn is_emoji(c: char) -> bool {
+    let code = c as u32;
+    matches!(code,
+        0x231A..=0x23FA |
+        0x25AA..=0x25FE |
+        0x2600..=0x27BF |
+        0x2934..=0x2935 |
+        0x2B05..=0x2B55 |
+        0x3030 | 0x303D | 0x3297 | 0x3299 |
+        0x1F000..=0x1FFFF |
+        0xFE00..=0xFE0F   // variation selectors (applied after emoji)
+    )
 }
 
 // ── MCP server configuration ─────────────────────────────────────────────────
@@ -429,10 +528,16 @@ impl Agent {
         reminders: Reminders,
     ) -> Self {
         let queue = Arc::new(LlmRequestQueue::default());
-        let queued_client = Arc::new(QueuedChatClient::new(client, queue));
+        let queued_client = Arc::new(QueuedChatClient::new(
+            Arc::clone(&client),
+            Arc::clone(&queue),
+        ));
+        let emoji_client = Arc::new(QueuedChatClient::new(client, queue));
         Self {
             client: queued_client.clone(),
             queued_client,
+            emoji_client,
+            emoji_model: "test-model".into(),
             model: "test-model".into(),
             context_window_tokens: 10_000,
             history,
