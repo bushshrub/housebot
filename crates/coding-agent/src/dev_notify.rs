@@ -38,12 +38,16 @@ fn hex_encode(bytes: &[u8]) -> String {
 }
 
 fn hex_decode(s: &str) -> Option<Vec<u8>> {
-    if s.len() % 2 != 0 {
+    if !s.is_ascii() || s.len() % 2 != 0 {
         return None;
     }
-    (0..s.len())
-        .step_by(2)
-        .map(|i| u8::from_str_radix(&s[i..i + 2], 16).ok())
+    s.as_bytes()
+        .chunks_exact(2)
+        .map(|pair| {
+            std::str::from_utf8(pair)
+                .ok()
+                .and_then(|hex| u8::from_str_radix(hex, 16).ok())
+        })
         .collect()
 }
 
@@ -75,5 +79,12 @@ mod tests {
         assert!(!verify(b"secret", 123, 42, "success", "not-hex"));
         assert!(!verify(b"secret", 123, 42, "success", "abc"));
         assert!(!verify(b"secret", 123, 42, "success", ""));
+    }
+
+    #[test]
+    fn verify_rejects_non_ascii_signature_without_panicking() {
+        // "aéx" is 4 bytes (even length) but "é" isn't a char boundary at
+        // byte 2, so naive &s[i..i+2] slicing would panic here.
+        assert!(!verify(b"secret", 123, 42, "success", "aéx"));
     }
 }
