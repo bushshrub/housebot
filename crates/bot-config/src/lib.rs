@@ -410,6 +410,10 @@ pub struct AccessControl {
     /// `/personalize proactive` settings are ignored for everyone.
     #[serde(default = "default_respond")]
     pub proactive_enabled: bool,
+    /// Channel the bot watches for the feature-development completion webhook
+    /// (`/config dev_notify_channel`). `None` disables the watch.
+    #[serde(default)]
+    pub dev_notify_channel_id: Option<u64>,
 }
 
 impl Default for AccessControl {
@@ -418,6 +422,7 @@ impl Default for AccessControl {
             configurer_ids: HashSet::new(),
             user_policies: HashMap::new(),
             proactive_enabled: true,
+            dev_notify_channel_id: None,
         }
     }
 }

@@ -258,13 +258,12 @@ impl HouseBot {
         }
     }
 
-    /// Watch the configured dev-notify channel for the completion webhook posted
-    /// by `claude-dispatch.yml`/`opencode-dispatch.yml`, and DM the requester
-    /// encoded in the embed footer. No-op unless `DEVELOPMENT_NOTIFY_CHANNEL_ID`
-    /// matches and the message carries a recognizable footer.
+    /// Watch the configured dev-notify channel (`/config dev_notify_channel`) for
+    /// the completion webhook posted by `claude-dispatch.yml`/`opencode-dispatch.yml`,
+    /// and DM the requester encoded in the embed footer.
     pub(crate) async fn handle_dev_notify_webhook(&self, ctx: &Context, msg: &Message) {
-        let notify_channel: u64 = config::env_parse("DEVELOPMENT_NOTIFY_CHANNEL_ID", 0);
-        if notify_channel == 0 || msg.channel_id.get() != notify_channel {
+        let notify_channel = self.access.load().await.dev_notify_channel_id;
+        if notify_channel != Some(msg.channel_id.get()) {
             return;
         }
         let Some((requester_id, issue_number, status)) = msg

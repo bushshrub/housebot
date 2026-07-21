@@ -267,6 +267,19 @@ pub(crate) async fn register_slash_commands(ctx: &Context, guild_ids: &[GuildId]
                 .required(true),
             ),
         )
+        // ── dev_notify_channel subcommand (feature-development completion) ─
+        .add_option(
+            CreateCommandOption::new(
+                CommandOptionType::SubCommand,
+                "dev_notify_channel",
+                "Set which channel to watch for feature-development completion notices (omit to disable)",
+            )
+            .add_sub_option(CreateCommandOption::new(
+                CommandOptionType::Channel,
+                "channel",
+                "Channel receiving the dispatch workflows' completion webhook",
+            )),
+        )
         // ── access subcommand group ──────────────────────────────────────
         .add_option(
             CreateCommandOption::new(
