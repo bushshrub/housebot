@@ -80,6 +80,34 @@ fn owner_interactive_returns_config_required() {
 }
 
 #[test]
+fn configurer_interactive_returns_config_required() {
+    // A non-owner requester with DispatchMode::Interactive (as the caller
+    // decides for configurers) must route the same as the owner would —
+    // routing must key off dispatch_mode, not requester.user_id == owner_id.
+    let store = make_store();
+    let rl = make_limiter();
+    let outcome = prepare_feature_development(
+        &store,
+        &rl,
+        42,
+        non_owner_requester(),
+        source(),
+        1,
+        "Title",
+        "Obj",
+        "",
+        valid_reqs(),
+        valid_ac(),
+        DispatchMode::Interactive,
+        &defaults(),
+    );
+    assert!(matches!(
+        outcome,
+        FeatureDevelopmentOutcome::OwnerConfigurationRequired { .. }
+    ));
+}
+
+#[test]
 fn non_owner_creates_approval_request() {
     let store = make_store();
     let rl = make_limiter();

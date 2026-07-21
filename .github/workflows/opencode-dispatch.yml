@@ -65,6 +65,7 @@ jobs:
         if: always() && steps.run_agent.outcome != 'skipped'
         env:
           WEBHOOK: ${{ secrets.DISCORD_DEPLOYMENT_WEBHOOK }}
+          SIGNING_KEY: ${{ secrets.DEV_NOTIFY_SIGNING_KEY }}
           OUTCOME: ${{ steps.run_agent.outcome }}
           ISSUE_NUMBER: ${{ inputs.issue_number }}
           REQUESTER_ID: ${{ inputs.requester_id }}
@@ -74,15 +75,23 @@ jobs:
             echo "DISCORD_DEPLOYMENT_WEBHOOK is not configured; skipping notification."
             exit 0
           fi
+          if [ -z "$SIGNING_KEY" ]; then
+            echo "DEV_NOTIFY_SIGNING_KEY is not configured; skipping notification."
+            exit 0
+          fi
 
           if [ "$OUTCOME" = "success" ]; then
             STATUS_LINE="✅ OpenCode finished issue #${ISSUE_NUMBER}."
           else
             STATUS_LINE="❌ OpenCode run for issue #${ISSUE_NUMBER} did not complete successfully (${OUTCOME})."
           fi
-          # Machine-readable footer the bot parses to know who to DM; kept out
-          # of the visible description since it's not meant to be read.
-          FOOTER="housebot-dev-notify requester_id=${REQUESTER_ID} issue=${ISSUE_NUMBER} status=${OUTCOME}"
+          # Signed so the bot can tell this footer really came from this
+          # workflow and not from some other webhook posting in the same
+          # channel — see housebot_coding_agent::dev_notify for the matching
+          # verification and the exact canonical-message format.
+          CANONICAL="requester_id=${REQUESTER_ID} issue=${ISSUE_NUMBER} status=${OUTCOME}"
+          SIG=$(printf '%s' "$CANONICAL" | openssl dgst -sha256 -hmac "$SIGNING_KEY" -hex | awk '{print $NF}')
+          FOOTER="housebot-dev-notify ${CANONICAL} sig=${SIG}"
 
           jq -n \
             --arg status "$STATUS_LINE" \

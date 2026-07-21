@@ -159,7 +159,7 @@ impl HouseBot {
         if notify_channel != Some(msg.channel_id.get()) {
             return false;
         }
-        let Some((requester_id, issue_number, status)) = msg
+        let Some((requester_id, issue_number, status, sig)) = msg
             .embeds
             .first()
             .and_then(|e| e.footer.as_ref())
@@ -167,6 +167,28 @@ impl HouseBot {
         else {
             return true;
         };
+        let signing_key = config::env_or("DEV_NOTIFY_SIGNING_KEY", "");
+        if signing_key.is_empty() {
+            tracing::warn!(
+                target: "housebot::develop",
+                "DEV_NOTIFY_SIGNING_KEY is not configured — ignoring unverifiable dev-notify webhook"
+            );
+            return true;
+        }
+        if !crate::coding_agent::dev_notify::verify(
+            signing_key.as_bytes(),
+            requester_id,
+            issue_number,
+            &status,
+            &sig,
+        ) {
+            tracing::warn!(
+                target: "housebot::develop",
+                channel_id = msg.channel_id.get(),
+                "Dev-notify webhook signature verification failed — ignoring"
+            );
+            return true;
+        }
         let emoji = if status == "success" { "✅" } else { "❌" };
         let content = self.redactor.redact(&format!(
             "{emoji} Feature development for issue #{issue_number} finished (`{status}`)."
@@ -237,23 +259,27 @@ impl HouseBot {
     }
 }
 
-/// Parse the `housebot-dev-notify requester_id=<id> issue=<n> status=<s>` footer
-/// text posted by the dispatch workflows' completion-notify step.
-pub(crate) fn parse_dev_notify_footer(text: &str) -> Option<(u64, u64, String)> {
+/// Parse the `housebot-dev-notify requester_id=<id> issue=<n> status=<s> sig=<hex>`
+/// footer text posted by the dispatch workflows' completion-notify step. The
+/// `sig` field still needs verifying against `DEV_NOTIFY_SIGNING_KEY` — this only
+/// extracts the fields.
+pub(crate) fn parse_dev_notify_footer(text: &str) -> Option<(u64, u64, String, String)> {
     let rest = text.strip_prefix("housebot-dev-notify ")?;
     let mut requester_id = None;
     let mut issue = None;
     let mut status = None;
+    let mut sig = None;
     for kv in rest.split_whitespace() {
         let (key, value) = kv.split_once('=')?;
         match key {
             "requester_id" => requester_id = value.parse::<u64>().ok().filter(|id| *id != 0),
             "issue" => issue = value.parse::<u64>().ok(),
             "status" => status = Some(value).filter(|s| !s.is_empty()),
+            "sig" => sig = Some(value).filter(|s| !s.is_empty()),
             _ => {}
         }
     }
-    Some((requester_id?, issue?, status?.to_string()))
+    Some((requester_id?, issue?, status?.to_string(), sig?.to_string()))
 }
 
 // ── develop flow component builders ──────────────────────────────────────────
