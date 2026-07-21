@@ -35,6 +35,7 @@ jobs:
           fetch-depth: 1
           persist-credentials: false
       - name: Run Claude Code
+        id: run_agent
         uses: anthropics/claude-code-action@beta
         with:
           direct_prompt: ${{ inputs.prompt }}
@@ -42,3 +43,43 @@ jobs:
         env:
           CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: Notify Discord of completion
+        if: always()
+        env:
+          WEBHOOK: ${{ secrets.DISCORD_DEPLOYMENT_WEBHOOK }}
+          OWNER_ID: ${{ secrets.OWNER_DISCORD_ID }}
+          OUTCOME: ${{ steps.run_agent.outcome }}
+          ISSUE_NUMBER: ${{ inputs.issue_number }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          if [ -z "$WEBHOOK" ]; then
+            echo "DISCORD_DEPLOYMENT_WEBHOOK is not configured; skipping notification."
+            exit 0
+          fi
+
+          if [ "$OUTCOME" = "success" ]; then
+            STATUS_LINE="✅ Claude Code finished issue #${ISSUE_NUMBER}."
+          else
+            STATUS_LINE="❌ Claude Code run for issue #${ISSUE_NUMBER} did not complete successfully (${OUTCOME})."
+          fi
+          CONTENT=""
+          if [ -n "$OWNER_ID" ]; then
+            CONTENT="<@${OWNER_ID}>"
+          fi
+
+          jq -n \
+            --arg content "$CONTENT" \
+            --arg status "$STATUS_LINE" \
+            --arg url "$RUN_URL" \
+            '{
+              content: $content,
+              embeds: [{
+                title: "Feature development finished",
+                url: $url,
+                description: $status,
+                color: 5814783
+              }]
+            }' \
+            | curl --fail --silent --show-error -X POST "$WEBHOOK" \
+                -H "Content-Type: application/json" \
+                --data-binary @-
