@@ -154,6 +154,10 @@ pub struct ServerConfig {
     /// Users still opt in individually via `/personalize proactive`.
     #[serde(default = "default_respond")]
     pub proactive_allowed: bool,
+    /// Whether embed rendering (Discord link previews and bot embeds) is
+    /// allowed in this server. When false, overrides any user-level preference.
+    #[serde(default = "default_embed_enabled")]
+    pub embed_enabled: bool,
 }
 
 impl Default for ServerConfig {
@@ -164,6 +168,7 @@ impl Default for ServerConfig {
             leaderboard_role_ids: HashSet::new(),
             respond_to_bot_pings: false,
             proactive_allowed: true,
+            embed_enabled: true,
         }
     }
 }
@@ -288,6 +293,10 @@ pub struct UserConfig {
     /// Only narrow cases are handled (obvious reminder requests, help questions).
     #[serde(default)]
     pub proactive_assistance_enabled: bool,
+    /// Whether Discord link previews (embeds) are shown for URLs in bot responses.
+    /// Server admins can override this server-wide via `/server-config embeds`.
+    #[serde(default = "default_embed_enabled")]
+    pub embed_enabled: bool,
 }
 
 fn default_followup_timeout() -> u64 {
@@ -313,6 +322,7 @@ impl Default for UserConfig {
             progress_updates_enabled: true,
             deep_memory_enabled: true,
             proactive_assistance_enabled: false,
+            embed_enabled: true,
         }
     }
 }
@@ -382,6 +392,10 @@ pub struct UserPolicy {
 }
 
 fn default_respond() -> bool {
+    true
+}
+
+fn default_embed_enabled() -> bool {
     true
 }
 
@@ -558,6 +572,17 @@ mod tests {
         assert!(config.leaderboard_role_ids.is_empty());
         assert!(!config.respond_to_bot_pings);
         assert!(config.proactive_allowed);
+        assert!(config.embed_enabled);
+    }
+
+    #[test]
+    fn server_config_embed_enabled_persists_through_serde() {
+        let mut config = ServerConfig::default();
+        assert!(config.embed_enabled);
+        config.embed_enabled = false;
+        let json = serde_json::to_string(&config).unwrap();
+        let restored: ServerConfig = serde_json::from_str(&json).unwrap();
+        assert!(!restored.embed_enabled);
     }
 
     #[test]
@@ -571,6 +596,7 @@ mod tests {
             serde_json::from_str(r#"{"personality":null,"followup_timeout_secs":300}"#).unwrap();
         assert!(!config.labs_pagination_enabled);
         assert!(!config.followup_enabled);
+        assert!(config.embed_enabled);
     }
 
     #[test]

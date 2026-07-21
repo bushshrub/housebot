@@ -494,6 +494,22 @@ pub(crate) async fn register_slash_commands(ctx: &Context, guild_ids: &[GuildId]
                 )
                 .required(true),
             ),
+        )
+        // ── embeds subcommand ────────────────────────────────────────────
+        .add_option(
+            CreateCommandOption::new(
+                CommandOptionType::SubCommand,
+                "embeds",
+                "Control whether embed rendering is allowed in this server",
+            )
+            .add_sub_option(
+                CreateCommandOption::new(
+                    CommandOptionType::Boolean,
+                    "enabled",
+                    "Enable or disable embed rendering for all users (overrides user preferences)",
+                )
+                .required(true),
+            ),
         );
     guild_only_commands.push(server_config_cmd);
     let personalize_cmd = CreateCommand::new("personalize")
@@ -587,6 +603,21 @@ pub(crate) async fn register_slash_commands(ctx: &Context, guild_ids: &[GuildId]
                     CommandOptionType::Boolean,
                     "enabled",
                     "Enable or disable paginated responses",
+                )
+                .required(true),
+            ),
+        )
+        .add_option(
+            CreateCommandOption::new(
+                CommandOptionType::SubCommand,
+                "embeds",
+                "Toggle Discord link preview embeds for URLs in bot responses",
+            )
+            .add_sub_option(
+                CreateCommandOption::new(
+                    CommandOptionType::Boolean,
+                    "enabled",
+                    "Enable or disable URL embed previews",
                 )
                 .required(true),
             ),
