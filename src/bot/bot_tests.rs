@@ -594,6 +594,59 @@ async fn skill_add_and_edit_redirect_to_conversation() {
     assert!(edit.contains("edit_skill"), "edit: {edit}");
 }
 
+/// Regression test for the vulnerability this removal fixes: `!skill add`
+/// used to silently overwrite any existing skill (including one owned by
+/// someone else) with no ownership check at all. Now that `add` is a static
+/// redirect, an attempted overwrite must leave the existing skill untouched.
+#[tokio::test]
+async fn skill_add_cannot_overwrite_an_existing_skill_owned_by_someone_else() {
+    let (t, skills, _n, _m, _h) = stores();
+    let user_config = UserConfigStore::new(t.path().join("user_config"));
+    skills.save(test_skill("greeter", "7")).await.unwrap();
+    let out = skill_command(&skills, &user_config, "!skill add greeter", 999).await;
+    assert!(out.contains("create_skill"), "out: {out}");
+    let unchanged = skills.get("greeter").await.unwrap();
+    assert_eq!(unchanged.instructions, "You greet people");
+    assert_eq!(unchanged.created_by.as_deref(), Some("7"));
+    assert_eq!(unchanged.version, 1);
+}
+
+/// Regression test: the `/skill add` Discord slash subcommand was removed
+/// along with `!skill add` (same overwrite vulnerability). Sending the old
+/// subcommand shape must no longer be recognized or create anything.
+#[tokio::test]
+async fn skill_interaction_add_subcommand_no_longer_recognized() {
+    let (t, skills, _n, _m, _h) = stores();
+    let user_config = UserConfigStore::new(t.path().join("user_config"));
+    let options: Vec<serenity::all::CommandDataOption> = serde_json::from_value(json!([{
+        "name": "add",
+        "type": 1,
+        "options": [
+            {"name": "name", "type": 3, "value": "greeter"},
+            {"name": "prompt", "type": 3, "value": "Say hello"}
+        ]
+    }]))
+    .unwrap();
+    let out = handle_skill_interaction(&skills, &user_config, &options, 1).await;
+    assert!(out.contains("Unknown subcommand"), "out: {out}");
+    assert!(skills.get("greeter").await.is_none());
+}
+
+/// Regression test: the `/skill` command definition must not re-offer an
+/// `add` subcommand — creation/editing now happens only through the
+/// create_skill / edit_skill LLM tools.
+#[test]
+fn skill_slash_command_definition_has_no_add_option() {
+    let definition = serde_json::to_value(skill_command_definition()).unwrap();
+    let option_names: Vec<String> = definition["options"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|option| option["name"].as_str().unwrap().to_string())
+        .collect();
+    assert_eq!(option_names, ["list", "info", "delete"]);
+}
+
 #[tokio::test]
 async fn skill_enable_then_disable() {
     let (t, skills, _n, _m, _h) = stores();
