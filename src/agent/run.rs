@@ -312,6 +312,7 @@ impl Agent {
             tools::manage_skills::list_definition(),
             tools::manage_skills::info_definition(),
             tools::manage_skills::delete_definition(),
+            tools::manage_skills::edit_definition(),
             tools::manage_skills::enable_definition(),
             tools::manage_skills::disable_definition(),
             tools::feature_request::definition(),

@@ -9,7 +9,7 @@ use housebot_message_log::MessageLog;
 use housebot_notes::Notes;
 use housebot_profile::ProfileStore;
 use housebot_reminders::Reminders;
-use housebot_skills::{Skill, Skills};
+use housebot_skills::Skills;
 
 fn truncate_chars(value: &str, limit: usize) -> String {
     value.chars().take(limit).collect()
@@ -38,7 +38,6 @@ pub async fn skill_command(
     skills: &Skills,
     user_config: &UserConfigStore,
     first_line: &str,
-    rest: &str,
     author_id: u64,
 ) -> String {
     let author_str = author_id.to_string();
@@ -47,17 +46,17 @@ pub async fn skill_command(
         .filter(|s| !s.is_empty())
         .collect();
     if parts.len() < 2 {
-        return "Usage: `!skill list` | `!skill add <name>` | `!skill edit <name>` \
-                | `!skill delete <name>` | `!skill info <name>` \
+        return "Usage: `!skill list` | `!skill delete <name>` | `!skill info <name>` \
                 | `!skill enable <name>` | `!skill disable <name>` \
-                | `!skill grant <name> <@user>` | `!skill revoke <name> <@user>`"
+                | `!skill grant <name> <@user>` | `!skill revoke <name> <@user>`\n\
+                To create or edit a skill, just ask the bot in conversation."
             .into();
     }
     match parts[1].to_lowercase().as_str() {
         "list" => {
             let all = skills.load_all().await;
             if all.is_empty() {
-                return "No skills in the marketplace yet. Use `!skill add <name>` (with the prompt on the next line).".into();
+                return "No skills in the marketplace yet. Ask the bot in conversation to create one.".into();
             }
             let enabled = user_config.load(author_id).await.enabled_skills;
             let mut lines = vec!["**Marketplace skills** (✓ = enabled for you):".to_string()];
@@ -175,79 +174,10 @@ pub async fn skill_command(
                 }
             }
         }
-        "add" => {
-            let Some(name) = parts.get(2).map(|s| s.trim().to_lowercase()) else {
-                return "Usage: `!skill add <name>` with the skill prompt on the next line.".into();
-            };
-            if !valid_name(&name) {
-                return "Skill name must be lowercase letters, numbers, and underscores only."
-                    .into();
-            }
-            if rest.is_empty() {
-                return "Please include the skill prompt on a new line after the command.".into();
-            }
-            let description = if rest.chars().count() > 100 {
-                format!("{}…", truncate_chars(rest, 100))
-            } else {
-                rest.to_string()
-            };
-            let skill = Skill {
-                name: name.clone(),
-                description: Some(description),
-                instructions: rest.to_string(),
-                triggers: Vec::new(),
-                enabled_tools: Vec::new(),
-                examples: Vec::new(),
-                version: 1,
-                version_history: Vec::new(),
-                created_by: Some(author_str),
-                editors: Vec::new(),
-                created_at: std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .unwrap_or_default()
-                    .as_secs(),
-                updated_at: std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .unwrap_or_default()
-                    .as_secs(),
-                prompt: None,
-            };
-            if skills.save(skill).await.is_err() {
-                return "Error: failed to save skill.".into();
-            }
-            format!("✅ Skill **{name}** saved.")
-        }
-        "edit" => {
-            let Some(name) = parts.get(2).map(|s| s.to_lowercase()) else {
-                return "Usage: `!skill edit <name>` with the updated prompt on the next line."
-                    .into();
-            };
-            if rest.is_empty() {
-                return "Please include the updated skill prompt on a new line after the command."
-                    .into();
-            }
-            match skills.get(&name).await {
-                None => format!("Skill `{name}` not found."),
-                Some(mut skill) => {
-                    if !skill.can_edit(&author_str) {
-                        return format!(
-                            "⛔ Only the author (<@{}>) or a delegated editor can edit **{name}**.",
-                            skill.created_by.as_deref().unwrap_or("unknown")
-                        );
-                    }
-                    skill.bump_version();
-                    skill.instructions = rest.to_string();
-                    skill.description = if rest.chars().count() > 100 {
-                        Some(format!("{}…", truncate_chars(rest, 100)))
-                    } else {
-                        Some(rest.to_string())
-                    };
-                    if skills.save(skill).await.is_err() {
-                        return "Error: failed to save skill.".into();
-                    }
-                    format!("✅ Skill **{name}** updated.")
-                }
-            }
+        "add" | "edit" => {
+            "Skills are now created and edited by asking the bot directly in conversation \
+             (it uses the create_skill / edit_skill tools) rather than through this command."
+                .into()
         }
         "delete" => {
             let Some(name) = parts.get(2).map(|s| s.to_lowercase()) else {

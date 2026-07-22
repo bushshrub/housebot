@@ -152,7 +152,7 @@ Discord message
                  │    ├─ update_memory → memory.save()
                  │    ├─ set_reminder / summarize_url / translate / create_feature_request
                  │    ├─ use_skill (loads an enabled skill's instructions into context) / create_skill
-                 │    ├─ list_skills / skill_info / delete_skill / enable_skill / disable_skill (per-user marketplace)
+                 │    ├─ list_skills / skill_info / delete_skill / edit_skill / enable_skill / disable_skill (per-user marketplace)
                  │    ├─ prepare_feature_development → PendingJobStore (owner-only; returns DISPATCH_FLOW:<uuid>)
                  │    └─ prefix__tool → McpServer::call_tool()
                  └─ repeat until finish_reason == "stop"

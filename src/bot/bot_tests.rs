@@ -557,45 +557,58 @@ fn stores() -> (TempDir, Skills, Notes, Memory, History) {
     )
 }
 
+fn test_skill(name: &str, author: &str) -> crate::skills::Skill {
+    crate::skills::Skill {
+        name: name.to_string(),
+        description: Some("You greet people".to_string()),
+        instructions: "You greet people".to_string(),
+        triggers: Vec::new(),
+        enabled_tools: Vec::new(),
+        examples: Vec::new(),
+        version: 1,
+        version_history: Vec::new(),
+        created_by: Some(author.to_string()),
+        editors: Vec::new(),
+        created_at: 0,
+        updated_at: 0,
+        prompt: None,
+    }
+}
+
 #[tokio::test]
-async fn skill_add_and_list() {
+async fn skill_list_shows_saved_skill() {
     let (t, skills, _n, _m, _h) = stores();
     let user_config = UserConfigStore::new(t.path().join("user_config"));
-    let add = skill_command(
-        &skills,
-        &user_config,
-        "!skill add greeter",
-        "You greet people",
-        7,
-    )
-    .await;
-    assert!(add.contains("saved"));
-    let list = skill_command(&skills, &user_config, "!skill list", "", 7).await;
+    skills.save(test_skill("greeter", "7")).await.unwrap();
+    let list = skill_command(&skills, &user_config, "!skill list", 7).await;
     assert!(list.contains("greeter"));
+}
+
+#[tokio::test]
+async fn skill_add_and_edit_redirect_to_conversation() {
+    let (t, skills, _n, _m, _h) = stores();
+    let user_config = UserConfigStore::new(t.path().join("user_config"));
+    let add = skill_command(&skills, &user_config, "!skill add greeter", 1).await;
+    assert!(add.contains("create_skill"), "add: {add}");
+    let edit = skill_command(&skills, &user_config, "!skill edit greeter", 1).await;
+    assert!(edit.contains("edit_skill"), "edit: {edit}");
 }
 
 #[tokio::test]
 async fn skill_enable_then_disable() {
     let (t, skills, _n, _m, _h) = stores();
     let user_config = UserConfigStore::new(t.path().join("user_config"));
-    skill_command(
-        &skills,
-        &user_config,
-        "!skill add greeter",
-        "You greet people",
-        7,
-    )
-    .await;
-    let enable = skill_command(&skills, &user_config, "!skill enable greeter", "", 7).await;
+    skills.save(test_skill("greeter", "7")).await.unwrap();
+    let enable = skill_command(&skills, &user_config, "!skill enable greeter", 7).await;
     assert!(enable.contains("enabled"));
     assert!(user_config
         .load(7)
         .await
         .enabled_skills
         .contains(&"greeter".to_string()));
-    let list = skill_command(&skills, &user_config, "!skill list", "", 7).await;
+    let list = skill_command(&skills, &user_config, "!skill list", 7).await;
     assert!(list.contains("✓ **greeter**"));
-    let disable = skill_command(&skills, &user_config, "!skill disable greeter", "", 7).await;
+    let disable = skill_command(&skills, &user_config, "!skill disable greeter", 7).await;
     assert!(disable.contains("disabled"));
     assert!(user_config.load(7).await.enabled_skills.is_empty());
 }
@@ -604,16 +617,8 @@ async fn skill_enable_then_disable() {
 async fn skill_enable_missing_rejected() {
     let (t, skills, _n, _m, _h) = stores();
     let user_config = UserConfigStore::new(t.path().join("user_config"));
-    let out = skill_command(&skills, &user_config, "!skill enable nope", "", 7).await;
+    let out = skill_command(&skills, &user_config, "!skill enable nope", 7).await;
     assert!(out.contains("not found"));
-}
-
-#[tokio::test]
-async fn skill_invalid_name_rejected() {
-    let (t, skills, _n, _m, _h) = stores();
-    let user_config = UserConfigStore::new(t.path().join("user_config"));
-    let out = skill_command(&skills, &user_config, "!skill add Bad-Name", "prompt", 1).await;
-    assert!(out.contains("lowercase"));
 }
 
 #[tokio::test]
@@ -621,7 +626,7 @@ async fn skill_delete_missing() {
     let (t, skills, _n, _m, _h) = stores();
     let user_config = UserConfigStore::new(t.path().join("user_config"));
     assert!(
-        skill_command(&skills, &user_config, "!skill delete nope", "", 1)
+        skill_command(&skills, &user_config, "!skill delete nope", 1)
             .await
             .contains("not found")
     );

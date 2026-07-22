@@ -182,7 +182,7 @@ pub(crate) async fn create_skill(
     }
 }
 
-fn parse_triggers(val: Option<&Value>) -> Result<Option<Vec<SkillTrigger>>, String> {
+pub(crate) fn parse_triggers(val: Option<&Value>) -> Result<Option<Vec<SkillTrigger>>, String> {
     match val {
         None => Ok(None),
         Some(v) => {
@@ -215,7 +215,7 @@ fn parse_triggers(val: Option<&Value>) -> Result<Option<Vec<SkillTrigger>>, Stri
     }
 }
 
-fn parse_examples(val: Option<&Value>) -> Result<Option<Vec<SkillExample>>, String> {
+pub(crate) fn parse_examples(val: Option<&Value>) -> Result<Option<Vec<SkillExample>>, String> {
     match val {
         None => Ok(None),
         Some(v) => {
@@ -245,7 +245,7 @@ fn parse_examples(val: Option<&Value>) -> Result<Option<Vec<SkillExample>>, Stri
     }
 }
 
-fn parse_strings(val: Option<&Value>) -> Result<Option<Vec<String>>, String> {
+pub(crate) fn parse_strings(val: Option<&Value>) -> Result<Option<Vec<String>>, String> {
     match val {
         None => Ok(None),
         Some(v) => {
