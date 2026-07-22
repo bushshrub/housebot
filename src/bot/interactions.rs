@@ -640,14 +640,14 @@ pub(crate) async fn handle_skill_interaction(
     author_id: u64,
 ) -> String {
     let Some(command) = options.first() else {
-        return "Usage: `/skill list` | `/skill info <name>` | `/skill add <name> <prompt>` | `/skill delete <name>`".into();
+        return "Usage: `/skill list` | `/skill info <name>` | `/skill delete <name>`. To create or edit a skill, ask the bot in conversation.".into();
     };
     let sub_opts = match &command.value {
         CommandDataOptionValue::SubCommand(opts) => opts,
         _ => return "Unexpected option structure.".into(),
     };
     match command.name.as_str() {
-        "list" => skill_command(skills, user_cfg, "!skill list", "", author_id).await,
+        "list" => skill_command(skills, user_cfg, "!skill list", author_id).await,
         "info" => {
             let name = sub_opts
                 .iter()
@@ -657,40 +657,7 @@ pub(crate) async fn handle_skill_interaction(
                     _ => None,
                 })
                 .unwrap_or_default();
-            skill_command(
-                skills,
-                user_cfg,
-                &format!("!skill info {name}"),
-                "",
-                author_id,
-            )
-            .await
-        }
-        "add" => {
-            let name = sub_opts
-                .iter()
-                .find(|o| o.name == "name")
-                .and_then(|o| match &o.value {
-                    CommandDataOptionValue::String(s) => Some(s.clone()),
-                    _ => None,
-                })
-                .unwrap_or_default();
-            let prompt = sub_opts
-                .iter()
-                .find(|o| o.name == "prompt")
-                .and_then(|o| match &o.value {
-                    CommandDataOptionValue::String(s) => Some(s.clone()),
-                    _ => None,
-                })
-                .unwrap_or_default();
-            skill_command(
-                skills,
-                user_cfg,
-                &format!("!skill add {name}"),
-                &prompt,
-                author_id,
-            )
-            .await
+            skill_command(skills, user_cfg, &format!("!skill info {name}"), author_id).await
         }
         "delete" => {
             let name = sub_opts
@@ -705,12 +672,11 @@ pub(crate) async fn handle_skill_interaction(
                 skills,
                 user_cfg,
                 &format!("!skill delete {name}"),
-                "",
                 author_id,
             )
             .await
         }
-        other => format!("Unknown subcommand `{other}`. Options: list, info, add, delete"),
+        other => format!("Unknown subcommand `{other}`. Options: list, info, delete"),
     }
 }
 

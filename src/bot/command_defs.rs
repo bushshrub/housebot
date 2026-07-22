@@ -124,29 +124,6 @@ pub(crate) fn skill_command_definition() -> CreateCommand {
             ),
         )
         .add_option(
-            CreateCommandOption::new(
-                CommandOptionType::SubCommand,
-                "add",
-                "Create or replace a skill",
-            )
-            .add_sub_option(
-                CreateCommandOption::new(
-                    CommandOptionType::String,
-                    "name",
-                    "Skill name (lowercase, numbers, underscores)",
-                )
-                .required(true),
-            )
-            .add_sub_option(
-                CreateCommandOption::new(
-                    CommandOptionType::String,
-                    "prompt",
-                    "The skill prompt / instructions",
-                )
-                .required(true),
-            ),
-        )
-        .add_option(
             CreateCommandOption::new(CommandOptionType::SubCommand, "delete", "Delete a skill")
                 .add_sub_option(
                     CreateCommandOption::new(CommandOptionType::String, "name", "Skill name")

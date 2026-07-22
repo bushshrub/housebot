@@ -425,8 +425,8 @@ impl EventHandler for HouseBot {
         // ── commands ──
         if msg.content.starts_with("!skill") {
             tracing::info!(target: "housebot::commands", user_id, "!skill command received");
-            let (first, rest) = split_command(&msg.content);
-            let reply = skill_command(&self.skills, &self.user_cfg, &first, &rest, user_id).await;
+            let (first, _rest) = split_command(&msg.content);
+            let reply = skill_command(&self.skills, &self.user_cfg, &first, user_id).await;
             let reply = self.redactor.redact(&reply);
             self.respond(&ctx, &msg, &reply).await;
             return;

@@ -38,6 +38,7 @@ pub fn all_tool_names() -> &'static [&'static str] {
         "list_skills",
         "skill_info",
         "delete_skill",
+        "edit_skill",
         "enable_skill",
         "disable_skill",
         "create_feature_request",

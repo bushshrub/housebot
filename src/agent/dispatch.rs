@@ -337,6 +337,9 @@ impl Agent {
             "delete_skill" => ToolOutcome::Text(
                 tools::manage_skills::dispatch_delete_skill(&self.skills, user_id, args).await,
             ),
+            "edit_skill" => ToolOutcome::Text(
+                tools::manage_skills::dispatch_edit_skill(&self.skills, user_id, args).await,
+            ),
             "enable_skill" => {
                 let name = str_arg(args, "name").to_lowercase();
                 if self.skills.get(&name).await.is_none() {
