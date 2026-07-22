@@ -54,10 +54,11 @@ pub(crate) struct ResponseProgressHooks {
     generating: AtomicBool,
     typing_task: Mutex<Option<tokio::task::JoinHandle<()>>>,
     tool_calls: Mutex<String>,
+    redactor: Arc<SecretRedactor>,
 }
 
 impl ResponseProgressHooks {
-    pub(crate) fn new(ctx: &Context, progress: &Message) -> Self {
+    pub(crate) fn new(ctx: &Context, progress: &Message, redactor: Arc<SecretRedactor>) -> Self {
         Self {
             ctx: ctx.clone(),
             channel_id: progress.channel_id,
@@ -65,6 +66,7 @@ impl ResponseProgressHooks {
             generating: AtomicBool::new(false),
             typing_task: Mutex::new(None),
             tool_calls: Mutex::new(String::new()),
+            redactor,
         }
     }
 
@@ -130,7 +132,7 @@ impl AgentHooks for ResponseProgressHooks {
         self.stop_typing();
     }
 
-    async fn on_tool_called(&self, tool: &str, _args: &serde_json::Value) {
+    async fn on_tool_called(&self, tool: &str, args: &serde_json::Value) {
         self.stop_typing();
         self.generating.store(false, Ordering::Release);
         let content = {
@@ -138,7 +140,14 @@ impl AgentHooks for ResponseProgressHooks {
             if !calls.is_empty() {
                 calls.push('\n');
             }
-            calls.push_str(&tool_status(tool));
+            let status = tool_status(tool);
+            let hint = tool_hint(tool, args);
+            if hint.is_empty() {
+                calls.push_str(&status);
+            } else {
+                let base = status.strip_suffix("...**").unwrap_or(&status);
+                calls.push_str(&format!("{base}{hint}...**"));
+            }
             while calls.chars().count() > DISCORD_CONTENT_LIMIT {
                 if let Some(pos) = calls.find('\n') {
                     calls.drain(..pos + 1);
@@ -146,7 +155,9 @@ impl AgentHooks for ResponseProgressHooks {
                     break;
                 }
             }
-            calls.clone()
+            let redacted = self.redactor.redact(&calls);
+            *calls = redacted.clone();
+            redacted
         };
         if let Err(e) = self
             .channel_id
