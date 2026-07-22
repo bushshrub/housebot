@@ -70,7 +70,11 @@ pub fn split_text(text: &str, limit: usize) -> Vec<String> {
 pub fn tool_hint(tool_name: &str, args: &Value) -> String {
     let get = |key| args.get(key).and_then(Value::as_str).unwrap_or("");
     match tool_name {
-        "use_skill" if !get("name").is_empty() => format!(" — {}", get("name")),
+        "run_skill" if !get("name").is_empty() => format!(
+            " — {}: {}",
+            get("name"),
+            truncate(get("input"), 60).replace('\n', " ")
+        ),
         "set_reminder" if !get("message").is_empty() => format!(
             " — in {}m: {}",
             args.get("delay_minutes")
@@ -83,19 +87,26 @@ pub fn tool_hint(tool_name: &str, args: &Value) -> String {
             get("target_language"),
             truncate(get("text"), 40).replace('\n', " ")
         ),
-        "use_skill" | "set_reminder" | "translate" => String::new(),
-        _ => ["query", "task", "repo_url", "memory_content", "url"]
-            .into_iter()
-            .map(get)
-            .find(|value| !value.is_empty())
-            .map(|value| {
-                let mut preview = truncate(value, 80).replace('\n', " ");
-                if value.chars().count() > 80 {
-                    preview.push('…');
-                }
-                format!(" — {preview}")
-            })
-            .unwrap_or_default(),
+        "run_skill" | "set_reminder" | "translate" => String::new(),
+        _ => [
+            "query",
+            "task",
+            "repo_url",
+            "memory_content",
+            "url",
+            "command",
+        ]
+        .into_iter()
+        .map(get)
+        .find(|value| !value.is_empty())
+        .map(|value| {
+            let mut preview = truncate(value, 80).replace('\n', " ");
+            if value.chars().count() > 80 {
+                preview.push('…');
+            }
+            format!(" — {preview}")
+        })
+        .unwrap_or_default(),
     }
 }
 
@@ -120,7 +131,7 @@ pub fn tool_status(tool_name: &str) -> String {
         "download_file" => "📥",
         "run_lua" => "⚙️",
         "get_lua_docs" => "📖",
-        "use_skill" => "🧩",
+        "run_skill" => "🧩",
         "translate" => "🌐",
         "set_reminder" => "⏰",
         "get_messages" => "💬",
@@ -170,4 +181,123 @@ pub fn append_tool_summary(text: &str, tools: &[String]) -> String {
             .join(", ")
     };
     format!("{text}\n\n🛠️ **Tools used:** {summary}")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn tool_hint_sandbox_run_shows_command() {
+        let args = json!({"command": "ls -la /tmp"});
+        let hint = tool_hint("sandbox_run", &args);
+        assert_eq!(hint, " — ls -la /tmp");
+    }
+
+    #[test]
+    fn tool_hint_sandbox_run_truncates_long_command() {
+        let command = "x".repeat(100);
+        let args = json!({"command": command});
+        let hint = tool_hint("sandbox_run", &args);
+        assert_eq!(hint, format!(" — {}…", "x".repeat(80)));
+    }
+
+    #[test]
+    fn tool_hint_sandbox_run_missing_command() {
+        let args = json!({});
+        let hint = tool_hint("sandbox_run", &args);
+        assert_eq!(hint, "");
+    }
+
+    #[test]
+    fn tool_hint_sandbox_run_negated_command_empty() {
+        let args = json!({"command": ""});
+        let hint = tool_hint("sandbox_run", &args);
+        assert_eq!(hint, "");
+    }
+
+    #[test]
+    fn tool_hint_query_is_shown() {
+        let args = json!({"query": "rust async patterns"});
+        let hint = tool_hint("web_search", &args);
+        assert_eq!(hint, " — rust async patterns");
+    }
+
+    #[test]
+    fn tool_hint_task_is_shown() {
+        let args = json!({"task": "implement feature"});
+        let hint = tool_hint("some_tool", &args);
+        assert_eq!(hint, " — implement feature");
+    }
+
+    #[test]
+    fn tool_hint_url_is_shown() {
+        let args = json!({"url": "https://example.com"});
+        let hint = tool_hint("fetch_webpage", &args);
+        assert_eq!(hint, " — https://example.com");
+    }
+
+    #[test]
+    fn tool_hint_fallback_prefers_first_nonempty_key() {
+        let args = json!({"query": "", "task": "real task", "url": "https://example.com"});
+        let hint = tool_hint("generic_tool", &args);
+        assert_eq!(hint, " — real task");
+    }
+
+    #[test]
+    fn tool_hint_run_skill_shows_name_and_input() {
+        let args = json!({"name": "greet", "input": "Hello world"});
+        let hint = tool_hint("run_skill", &args);
+        assert_eq!(hint, " — greet: Hello world");
+    }
+
+    #[test]
+    fn tool_hint_run_skill_empty_input_still_shows_name() {
+        let args = json!({"name": "greet", "input": ""});
+        let hint = tool_hint("run_skill", &args);
+        assert_eq!(hint, " — greet: ");
+    }
+
+    #[test]
+    fn tool_hint_run_skill_hides_when_no_name() {
+        let args = json!({"input": "something"});
+        let hint = tool_hint("run_skill", &args);
+        assert_eq!(hint, "");
+    }
+
+    #[test]
+    fn tool_hint_set_reminder_shows_delay_and_message() {
+        let args = json!({"delay_minutes": 15, "message": "check the oven"});
+        let hint = tool_hint("set_reminder", &args);
+        assert_eq!(hint, " — in 15m: check the oven");
+    }
+
+    #[test]
+    fn tool_hint_set_reminder_hides_when_no_message() {
+        let args = json!({"delay_minutes": 15});
+        let hint = tool_hint("set_reminder", &args);
+        assert_eq!(hint, "");
+    }
+
+    #[test]
+    fn tool_hint_translate_shows_target_and_text() {
+        let args = json!({"target_language": "es", "text": "hello"});
+        let hint = tool_hint("translate", &args);
+        assert_eq!(hint, " — → es: hello");
+    }
+
+    #[test]
+    fn tool_hint_translate_hides_when_no_target() {
+        let args = json!({"text": "hello"});
+        let hint = tool_hint("translate", &args);
+        assert_eq!(hint, "");
+    }
+
+    #[test]
+    fn tool_hint_redactable_command() {
+        let args = json!({"command": "export MY_SECRET_KEY=hunter2"});
+        let hint = tool_hint("sandbox_run", &args);
+        assert_eq!(hint, " — export MY_SECRET_KEY=hunter2");
+    }
 }

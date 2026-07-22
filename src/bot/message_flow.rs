@@ -252,7 +252,7 @@ impl HouseBot {
 
         let response_hooks = progress
             .as_ref()
-            .map(|progress| ResponseProgressHooks::new(ctx, progress));
+            .map(|progress| ResponseProgressHooks::new(ctx, progress, self.redactor.clone()));
 
         let user_text = if text.is_empty() {
             "(no text)".to_string()
