@@ -54,6 +54,30 @@ pub(crate) async fn handle_config_interaction(
             }
         }
 
+        "dev_notify_channel" => {
+            let sub_opts = match &top.value {
+                CommandDataOptionValue::SubCommand(opts) => opts,
+                _ => return "Unexpected option structure.".into(),
+            };
+            let channel_id = sub_opts.iter().find_map(|option| match option.value {
+                CommandDataOptionValue::Channel(c) if option.name == "channel" => Some(c.get()),
+                _ => None,
+            });
+            if access_store
+                .update(|access| access.dev_notify_channel_id = channel_id)
+                .await
+                .is_err()
+            {
+                return "Error: failed to save config.".into();
+            }
+            match channel_id {
+                Some(cid) => {
+                    format!("✅ Now watching <#{cid}> for feature-development completion notices.")
+                }
+                None => "✅ Feature-development completion watching disabled.".into(),
+            }
+        }
+
         "access" => {
             let sub_opts = match &top.value {
                 CommandDataOptionValue::SubCommandGroup(opts) => opts,

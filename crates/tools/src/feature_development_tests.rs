@@ -55,7 +55,7 @@ fn defaults() -> PartialAgentSelection {
 }
 
 #[test]
-fn owner_immediate_returns_dispatch_ready() {
+fn owner_interactive_returns_config_required() {
     let store = make_store();
     let rl = make_limiter();
     let outcome = prepare_feature_development(
@@ -70,24 +70,27 @@ fn owner_immediate_returns_dispatch_ready() {
         "",
         valid_reqs(),
         valid_ac(),
-        DispatchMode::Immediate,
+        DispatchMode::Interactive,
         &defaults(),
     );
     assert!(matches!(
         outcome,
-        FeatureDevelopmentOutcome::OwnerDispatchReady { .. }
+        FeatureDevelopmentOutcome::OwnerConfigurationRequired { .. }
     ));
 }
 
 #[test]
-fn owner_interactive_returns_config_required() {
+fn configurer_interactive_returns_config_required() {
+    // A non-owner requester with DispatchMode::Interactive (as the caller
+    // decides for configurers) must route the same as the owner would —
+    // routing must key off dispatch_mode, not requester.user_id == owner_id.
     let store = make_store();
     let rl = make_limiter();
     let outcome = prepare_feature_development(
         &store,
         &rl,
         42,
-        owner_requester(42),
+        non_owner_requester(),
         source(),
         1,
         "Title",
@@ -145,7 +148,7 @@ fn missing_owner_id_rejected() {
         "",
         valid_reqs(),
         valid_ac(),
-        DispatchMode::Immediate,
+        DispatchMode::Interactive,
         &defaults(),
     );
     assert!(matches!(
@@ -348,7 +351,7 @@ fn invalid_specification_rejected_before_job_insertion() {
         "",
         valid_reqs(),
         valid_ac(),
-        DispatchMode::Immediate,
+        DispatchMode::Interactive,
         &defaults(),
     );
     assert!(matches!(

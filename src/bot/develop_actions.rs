@@ -51,8 +51,7 @@ impl HouseBot {
                 j.requester.user_id,
             ))
         });
-        let Some(Some((spec, agent, model, effort, _requester_name, _requester_user_id))) =
-            job_data
+        let Some(Some((spec, agent, model, effort, _requester_name, requester_user_id))) = job_data
         else {
             self.pending_jobs.mark_dispatch_failed(job_id);
             let _ = component
@@ -104,6 +103,10 @@ impl HouseBot {
         inputs.insert(
             "prompt".into(),
             serde_json::Value::String(build_dispatch_prompt(spec.issue_number)),
+        );
+        inputs.insert(
+            "requester_id".into(),
+            serde_json::Value::String(requester_user_id.to_string()),
         );
         if reporter
             .trigger_workflow_dispatch(dispatch_workflow_file(agent), "master", &inputs)
@@ -241,6 +244,10 @@ impl HouseBot {
         inputs.insert(
             "prompt".into(),
             serde_json::Value::String(build_dispatch_prompt(spec.issue_number)),
+        );
+        inputs.insert(
+            "requester_id".into(),
+            serde_json::Value::String(req_id.to_string()),
         );
         if reporter
             .trigger_workflow_dispatch(dispatch_workflow_file(agent), "master", &inputs)

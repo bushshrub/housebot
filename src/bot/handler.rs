@@ -341,7 +341,10 @@ impl EventHandler for HouseBot {
                 handle_storage_interaction(&self.memory, &self.notes, &cmd.data.options, user_id)
                     .await
             }
-            "skill" => handle_skill_interaction(&self.skills, &cmd.data.options, user_id).await,
+            "skill" => {
+                handle_skill_interaction(&self.skills, &self.user_cfg, &cmd.data.options, user_id)
+                    .await
+            }
             "stats" => {
                 handle_stats_interaction(
                     &self.history,
@@ -373,6 +376,12 @@ impl EventHandler for HouseBot {
         if msg.author.id == bot_id {
             // Never respond to our own messages, e.g. a reply chain off our
             // own "Thinking..." progress updates would otherwise loop forever.
+            return;
+        }
+        if msg.webhook_id.is_some() && self.handle_dev_notify_webhook(&ctx, &msg).await {
+            // Only short-circuit for the configured dev-notify channel; other
+            // webhook messages (e.g. from other bots) still flow through the
+            // normal pipeline below, same as before this feature existed.
             return;
         }
         let structured_mention = msg.mentions.iter().any(|u| u.id == bot_id);
@@ -417,7 +426,7 @@ impl EventHandler for HouseBot {
         if msg.content.starts_with("!skill") {
             tracing::info!(target: "housebot::commands", user_id, "!skill command received");
             let (first, rest) = split_command(&msg.content);
-            let reply = skill_command(&self.skills, &first, &rest, user_id).await;
+            let reply = skill_command(&self.skills, &self.user_cfg, &first, &rest, user_id).await;
             let reply = self.redactor.redact(&reply);
             self.respond(&ctx, &msg, &reply).await;
             return;

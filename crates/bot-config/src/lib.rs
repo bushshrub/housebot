@@ -297,6 +297,10 @@ pub struct UserConfig {
     /// Server admins can override this server-wide via `/server-config embeds`.
     #[serde(default = "default_embed_enabled")]
     pub embed_enabled: bool,
+    /// Names of global marketplace skills this user has enabled. Only enabled
+    /// skills are listed in the user's prompt and executable via `use_skill`.
+    #[serde(default)]
+    pub enabled_skills: Vec<String>,
 }
 
 fn default_followup_timeout() -> u64 {
@@ -323,6 +327,7 @@ impl Default for UserConfig {
             deep_memory_enabled: true,
             proactive_assistance_enabled: false,
             embed_enabled: true,
+            enabled_skills: Vec::new(),
         }
     }
 }
@@ -424,6 +429,10 @@ pub struct AccessControl {
     /// `/personalize proactive` settings are ignored for everyone.
     #[serde(default = "default_respond")]
     pub proactive_enabled: bool,
+    /// Channel the bot watches for the feature-development completion webhook
+    /// (`/config dev_notify_channel`). `None` disables the watch.
+    #[serde(default)]
+    pub dev_notify_channel_id: Option<u64>,
 }
 
 impl Default for AccessControl {
@@ -432,6 +441,7 @@ impl Default for AccessControl {
             configurer_ids: HashSet::new(),
             user_policies: HashMap::new(),
             proactive_enabled: true,
+            dev_notify_channel_id: None,
         }
     }
 }

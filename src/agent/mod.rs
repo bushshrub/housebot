@@ -8,7 +8,7 @@ use async_trait::async_trait;
 use chrono::{Local, Utc};
 use serde_json::{json, Value};
 
-use crate::bot_config::{AccessControl, AccessControlStore};
+use crate::bot_config::{AccessControl, AccessControlStore, UserConfigStore};
 use crate::channel_log::ChannelLog;
 use crate::coding_agent::pending::PendingJobStore;
 use crate::config;
@@ -100,8 +100,6 @@ impl<'a> AgentRequest<'a> {
 /// Structured bot-control action extracted from a tool call, carried alongside text.
 #[derive(Debug, Clone)]
 pub enum AgentControlAction {
-    /// Owner immediate dispatch is ready.
-    OwnerDispatchReady { job_id: uuid::Uuid },
     /// Owner wants to configure interactively.
     OwnerConfigurationRequired { job_id: uuid::Uuid },
     /// Non-owner request created; owner must approve.
@@ -215,6 +213,8 @@ pub struct Agent {
     active_conversations: tokio::sync::Mutex<HashMap<String, String>>,
     tool_permissions: ToolPermissions,
     access_control: AccessControlStore,
+    /// Per-user configuration, including each user's enabled marketplace skills.
+    user_config: UserConfigStore,
     discord: Arc<DiscordBridge>,
     channel_log: ChannelLog,
     sandbox_client: housebot_sandbox::SandboxClient,
@@ -321,6 +321,7 @@ impl Agent {
             active_conversations: tokio::sync::Mutex::new(HashMap::new()),
             tool_permissions: ToolPermissions::default(),
             access_control,
+            user_config: UserConfigStore::default(),
             discord,
             channel_log: ChannelLog::default(),
             sandbox_client: housebot_sandbox::SandboxClient::from_env(),
@@ -460,6 +461,7 @@ impl Agent {
             active_conversations: tokio::sync::Mutex::new(HashMap::new()),
             tool_permissions: ToolPermissions::default(),
             access_control: AccessControlStore::default(),
+            user_config: UserConfigStore::default(),
             discord: Arc::new(DiscordBridge::default()),
             channel_log: ChannelLog::default(),
             sandbox_client: housebot_sandbox::SandboxClient::new("/dev/null"),

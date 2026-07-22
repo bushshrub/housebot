@@ -58,6 +58,7 @@ pub fn build_system_prompt(
         "",
         "",
         &Local::now().format("%Y-%m-%d %H:%M").to_string(),
+        "",
     )
 }
 
@@ -213,25 +214,48 @@ struct ConfigSuffix {
 }
 
 impl ConfigSuffix {
-    fn new(deep_memory_enabled: bool, all_skills: &BTreeMap<String, Skill>) -> Self {
+    fn new(
+        deep_memory_enabled: bool,
+        all_skills: &BTreeMap<String, Skill>,
+        current_message: &str,
+    ) -> Self {
         let memory_tool_line = if deep_memory_enabled {
             "- update_memory — Persist important facts about the current user for future conversations. Write the full memory each time.\n- search_memory — Search stored memory for a keyword or phrase. Use when the user refers to something you may have remembered.\n"
         } else {
             ""
         };
         let skills_section = if all_skills.is_empty() {
-            "\n- run_skill — Execute a custom skill by name. No skills are defined yet; users can add \
-              them through conversation (describe what you want the skill to do)."
+            "\n- use_skill — Load a custom skill's instructions into your context by name. You have \
+              no skills enabled yet; browse the marketplace with list_skills and enable one with \
+              enable_skill (or `!skill enable <name>`), or create one through conversation."
                 .to_string()
         } else {
+            // Only skill names appear here — user-authored descriptions must not
+            // receive system-message authority. Use list_skills / skill_info to
+            // inspect a skill's details as tool output instead.
             let lines: Vec<String> = all_skills
                 .values()
                 .map(|s| format!("  - **{}**", s.name))
                 .collect();
-            format!(
-                "\n- run_skill — Execute a custom skill by name with an input string. Available skills:\n{}",
+            let mut section = format!(
+                "\n- use_skill — Load a custom skill's full instructions into your context by name, \
+                 then follow them yourself using your normal tools. Use list_skills or skill_info \
+                 to see what a skill does. Available skills:\n{}",
                 lines.join("\n")
-            )
+            );
+            let matched: Vec<String> = all_skills
+                .values()
+                .filter(|s| s.matches_message(current_message))
+                .map(|s| format!("**{}**", s.name))
+                .collect();
+            if !matched.is_empty() {
+                section.push_str(&format!(
+                    "\n\nThe current message matches the triggers of these skills — strongly \
+                     consider loading them with use_skill: {}.",
+                    matched.join(", ")
+                ));
+            }
+            section
         };
         Self {
             memory_tool_line,
@@ -338,6 +362,7 @@ pub(crate) fn build_system_prompt_with_profile(
     profile_tags: &str,
     quick_actions: &str,
     now: &str,
+    current_message: &str,
 ) -> String {
     let memory_guidance = if deep_memory_enabled {
         "Actively use memory: when the user says 'remember', 'don't forget', 'keep in mind', \
@@ -351,7 +376,7 @@ pub(crate) fn build_system_prompt_with_profile(
          still works normally."
     };
 
-    let config = ConfigSuffix::new(deep_memory_enabled, all_skills);
+    let config = ConfigSuffix::new(deep_memory_enabled, all_skills, current_message);
     let dynamic = DynamicSuffix::new(
         username,
         user_id,
@@ -412,24 +437,18 @@ Current user: {username} (ID: {user_id})\n",
     )
 }
 
-/// Build a system prompt for skill execution that includes instructions,
-/// trigger context, enabled tools, and few-shot examples.
-pub(crate) fn build_skill_system_prompt(skill: &Skill, instructions: &str) -> String {
-    let mut parts = vec![instructions.to_string()];
-
-    if !skill.triggers.is_empty() {
-        let triggers: Vec<String> = skill
-            .triggers
-            .iter()
-            .map(|t| format!("  - {}: {}", t.trigger_type, t.value))
-            .collect();
-        parts.push(format!("## Trigger conditions\n{}", triggers.join("\n")));
-    }
+/// Render a skill's loaded content for injection into the main agent's
+/// context: its instructions, recommended tools, and few-shot examples.
+pub(crate) fn build_loaded_skill_content(skill: &Skill, instructions: &str) -> String {
+    let mut parts = vec![format!(
+        "# Skill: {}\nYou have loaded the **{}** skill. Follow these instructions using your \
+         normal tools.\n\n{instructions}",
+        skill.name, skill.name
+    )];
 
     if !skill.enabled_tools.is_empty() {
         parts.push(format!(
-            "## Available tools\nYou have access to the following tools: {}.\n\
-             Use them when needed to fulfill the user's request.",
+            "## Recommended tools\nThis skill is intended to use: {}.",
             skill.enabled_tools.join(", ")
         ));
     }

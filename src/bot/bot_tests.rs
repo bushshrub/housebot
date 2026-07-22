@@ -309,18 +309,14 @@ fn split_custom_limit() {
 
 // ── tool_hint ──
 #[test]
-fn hint_run_skill_with_name_and_input() {
-    let h = tool_hint(
-        "run_skill",
-        &json!({"name": "summarize", "input": "some text"}),
-    );
+fn hint_use_skill_with_name() {
+    let h = tool_hint("use_skill", &json!({"name": "summarize"}));
     assert!(h.contains("summarize"));
-    assert!(h.contains("some text"));
 }
 
 #[test]
-fn hint_run_skill_no_name() {
-    assert_eq!(tool_hint("run_skill", &json!({"input": "some text"})), "");
+fn hint_use_skill_no_name() {
+    assert_eq!(tool_hint("use_skill", &json!({})), "");
 }
 
 #[test]
@@ -563,26 +559,72 @@ fn stores() -> (TempDir, Skills, Notes, Memory, History) {
 
 #[tokio::test]
 async fn skill_add_and_list() {
-    let (_t, skills, _n, _m, _h) = stores();
-    let add = skill_command(&skills, "!skill add greeter", "You greet people", 7).await;
+    let (t, skills, _n, _m, _h) = stores();
+    let user_config = UserConfigStore::new(t.path().join("user_config"));
+    let add = skill_command(
+        &skills,
+        &user_config,
+        "!skill add greeter",
+        "You greet people",
+        7,
+    )
+    .await;
     assert!(add.contains("saved"));
-    let list = skill_command(&skills, "!skill list", "", 7).await;
+    let list = skill_command(&skills, &user_config, "!skill list", "", 7).await;
     assert!(list.contains("greeter"));
 }
 
 #[tokio::test]
+async fn skill_enable_then_disable() {
+    let (t, skills, _n, _m, _h) = stores();
+    let user_config = UserConfigStore::new(t.path().join("user_config"));
+    skill_command(
+        &skills,
+        &user_config,
+        "!skill add greeter",
+        "You greet people",
+        7,
+    )
+    .await;
+    let enable = skill_command(&skills, &user_config, "!skill enable greeter", "", 7).await;
+    assert!(enable.contains("enabled"));
+    assert!(user_config
+        .load(7)
+        .await
+        .enabled_skills
+        .contains(&"greeter".to_string()));
+    let list = skill_command(&skills, &user_config, "!skill list", "", 7).await;
+    assert!(list.contains("✓ **greeter**"));
+    let disable = skill_command(&skills, &user_config, "!skill disable greeter", "", 7).await;
+    assert!(disable.contains("disabled"));
+    assert!(user_config.load(7).await.enabled_skills.is_empty());
+}
+
+#[tokio::test]
+async fn skill_enable_missing_rejected() {
+    let (t, skills, _n, _m, _h) = stores();
+    let user_config = UserConfigStore::new(t.path().join("user_config"));
+    let out = skill_command(&skills, &user_config, "!skill enable nope", "", 7).await;
+    assert!(out.contains("not found"));
+}
+
+#[tokio::test]
 async fn skill_invalid_name_rejected() {
-    let (_t, skills, _n, _m, _h) = stores();
-    let out = skill_command(&skills, "!skill add Bad-Name", "prompt", 1).await;
+    let (t, skills, _n, _m, _h) = stores();
+    let user_config = UserConfigStore::new(t.path().join("user_config"));
+    let out = skill_command(&skills, &user_config, "!skill add Bad-Name", "prompt", 1).await;
     assert!(out.contains("lowercase"));
 }
 
 #[tokio::test]
 async fn skill_delete_missing() {
-    let (_t, skills, _n, _m, _h) = stores();
-    assert!(skill_command(&skills, "!skill delete nope", "", 1)
-        .await
-        .contains("not found"));
+    let (t, skills, _n, _m, _h) = stores();
+    let user_config = UserConfigStore::new(t.path().join("user_config"));
+    assert!(
+        skill_command(&skills, &user_config, "!skill delete nope", "", 1)
+            .await
+            .contains("not found")
+    );
 }
 
 #[tokio::test]
@@ -620,4 +662,67 @@ async fn stats_reports_counts() {
     let out = stats_command(&history, &memory, &notes, &skills, 5, "Alice").await;
     assert!(out.contains("Stats for Alice"));
     assert!(out.contains("Saved notes: 1"));
+}
+
+#[test]
+fn dev_notify_footer_parses_valid_text() {
+    let footer = "housebot-dev-notify requester_id=123456789 issue=42 status=success sig=ab12";
+    assert_eq!(
+        parse_dev_notify_footer(footer),
+        Some((123456789, 42, "success".to_string(), "ab12".to_string()))
+    );
+}
+
+#[test]
+fn dev_notify_footer_rejects_unrelated_text() {
+    assert_eq!(parse_dev_notify_footer("some other footer text"), None);
+    assert_eq!(
+        parse_dev_notify_footer("housebot-dev-notify issue=42"),
+        None
+    );
+}
+
+#[test]
+fn dev_notify_footer_rejects_missing_requester_id() {
+    // requester_id absent even though issue and status are present.
+    assert_eq!(
+        parse_dev_notify_footer("housebot-dev-notify issue=42 status=success sig=ab12"),
+        None
+    );
+}
+
+#[test]
+fn dev_notify_footer_rejects_empty_status() {
+    assert_eq!(
+        parse_dev_notify_footer("housebot-dev-notify requester_id=1 issue=42 status= sig=ab12"),
+        None
+    );
+}
+
+#[test]
+fn dev_notify_footer_rejects_zero_requester_id() {
+    assert_eq!(
+        parse_dev_notify_footer(
+            "housebot-dev-notify requester_id=0 issue=42 status=success sig=ab12"
+        ),
+        None
+    );
+}
+
+#[test]
+fn dev_notify_footer_rejects_missing_sig() {
+    assert_eq!(
+        parse_dev_notify_footer("housebot-dev-notify requester_id=1 issue=42 status=success"),
+        None
+    );
+}
+
+#[test]
+fn dev_notify_footer_allows_equals_in_value() {
+    // split_once splits on the *first* '=', so values may safely contain '='.
+    let footer = "housebot-dev-notify requester_id=1 issue=42 status=error=timeout sig=ab12";
+    assert_eq!(
+        parse_dev_notify_footer(footer),
+        Some((1, 42, "error=timeout".to_string(), "ab12".to_string()))
+    );
 }
