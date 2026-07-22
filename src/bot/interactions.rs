@@ -646,36 +646,19 @@ pub(crate) async fn handle_skill_interaction(
         CommandDataOptionValue::SubCommand(opts) => opts,
         _ => return "Unexpected option structure.".into(),
     };
+    let name_option = |opts: &[serenity::all::CommandDataOption]| {
+        opts.iter()
+            .find(|o| o.name == "name")
+            .and_then(|o| match &o.value {
+                CommandDataOptionValue::String(s) => Some(s.to_lowercase()),
+                _ => None,
+            })
+            .unwrap_or_default()
+    };
     match command.name.as_str() {
-        "list" => skill_command(skills, user_cfg, "!skill list", author_id).await,
-        "info" => {
-            let name = sub_opts
-                .iter()
-                .find(|o| o.name == "name")
-                .and_then(|o| match &o.value {
-                    CommandDataOptionValue::String(s) => Some(s.clone()),
-                    _ => None,
-                })
-                .unwrap_or_default();
-            skill_command(skills, user_cfg, &format!("!skill info {name}"), author_id).await
-        }
-        "delete" => {
-            let name = sub_opts
-                .iter()
-                .find(|o| o.name == "name")
-                .and_then(|o| match &o.value {
-                    CommandDataOptionValue::String(s) => Some(s.clone()),
-                    _ => None,
-                })
-                .unwrap_or_default();
-            skill_command(
-                skills,
-                user_cfg,
-                &format!("!skill delete {name}"),
-                author_id,
-            )
-            .await
-        }
+        "list" => skill_list(skills, user_cfg, author_id).await,
+        "info" => skill_info(skills, &name_option(sub_opts)).await,
+        "delete" => skill_delete(skills, author_id, &name_option(sub_opts)).await,
         other => format!("Unknown subcommand `{other}`. Options: list, info, delete"),
     }
 }

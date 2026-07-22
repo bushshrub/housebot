@@ -49,7 +49,8 @@ use crate::token_monitor::{LeaderboardMetric, LeaderboardPeriod};
 use crate::tool_permissions::{ToolPermissions, VoteResult};
 
 pub use crate::bot_commands::{
-    erase_data_command, grocery_command, memory_command, note_command, skill_command, stats_command,
+    erase_data_command, grocery_command, memory_command, note_command, skill_command, skill_delete,
+    skill_info, skill_list, stats_command,
 };
 use crate::bot_formatting::{append_tool_summary, tool_status};
 pub use crate::bot_formatting::{extract_code_files, lang_ext, split_text, tool_hint};
