@@ -371,6 +371,165 @@ async fn run_update_memory_tool_persists() {
     assert_eq!(agent.memory.load("u4").await, "Likes tea");
 }
 
+fn fixture_skill(name: &str, author: &str) -> Skill {
+    Skill {
+        name: name.to_string(),
+        description: Some("desc".to_string()),
+        instructions: "original instructions".to_string(),
+        triggers: Vec::new(),
+        enabled_tools: Vec::new(),
+        examples: Vec::new(),
+        version: 1,
+        version_history: Vec::new(),
+        created_by: Some(author.to_string()),
+        editors: Vec::new(),
+        created_at: 0,
+        updated_at: 0,
+        prompt: None,
+    }
+}
+
+/// End-to-end: the LLM creates a skill, then edits it, purely through tool
+/// calls dispatched by the normal agent loop — no direct store access.
+#[tokio::test]
+async fn run_creates_and_edits_skill_via_conversation() {
+    let client = Arc::new(MockChatClient::new());
+    client.push_tool_call(
+        "call_1",
+        "create_skill",
+        r#"{"name":"greeter","instructions":"Say hello."}"#,
+    );
+    client.push_tool_call(
+        "call_2",
+        "edit_skill",
+        r#"{"name":"greeter","instructions":"Say hello warmly."}"#,
+    );
+    client.push_text("Done — created and refined the greeter skill.");
+    let (_t, agent) = test_agent(client);
+
+    let result = agent
+        .run(
+            AgentRequest::text("555", "Sky", "make me a greeter skill, then warm it up"),
+            &NoHooks,
+        )
+        .await;
+
+    assert_eq!(result.text, "Done — created and refined the greeter skill.");
+
+    let skill = agent.skills.get("greeter").await.expect("skill saved");
+    assert_eq!(skill.instructions, "Say hello warmly.");
+    assert_eq!(skill.version, 2, "edit_skill must bump the version");
+    assert_eq!(skill.version_history.len(), 1);
+    assert_eq!(skill.created_by.as_deref(), Some("555"));
+
+    // create_skill auto-enables the new skill for its creator.
+    assert!(
+        agent
+            .user_config
+            .load(555)
+            .await
+            .enabled_skills
+            .contains(&"greeter".to_string()),
+        "creator should have the skill auto-enabled"
+    );
+
+    let hist = agent.history.load("555").await;
+    assert!(hist.iter().any(|m| m["role"] == "tool"
+        && m["content"]
+            .as_str()
+            .unwrap_or("")
+            .contains("updated to version 2")));
+}
+
+/// Regression test for the vulnerability this change fixes: the removed
+/// `!skill add` / `/skill add` commands let anyone silently overwrite a
+/// skill they didn't own. The replacement `edit_skill` tool must enforce
+/// author/editor ownership at the dispatch layer and leave the skill
+/// completely untouched when denied.
+#[tokio::test]
+async fn dispatch_edit_skill_denies_non_owner_and_leaves_skill_unchanged() {
+    let client = Arc::new(MockChatClient::new());
+    let (_t, agent) = test_agent(client);
+    agent
+        .skills
+        .save(fixture_skill("locked", "owner_1"))
+        .await
+        .unwrap();
+    let sb = noop_sandbox();
+
+    let out = agent
+        .dispatch_tool(
+            "edit_skill",
+            &json!({"name": "locked", "instructions": "hacked instructions"}),
+            "intruder_2",
+            "Intruder",
+            0,
+            None,
+            &sb,
+        )
+        .await;
+    match out {
+        ToolOutcome::Text(t) => assert!(t.contains('⛔'), "unexpected: {t}"),
+        other => panic!("unexpected outcome: {other:?}"),
+    }
+
+    let unchanged = agent.skills.get("locked").await.unwrap();
+    assert_eq!(unchanged.instructions, "original instructions");
+    assert_eq!(unchanged.version, 1);
+    assert!(unchanged.version_history.is_empty());
+}
+
+/// Integration test stitching create → edit → use together through the
+/// dispatch layer: the instructions loaded by `use_skill` must reflect the
+/// most recent `edit_skill` update, and only the author can edit.
+#[tokio::test]
+async fn dispatch_edit_skill_then_use_skill_reflects_update() {
+    let client = Arc::new(MockChatClient::new());
+    let (_t, agent) = test_agent(client);
+    agent
+        .skills
+        .save(fixture_skill("greeter", "owner_1"))
+        .await
+        .unwrap();
+    agent.enable_skill_for_user("owner_1", "greeter").await;
+    let sb = noop_sandbox();
+
+    let edit_out = agent
+        .dispatch_tool(
+            "edit_skill",
+            &json!({"name": "greeter", "instructions": "Say hello warmly."}),
+            "owner_1",
+            "Owner",
+            0,
+            None,
+            &sb,
+        )
+        .await;
+    match edit_out {
+        ToolOutcome::Text(t) => assert!(t.contains("updated to version 2"), "unexpected: {t}"),
+        other => panic!("unexpected outcome: {other:?}"),
+    }
+
+    let use_out = agent
+        .dispatch_tool(
+            "use_skill",
+            &json!({"name": "greeter"}),
+            "owner_1",
+            "Owner",
+            0,
+            None,
+            &sb,
+        )
+        .await;
+    match use_out {
+        ToolOutcome::Text(t) => assert!(
+            t.contains("Say hello warmly."),
+            "use_skill did not reflect the edit: {t}"
+        ),
+        other => panic!("unexpected outcome: {other:?}"),
+    }
+}
+
 #[tokio::test]
 async fn dispatch_unknown_tool_returns_error() {
     let client = Arc::new(MockChatClient::new());
