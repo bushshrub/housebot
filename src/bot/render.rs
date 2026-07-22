@@ -38,6 +38,11 @@ pub(crate) async fn send_final_message(
     // even if pagination was requested.
     let use_pagination = paginate && !suppress_embeds;
     if !use_pagination {
+        if paginate && suppress_embeds {
+            if let Some(progress) = progress {
+                let _ = progress.delete(&ctx.http).await;
+            }
+        }
         let chunks = split_text(text, MAX_MESSAGE_LENGTH);
         let mut first_id = None;
         for (i, chunk) in chunks.iter().enumerate() {

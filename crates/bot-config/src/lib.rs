@@ -600,6 +600,17 @@ mod tests {
     }
 
     #[test]
+    fn user_config_embed_enabled_persists_through_serde() {
+        let config = UserConfig {
+            embed_enabled: false,
+            ..UserConfig::default()
+        };
+        let json = serde_json::to_string(&config).unwrap();
+        let restored: UserConfig = serde_json::from_str(&json).unwrap();
+        assert!(!restored.embed_enabled);
+    }
+
+    #[test]
     fn old_user_config_defaults_thinking_mode_to_medium() {
         let config: UserConfig =
             serde_json::from_str(r#"{"personality":null,"followup_timeout_secs":300}"#).unwrap();
