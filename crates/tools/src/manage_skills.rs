@@ -259,6 +259,11 @@ pub async fn dispatch_edit_skill(skills: &Skills, author_id: &str, args: &Value)
         return format!("⛔ Only the author or a delegated editor can edit **{name}**.");
     }
     let instructions = args.get("instructions").and_then(Value::as_str);
+    if let Some(i) = instructions {
+        if i.trim().is_empty() {
+            return "Error: Skill instructions cannot be empty.".into();
+        }
+    }
     let description = args.get("description").and_then(Value::as_str);
     let triggers = match parse_triggers(args.get("triggers")) {
         Ok(t) => t,
