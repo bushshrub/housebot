@@ -349,11 +349,25 @@ impl HouseBot {
             safe
         };
         let (display, code_files) = extract_code_files(&with_tool_summary);
+        // Determine whether to suppress Discord link preview embeds:
+        // 1. If the server admin has disabled embeds, override everything.
+        // 2. Otherwise respect the user's preference.
+        let suppress_embeds = if let Some(gid) = msg.guild_id {
+            let server_cfg = self.server_cfg.load(gid.get()).await;
+            if !server_cfg.embed_enabled {
+                true
+            } else {
+                !user_config.embed_enabled
+            }
+        } else {
+            !user_config.embed_enabled
+        };
         let sent_id = send_final_message(
             ctx,
             msg,
             &display,
             user_config.labs_pagination_enabled,
+            suppress_embeds,
             msg.author.id.get(),
             &self.paginated,
             progress.as_ref(),

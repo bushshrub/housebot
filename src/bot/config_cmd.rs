@@ -484,6 +484,34 @@ pub(crate) async fn handle_server_config_interaction(
             }
         }
 
+        "embeds" => {
+            let sub_opts = match &top.value {
+                CommandDataOptionValue::SubCommand(opts) => opts,
+                _ => return "Unexpected option structure.".into(),
+            };
+            let enabled =
+                sub_opts
+                    .iter()
+                    .find(|o| o.name == "enabled")
+                    .and_then(|o| match &o.value {
+                        CommandDataOptionValue::Boolean(b) => Some(*b),
+                        _ => None,
+                    });
+            let Some(enabled) = enabled else {
+                return "Please specify `enabled`.".into();
+            };
+            let mut cfg = server_cfg.load(gid).await;
+            cfg.embed_enabled = enabled;
+            if server_cfg.save(gid, &cfg).await.is_err() {
+                return "Error: failed to save config.".into();
+            }
+            if enabled {
+                "✅ Embed rendering is enabled in this server. Users can still disable it individually via `/labs embeds`.".into()
+            } else {
+                "✅ Embed rendering is disabled in this server for everyone, overriding user preferences.".into()
+            }
+        }
+
         other => format!("Unknown server-config option `{other}`."),
     }
 }

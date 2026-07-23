@@ -117,20 +117,40 @@ pub(crate) async fn reply_no_ping(
     msg.channel_id.send_message(&ctx.http, builder).await
 }
 
-pub(crate) async fn reply_with_mentions(
+pub(crate) async fn reply_no_ping_with_suppress(
+    ctx: &Context,
+    msg: &Message,
+    content: &str,
+    suppress_embeds: bool,
+) -> serenity::Result<Message> {
+    let mut builder = CreateMessage::new()
+        .content(content)
+        .reference_message(msg)
+        .allowed_mentions(CreateAllowedMentions::new());
+    if suppress_embeds {
+        builder = builder.flags(MessageFlags::SUPPRESS_EMBEDS);
+    }
+    msg.channel_id.send_message(&ctx.http, builder).await
+}
+
+pub(crate) async fn reply_with_mentions_and_suppress(
     ctx: &Context,
     msg: &Message,
     content: &str,
     allowed_users: &[u64],
+    suppress_embeds: bool,
 ) -> serenity::Result<Message> {
     let mut mentions = CreateAllowedMentions::new();
     if !allowed_users.is_empty() {
         mentions = mentions.users(allowed_users.iter().map(|id| UserId::new(*id)));
     }
-    let builder = CreateMessage::new()
+    let mut builder = CreateMessage::new()
         .content(content)
         .reference_message(msg)
         .allowed_mentions(mentions);
+    if suppress_embeds {
+        builder = builder.flags(MessageFlags::SUPPRESS_EMBEDS);
+    }
     msg.channel_id.send_message(&ctx.http, builder).await
 }
 

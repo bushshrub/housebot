@@ -27,33 +27,47 @@ pub(crate) async fn send_final_message(
     msg: &Message,
     text: &str,
     paginate: bool,
+    suppress_embeds: bool,
     owner_id: u64,
     store: &Mutex<HashMap<String, PaginatedResponse>>,
     progress: Option<&Message>,
     allowed_pings: &[u64],
 ) -> Option<MessageId> {
     let mentions = build_allowed_mentions(allowed_pings);
-    if !paginate {
+    // When embeds are suppressed (server override), fall back to plain text
+    // even if pagination was requested.
+    let use_pagination = paginate && !suppress_embeds;
+    if !use_pagination {
+        if paginate && suppress_embeds {
+            if let Some(progress) = progress {
+                let _ = progress.delete(&ctx.http).await;
+            }
+        }
         let chunks = split_text(text, MAX_MESSAGE_LENGTH);
         let mut first_id = None;
         for (i, chunk) in chunks.iter().enumerate() {
             if i == 0 {
                 let sent = if !allowed_pings.is_empty() {
-                    reply_with_mentions(ctx, msg, chunk, allowed_pings).await
+                    reply_with_mentions_and_suppress(
+                        ctx,
+                        msg,
+                        chunk,
+                        allowed_pings,
+                        suppress_embeds,
+                    )
+                    .await
                 } else {
-                    reply_no_ping(ctx, msg, chunk).await
+                    reply_no_ping_with_suppress(ctx, msg, chunk, suppress_embeds).await
                 };
                 first_id = sent.ok().map(|m| m.id);
             } else {
-                let _ = msg
-                    .channel_id
-                    .send_message(
-                        &ctx.http,
-                        CreateMessage::new()
-                            .content(chunk)
-                            .allowed_mentions(mentions.clone()),
-                    )
-                    .await;
+                let mut msg_builder = CreateMessage::new()
+                    .content(chunk)
+                    .allowed_mentions(mentions.clone());
+                if suppress_embeds {
+                    msg_builder = msg_builder.flags(MessageFlags::SUPPRESS_EMBEDS);
+                }
+                let _ = msg.channel_id.send_message(&ctx.http, msg_builder).await;
             }
         }
         return first_id;

@@ -365,8 +365,13 @@ pub(crate) async fn handle_status_interaction(
     } else {
         "disabled (final responses only)"
     };
+    let embeds = if cfg.embed_enabled {
+        "enabled"
+    } else {
+        "disabled"
+    };
     format!(
-        "**Your current settings:**\n• Effort level: {effort}\n• Progress updates: {progress}\n• Follow-up replies: {followup}\n• Personality: {personality}\n\nUse `/effort` to change the thinking effort level."
+        "**Your current settings:**\n• Effort level: {effort}\n• Progress updates: {progress}\n• URL embeds: {embeds}\n• Follow-up replies: {followup}\n• Personality: {personality}\n\nUse `/effort` to change the thinking effort level."
     )
 }
 
@@ -381,8 +386,13 @@ pub(crate) async fn handle_labs_interaction(
     };
     match top.name.as_str() {
         "list" => format!(
-            "**Labs features**\n• Pagination: {}",
+            "**Labs features**\n• Pagination: {}\n• Embeds: {}",
             if cfg.labs_pagination_enabled {
+                "enabled"
+            } else {
+                "disabled"
+            },
+            if cfg.embed_enabled {
                 "enabled"
             } else {
                 "disabled"
@@ -411,6 +421,32 @@ pub(crate) async fn handle_labs_interaction(
             tracing::info!(target: "housebot::labs::pagination", user_id = author_id, enabled, "Updated pagination setting");
             format!(
                 "✅ Paginated responses {}.",
+                if enabled { "enabled" } else { "disabled" }
+            )
+        }
+        "embeds" => {
+            let CommandDataOptionValue::SubCommand(sub_opts) = &top.value else {
+                return "Unexpected option structure.".into();
+            };
+            let Some(enabled) =
+                sub_opts
+                    .iter()
+                    .find(|o| o.name == "enabled")
+                    .and_then(|o| match &o.value {
+                        CommandDataOptionValue::Boolean(value) => Some(*value),
+                        _ => None,
+                    })
+            else {
+                return "Please specify `enabled`.".into();
+            };
+            cfg.embed_enabled = enabled;
+            if let Err(error) = user_cfg.save(author_id, &cfg).await {
+                tracing::error!(target: "housebot::labs::embeds", user_id = author_id, %error, "Failed to save embed setting");
+                return "Error: failed to save labs configuration.".into();
+            }
+            tracing::info!(target: "housebot::labs::embeds", user_id = author_id, enabled, "Updated embed setting");
+            format!(
+                "✅ URL embed previews {}.",
                 if enabled { "enabled" } else { "disabled" }
             )
         }
