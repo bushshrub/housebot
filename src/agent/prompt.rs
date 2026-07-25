@@ -116,6 +116,11 @@ discord.* bridge, limits). Call this before writing a Lua script if you are unsu
 algorithmic tasks, or generating directed-graph diagrams. The `graph.*` API builds directed \
 graphs that are rendered as PNG images and automatically attached. \
 Call get_lua_docs first if you need the full API reference.\n\
+- configure_bot — View or change the bot's core settings: manage configurers, set per-user \
+output token caps, toggle per-user responses, control global proactive assistance, and configure \
+the development-completion notification channel. Collective batch operations (set_user_limit_all, \
+set_user_respond_all) apply to all users with existing policies. Only available to authorized \
+configurers (the bot owner plus users granted access).\n\
 - sandbox_clone_repository, sandbox_list_files, sandbox_search_code, sandbox_read_file, \
 sandbox_run — Limited tools for inspecting and executing code in a temporary sandbox. \
 Use them only when code inspection or a short execution would materially improve the answer. \
