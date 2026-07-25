@@ -22,7 +22,8 @@ use tokio::sync::Mutex;
 use uuid::Uuid;
 
 use crate::agent::{
-    Agent, AgentControlAction, AgentHooks, AgentRequest, AgentResult, MediaData, NoHooks,
+    Agent, AgentControlAction, AgentHooks, AgentRequest, AgentResult, CancelToken, MediaData,
+    NoHooks,
 };
 use crate::bot_config::{
     AccessControlStore, LeaderboardVisibility, ServerConfig, ServerConfigStore, UserConfigStore,
@@ -192,6 +193,9 @@ pub struct HouseBot {
     grocery: GroceryList,
     /// Logs all guild channel messages for the get_messages tool's search mode.
     channel_log: ChannelLog,
+    /// Tracks active progress messages so the ❌ cancel reaction can be
+    /// matched to the right user and agent run.  Keyed by progress message ID.
+    progress_messages: Arc<Mutex<HashMap<u64, (u64, CancelToken)>>>,
 }
 
 impl HouseBot {
@@ -243,6 +247,7 @@ impl HouseBot {
             grocery: GroceryList::default(),
             discord,
             channel_log: ChannelLog::default(),
+            progress_messages: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 

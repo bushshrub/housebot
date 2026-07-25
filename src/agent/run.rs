@@ -25,6 +25,7 @@ impl Agent {
             proactive,
             record_profile_usage,
             max_output_tokens,
+            cancel,
         } = request;
         let run_started = std::time::Instant::now();
         tracing::info!(
@@ -106,6 +107,7 @@ impl Agent {
         let mut attachments = Vec::new();
 
         let mut control_action: Option<AgentControlAction> = None;
+        let mut cancelled = false;
 
         // Bound the tool loop so a model that keeps requesting tools cannot
         // spin forever (each iteration is a full LLM round trip).
@@ -116,6 +118,13 @@ impl Agent {
             if rounds > MAX_TOOL_ROUNDS {
                 tracing::warn!(target: "housebot::agent", user_id, "Tool loop exceeded {MAX_TOOL_ROUNDS} rounds — stopping");
                 break "I had to stop because this request required too many tool calls in a row. Please try a more specific request.".to_string();
+            }
+
+            // Honour cancellation — checked before each LLM call so the user
+            // gets a prompt stop signal even during a multi-tool sequence.
+            if cancel.as_ref().is_some_and(|t| t.is_cancelled()) {
+                cancelled = true;
+                break String::new();
             }
             // Start the typing indicator proactively so it appears even when
             // the model responds with only tool calls (no text deltas).
@@ -134,6 +143,14 @@ impl Agent {
                 )
                 .await;
             hooks.on_text_stream_end().await;
+
+            // Check again after the LLM stream finishes — the user may have
+            // cancelled while we were waiting for tokens.
+            if cancel.as_ref().is_some_and(|t| t.is_cancelled()) {
+                cancelled = true;
+                break String::new();
+            }
+
             let completion = match completion_result {
                 Ok(c) => c,
                 Err(e) => {
@@ -266,7 +283,9 @@ impl Agent {
             "Agent run finished"
         );
         AgentResult {
-            text: if final_text.is_empty() {
+            text: if cancelled {
+                String::new()
+            } else if final_text.is_empty() {
                 "(no response)".to_string()
             } else {
                 final_text
@@ -275,6 +294,7 @@ impl Agent {
             tools_called,
             attachments,
             control_action,
+            cancelled,
         }
     }
 
