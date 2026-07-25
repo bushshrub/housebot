@@ -98,15 +98,12 @@ impl Agent {
         messages.extend(past);
         messages.push(new_user_message.clone());
 
-        let is_owner = user_id.parse::<u64>().unwrap_or(0) == config::owner_id();
         let is_configurer = self
             .access_control
             .load()
             .await
             .is_configurer(user_id.parse::<u64>().unwrap_or(0), config::owner_id());
-        let tools = self
-            .build_tools(deep_memory_enabled, is_owner, is_configurer)
-            .await;
+        let tools = self.build_tools(deep_memory_enabled, is_configurer).await;
         let sandbox = LazySandbox::new(self.sandbox_client.clone());
         let mut turn_messages: Vec<Value> = Vec::new();
         let mut tools_called = Vec::new();
@@ -288,7 +285,6 @@ impl Agent {
     pub(crate) async fn build_tools(
         &self,
         deep_memory_enabled: bool,
-        sandbox_allowed: bool,
         configurer: bool,
     ) -> Vec<Value> {
         let mut tools = Vec::new();
@@ -330,10 +326,7 @@ impl Agent {
             run_lua_tool(),
             get_lua_docs_tool(),
         ];
-        // Include sandbox tools only for the owner.
-        if sandbox_allowed {
-            defs.extend(tools::sandbox::all_definitions());
-        }
+        defs.extend(tools::sandbox::all_definitions());
         // Configuration control is only offered to authorized configurers
         // (re-checked at dispatch as a defence-in-depth measure).
         if configurer {

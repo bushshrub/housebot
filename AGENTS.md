@@ -75,7 +75,7 @@ src/
     translate.rs     # translate
     feature_request.rs # create_feature_request + per-user RateLimiter
     feature_development.rs # prepare_feature_development + owner auth + rate limit
-    sandbox.rs         # LazySandbox + five tool definitions (owner-only)
+    sandbox.rs         # LazySandbox + five tool definitions
   coding_agent/
     catalog.rs       # versioned agent/model/effort catalog (loaded from .github/agents/catalog.json)
     pending.rs       # PendingDevelopmentJob state machine (15-min expiry, atomic dispatch guard)
@@ -195,9 +195,10 @@ handshake, lists tools, and calls them. Tool names are namespaced `{server}__{to
 
 ## Code inspection sandbox
 
-Five owner-only tools (`sandbox_clone_repository`, `sandbox_list_files`,
+Five tools (`sandbox_clone_repository`, `sandbox_list_files`,
 `sandbox_search_code`, `sandbox_read_file`, `sandbox_run`) let the bot inspect
 and run short commands in a temporary isolated container.
+All users have access to these tools.
 
 ### Security boundary
 
