@@ -2,6 +2,7 @@
 //! calls (built-in tools + MCP servers), and persists per-user history and memory.
 
 use std::collections::{BTreeMap, HashMap};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 use async_trait::async_trait;
@@ -42,8 +43,23 @@ pub struct MediaData {
     pub data: String,
 }
 
+/// A one-shot cancellation flag for an active agent run.  When the flag is
+/// triggered the agent loop stops as soon as possible.
+#[derive(Debug, Clone, Default)]
+pub struct CancelToken(Arc<AtomicBool>);
+
+impl CancelToken {
+    pub(crate) fn cancel(&self) {
+        self.0.store(true, Ordering::Release);
+    }
+
+    pub(crate) fn is_cancelled(&self) -> bool {
+        self.0.load(Ordering::Acquire)
+    }
+}
+
 /// One user turn to run through the agent.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 pub struct AgentRequest<'a> {
     pub user_id: &'a str,
     pub username: &'a str,
@@ -70,6 +86,9 @@ pub struct AgentRequest<'a> {
     pub record_profile_usage: bool,
     /// Per-user cap on completion output tokens, set by the bot's configurers.
     pub max_output_tokens: Option<u32>,
+    /// Optional cancellation token.  When the token is triggered the agent
+    /// loop stops as soon as possible — typically within one LLM round-trip.
+    pub cancel: Option<CancelToken>,
 }
 
 impl<'a> AgentRequest<'a> {
@@ -93,6 +112,7 @@ impl<'a> AgentRequest<'a> {
             proactive: false,
             record_profile_usage: true,
             max_output_tokens: None,
+            cancel: None,
         }
     }
 }
@@ -122,6 +142,8 @@ pub struct AgentResult {
     pub attachments: Vec<AgentAttachment>,
     /// Set when a `prepare_feature_development` tool call produces a structured outcome.
     pub control_action: Option<AgentControlAction>,
+    /// Set when the user cancelled this request mid-generation.
+    pub cancelled: bool,
 }
 
 /// The result of the pre-execution Lua safety review.

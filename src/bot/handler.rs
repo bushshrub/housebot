@@ -577,6 +577,39 @@ impl EventHandler for HouseBot {
             }
         }
 
+        // ── Cancel reaction: ❌ on a progress message ────────────────────
+        if let serenity::all::ReactionType::Unicode(e) = &reaction.emoji {
+            if e == "❌" {
+                let progress = self.progress_messages.lock().await;
+                if let Some((owner_id, cancel_token)) =
+                    progress.get(&reaction.message_id.get()).cloned()
+                {
+                    if owner_id == user_id {
+                        cancel_token.cancel();
+                        let _ = reaction
+                            .channel_id
+                            .edit_message(
+                                &ctx.http,
+                                reaction.message_id,
+                                EditMessage::new().content("❌ **Cancelled**"),
+                            )
+                            .await;
+                        let _ = reaction
+                            .channel_id
+                            .delete_reaction(
+                                &ctx.http,
+                                reaction.message_id,
+                                Some(UserId::new(user_id)),
+                                '❌',
+                            )
+                            .await;
+                        drop(progress);
+                        return;
+                    }
+                }
+            }
+        }
+
         // ── Tool-ban voting ──────────────────────────────────────────────
         let Some(guild_id) = reaction.guild_id.map(|g| g.get()) else {
             return;

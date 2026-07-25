@@ -265,6 +265,15 @@ impl HouseBot {
         } else {
             None
         };
+        let cancel_token = CancelToken::default();
+        if let Some(ref progress) = progress {
+            let _ = progress.react(&ctx.http, '❌').await;
+            self.progress_messages.lock().await.insert(
+                progress.id.get(),
+                (msg.author.id.get(), cancel_token.clone()),
+            );
+        }
+
         let response_hooks = progress
             .as_ref()
             .map(|progress| ResponseProgressHooks::new(ctx, progress, self.redactor.clone()));
@@ -311,6 +320,7 @@ impl HouseBot {
                     proactive,
                     record_profile_usage: !proactive,
                     max_output_tokens,
+                    cancel: Some(cancel_token),
                 },
                 response_hooks
                     .as_ref()
@@ -319,6 +329,22 @@ impl HouseBot {
                     }),
             )
             .await;
+
+        // ── Cleanup: remove progress message from the cancel registry ──
+        if let Some(ref progress) = progress {
+            self.progress_messages
+                .lock()
+                .await
+                .remove(&progress.id.get());
+            let _ = progress
+                .delete_reaction(&ctx.http, Some(msg.author.id), '❌')
+                .await;
+        }
+
+        // If the user cancelled this request, stop here — no final message.
+        if result.cancelled {
+            return;
+        }
 
         {
             let mut convos = self.conversations.lock().await;
