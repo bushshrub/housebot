@@ -559,31 +559,16 @@ impl EventHandler for HouseBot {
             return;
         }
 
-        // ── Emoji echo: when a user reacts to a bot reply, copy the reaction
-        //    back to the user's original message.
-        //
-        //    We do this *before* the tool-ban check so that the message-fetch
-        //    is shared: the tool-ban path returns early on non-proposal
-        //    messages, which is *after* our echo has already fired.
-        if let Ok(message) = reaction
-            .channel_id
-            .message(&ctx.http, reaction.message_id)
-            .await
-        {
-            if message.author.id.get() == bot_id {
-                if let Some(ref referenced) = message.referenced_message {
-                    let _ = referenced.react(&ctx.http, reaction.emoji.clone()).await;
-                }
-            }
-        }
-
         // ── Cancel reaction: ❌ on a progress message ────────────────────
         if let serenity::all::ReactionType::Unicode(e) = &reaction.emoji {
             if e == "❌" {
-                let progress = self.progress_messages.lock().await;
-                if let Some((owner_id, cancel_token)) =
-                    progress.get(&reaction.message_id.get()).cloned()
-                {
+                let progress = self
+                    .progress_messages
+                    .lock()
+                    .await
+                    .get(&reaction.message_id.get())
+                    .cloned();
+                if let Some((owner_id, cancel_token)) = progress {
                     if owner_id == user_id {
                         cancel_token.cancel();
                         let _ = reaction
@@ -603,9 +588,26 @@ impl EventHandler for HouseBot {
                                 '❌',
                             )
                             .await;
-                        drop(progress);
                         return;
                     }
+                }
+            }
+        }
+
+        // ── Emoji echo: when a user reacts to a bot reply, copy the reaction
+        //    back to the user's original message.
+        //
+        //    We do this *before* the tool-ban check so that the message-fetch
+        //    is shared: the tool-ban path returns early on non-proposal
+        //    messages, which is *after* our echo has already fired.
+        if let Ok(message) = reaction
+            .channel_id
+            .message(&ctx.http, reaction.message_id)
+            .await
+        {
+            if message.author.id.get() == bot_id {
+                if let Some(ref referenced) = message.referenced_message {
+                    let _ = referenced.react(&ctx.http, reaction.emoji.clone()).await;
                 }
             }
         }

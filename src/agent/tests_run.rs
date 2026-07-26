@@ -1,9 +1,12 @@
 use super::*;
+use crate::llm::ChatCompletion;
 use crate::testing::MockChatClient;
 use crate::tools::sandbox::LazySandbox;
 use housebot_sandbox::SandboxClient;
 use serde_json::json;
+use std::sync::atomic::{AtomicBool, Ordering};
 use tempfile::TempDir;
+use tokio::sync::Notify;
 
 fn test_agent(client: Arc<dyn ChatClient>) -> (TempDir, Agent) {
     let tmp = TempDir::new().unwrap();
@@ -27,6 +30,50 @@ struct StreamLifecycleHooks {
     events: std::sync::Mutex<Vec<&'static str>>,
 }
 
+struct BlockingChatClient {
+    started: Arc<Notify>,
+    stream_dropped: Arc<AtomicBool>,
+}
+
+struct StreamDropGuard(Arc<AtomicBool>);
+
+impl Drop for StreamDropGuard {
+    fn drop(&mut self) {
+        self.0.store(true, Ordering::Release);
+    }
+}
+
+#[async_trait]
+impl ChatClient for BlockingChatClient {
+    async fn context_window_tokens(&self) -> anyhow::Result<Option<u64>> {
+        Ok(Some(10_000))
+    }
+
+    async fn chat_stream(
+        &self,
+        _model: &str,
+        _messages: &[Value],
+        _tools: &[Value],
+        _tool_choice: Option<Value>,
+        _thinking: ThinkingMode,
+        _max_completion_tokens: Option<u32>,
+        _sink: Option<&dyn TextSink>,
+    ) -> anyhow::Result<ChatCompletion> {
+        let _guard = StreamDropGuard(Arc::clone(&self.stream_dropped));
+        self.started.notify_one();
+        std::future::pending().await
+    }
+
+    async fn chat_once(
+        &self,
+        _model: &str,
+        _messages: &[Value],
+        _max_tokens: u32,
+    ) -> anyhow::Result<ChatCompletion> {
+        unreachable!("cancellation test only exercises streaming")
+    }
+}
+
 #[async_trait]
 impl AgentHooks for StreamLifecycleHooks {
     async fn on_text_stream(&self, _partial: &str) {
@@ -36,6 +83,41 @@ impl AgentHooks for StreamLifecycleHooks {
     async fn on_text_stream_end(&self) {
         self.events.lock().unwrap().push("end");
     }
+}
+
+#[tokio::test]
+async fn cancellation_drops_the_active_llm_stream() {
+    let started = Arc::new(Notify::new());
+    let stream_dropped = Arc::new(AtomicBool::new(false));
+    let client = Arc::new(BlockingChatClient {
+        started: Arc::clone(&started),
+        stream_dropped: Arc::clone(&stream_dropped),
+    });
+    let (_tmp, agent) = test_agent(client);
+    let cancel = CancelToken::default();
+    let run_cancel = cancel.clone();
+
+    let run = tokio::spawn(async move {
+        let mut request = AgentRequest::text("u1", "Alice", "hi");
+        request.cancel = Some(run_cancel);
+        let result = agent.run(request, &NoHooks).await;
+        (result, agent)
+    });
+
+    started.notified().await;
+    cancel.cancel();
+    let (result, agent) = tokio::time::timeout(std::time::Duration::from_secs(1), run)
+        .await
+        .expect("agent run did not stop promptly")
+        .expect("agent task panicked");
+
+    assert!(result.cancelled);
+    assert!(result.text.is_empty());
+    assert!(
+        stream_dropped.load(Ordering::Acquire),
+        "the in-flight chat_stream future kept running"
+    );
+    assert_eq!(agent.llm_queue_info().active, 0);
 }
 
 #[tokio::test]

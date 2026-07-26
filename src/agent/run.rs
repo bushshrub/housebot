@@ -130,22 +130,31 @@ impl Agent {
             // the model responds with only tool calls (no text deltas).
             hooks.on_text_stream("").await;
             let text_sink = TextStreamAdapter(hooks);
-            let completion_result = self
-                .client
-                .chat_stream(
-                    &self.model,
-                    &messages,
-                    &tools,
-                    None,
-                    thinking,
-                    max_output_tokens,
-                    Some(&text_sink),
-                )
-                .await;
+            let completion = self.client.chat_stream(
+                &self.model,
+                &messages,
+                &tools,
+                None,
+                thinking,
+                max_output_tokens,
+                Some(&text_sink),
+            );
+            let completion_result = if let Some(cancel) = cancel.as_ref() {
+                tokio::select! {
+                    _ = cancel.cancelled() => None,
+                    result = completion => Some(result),
+                }
+            } else {
+                Some(completion.await)
+            };
             hooks.on_text_stream_end().await;
 
-            // Check again after the LLM stream finishes — the user may have
-            // cancelled while we were waiting for tokens.
+            let Some(completion_result) = completion_result else {
+                cancelled = true;
+                break String::new();
+            };
+
+            // Catch cancellation that raced with a completed stream.
             if cancel.as_ref().is_some_and(|t| t.is_cancelled()) {
                 cancelled = true;
                 break String::new();
