@@ -183,9 +183,9 @@ impl Agent {
             }),
             json!({"role": "user", "content": prompt}),
         ];
-        let completion = self
-            .queued_client
-            .chat_stream(
+        let completion = tokio::time::timeout(
+            std::time::Duration::from_secs(30),
+            self.queued_client.chat_stream(
                 &self.model,
                 &messages,
                 &[verdict_tool],
@@ -193,8 +193,15 @@ impl Agent {
                 ThinkingMode::Low,
                 None,
                 None,
-            )
-            .await;
+            ),
+        )
+        .await;
+        let Ok(completion) = completion else {
+            return LuaAnalysis {
+                allowed: false,
+                reason: "the safety review could not be completed".to_string(),
+            };
+        };
         let Ok(completion) = completion else {
             return LuaAnalysis {
                 allowed: false,

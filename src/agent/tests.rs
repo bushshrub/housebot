@@ -7,7 +7,10 @@ use std::collections::BTreeSet;
 #[test]
 fn emoji_selection_accepts_only_an_emoji_or_none() {
     assert_eq!(parse_emoji_selection("👍"), Some("👍".into()));
+    assert_eq!(parse_emoji_selection("👍🏽"), Some("👍🏽".into()));
+    assert_eq!(parse_emoji_selection("🇨🇦"), Some("🇨🇦".into()));
     assert_eq!(parse_emoji_selection("❤️"), Some("❤️".into()));
+    assert_eq!(parse_emoji_selection("👍👍"), None);
     assert_eq!(parse_emoji_selection("NONE"), None);
     assert_eq!(parse_emoji_selection("👍 sounds good"), None);
     assert_eq!(parse_emoji_selection("sure"), None);
