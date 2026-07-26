@@ -54,7 +54,9 @@ jobs:
           key: discord-integration
 
       - name: Build Housebot and test driver
-        run: cargo build --locked --package housebot --bin housebot --package discord-integration-tests
+        run: |
+          cargo build --locked --package housebot --bin housebot
+          cargo build --locked --package discord-integration-tests
 
       - name: Run Discord integration suite
         run: bash .github/scripts/run-discord-integration.sh
