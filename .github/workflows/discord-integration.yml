@@ -1,0 +1,69 @@
+name: Discord integration tests
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [master]
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+
+concurrency:
+  group: discord-integration
+  cancel-in-progress: false
+
+jobs:
+  integration:
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    environment: discord-integration
+    timeout-minutes: 15
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_DB: housebot_test
+          POSTGRES_USER: housebot
+          POSTGRES_PASSWORD: housebot
+        options: >-
+          --health-cmd "pg_isready -U housebot -d housebot_test"
+          --health-interval 2s
+          --health-timeout 5s
+          --health-retries 15
+        ports:
+          - 5432:5432
+    env:
+      DATABASE_URL: postgres://housebot:housebot@127.0.0.1:5432/housebot_test
+      DATA_DIR: ${{ github.workspace }}/integration-data
+      DISCORD_BOT_TOKEN: ${{ secrets.INTEGRATION_TEST_DISCORD_TOKEN }}
+      INTEGRATION_TEST_DISCORD_TOKEN: ${{ secrets.INTEGRATION_TEST_DISCORD_TOKEN }}
+      INTEGRATION_TEST_DRIVER_DISCORD_TOKEN: ${{ secrets.INTEGRATION_TEST_DRIVER_DISCORD_TOKEN }}
+      INTEGRATION_TEST_CHANNEL_ID: ${{ vars.INTEGRATION_TEST_CHANNEL_ID }}
+      LLM_BASE_URL: http://127.0.0.1:18080/v1
+      LLM_MODEL: housebot-integration-test
+      E2E_FAKE_SECRET: housebot-e2e-secret-redacted
+      RUST_LOG: info
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: discord-integration
+
+      - name: Build Housebot and test driver
+        run: cargo build --locked --package housebot --bin housebot --package discord-integration-tests
+
+      - name: Run Discord integration suite
+        run: bash .github/scripts/run-discord-integration.sh
+
+      - name: Upload integration logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: discord-integration-logs-${{ github.run_id }}-${{ github.run_attempt }}
+          path: integration-logs/
+          if-no-files-found: warn
+          retention-days: 14

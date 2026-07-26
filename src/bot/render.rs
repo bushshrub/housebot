@@ -11,6 +11,18 @@ pub(crate) fn split_command(content: &str) -> (String, String) {
     }
 }
 
+pub(crate) fn legacy_slash_command(content: &str) -> Option<&str> {
+    content
+        .strip_prefix("!/")
+        .and_then(|rest| rest.split_whitespace().next())
+        .filter(|command| {
+            !command.is_empty()
+                && command
+                    .chars()
+                    .all(|character| character.is_ascii_lowercase() || character == '-')
+        })
+}
+
 fn build_allowed_mentions(allowed_pings: &[u64]) -> CreateAllowedMentions {
     let mut mentions = CreateAllowedMentions::new();
     if !allowed_pings.is_empty() {

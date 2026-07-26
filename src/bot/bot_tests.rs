@@ -1,6 +1,17 @@
 //! Unit tests for `bot` (split out to keep the module under 600 lines).
 
 use super::*;
+
+#[test]
+fn legacy_slash_adapter_parses_command_before_mention() {
+    assert_eq!(legacy_slash_command("!/stats <@123>"), Some("stats"));
+    assert_eq!(
+        legacy_slash_command("!/server-config channel list <@123>"),
+        Some("server-config")
+    );
+    assert_eq!(legacy_slash_command("hello"), None);
+    assert_eq!(legacy_slash_command("!/Stats"), None);
+}
 use crate::profile::{ProfileTag, UserProfile};
 use serde_json::json;
 use tempfile::TempDir;
