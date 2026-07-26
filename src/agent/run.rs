@@ -10,6 +10,7 @@ impl Agent {
         let AgentRequest {
             user_id,
             username,
+            assistant_name,
             text,
             media,
             personality,
@@ -74,7 +75,12 @@ impl Agent {
         let now = Local::now().format("%Y-%m-%d %H:%M").to_string();
         let system = json!({
             "role": "system",
-            "content": build_system_prompt_with_profile(
+            "content": format!(
+                "## Discord identity\n\
+                 Your Discord username is {assistant_name}. References to \
+                 \"{assistant_name}\" in messages refer to you, the assistant, never to a third \
+                 party. The current user is the message author and is not you.\n\n{}",
+                build_system_prompt_with_profile(
                 username,
                 user_id,
                 display_name,
@@ -88,6 +94,7 @@ impl Agent {
                 quick_actions,
                 &now,
                 text,
+                ),
             ),
         });
         let mut messages: Vec<Value> = Vec::with_capacity(past.len() + 2);

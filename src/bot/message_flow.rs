@@ -299,12 +299,14 @@ impl HouseBot {
             .map(|(name, count)| format!("{name} ({count})"))
             .collect::<Vec<_>>()
             .join(", ");
+        let assistant_name = ctx.cache.current_user().name.clone();
         let result: AgentResult = self
             .agent
             .run(
                 AgentRequest {
                     user_id: &user_id_string,
                     username: &msg.author.name,
+                    assistant_name: &assistant_name,
                     text: &user_text,
                     media: &media,
                     personality: personality.as_deref(),

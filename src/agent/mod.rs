@@ -81,6 +81,8 @@ impl CancelToken {
 pub struct AgentRequest<'a> {
     pub user_id: &'a str,
     pub username: &'a str,
+    /// This bot's Discord username, used to keep speaker identity explicit.
+    pub assistant_name: &'a str,
     pub text: &'a str,
     pub media: &'a [MediaData],
     /// Optional personality/tone override injected into the system prompt.
@@ -115,6 +117,7 @@ impl<'a> AgentRequest<'a> {
         Self {
             user_id,
             username,
+            assistant_name: "housebot",
             text,
             media: &[],
             personality: None,

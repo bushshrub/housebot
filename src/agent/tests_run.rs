@@ -132,6 +132,24 @@ async fn run_returns_plain_text_completion() {
 }
 
 #[tokio::test]
+async fn run_makes_discord_assistant_identity_explicit() {
+    let client = Arc::new(MockChatClient::new());
+    client.push_text("hello there");
+    let chat_client: Arc<dyn ChatClient> = client.clone();
+    let (_t, agent) = test_agent(chat_client);
+    let mut request = AgentRequest::text("u1", "Oscar's Assistant", "hello slopbot");
+    request.assistant_name = "slopbot";
+
+    agent.run(request, &NoHooks).await;
+
+    let calls = client.stream_calls.lock().unwrap();
+    let system = calls[0][0]["content"].as_str().unwrap();
+    assert!(system.contains("Your Discord username is slopbot."));
+    assert!(system.contains("\"slopbot\" in messages refer to you"));
+    assert!(system.contains("Current user: Oscar's Assistant"));
+}
+
+#[tokio::test]
 async fn run_marks_text_stream_end_after_generation() {
     let client = Arc::new(MockChatClient::new());
     client.push_text("hello there");
