@@ -54,7 +54,7 @@ impl<'a> Suite<'a> {
         self.reply_followup(&basic_response).await?;
         self.rapid_correlated_responses().await?;
         self.unified_command_adapters().await?;
-        self.unsupported_command_adapter().await?;
+        self.repeated_unified_command().await?;
         self.long_response().await?;
         self.secret_redaction().await?;
         Ok(())
@@ -160,18 +160,14 @@ impl<'a> Suite<'a> {
         Ok(())
     }
 
-    async fn unsupported_command_adapter(&mut self) -> anyhow::Result<()> {
-        self.case_start("legacy-slash-unsupported").await?;
+    async fn repeated_unified_command(&mut self) -> anyhow::Result<()> {
+        self.case_start("legacy-slash-stats-repeat").await?;
         let sent = self
-            .send(format!("!/privacy <@{}>", self.housebot_id.get()))
+            .send(format!("!/stats <@{}>", self.housebot_id.get()))
             .await?;
-        self.wait_for_reply(
-            sent.id,
-            "Legacy adapter for `/privacy` is not available",
-            RESPONSE_TIMEOUT,
-        )
-        .await?;
-        self.case_pass("legacy-slash-unsupported").await
+        self.wait_for_reply(sent.id, "**Stats for", RESPONSE_TIMEOUT)
+            .await?;
+        self.case_pass("legacy-slash-stats-repeat").await
     }
 
     async fn long_response(&mut self) -> anyhow::Result<()> {
