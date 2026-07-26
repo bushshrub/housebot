@@ -67,12 +67,7 @@ impl Agent {
             .current_conversation_id(user_id, display_name, channel_id)
             .await;
 
-        let mut enabled_skills = self
-            .user_config
-            .load(user_id.parse().unwrap_or(0))
-            .await
-            .enabled_skills;
-        enabled_skills.push(housebot_skills::SKILL_CREATOR_NAME.to_string());
+        let enabled_skills = self.enabled_skills_for(user_id).await;
         let mut all_skills = self.skills.load_all().await;
         all_skills.retain(|name, _| enabled_skills.iter().any(|n| n == name));
         let now = Local::now().format("%Y-%m-%d %H:%M").to_string();

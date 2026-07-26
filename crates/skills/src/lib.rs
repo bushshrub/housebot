@@ -254,40 +254,47 @@ impl Skills {
         }
     }
 
-    /// Load every defined skill, keyed by name (cached after first load).
-    /// Automatically migrates any legacy `prompt`-based skills.
-    pub async fn load_all(&self) -> BTreeMap<String, Skill> {
+    async fn load_from_disk(&self) -> std::io::Result<BTreeMap<String, Skill>> {
         {
             let cache = self.cache.lock().await;
             if let Some(skills) = &*cache {
-                return skills.clone();
+                return Ok(skills.clone());
             }
         }
-        let raw = tokio::fs::read_to_string(&self.path)
-            .await
-            .unwrap_or_default();
+        let raw = match tokio::fs::read_to_string(&self.path).await {
+            Ok(raw) => raw,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => String::new(),
+            Err(error) => return Err(error),
+        };
         let mut skills: BTreeMap<String, Skill> = if raw.trim().is_empty() {
             BTreeMap::new()
         } else {
-            match serde_json::from_str(&raw) {
-                Ok(s) => s,
-                Err(e) => {
-                    tracing::error!(
-                        target: "housebot::skills",
-                        error = %e,
-                        path = %self.path.display(),
-                        "Failed to parse skills file — returning empty store without caching"
-                    );
-                    return builtin_skills();
-                }
-            }
+            serde_json::from_str(&raw)
+                .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))?
         };
         for skill in skills.values_mut() {
             skill.migrate_from_prompt();
         }
         skills.insert(SKILL_CREATOR_NAME.to_string(), builtin_skill_creator());
         *self.cache.lock().await = Some(skills.clone());
-        skills
+        Ok(skills)
+    }
+
+    /// Load every defined skill, keyed by name (cached after first load).
+    /// Automatically migrates any legacy `prompt`-based skills.
+    pub async fn load_all(&self) -> BTreeMap<String, Skill> {
+        match self.load_from_disk().await {
+            Ok(skills) => skills,
+            Err(error) => {
+                tracing::error!(
+                    target: "housebot::skills",
+                    %error,
+                    path = %self.path.display(),
+                    "Failed to load skills file — returning built-ins without caching"
+                );
+                builtin_skills()
+            }
+        }
     }
 
     async fn write_all(&self, skills: &BTreeMap<String, Skill>) -> std::io::Result<()> {
@@ -316,7 +323,7 @@ impl Skills {
                 "built-in skills cannot be overwritten",
             ));
         }
-        let mut all = self.load_all().await;
+        let mut all = self.load_from_disk().await?;
         all.insert(skill.name.clone(), skill);
         self.write_all(&all).await?;
         *self.cache.lock().await = Some(all);
@@ -331,7 +338,7 @@ impl Skills {
                 "built-in skills cannot be deleted",
             ));
         }
-        let mut all = self.load_all().await;
+        let mut all = self.load_from_disk().await?;
         if all.remove(name).is_none() {
             return Ok(false);
         }
@@ -382,6 +389,23 @@ mod tests {
         let persisted = tokio::fs::read_to_string(path).await.unwrap();
         assert!(persisted.contains("\"custom\""));
         assert!(!persisted.contains(SKILL_CREATOR_NAME));
+    }
+
+    #[tokio::test]
+    async fn corrupt_store_is_not_overwritten() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("skills.json");
+        tokio::fs::write(&path, "{not json").await.unwrap();
+        let skills = Skills::new(&path);
+
+        assert!(skills.load_all().await.contains_key(SKILL_CREATOR_NAME));
+        let mut custom = builtin_skill_creator();
+        custom.name = "custom".to_string();
+        assert_eq!(
+            skills.save(custom).await.unwrap_err().kind(),
+            std::io::ErrorKind::InvalidData
+        );
+        assert_eq!(tokio::fs::read_to_string(path).await.unwrap(), "{not json");
     }
     use tempfile::TempDir;
 

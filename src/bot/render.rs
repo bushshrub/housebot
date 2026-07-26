@@ -20,7 +20,7 @@ fn build_allowed_mentions(allowed_pings: &[u64]) -> CreateAllowedMentions {
 }
 
 /// Send the final response message. Returns the MessageId of the primary
-/// reply message when one was sent, so callers can attach emoji reactions.
+/// reply message when one was sent.
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn send_final_message(
     ctx: &Context,

@@ -405,10 +405,12 @@ impl Agent {
             json!({"role": "user", "content": prompt}),
         ];
         let start = std::time::Instant::now();
-        let result = self
-            .queued_client
-            .chat_once(&self.model, &messages, 128)
-            .await;
+        let result = tokio::time::timeout(
+            std::time::Duration::from_secs(15),
+            self.queued_client.chat_once(&self.model, &messages, 128),
+        )
+        .await
+        .unwrap_or_else(|_| Err(anyhow::anyhow!("emoji selection timed out")));
         match result {
             Ok(completion) => {
                 let elapsed = start.elapsed();
@@ -452,6 +454,14 @@ fn is_emoji(c: char) -> bool {
     )
 }
 
+fn is_emoji_modifier(c: char) -> bool {
+    matches!(c as u32, 0x1F3FB..=0x1F3FF)
+}
+
+fn is_regional_indicator(c: char) -> bool {
+    matches!(c as u32, 0x1F1E6..=0x1F1FF)
+}
+
 fn parse_emoji_selection(value: &str) -> Option<String> {
     let value = value.trim();
     if value.eq_ignore_ascii_case("none") || value.is_empty() {
@@ -459,7 +469,25 @@ fn parse_emoji_selection(value: &str) -> Option<String> {
     }
     let mut chars = value.chars();
     let first = chars.next()?;
-    if !is_emoji(first) || chars.any(|c| !is_emoji(c) && c != '\u{200D}' && c != '\u{FE0F}') {
+    if !is_emoji(first) {
+        return None;
+    }
+    let mut after_joiner = false;
+    let mut regional_pair = false;
+    for c in chars {
+        if c == '\u{200D}' {
+            after_joiner = true;
+        } else if c == '\u{FE0F}' || is_emoji_modifier(c) {
+            continue;
+        } else if is_regional_indicator(first) && is_regional_indicator(c) && !regional_pair {
+            regional_pair = true;
+        } else if !is_emoji(c) || !after_joiner {
+            return None;
+        } else {
+            after_joiner = false;
+        }
+    }
+    if after_joiner {
         return None;
     }
     Some(value.to_string())

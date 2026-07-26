@@ -133,21 +133,6 @@ impl HouseBot {
             }
         }
 
-        if emoji_only_allowed && !message_has_attachments(msg) {
-            if let Some(emoji) = self.agent.select_emoji(&text).await {
-                let reaction = serenity::all::ReactionType::Unicode(emoji);
-                if let Err(error) = msg.react(&ctx.http, reaction).await {
-                    tracing::warn!(
-                        target: "housebot::emoji",
-                        message_id = msg.id.get(),
-                        %error,
-                        "Failed to send emoji-only response"
-                    );
-                }
-                return;
-            }
-        }
-
         let referenced_text = {
             if let Some(referenced) = msg.referenced_message.as_deref() {
                 referenced_message_context(referenced)
@@ -178,6 +163,20 @@ impl HouseBot {
             Some(referenced) => format!("{text}\n\n{referenced}"),
             None => text,
         };
+        if emoji_only_allowed && !message_has_attachments(msg) {
+            if let Some(emoji) = self.agent.select_emoji(&text).await {
+                let reaction = serenity::all::ReactionType::Unicode(emoji);
+                match msg.react(&ctx.http, reaction).await {
+                    Ok(_) => return,
+                    Err(error) => tracing::warn!(
+                        target: "housebot::emoji",
+                        message_id = msg.id.get(),
+                        %error,
+                        "Failed to send emoji-only response"
+                    ),
+                }
+            }
+        }
         if text.is_empty() && !message_has_attachments(msg) {
             return;
         }

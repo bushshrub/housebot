@@ -346,6 +346,8 @@ impl Agent {
                     ToolOutcome::Text(format!(
                         "Error: Skill '{name}' not found in the marketplace."
                     ))
+                } else if name == housebot_skills::SKILL_CREATOR_NAME {
+                    ToolOutcome::Text(format!("Skill '{name}' is built in and always enabled."))
                 } else if self.enable_skill_for_user(user_id, &name).await {
                     ToolOutcome::Text(format!(
                         "✅ Skill '{name}' enabled. You can now load it with use_skill."
@@ -356,7 +358,9 @@ impl Agent {
             }
             "disable_skill" => {
                 let name = str_arg(args, "name").to_lowercase();
-                if self.disable_skill_for_user(user_id, &name).await {
+                if name == housebot_skills::SKILL_CREATOR_NAME {
+                    ToolOutcome::Text(format!("Skill '{name}' is built in and always enabled."))
+                } else if self.disable_skill_for_user(user_id, &name).await {
                     ToolOutcome::Text(format!("✅ Skill '{name}' disabled."))
                 } else {
                     ToolOutcome::Text(format!("Skill '{name}' was not enabled."))
@@ -787,7 +791,12 @@ impl Agent {
             .load(user_id.parse().unwrap_or(0))
             .await
             .enabled_skills;
-        enabled.push(housebot_skills::SKILL_CREATOR_NAME.to_string());
+        if !enabled
+            .iter()
+            .any(|name| name == housebot_skills::SKILL_CREATOR_NAME)
+        {
+            enabled.push(housebot_skills::SKILL_CREATOR_NAME.to_string());
+        }
         enabled
     }
 
