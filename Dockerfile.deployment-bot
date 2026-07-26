@@ -19,6 +19,7 @@ COPY crates/config/Cargo.toml crates/config/Cargo.toml
 COPY crates/database/Cargo.toml crates/database/Cargo.toml
 COPY crates/deployment-bot/Cargo.toml crates/deployment-bot/Cargo.toml
 COPY crates/discord-bridge/Cargo.toml crates/discord-bridge/Cargo.toml
+COPY crates/discord-integration-tests/Cargo.toml crates/discord-integration-tests/Cargo.toml
 COPY crates/github-issues/Cargo.toml crates/github-issues/Cargo.toml
 COPY crates/graph-render/Cargo.toml crates/graph-render/Cargo.toml
 COPY crates/grocery/Cargo.toml crates/grocery/Cargo.toml
@@ -44,8 +45,10 @@ COPY crates/tools/Cargo.toml crates/tools/Cargo.toml
 RUN for manifest in crates/*/Cargo.toml; do \
         dir="$(dirname "$manifest")"; \
         mkdir -p "$dir/src"; \
-        [ "$dir" = "crates/deployment-bot" ] && echo "fn main() {}" > "$dir/src/main.rs" \
-            || echo "" > "$dir/src/lib.rs"; \
+        case "$dir" in \
+            crates/deployment-bot|crates/discord-integration-tests) echo "fn main() {}" > "$dir/src/main.rs" ;; \
+            *) echo "" > "$dir/src/lib.rs" ;; \
+        esac; \
     done
 RUN --mount=type=cache,id=deployment-bot-cargo-registry,target=/usr/local/cargo/registry \
     --mount=type=cache,id=deployment-bot-cargo-git,target=/usr/local/cargo/git \
