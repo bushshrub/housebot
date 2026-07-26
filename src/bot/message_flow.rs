@@ -331,18 +331,23 @@ impl HouseBot {
             .await;
 
         // ── Cleanup: remove progress message from the cancel registry ──
-        if let Some(ref progress) = progress {
-            self.progress_messages
+        let cancelled = if let Some(ref progress) = progress {
+            let token_cancelled = self
+                .progress_messages
                 .lock()
                 .await
-                .remove(&progress.id.get());
+                .remove(&progress.id.get())
+                .is_some_and(|(_, token)| token.is_cancelled());
             let _ = progress
                 .delete_reaction(&ctx.http, Some(msg.author.id), '❌')
                 .await;
-        }
+            result.cancelled || token_cancelled
+        } else {
+            result.cancelled
+        };
 
         // If the user cancelled this request, stop here — no final message.
-        if result.cancelled {
+        if cancelled {
             return;
         }
 

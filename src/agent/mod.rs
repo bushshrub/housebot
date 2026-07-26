@@ -8,6 +8,7 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use chrono::{Local, Utc};
 use serde_json::{json, Value};
+use tokio::sync::Notify;
 
 use crate::bot_config::{AccessControl, AccessControlStore, UserConfigStore};
 use crate::channel_log::ChannelLog;
@@ -45,16 +46,33 @@ pub struct MediaData {
 
 /// A one-shot cancellation flag for an active agent run.  When the flag is
 /// triggered the agent loop stops as soon as possible.
+#[derive(Debug, Default)]
+struct CancelState {
+    cancelled: AtomicBool,
+    notify: Notify,
+}
+
 #[derive(Debug, Clone, Default)]
-pub struct CancelToken(Arc<AtomicBool>);
+pub struct CancelToken(Arc<CancelState>);
 
 impl CancelToken {
     pub(crate) fn cancel(&self) {
-        self.0.store(true, Ordering::Release);
+        self.0.cancelled.store(true, Ordering::Release);
+        self.0.notify.notify_waiters();
     }
 
     pub(crate) fn is_cancelled(&self) -> bool {
-        self.0.load(Ordering::Acquire)
+        self.0.cancelled.load(Ordering::Acquire)
+    }
+
+    pub(crate) async fn cancelled(&self) {
+        loop {
+            let notified = self.0.notify.notified();
+            if self.is_cancelled() {
+                return;
+            }
+            notified.await;
+        }
     }
 }
 
@@ -86,8 +104,8 @@ pub struct AgentRequest<'a> {
     pub record_profile_usage: bool,
     /// Per-user cap on completion output tokens, set by the bot's configurers.
     pub max_output_tokens: Option<u32>,
-    /// Optional cancellation token.  When the token is triggered the agent
-    /// loop stops as soon as possible — typically within one LLM round-trip.
+    /// Optional cancellation token. When triggered, the active LLM stream is
+    /// dropped and the agent loop stops without producing a response.
     pub cancel: Option<CancelToken>,
 }
 
