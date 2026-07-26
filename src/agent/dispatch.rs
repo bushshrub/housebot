@@ -564,73 +564,64 @@ impl Agent {
                 }
                 ToolOutcome::Text(self.handle_configure_bot(args, access).await)
             }
-            // ── Sandbox tools (owner-only; enforced at the tool-definition
-            //    layer, but re-checked here as a defence-in-depth measure) ──
-            name if name.starts_with("sandbox_") => {
-                let is_owner = user_id.parse::<u64>().unwrap_or(0) == config::owner_id();
-                if !is_owner {
-                    return ToolOutcome::Text(
-                        "Error: permission denied — sandbox tools are owner-only.".into(),
-                    );
-                }
-                match name {
-                    "sandbox_clone_repository" => ToolOutcome::Text(
-                        sandbox
-                            .clone_repository(
-                                str_arg(args, "url"),
-                                args.get("branch").and_then(Value::as_str),
-                            )
-                            .await
-                            .unwrap_or_else(|e| format!("Error: {e}")),
-                    ),
-                    "sandbox_list_files" => ToolOutcome::Text(
-                        sandbox
-                            .list_files(
-                                str_arg(args, "path"),
-                                args.get("max_depth")
-                                    .and_then(Value::as_u64)
-                                    .map(|d| d as u32),
-                            )
-                            .await
-                            .unwrap_or_else(|e| format!("Error: {e}")),
-                    ),
-                    "sandbox_search_code" => ToolOutcome::Text(
-                        sandbox
-                            .search_code(
-                                str_arg(args, "query"),
-                                args.get("path").and_then(Value::as_str),
-                                args.get("glob").and_then(Value::as_str),
-                            )
-                            .await
-                            .unwrap_or_else(|e| format!("Error: {e}")),
-                    ),
-                    "sandbox_read_file" => ToolOutcome::Text(
-                        sandbox
-                            .read_file(
-                                str_arg(args, "path"),
-                                args.get("start_line")
-                                    .and_then(Value::as_u64)
-                                    .map(|l| l as u32),
-                                args.get("end_line")
-                                    .and_then(Value::as_u64)
-                                    .map(|l| l as u32),
-                            )
-                            .await
-                            .unwrap_or_else(|e| format!("Error: {e}")),
-                    ),
-                    "sandbox_run" => ToolOutcome::Text(
-                        sandbox
-                            .run(
-                                str_arg(args, "command"),
-                                args.get("working_dir").and_then(Value::as_str),
-                                args.get("timeout").and_then(Value::as_u64),
-                            )
-                            .await
-                            .unwrap_or_else(|e| format!("Error: {e}")),
-                    ),
-                    _ => ToolOutcome::Text(format!("Unknown tool: {name}")),
-                }
-            }
+            // ── Sandbox tools ──
+            name if name.starts_with("sandbox_") => match name {
+                "sandbox_clone_repository" => ToolOutcome::Text(
+                    sandbox
+                        .clone_repository(
+                            str_arg(args, "url"),
+                            args.get("branch").and_then(Value::as_str),
+                        )
+                        .await
+                        .unwrap_or_else(|e| format!("Error: {e}")),
+                ),
+                "sandbox_list_files" => ToolOutcome::Text(
+                    sandbox
+                        .list_files(
+                            str_arg(args, "path"),
+                            args.get("max_depth")
+                                .and_then(Value::as_u64)
+                                .map(|d| d as u32),
+                        )
+                        .await
+                        .unwrap_or_else(|e| format!("Error: {e}")),
+                ),
+                "sandbox_search_code" => ToolOutcome::Text(
+                    sandbox
+                        .search_code(
+                            str_arg(args, "query"),
+                            args.get("path").and_then(Value::as_str),
+                            args.get("glob").and_then(Value::as_str),
+                        )
+                        .await
+                        .unwrap_or_else(|e| format!("Error: {e}")),
+                ),
+                "sandbox_read_file" => ToolOutcome::Text(
+                    sandbox
+                        .read_file(
+                            str_arg(args, "path"),
+                            args.get("start_line")
+                                .and_then(Value::as_u64)
+                                .map(|l| l as u32),
+                            args.get("end_line")
+                                .and_then(Value::as_u64)
+                                .map(|l| l as u32),
+                        )
+                        .await
+                        .unwrap_or_else(|e| format!("Error: {e}")),
+                ),
+                "sandbox_run" => ToolOutcome::Text(
+                    sandbox
+                        .run(
+                            str_arg(args, "command"),
+                            args.get("working_dir").and_then(Value::as_str),
+                            args.get("timeout").and_then(Value::as_u64),
+                        )
+                        .await
+                        .unwrap_or_else(|e| format!("Error: {e}")),
+                ),
+                _ => ToolOutcome::Text(format!("Unknown tool: {name}")),
+            },
             _ if name.contains("__") => {
                 let (prefix, tool_name) = name.split_once("__").unwrap();
                 for server in self.mcp_servers.iter() {
@@ -657,6 +648,21 @@ impl Agent {
                     id => format!("<@{id}>"),
                 }
             )];
+            lines.push(format!(
+                "Proactive assistance (global): {}",
+                if access.proactive_enabled {
+                    "enabled"
+                } else {
+                    "disabled"
+                }
+            ));
+            lines.push(format!(
+                "Dev notification channel: {}",
+                access
+                    .dev_notify_channel_id
+                    .map(|id| format!("<#{id}>"))
+                    .unwrap_or_else(|| "not set".to_string())
+            ));
             if access.configurer_ids.is_empty() {
                 lines.push("Additional configurers: none".to_string());
             } else {
@@ -675,6 +681,7 @@ impl Agent {
             } else {
                 let mut policies: Vec<_> = access.user_policies.iter().collect();
                 policies.sort_unstable_by_key(|(id, _)| **id);
+                lines.push(format!("Users with policies: {}", policies.len()));
                 for (id, policy) in policies {
                     let limit = policy
                         .max_output_tokens
@@ -686,6 +693,119 @@ impl Agent {
                 }
             }
             return lines.join("\n");
+        }
+
+        if action == "set_proactive" {
+            let Some(enabled) = args.get("enabled").and_then(Value::as_bool) else {
+                return "Error: 'enabled' (true/false) is required for set_proactive.".to_string();
+            };
+            let updated = self
+                .access_control
+                .update(|access| {
+                    access.proactive_enabled = enabled;
+                })
+                .await;
+            return match updated {
+                Ok(_) => {
+                    if enabled {
+                        "Proactive assistance is now globally **enabled**.".to_string()
+                    } else {
+                        "Proactive assistance is now globally **disabled**.".to_string()
+                    }
+                }
+                Err(error) => {
+                    tracing::error!(%error, "failed to save bot access control");
+                    "Error: failed to save the bot configuration.".to_string()
+                }
+            };
+        }
+
+        if action == "set_dev_notify_channel" {
+            let channel_id = match optional_nonzero_u64_string(args, "channel_id") {
+                Ok(channel_id) => channel_id,
+                Err(error) => return error,
+            };
+            let updated = self
+                .access_control
+                .update(|access| {
+                    access.dev_notify_channel_id = channel_id;
+                })
+                .await;
+            return match updated {
+                Ok(_) => match channel_id {
+                    Some(id) => format!("Dev notification channel set to <#{id}>."),
+                    None => "Dev notification channel disabled.".to_string(),
+                },
+                Err(error) => {
+                    tracing::error!(%error, "failed to save bot access control");
+                    "Error: failed to save the bot configuration.".to_string()
+                }
+            };
+        }
+
+        if action == "set_user_limit_all" {
+            let cap = match optional_nonzero_u32(args, "max_output_tokens") {
+                Ok(cap) => cap,
+                Err(error) => return error,
+            };
+            let updated = self
+                .access_control
+                .update(|access| {
+                    let count = access.user_policies.len();
+                    for policy in access.user_policies.values_mut() {
+                        policy.max_output_tokens = cap;
+                    }
+                    count
+                })
+                .await;
+            return match updated {
+                Ok(count) => match cap {
+                    Some(cap) => {
+                        format!(
+                            "Set output token cap to {cap} for all {count} user(s) with policies."
+                        )
+                    }
+                    None => {
+                        format!("Removed output token caps for all {count} user(s) with policies.")
+                    }
+                },
+                Err(error) => {
+                    tracing::error!(%error, "failed to save bot access control");
+                    "Error: failed to save the bot configuration.".to_string()
+                }
+            };
+        }
+
+        if action == "set_user_respond_all" {
+            let Some(respond) = args.get("respond").and_then(Value::as_bool) else {
+                return "Error: 'respond' (true/false) is required for set_user_respond_all."
+                    .to_string();
+            };
+            let updated = self
+                .access_control
+                .update(|access| {
+                    let count = access.user_policies.len();
+                    for policy in access.user_policies.values_mut() {
+                        policy.respond = respond;
+                    }
+                    count
+                })
+                .await;
+            return match updated {
+                Ok(count) => {
+                    if respond {
+                        format!("The bot will now respond to all {count} user(s) with policies.")
+                    } else {
+                        format!(
+                            "The bot will no longer respond to all {count} user(s) with policies."
+                        )
+                    }
+                }
+                Err(error) => {
+                    tracing::error!(%error, "failed to save bot access control");
+                    "Error: failed to save the bot configuration.".to_string()
+                }
+            };
         }
 
         let target: u64 = str_arg(args, "user_id").parse().unwrap_or(0);
@@ -835,5 +955,67 @@ impl Agent {
             tracing::error!(%error, %uid, %name, "failed to disable skill for user");
         }
         true
+    }
+}
+
+fn optional_nonzero_u64_string(args: &Value, key: &str) -> Result<Option<u64>, String> {
+    let Some(value) = args.get(key) else {
+        return Ok(None);
+    };
+    let Some(value) = value.as_str() else {
+        return Err(format!("Error: '{key}' must be a non-zero numeric string."));
+    };
+    let parsed = value
+        .parse::<u64>()
+        .ok()
+        .filter(|parsed| *parsed > 0)
+        .ok_or_else(|| format!("Error: '{key}' must be a non-zero numeric string."))?;
+    Ok(Some(parsed))
+}
+
+fn optional_nonzero_u32(args: &Value, key: &str) -> Result<Option<u32>, String> {
+    let Some(value) = args.get(key) else {
+        return Ok(None);
+    };
+    let parsed = value
+        .as_u64()
+        .and_then(|value| u32::try_from(value).ok())
+        .filter(|value| *value > 0)
+        .ok_or_else(|| format!("Error: '{key}' must be an integer from 1 to {}.", u32::MAX))?;
+    Ok(Some(parsed))
+}
+
+#[cfg(test)]
+mod configure_bot_argument_tests {
+    use super::{optional_nonzero_u32, optional_nonzero_u64_string};
+    use serde_json::json;
+
+    #[test]
+    fn optional_values_only_clear_when_omitted() {
+        assert_eq!(
+            optional_nonzero_u64_string(&json!({}), "channel_id"),
+            Ok(None)
+        );
+        assert_eq!(
+            optional_nonzero_u32(&json!({}), "max_output_tokens"),
+            Ok(None)
+        );
+
+        for args in [
+            json!({"channel_id": null}),
+            json!({"channel_id": ""}),
+            json!({"channel_id": "0"}),
+            json!({"channel_id": 123}),
+        ] {
+            assert!(optional_nonzero_u64_string(&args, "channel_id").is_err());
+        }
+        for args in [
+            json!({"max_output_tokens": null}),
+            json!({"max_output_tokens": 0}),
+            json!({"max_output_tokens": "100"}),
+            json!({"max_output_tokens": u64::from(u32::MAX) + 1}),
+        ] {
+            assert!(optional_nonzero_u32(&args, "max_output_tokens").is_err());
+        }
     }
 }

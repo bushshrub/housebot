@@ -3,9 +3,7 @@
 //! These tools call into the `housebot-sandbox` crate to create and interact
 //! with disposable code-inspection containers.  They contain no Docker logic.
 //!
-//! Authorization (owner-only) is enforced in two places:
-//!   1. Tool definitions are only exposed to authorized users.
-//!   2. The dispatch arm rejects unauthorized calls again.
+//! Available to all users.
 
 use std::sync::Arc;
 

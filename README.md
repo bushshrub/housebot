@@ -12,7 +12,7 @@ A Discord-based house assistant bot powered by a local LLM (llama.cpp) with MCP 
 - **Jellyfin media server** — browse and query your media library via MCP
 - **Built-in tools** — reminders, URL summarization, translation, and GitHub feature-request filing
 - **Automated feature development** — owner-approved jobs can dispatch Codex, Claude Code, or OpenCode to open reviewable pull requests
-- **Code inspection sandbox** — owner-only tools for cloning public repos, browsing files, searching code, reading files, and running short commands inside an isolated gVisor container
+- **Code inspection sandbox** — tools for cloning public repos, browsing files, searching code, reading files, and running short commands inside an isolated gVisor container
 
 ## Quick start
 
@@ -61,7 +61,7 @@ Discord message → HouseBot::message() → Agent::run()
 
 ## Code inspection sandbox
 
-The five `sandbox_*` tools (owner-only) let the bot clone a public repository,
+The five `sandbox_*` tools let the bot clone a public repository,
 browse its files, and run short commands for diagnostic purposes.  Each agent
 response gets one disposable container; it is destroyed when the response ends.
 
