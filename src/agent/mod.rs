@@ -258,6 +258,8 @@ pub struct Agent {
     discord: Arc<DiscordBridge>,
     channel_log: ChannelLog,
     sandbox_client: housebot_sandbox::SandboxClient,
+    /// Audit trail of administrator pull-request merges.
+    merge_audit: tools::github_api::MergeAuditLog,
 }
 
 mod dispatch;
@@ -365,6 +367,7 @@ impl Agent {
             discord,
             channel_log: ChannelLog::default(),
             sandbox_client: housebot_sandbox::SandboxClient::from_env(),
+            merge_audit: tools::github_api::MergeAuditLog::default(),
         })
     }
 
@@ -609,7 +612,12 @@ impl Agent {
             discord: Arc::new(DiscordBridge::default()),
             channel_log: ChannelLog::default(),
             sandbox_client: housebot_sandbox::SandboxClient::new("/dev/null"),
+            merge_audit: tools::github_api::MergeAuditLog::default(),
         }
+    }
+
+    pub fn set_merge_audit_path(&mut self, path: impl Into<std::path::PathBuf>) {
+        self.merge_audit = tools::github_api::MergeAuditLog::new(path);
     }
 
     pub fn set_max_context_tokens(&mut self, n: usize) {

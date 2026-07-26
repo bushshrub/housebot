@@ -1,9 +1,87 @@
 //! GitHub API tool — native access to issues, workflows, and repository metadata
 //! without scraping the web UI.
 
+use std::path::PathBuf;
+
 use serde_json::{json, Value};
 
-use housebot_github_issues::GitHubIssueReporter;
+use housebot_config as config;
+use housebot_github_issues::{GitHubIssueReporter, MergeOutcome, MERGE_METHODS};
+
+/// Identity of the user on whose behalf a github_api call is made. Privileged
+/// actions (merging pull requests) are refused unless `is_admin` is set.
+pub struct ToolCaller<'a> {
+    pub user_id: &'a str,
+    pub username: &'a str,
+    pub is_admin: bool,
+}
+
+/// Append-only audit trail of pull-request merge attempts, authorized or not.
+#[derive(Clone)]
+pub struct MergeAuditLog {
+    path: PathBuf,
+}
+
+impl Default for MergeAuditLog {
+    fn default() -> Self {
+        Self::new(config::data_dir().join("pr_merge_audit.jsonl"))
+    }
+}
+
+impl MergeAuditLog {
+    pub fn new(path: impl Into<PathBuf>) -> Self {
+        Self { path: path.into() }
+    }
+
+    /// Append one merge attempt. Failures are logged but never block the merge
+    /// result from reaching the caller.
+    pub async fn record(
+        &self,
+        caller: &ToolCaller<'_>,
+        pull_number: u64,
+        authorized: bool,
+        result: &str,
+        detail: &str,
+    ) {
+        let entry = json!({
+            "timestamp": chrono::Utc::now().to_rfc3339(),
+            "admin_id": caller.user_id,
+            "admin_username": caller.username,
+            "pull_request": pull_number,
+            "authorized": authorized,
+            "result": result,
+            "detail": detail,
+        });
+        tracing::info!(
+            target: "housebot::audit",
+            admin_id = caller.user_id,
+            admin_username = caller.username,
+            pull_request = pull_number,
+            authorized,
+            result,
+            "pull request merge attempt"
+        );
+        if let Err(error) = self.append(&entry).await {
+            tracing::error!(%error, path = %self.path.display(), "failed to write merge audit record");
+        }
+    }
+
+    async fn append(&self, entry: &Value) -> std::io::Result<()> {
+        use tokio::io::AsyncWriteExt;
+
+        if let Some(parent) = self.path.parent() {
+            tokio::fs::create_dir_all(parent).await?;
+        }
+        let mut line = serde_json::to_string(entry).map_err(std::io::Error::other)?;
+        line.push('\n');
+        let mut file = tokio::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&self.path)
+            .await?;
+        file.write_all(line.as_bytes()).await
+    }
+}
 
 /// OpenAI-style tool definition.
 pub fn definition() -> Value {
@@ -14,7 +92,8 @@ pub fn definition() -> Value {
             GitHub data because the API provides accurate, structured results. Use this for listing \
             issues, searching issues, viewing issue details, closing issues, managing labels, \
             pruning issues, checking workflow run status, getting repository metadata, and \
-            viewing workflow job details.",
+            viewing workflow job details. The merge_pull_request action merges a pull request and \
+            is restricted to bot administrators; every attempt is recorded in an audit log.",
         "input_schema": {
             "type": "object",
             "properties": {
@@ -33,8 +112,19 @@ pub fn definition() -> Value {
                         "list_workflows",
                         "list_workflow_runs",
                         "get_workflow_run",
-                        "get_workflow_run_jobs"
+                        "get_workflow_run_jobs",
+                        "merge_pull_request"
                     ]
+                },
+                "pull_request_number": {
+                    "type": "integer",
+                    "description": "Pull request number to merge. Used with merge_pull_request."
+                },
+                "merge_method": {
+                    "type": "string",
+                    "description": "How to merge the pull request (merge, squash, rebase). Used with merge_pull_request.",
+                    "enum": ["merge", "squash", "rebase"],
+                    "default": "merge"
                 },
                 "state": {
                     "type": "string",
@@ -96,7 +186,12 @@ pub async fn handle_github_api(
     reporter: &GitHubIssueReporter,
     action: &str,
     args: &Value,
+    caller: &ToolCaller<'_>,
+    audit: &MergeAuditLog,
 ) -> String {
+    if action == "merge_pull_request" {
+        return merge_pull_request(reporter, args, caller, audit).await;
+    }
     if !reporter.is_configured() {
         return "Error: GitHub integration is not configured — the github_api tool requires GITHUB_APP_ID, \
             GITHUB_APP_PRIVATE_KEY, GITHUB_INSTALLATION_ID, and GITHUB_REPO to be set."
@@ -269,9 +364,107 @@ pub async fn handle_github_api(
     }
 }
 
+/// Merge a pull request on behalf of an administrator, auditing every attempt.
+async fn merge_pull_request(
+    reporter: &GitHubIssueReporter,
+    args: &Value,
+    caller: &ToolCaller<'_>,
+    audit: &MergeAuditLog,
+) -> String {
+    let pull_number = args
+        .get("pull_request_number")
+        .and_then(Value::as_u64)
+        .unwrap_or(0);
+
+    if !caller.is_admin {
+        audit
+            .record(
+                caller,
+                pull_number,
+                false,
+                "denied",
+                "caller is not a bot administrator",
+            )
+            .await;
+        return "Error: permission denied — only bot administrators can merge pull requests."
+            .to_string();
+    }
+    if pull_number == 0 {
+        return "Error: pull_request_number is required for merge_pull_request.".to_string();
+    }
+    let merge_method = args
+        .get("merge_method")
+        .and_then(Value::as_str)
+        .unwrap_or("merge");
+    if !MERGE_METHODS.contains(&merge_method) {
+        return format!(
+            "Error: merge_method must be one of {}.",
+            MERGE_METHODS.join(", ")
+        );
+    }
+
+    let outcome = reporter.merge_pull_request(pull_number, merge_method).await;
+    let response = match &outcome {
+        MergeOutcome::Merged { sha, message } => format!(
+            "Success: pull request #{pull_number} merged with `{merge_method}` (commit `{sha}`) — {message}"
+        ),
+        MergeOutcome::Conflict(detail) => format!(
+            "Conflict: pull request #{pull_number} could not be merged — {detail}. Resolve the conflict and try again."
+        ),
+        MergeOutcome::Blocked(detail) => format!(
+            "Error: GitHub refused to merge pull request #{pull_number} — {detail}. It may be a draft, or required checks or reviews are outstanding."
+        ),
+        MergeOutcome::NotPermitted(detail) => format!(
+            "Error: the bot lacks permission to merge in this repository — {detail}."
+        ),
+        MergeOutcome::NotFound(detail) => format!(
+            "Error: pull request #{pull_number} was not found in the configured repository — {detail}."
+        ),
+        MergeOutcome::Error(detail) => {
+            format!("Error: merging pull request #{pull_number} failed — {detail}")
+        }
+    };
+    audit
+        .record(caller, pull_number, true, outcome.status(), &response)
+        .await;
+    response
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tempfile::TempDir;
+
+    fn admin() -> ToolCaller<'static> {
+        ToolCaller {
+            user_id: "196556976866459648",
+            username: "derp_z",
+            is_admin: true,
+        }
+    }
+
+    fn member() -> ToolCaller<'static> {
+        ToolCaller {
+            user_id: "42",
+            username: "someone",
+            is_admin: false,
+        }
+    }
+
+    fn audit_log() -> (TempDir, MergeAuditLog) {
+        let temp = TempDir::new().unwrap();
+        let log = MergeAuditLog::new(temp.path().join("audit").join("pr_merge_audit.jsonl"));
+        (temp, log)
+    }
+
+    async fn audit_entries(temp: &TempDir) -> Vec<Value> {
+        let path = temp.path().join("audit").join("pr_merge_audit.jsonl");
+        let raw = tokio::fs::read_to_string(path).await.unwrap_or_default();
+        raw.lines()
+            .filter(|line| !line.trim().is_empty())
+            .map(|line| serde_json::from_str(line).expect("audit lines are JSON"))
+            .collect()
+    }
 
     #[test]
     fn definition_includes_new_actions() {
@@ -293,7 +486,15 @@ mod tests {
     async fn handle_github_api_returns_not_configured() {
         let reporter =
             GitHubIssueReporter::new(String::new(), String::new(), String::new(), String::new());
-        let result = handle_github_api(&reporter, "close_issue", &json!({"issue_number": 1})).await;
+        let (_temp, audit) = audit_log();
+        let result = handle_github_api(
+            &reporter,
+            "close_issue",
+            &json!({"issue_number": 1}),
+            &admin(),
+            &audit,
+        )
+        .await;
         assert!(result.contains("not configured"), "got: {result}");
     }
 
@@ -303,16 +504,20 @@ mod tests {
         let reporter =
             GitHubIssueReporter::with_direct_token("test-token".into(), "owner/repo".into());
 
-        let result = handle_github_api(&reporter, "get_issue", &json!({})).await;
+        let (_temp, audit) = audit_log();
+        let result = handle_github_api(&reporter, "get_issue", &json!({}), &admin(), &audit).await;
         assert!(result.contains("issue_number is required"), "got: {result}");
 
-        let result = handle_github_api(&reporter, "close_issue", &json!({})).await;
+        let result =
+            handle_github_api(&reporter, "close_issue", &json!({}), &admin(), &audit).await;
         assert!(result.contains("issue_number is required"), "got: {result}");
 
         let result = handle_github_api(
             &reporter,
             "add_labels",
             &json!({"issue_number": 1, "label_names": ""}),
+            &admin(),
+            &audit,
         )
         .await;
         assert!(result.contains("label_names is required"), "got: {result}");
@@ -321,6 +526,8 @@ mod tests {
             &reporter,
             "prune_issues",
             &json!({"action_value": "invalid_action"}),
+            &admin(),
+            &audit,
         )
         .await;
         assert!(
@@ -328,10 +535,134 @@ mod tests {
             "got: {result}"
         );
 
-        let result = handle_github_api(&reporter, "nonexistent", &json!({})).await;
+        let result =
+            handle_github_api(&reporter, "nonexistent", &json!({}), &admin(), &audit).await;
         assert!(
             result.contains("unknown github_api action"),
             "got: {result}"
         );
+    }
+
+    #[test]
+    fn definition_exposes_merge_pull_request() {
+        let def = definition();
+        let properties = &def["input_schema"]["properties"];
+        let actions: Vec<&str> = properties["action"]["enum"]
+            .as_array()
+            .expect("actions should be an array")
+            .iter()
+            .filter_map(|v| v.as_str())
+            .collect();
+        assert!(actions.contains(&"merge_pull_request"));
+        assert_eq!(properties["pull_request_number"]["type"], "integer");
+        let methods: Vec<&str> = properties["merge_method"]["enum"]
+            .as_array()
+            .expect("merge methods should be an array")
+            .iter()
+            .filter_map(|v| v.as_str())
+            .collect();
+        assert_eq!(methods, vec!["merge", "squash", "rebase"]);
+    }
+
+    #[tokio::test]
+    async fn merge_is_refused_for_non_administrators_and_audited() {
+        let reporter =
+            GitHubIssueReporter::with_direct_token("test-token".into(), "owner/repo".into());
+        let (temp, audit) = audit_log();
+
+        let result = handle_github_api(
+            &reporter,
+            "merge_pull_request",
+            &json!({"pull_request_number": 7}),
+            &member(),
+            &audit,
+        )
+        .await;
+
+        assert!(result.contains("permission denied"), "got: {result}");
+        let entries = audit_entries(&temp).await;
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0]["admin_id"], "42");
+        assert_eq!(entries[0]["admin_username"], "someone");
+        assert_eq!(entries[0]["pull_request"], 7);
+        assert_eq!(entries[0]["authorized"], false);
+        assert_eq!(entries[0]["result"], "denied");
+        assert!(entries[0]["timestamp"]
+            .as_str()
+            .is_some_and(|ts| ts.contains('T')));
+    }
+
+    #[tokio::test]
+    async fn merge_validates_arguments_for_administrators() {
+        let reporter =
+            GitHubIssueReporter::with_direct_token("test-token".into(), "owner/repo".into());
+        let (temp, audit) = audit_log();
+
+        let result = handle_github_api(
+            &reporter,
+            "merge_pull_request",
+            &json!({}),
+            &admin(),
+            &audit,
+        )
+        .await;
+        assert!(
+            result.contains("pull_request_number is required"),
+            "got: {result}"
+        );
+
+        let result = handle_github_api(
+            &reporter,
+            "merge_pull_request",
+            &json!({"pull_request_number": 7, "merge_method": "fast-forward"}),
+            &admin(),
+            &audit,
+        )
+        .await;
+        assert!(
+            result.contains("merge_method must be one of"),
+            "got: {result}"
+        );
+
+        // Rejected arguments never reach GitHub, so nothing is audited as an attempt.
+        assert!(audit_entries(&temp).await.is_empty());
+    }
+
+    #[tokio::test]
+    async fn merge_reports_unconfigured_github_and_audits_the_attempt() {
+        let reporter =
+            GitHubIssueReporter::new(String::new(), String::new(), String::new(), String::new());
+        let (temp, audit) = audit_log();
+
+        let result = handle_github_api(
+            &reporter,
+            "merge_pull_request",
+            &json!({"pull_request_number": 12}),
+            &admin(),
+            &audit,
+        )
+        .await;
+
+        assert!(result.starts_with("Error:"), "got: {result}");
+        assert!(result.contains("not configured"), "got: {result}");
+        let entries = audit_entries(&temp).await;
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0]["admin_id"], "196556976866459648");
+        assert_eq!(entries[0]["pull_request"], 12);
+        assert_eq!(entries[0]["authorized"], true);
+        assert_eq!(entries[0]["result"], "error");
+    }
+
+    #[tokio::test]
+    async fn audit_log_appends_successive_entries() {
+        let (temp, audit) = audit_log();
+        audit.record(&admin(), 1, true, "success", "merged").await;
+        audit
+            .record(&member(), 2, false, "denied", "not admin")
+            .await;
+        let entries = audit_entries(&temp).await;
+        assert_eq!(entries.len(), 2);
+        assert_eq!(entries[0]["pull_request"], 1);
+        assert_eq!(entries[1]["pull_request"], 2);
     }
 }

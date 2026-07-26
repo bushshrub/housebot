@@ -142,7 +142,8 @@ Discord message
        ├─ extract media attachments (base64)
        ├─ post "⚙️ Generating..." progress message
        └─ Agent::run()
-            ├─ load user memory + history (auto-summarize on overflow)
+            ├─ load user memory + history (on overflow: summarize into the new
+            │   session's history; persistent memory is never written automatically)
             ├─ build system prompt
             └─ agentic loop
                  ├─ ChatClient::chat_stream (streams partial text to the progress msg,
@@ -351,7 +352,8 @@ Its tools appear as `prefix__tool_name` automatically.
 ## Data
 
 - **History** (`data/history/<user_id>.jsonl`): one JSON message per line, trimmed to `MAX_HISTORY_TURNS` pairs.
-- **Memory** (PostgreSQL `user_memories`): per-user markdown, rewritten in full on each `update_memory`.
+- **Memory** (PostgreSQL `user_memories`): per-user markdown, rewritten in full on each `update_memory`. Only an explicit `update_memory` call writes it — compaction never does.
+- **PR merge audit** (`data/pr_merge_audit.jsonl`): one JSON record per `github_api` `merge_pull_request` attempt (admin ID/name, PR number, timestamp, authorization, result).
 - **Notes** (`data/notes/<user_id>.json`), **skills** (`data/skills.json`), **reminders** (`data/reminders.json`).
 
 `data/` and the PostgreSQL volume are mounted in docker-compose so they survive restarts.

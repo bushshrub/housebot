@@ -18,7 +18,7 @@ pub(crate) fn session_command_definition() -> CreateCommand {
         .add_option(CreateCommandOption::new(
             CommandOptionType::SubCommand,
             "compact",
-            "Summarize the conversation into memory and start fresh",
+            "Summarize the conversation and start fresh",
         ))
 }
 
