@@ -81,27 +81,34 @@ async fn handle(mut stream: TcpStream) -> anyhow::Result<()> {
 }
 
 fn deterministic_response(messages: &str) -> String {
-    if let Some(nonce) = nonce_after(messages, "E2E_LONG:") {
-        return format!(
+    let latest = [
+        ("E2E_ECHO:", "echo"),
+        ("E2E_REPLY:", "echo"),
+        ("E2E_LONG:", "long"),
+        ("E2E_SECRET:", "secret"),
+    ]
+    .into_iter()
+    .filter_map(|(prefix, kind)| {
+        let start = messages.rfind(prefix)?;
+        Some((start, kind, nonce_at(messages, start, prefix)?))
+    })
+    .max_by_key(|(start, _, _)| *start);
+    match latest {
+        Some((_, "long", nonce)) => format!(
             "E2E_LONG_BEGIN:{nonce}\n{}\nE2E_LONG_END:{nonce}",
             "integration-output ".repeat(240)
-        );
-    }
-    if let Some(nonce) = nonce_after(messages, "E2E_SECRET:") {
-        let secret = std::env::var("E2E_FAKE_SECRET")
-            .unwrap_or_else(|_| "housebot-e2e-secret-redacted".to_string());
-        return format!("E2E_SECRET_BEGIN:{nonce} {secret} E2E_SECRET_END:{nonce}");
-    }
-    for prefix in ["E2E_ECHO:", "E2E_REPLY:"] {
-        if let Some(nonce) = nonce_after(messages, prefix) {
-            return format!("E2E_OK:{nonce}");
+        ),
+        Some((_, "secret", nonce)) => {
+            let secret = std::env::var("E2E_FAKE_SECRET")
+                .unwrap_or_else(|_| "housebot-e2e-secret-redacted".to_string());
+            format!("E2E_SECRET_BEGIN:{nonce} {secret} E2E_SECRET_END:{nonce}")
         }
+        Some((_, _, nonce)) => format!("E2E_OK:{nonce}"),
+        None => "E2E_FALLBACK".to_string(),
     }
-    "E2E_FALLBACK".to_string()
 }
 
-fn nonce_after<'a>(messages: &'a str, prefix: &str) -> Option<&'a str> {
-    let start = messages.rfind(prefix)?;
+fn nonce_at<'a>(messages: &'a str, start: usize, prefix: &str) -> Option<&'a str> {
     messages[start + prefix.len()..]
         .split(|character: char| !(character.is_ascii_alphanumeric() || character == '-'))
         .next()
@@ -177,5 +184,14 @@ mod tests {
         assert!(response.len() > 4_000);
         assert!(response.starts_with("E2E_LONG_BEGIN:abc-123"));
         assert!(response.ends_with("E2E_LONG_END:abc-123"));
+    }
+
+    #[test]
+    fn latest_conversation_marker_wins() {
+        let messages = "E2E_ECHO:old-nonce context E2E_REPLY:new-nonce";
+        assert_eq!(deterministic_response(messages), "E2E_OK:new-nonce");
+
+        let messages = "E2E_LONG:old-nonce context E2E_SECRET:new-nonce";
+        assert!(deterministic_response(messages).ends_with("E2E_SECRET_END:new-nonce"));
     }
 }
