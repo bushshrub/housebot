@@ -52,7 +52,9 @@ pub async fn run() -> anyhow::Result<()> {
     let driver_token = required("INTEGRATION_TEST_DRIVER_DISCORD_TOKEN")?;
     let housebot_token = required("INTEGRATION_TEST_DISCORD_TOKEN")?;
     let database_url = required("DATABASE_URL")?;
-    let api = reqwest::Client::new();
+    let api = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(10))
+        .build()?;
 
     let driver_user = current_user(&api, &driver_token).await?;
     let housebot_user = current_user(&api, &housebot_token).await?;

@@ -17,6 +17,8 @@ jobs:
     runs-on: ubuntu-latest
     environment: discord-integration
     timeout-minutes: 15
+    permissions:
+      contents: read
     services:
       postgres:
         image: postgres:17-alpine
@@ -34,14 +36,10 @@ jobs:
     env:
       DATABASE_URL: postgres://housebot:housebot@127.0.0.1:5432/housebot_test
       DATA_DIR: ${{ github.workspace }}/integration-data
-      DISCORD_BOT_TOKEN: ${{ secrets.INTEGRATION_TEST_DISCORD_TOKEN }}
-      INTEGRATION_TEST_DISCORD_TOKEN: ${{ secrets.INTEGRATION_TEST_DISCORD_TOKEN }}
-      INTEGRATION_TEST_DRIVER_DISCORD_TOKEN: ${{ secrets.INTEGRATION_TEST_DRIVER_DISCORD_TOKEN }}
       INTEGRATION_TEST_CHANNEL_ID: ${{ vars.INTEGRATION_TEST_CHANNEL_ID }}
       DISCORD_REGISTER_COMMANDS: "false"
       LLM_BASE_URL: http://127.0.0.1:18080/v1
       LLM_MODEL: housebot-integration-test
-      E2E_FAKE_SECRET: housebot-e2e-secret-redacted
       RUST_LOG: info
     steps:
       - uses: actions/checkout@v4
@@ -63,6 +61,11 @@ jobs:
           cargo build --locked --package discord-integration-tests
 
       - name: Run Discord integration suite
+        env:
+          DISCORD_BOT_TOKEN: ${{ secrets.INTEGRATION_TEST_DISCORD_TOKEN }}
+          INTEGRATION_TEST_DISCORD_TOKEN: ${{ secrets.INTEGRATION_TEST_DISCORD_TOKEN }}
+          INTEGRATION_TEST_DRIVER_DISCORD_TOKEN: ${{ secrets.INTEGRATION_TEST_DRIVER_DISCORD_TOKEN }}
+          E2E_FAKE_SECRET: housebot-e2e-secret-redacted
         run: bash .github/scripts/run-discord-integration.sh
 
       - name: Upload integration logs
