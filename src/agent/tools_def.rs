@@ -194,30 +194,62 @@ pub(crate) fn configure_bot_tool() -> Value {
     json!({
         "name": "configure_bot",
         "description": "View or change the bot's configuration. Only available to authorized \
-            configurers (the bot owner plus users granted access). Actions: 'show' lists the \
-            configurers and per-user policies; 'allow_configurer' / 'revoke_configurer' manage \
-            who may configure the bot; 'set_user_limit' caps a user's maximum output tokens \
-            (omit max_output_tokens to remove the cap); 'set_user_respond' controls whether the \
-            bot responds to a user's messages at all.",
+            configurers (the bot owner plus users granted access).\n\n\
+            Actions:\n\
+            - 'show' — list configurers and per-user policies.\n\
+            - 'allow_configurer' — grant a user permission to configure the bot. \
+              Requires user_id.\n\
+            - 'revoke_configurer' — remove a user's configure permission. \
+              Requires user_id.\n\
+            - 'set_user_limit' — cap a user's maximum output tokens. \
+              Requires user_id. Omit max_output_tokens to remove the cap.\n\
+            - 'set_user_respond' — control whether the bot responds to a user. \
+              Requires user_id and respond (boolean).\n\
+            - 'set_proactive' — globally enable or disable proactive assistance. \
+              Requires enabled (boolean).\n\
+            - 'set_dev_notify_channel' — set the Discord channel for development \
+              completion webhooks. Requires channel_id. Omit channel_id to disable.\n\
+            - 'set_user_limit_all' — cap max_output_tokens for every user who already \
+              has a policy. Omit max_output_tokens to remove all caps.\n\
+            - 'set_user_respond_all' — set the respond flag for every user who already \
+              has a policy. Requires respond (boolean).",
         "input_schema": {
             "type": "object",
             "properties": {
                 "action": {
                     "type": "string",
-                    "enum": ["show", "allow_configurer", "revoke_configurer", "set_user_limit", "set_user_respond"],
+                    "enum": [
+                        "show",
+                        "allow_configurer",
+                        "revoke_configurer",
+                        "set_user_limit",
+                        "set_user_respond",
+                        "set_proactive",
+                        "set_dev_notify_channel",
+                        "set_user_limit_all",
+                        "set_user_respond_all"
+                    ],
                     "description": "The configuration action to perform."
                 },
                 "user_id": {
                     "type": "string",
-                    "description": "Discord user ID the action applies to (required for every action except 'show')."
+                    "description": "Discord user ID the action applies to (required for allow_configurer, revoke_configurer, set_user_limit, set_user_respond)."
                 },
                 "max_output_tokens": {
                     "type": "integer",
-                    "description": "Maximum output tokens for set_user_limit. Omit to remove the cap."
+                    "description": "Maximum output tokens for set_user_limit / set_user_limit_all. Omit to remove the cap."
                 },
                 "respond": {
                     "type": "boolean",
-                    "description": "Whether the bot responds to the user, for set_user_respond."
+                    "description": "Whether the bot responds to the user, for set_user_respond / set_user_respond_all."
+                },
+                "enabled": {
+                    "type": "boolean",
+                    "description": "Whether proactive assistance is globally enabled, for set_proactive."
+                },
+                "channel_id": {
+                    "type": "string",
+                    "description": "Discord channel ID for development webhook notifications, for set_dev_notify_channel. Omit to disable."
                 }
             },
             "required": ["action"]
