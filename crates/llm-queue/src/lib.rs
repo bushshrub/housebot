@@ -9,9 +9,11 @@ use tokio::sync::Notify;
 
 use housebot_llm::{ChatClient, ChatCompletion, TextSink, ThinkingMode};
 
-/// Normal bot conversations take priority over Lua safety checks.
+/// Emoji reactions have the lowest priority, then Lua safety checks,
+/// then normal bot conversations.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum LlmPriority {
+    EmojiReaction,
     LuaAnalysis,
     Normal,
 }
@@ -67,8 +69,9 @@ impl LlmQueueInfo {
 
 /// A shared scheduler allowing at most four LLM requests to execute at once.
 ///
-/// Requests are FIFO within a priority and normal bot requests are selected
-/// before queued Lua-analysis requests whenever a slot becomes available.
+/// Requests are FIFO within a priority. Normal bot requests are selected
+/// before Lua-analysis requests, which are selected before emoji-reaction
+/// requests, whenever a slot becomes available.
 pub struct LlmRequestQueue {
     max_parallel: usize,
     state: Mutex<QueueState>,
@@ -346,52 +349,71 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn normal_requests_jump_ahead_of_lua_analysis() {
+    async fn priority_ordering_respected() {
+        // Verifies: Normal > LuaAnalysis > EmojiReaction
         let queue = Arc::new(LlmRequestQueue::new(1));
         let first_started = Arc::new(Barrier::new(2));
         let release = Arc::new(Notify::new());
         let order = Arc::new(Mutex::new(Vec::new()));
 
-        let queue_first = Arc::clone(&queue);
-        let first_started_first = Arc::clone(&first_started);
-        let release_first = Arc::clone(&release);
+        // Slot 0: hold a Normal request.
+        let q1 = Arc::clone(&queue);
+        let s1 = Arc::clone(&first_started);
+        let r1 = Arc::clone(&release);
         let first = tokio::spawn(async move {
-            queue_first
-                .execute(LlmPriority::Normal, move || async move {
-                    first_started_first.wait().await;
-                    release_first.notified().await;
-                })
-                .await;
+            q1.execute(LlmPriority::Normal, move || async move {
+                s1.wait().await;
+                r1.notified().await;
+            })
+            .await;
         });
         first_started.wait().await;
 
-        let queue_lua = Arc::clone(&queue);
-        let order_lua = Arc::clone(&order);
+        // Enqueue LuaAnalysis (will wait).
+        let q_lua = Arc::clone(&queue);
+        let o_lua = Arc::clone(&order);
         let lua = tokio::spawn(async move {
-            queue_lua
+            q_lua
                 .execute(LlmPriority::LuaAnalysis, move || async move {
-                    order_lua.lock().unwrap().push("lua");
+                    o_lua.lock().unwrap().push("lua");
                 })
                 .await;
         });
         tokio::task::yield_now().await;
 
-        let queue_normal = Arc::clone(&queue);
-        let order_normal = Arc::clone(&order);
-        let normal = tokio::spawn(async move {
-            queue_normal
-                .execute(LlmPriority::Normal, move || async move {
-                    order_normal.lock().unwrap().push("normal");
+        // Enqueue EmojiReaction (lowest priority, will wait).
+        let q_emoji = Arc::clone(&queue);
+        let o_emoji = Arc::clone(&order);
+        let emoji = tokio::spawn(async move {
+            q_emoji
+                .execute(LlmPriority::EmojiReaction, move || async move {
+                    o_emoji.lock().unwrap().push("emoji");
                 })
                 .await;
         });
         tokio::task::yield_now().await;
+
+        // Enqueue another Normal (should jump ahead of lua and emoji).
+        let q_normal = Arc::clone(&queue);
+        let o_normal = Arc::clone(&order);
+        let normal = tokio::spawn(async move {
+            q_normal
+                .execute(LlmPriority::Normal, move || async move {
+                    o_normal.lock().unwrap().push("normal");
+                })
+                .await;
+        });
+        tokio::task::yield_now().await;
+
+        // Release the active slot — Normal should run first since it was
+        // enqueued after the holding Normal but before lua/emoji.
         release.notify_one();
 
         first.await.unwrap();
         normal.await.unwrap();
         lua.await.unwrap();
-        assert_eq!(*order.lock().unwrap(), vec!["normal", "lua"]);
+        emoji.await.unwrap();
+        assert_eq!(*order.lock().unwrap(), vec!["normal", "lua", "emoji"]);
     }
 
     #[tokio::test]
@@ -459,14 +481,15 @@ mod tests {
         let queue = Arc::new(LlmRequestQueue::new(2));
         let done = Arc::new(AtomicUsize::new(0));
         let mut tasks = Vec::new();
+        let priorities = [
+            LlmPriority::EmojiReaction,
+            LlmPriority::LuaAnalysis,
+            LlmPriority::Normal,
+        ];
         for i in 0..64 {
             let queue = Arc::clone(&queue);
             let done = Arc::clone(&done);
-            let priority = if i % 3 == 0 {
-                LlmPriority::LuaAnalysis
-            } else {
-                LlmPriority::Normal
-            };
+            let priority = priorities[i % 3];
             tasks.push(tokio::spawn(async move {
                 queue
                     .execute(priority, move || async move {
