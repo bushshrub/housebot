@@ -112,6 +112,9 @@ data/                # runtime — gitignored
 | `LLM_BASE_URL` | yes | `http://server-slop:8080/v1` | OpenAI-compatible LLM endpoint |
 | `LLM_MODEL` | yes | `gemma-4-12b-qat-q4kxl` | Model name |
 | `LLM_API_KEY` | no | `not-required` | API key (llama.cpp ignores it) |
+| `EMOJI_MODEL` | no | `gemma-4-12b-qat-q4kxl` | Cheaper/faster model for low-priority emoji-reaction selection (defaults to `LLM_MODEL`) |
+| `EMOJI_BASE_URL` | no | `http://server-slop:8080/v1` | Separate endpoint for emoji-selection model (defaults to `LLM_BASE_URL`) |
+| `EMOJI_API_KEY` | no | `not-required` | API key for the emoji endpoint (defaults to `LLM_API_KEY`) |
 | `MAX_HISTORY_TURNS` | no | `30` | Conversation turn pairs kept |
 | `MAX_CONTEXT_TOKENS` | no | `10000` | Fallback context window (tokens) when the LLM server's `/props` probe fails |
 | `CONVERSATION_IDLE_TIMEOUT` | no | `300` | Seconds a channel conversation stays "active" |

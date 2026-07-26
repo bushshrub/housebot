@@ -2,6 +2,11 @@
 
 use super::*;
 
+pub(crate) enum ResponseMode {
+    Full { proactive: bool },
+    EmojiOrFull,
+}
+
 impl HouseBot {
     pub(crate) async fn handle_token_leaderboard_command(
         &self,
@@ -64,8 +69,10 @@ impl HouseBot {
         bot_id: UserId,
         session_expired: bool,
         followup_timeout: Duration,
-        proactive: bool,
+        response_mode: ResponseMode,
     ) {
+        let proactive = matches!(response_mode, ResponseMode::Full { proactive: true });
+        let emoji_only_allowed = matches!(response_mode, ResponseMode::EmojiOrFull);
         let mut text = msg.content.clone();
         for token in [format!("<@{bot_id}>"), format!("<@!{bot_id}>")] {
             text = text.replace(&token, "");
@@ -123,6 +130,21 @@ impl HouseBot {
                     tracing::error!(%error, %guild_id, "housebot ban check failed");
                 }
                 _ => {}
+            }
+        }
+
+        if emoji_only_allowed && !message_has_attachments(msg) {
+            if let Some(emoji) = self.agent.select_emoji(&text).await {
+                let reaction = serenity::all::ReactionType::Unicode(emoji);
+                if let Err(error) = msg.react(&ctx.http, reaction).await {
+                    tracing::warn!(
+                        target: "housebot::emoji",
+                        message_id = msg.id.get(),
+                        %error,
+                        "Failed to send emoji-only response"
+                    );
+                }
+                return;
             }
         }
 
@@ -244,12 +266,6 @@ impl HouseBot {
         } else {
             None
         };
-        let pending_reaction = if user_config.progress_updates_enabled {
-            msg.react(&ctx.http, '⏳').await.ok()
-        } else {
-            None
-        };
-
         let response_hooks = progress
             .as_ref()
             .map(|progress| ResponseProgressHooks::new(ctx, progress, self.redactor.clone()));
@@ -349,7 +365,7 @@ impl HouseBot {
             safe
         };
         let (display, code_files) = extract_code_files(&with_tool_summary);
-        let sent_id = send_final_message(
+        send_final_message(
             ctx,
             msg,
             &display,
@@ -360,21 +376,6 @@ impl HouseBot {
             &allowed_pings,
         )
         .await;
-
-        // Add dynamic emoji reactions to the response based on content
-        if let Some(reply_id) = sent_id {
-            let emojis = crate::bot::emoji_reactions::select_reactions(&with_tool_summary);
-            for emoji in emojis {
-                let _ = msg
-                    .channel_id
-                    .create_reaction(&ctx.http, reply_id, emoji)
-                    .await;
-            }
-        }
-
-        if let Some(reaction) = pending_reaction {
-            let _ = reaction.delete(&ctx.http).await;
-        }
         // Upload files returned by guarded agent tools.
         for attachment in result.attachments {
             if let Err(error) = msg

@@ -5,6 +5,15 @@ use crate::token_monitor::LeaderboardRank;
 use std::collections::BTreeSet;
 
 #[test]
+fn emoji_selection_accepts_only_an_emoji_or_none() {
+    assert_eq!(parse_emoji_selection("👍"), Some("👍".into()));
+    assert_eq!(parse_emoji_selection("❤️"), Some("❤️".into()));
+    assert_eq!(parse_emoji_selection("NONE"), None);
+    assert_eq!(parse_emoji_selection("👍 sounds good"), None);
+    assert_eq!(parse_emoji_selection("sure"), None);
+}
+
+#[test]
 fn token_leaderboard_format_shows_period_metric_and_requester_rank() {
     let entry = LeaderboardEntry {
         user_id: Some("u1".into()),

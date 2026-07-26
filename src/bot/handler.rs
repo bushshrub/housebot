@@ -1,5 +1,6 @@
 //! Serenity EventHandler: ready, interactions, and messages.
 
+use super::message_flow::ResponseMode;
 use super::*;
 
 #[serenity::async_trait]
@@ -531,13 +532,18 @@ impl EventHandler for HouseBot {
             return;
         }
 
+        let response_mode = if is_mentioned && !is_reply_to_bot && !is_reply_to_attachment {
+            ResponseMode::EmojiOrFull
+        } else {
+            ResponseMode::Full { proactive }
+        };
         self.handle_message(
             &ctx,
             &msg,
             bot_id,
             session_expired,
             followup_timeout,
-            proactive,
+            response_mode,
         )
         .await;
         self.mark_done(msg.id.get()).await;
