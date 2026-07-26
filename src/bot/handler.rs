@@ -3,6 +3,34 @@
 use super::message_flow::ResponseMode;
 use super::*;
 
+impl HouseBot {
+    async fn dispatch_unified_command(
+        &self,
+        name: &str,
+        user_id: u64,
+        display_name: &str,
+    ) -> Option<String> {
+        match name {
+            "status" => Some(handle_status_interaction(&self.user_cfg, user_id).await),
+            "help" => Some(help_response()),
+            "commit" => Some(commit_hash_response(option_env!("HOUSEBOT_GIT_SHA"))),
+            "model" => Some(self.agent.model_info()),
+            "stats" => Some(
+                handle_stats_interaction(
+                    &self.history,
+                    &self.memory,
+                    &self.notes,
+                    &self.skills,
+                    user_id,
+                    display_name,
+                )
+                .await,
+            ),
+            _ => None,
+        }
+    }
+}
+
 #[serenity::async_trait]
 impl EventHandler for HouseBot {
     async fn ready(&self, ctx: Context, ready: Ready) {
@@ -103,6 +131,22 @@ impl EventHandler for HouseBot {
         }
         if cmd.data.name == "token_leaderboard" {
             self.handle_token_leaderboard_command(&ctx, &cmd).await;
+            return;
+        }
+        if let Some(reply) = self
+            .dispatch_unified_command(&cmd.data.name, user_id, cmd.user.display_name())
+            .await
+        {
+            let reply = self.redactor.redact(&reply);
+            let reply = truncate_memory_reply("", &reply);
+            let response = CreateInteractionResponse::Message(
+                CreateInteractionResponseMessage::new()
+                    .content(reply)
+                    .ephemeral(command_response_is_ephemeral(&cmd.data.name)),
+            );
+            if let Err(error) = cmd.create_response(&ctx.http, response).await {
+                tracing::warn!(%error, "Failed to send unified command response");
+            }
             return;
         }
         let reply = match cmd.data.name.as_str() {
@@ -234,10 +278,6 @@ impl EventHandler for HouseBot {
                 )
                 .await
             }
-            "status" => handle_status_interaction(&self.user_cfg, user_id).await,
-            "help" => help_response(),
-            "commit" => commit_hash_response(option_env!("HOUSEBOT_GIT_SHA")),
-            "model" => self.agent.model_info(),
             "session" => {
                 if session_action == Some("new") {
                     self.handle_new(cmd.channel_id.get(), user_id).await
@@ -346,17 +386,6 @@ impl EventHandler for HouseBot {
                 handle_skill_interaction(&self.skills, &self.user_cfg, &cmd.data.options, user_id)
                     .await
             }
-            "stats" => {
-                handle_stats_interaction(
-                    &self.history,
-                    &self.memory,
-                    &self.notes,
-                    &self.skills,
-                    user_id,
-                    cmd.user.display_name(),
-                )
-                .await
-            }
             _ => return,
         };
 
@@ -424,6 +453,26 @@ impl EventHandler for HouseBot {
         }
 
         // ── commands ──
+        if let Some(command) = legacy_slash_command(&content) {
+            tracing::info!(
+                target: "housebot::commands",
+                user_id,
+                command,
+                "Legacy slash-command adapter received"
+            );
+            let reply = match self
+                .dispatch_unified_command(command, user_id, msg.author.display_name())
+                .await
+            {
+                Some(reply) => reply,
+                None => format!(
+                    "Legacy adapter for `/{command}` is not available. Use the Discord slash command."
+                ),
+            };
+            let reply = self.redactor.redact(&reply);
+            self.respond(&ctx, &msg, &reply).await;
+            return;
+        }
         if msg.content.starts_with("!skill") {
             tracing::info!(target: "housebot::commands", user_id, "!skill command received");
             let (first, _rest) = split_command(&msg.content);

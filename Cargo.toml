@@ -18,6 +18,7 @@ members = [
     "crates/config",
     "crates/database",
     "crates/deployment-bot",
+    "crates/discord-integration-tests",
     "crates/discord-bridge",
     "crates/github-issues",
     "crates/graph-render",
