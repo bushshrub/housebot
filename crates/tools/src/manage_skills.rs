@@ -340,11 +340,13 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn list_empty() {
+    async fn list_contains_builtin_skill_creator_by_default() {
         let (_t, skills) = test_skills();
-        assert!(dispatch_list_skills(&skills, &[])
-            .await
-            .contains("No skills"));
+        assert!(
+            dispatch_list_skills(&skills, &[housebot_skills::SKILL_CREATOR_NAME.to_string()])
+                .await
+                .contains("✓ skill_creator")
+        );
     }
 
     #[tokio::test]
