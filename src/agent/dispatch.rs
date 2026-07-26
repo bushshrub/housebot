@@ -726,18 +726,9 @@ impl Agent {
         }
 
         if action == "set_dev_notify_channel" {
-            let channel_id = str_arg(args, "channel_id");
-            let channel_id: Option<u64> = if channel_id.is_empty() {
-                None
-            } else {
-                match channel_id.parse() {
-                    Ok(id) => Some(id),
-                    Err(_) => {
-                        return format!(
-                            "Error: invalid channel_id '{channel_id}' — expected a numeric Discord channel ID."
-                        );
-                    }
-                }
+            let channel_id = match optional_nonzero_u64_string(args, "channel_id") {
+                Ok(channel_id) => channel_id,
+                Err(error) => return error,
             };
             let updated = self
                 .access_control
@@ -758,18 +749,9 @@ impl Agent {
         }
 
         if action == "set_user_limit_all" {
-            let cap = match args
-                .get("max_output_tokens")
-                .and_then(Value::as_u64)
-                .filter(|cap| *cap > 0)
-            {
-                None => None,
-                Some(cap) => match u32::try_from(cap) {
-                    Ok(cap) => Some(cap),
-                    Err(_) => {
-                        return format!("Error: max_output_tokens must be at most {}.", u32::MAX)
-                    }
-                },
+            let cap = match optional_nonzero_u32(args, "max_output_tokens") {
+                Ok(cap) => cap,
+                Err(error) => return error,
             };
             let updated = self
                 .access_control
@@ -970,5 +952,67 @@ impl Agent {
             tracing::error!(%error, %uid, %name, "failed to disable skill for user");
         }
         true
+    }
+}
+
+fn optional_nonzero_u64_string(args: &Value, key: &str) -> Result<Option<u64>, String> {
+    let Some(value) = args.get(key) else {
+        return Ok(None);
+    };
+    let Some(value) = value.as_str() else {
+        return Err(format!("Error: '{key}' must be a non-zero numeric string."));
+    };
+    let parsed = value
+        .parse::<u64>()
+        .ok()
+        .filter(|parsed| *parsed > 0)
+        .ok_or_else(|| format!("Error: '{key}' must be a non-zero numeric string."))?;
+    Ok(Some(parsed))
+}
+
+fn optional_nonzero_u32(args: &Value, key: &str) -> Result<Option<u32>, String> {
+    let Some(value) = args.get(key) else {
+        return Ok(None);
+    };
+    let parsed = value
+        .as_u64()
+        .and_then(|value| u32::try_from(value).ok())
+        .filter(|value| *value > 0)
+        .ok_or_else(|| format!("Error: '{key}' must be an integer from 1 to {}.", u32::MAX))?;
+    Ok(Some(parsed))
+}
+
+#[cfg(test)]
+mod configure_bot_argument_tests {
+    use super::{optional_nonzero_u32, optional_nonzero_u64_string};
+    use serde_json::json;
+
+    #[test]
+    fn optional_values_only_clear_when_omitted() {
+        assert_eq!(
+            optional_nonzero_u64_string(&json!({}), "channel_id"),
+            Ok(None)
+        );
+        assert_eq!(
+            optional_nonzero_u32(&json!({}), "max_output_tokens"),
+            Ok(None)
+        );
+
+        for args in [
+            json!({"channel_id": null}),
+            json!({"channel_id": ""}),
+            json!({"channel_id": "0"}),
+            json!({"channel_id": 123}),
+        ] {
+            assert!(optional_nonzero_u64_string(&args, "channel_id").is_err());
+        }
+        for args in [
+            json!({"max_output_tokens": null}),
+            json!({"max_output_tokens": 0}),
+            json!({"max_output_tokens": "100"}),
+            json!({"max_output_tokens": u64::from(u32::MAX) + 1}),
+        ] {
+            assert!(optional_nonzero_u32(&args, "max_output_tokens").is_err());
+        }
     }
 }
