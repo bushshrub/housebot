@@ -778,6 +778,98 @@ async fn disabled_memory_compaction_clears_history_without_writing_memory() {
     assert!(agent.history.load("u7").await.is_empty());
 }
 
+/// Regression test for issue #302: compaction must never write persistent
+/// memory on its own — memory changes only when the user asks for it via
+/// update_memory. The summary carries over in the new session's history.
+#[tokio::test]
+async fn compaction_never_writes_persistent_memory() {
+    let client = Arc::new(MockChatClient::new().with_once_reply("- Likes tea"));
+    let (_t, agent) = test_agent(client);
+    agent.memory.save("u8", "Existing memory").await.unwrap();
+    agent
+        .history
+        .save(
+            "u8",
+            &[
+                json!({"role": "user", "content": "I like tea"}),
+                json!({"role": "assistant", "content": "Noted"}),
+            ],
+        )
+        .await
+        .unwrap();
+
+    agent.compact_session("u8", true).await;
+
+    assert_eq!(agent.memory.load("u8").await, "Existing memory");
+    let history = agent.history.load("u8").await;
+    assert!(
+        history.iter().any(|m| m["content"]
+            .as_str()
+            .is_some_and(|c| c.contains("Likes tea"))),
+        "summary should carry over into the new session: {history:?}"
+    );
+    assert_eq!(history.first().unwrap()["role"], "user");
+    assert_eq!(history.last().unwrap()["role"], "assistant");
+}
+
+/// Compaction on a user with no stored memory must still leave memory empty.
+#[tokio::test]
+async fn compaction_leaves_empty_memory_empty() {
+    let client = Arc::new(MockChatClient::new().with_once_reply("- Discussed steak recipes"));
+    let (_t, agent) = test_agent(client);
+    agent
+        .history
+        .save(
+            "u9",
+            &[
+                json!({"role": "user", "content": "how do I cook steak"}),
+                json!({"role": "assistant", "content": "Sear it hot"}),
+            ],
+        )
+        .await
+        .unwrap();
+
+    agent.compact_session("u9", true).await;
+
+    assert_eq!(agent.memory.load("u9").await, "");
+}
+
+/// An explicit update_memory tool call remains the only path that writes
+/// persistent memory, and it must survive a subsequent compaction.
+#[tokio::test]
+async fn explicit_memory_update_survives_compaction() {
+    let client = Arc::new(MockChatClient::new().with_once_reply("- Session summary"));
+    let (_t, agent) = test_agent(client);
+    let sb = noop_sandbox();
+
+    agent
+        .dispatch_tool(
+            "update_memory",
+            &json!({"memory_content": "Prefers ribeye"}),
+            "u10",
+            "Ed",
+            0,
+            None,
+            &sb,
+        )
+        .await;
+    agent
+        .history
+        .save(
+            "u10",
+            &[
+                json!({"role": "user", "content": "hi"}),
+                json!({"role": "assistant", "content": "hello"}),
+            ],
+        )
+        .await
+        .unwrap();
+
+    agent.compact_session("u10", true).await;
+
+    assert_eq!(agent.memory.load("u10").await, "Prefers ribeye");
+}
+
 #[tokio::test]
 async fn history_turn_contains_discord_context_metadata() {
     let client = Arc::new(MockChatClient::new().with_once_reply("ok"));
@@ -798,6 +890,93 @@ async fn history_turn_contains_discord_context_metadata() {
         "https://cdn.discordapp.com/avatars/u8/avatar.png"
     );
     assert!(history[0]["discord_context"]["timestamp"].is_string());
+}
+
+/// Regression test for issue #301: merging a pull request must be refused for
+/// anyone outside the administrator list, and the attempt must be audited.
+#[tokio::test]
+async fn dispatch_github_api_merge_denies_non_administrators() {
+    let client = Arc::new(MockChatClient::new());
+    let (temp, mut agent) = test_agent(client);
+    let audit_path = temp.path().join("pr_merge_audit.jsonl");
+    agent.set_merge_audit_path(&audit_path);
+    agent.access_control = AccessControlStore::new(temp.path().join("access_control"));
+    let sb = noop_sandbox();
+
+    let out = agent
+        .dispatch_tool(
+            "github_api",
+            &json!({"action": "merge_pull_request", "pull_request_number": 42}),
+            "999",
+            "outsider",
+            0,
+            None,
+            &sb,
+        )
+        .await;
+
+    match out {
+        ToolOutcome::Text(text) => {
+            assert!(text.contains("permission denied"), "unexpected: {text}")
+        }
+        other => panic!("unexpected outcome: {other:?}"),
+    }
+
+    let logged = tokio::fs::read_to_string(&audit_path).await.unwrap();
+    let entry: Value = serde_json::from_str(logged.trim()).unwrap();
+    assert_eq!(entry["admin_id"], "999");
+    assert_eq!(entry["admin_username"], "outsider");
+    assert_eq!(entry["pull_request"], 42);
+    assert_eq!(entry["authorized"], false);
+    assert_eq!(entry["result"], "denied");
+}
+
+/// Integration test for issue #301: an authorized configurer passes the admin
+/// gate, reaches the GitHub layer, and the authorized attempt is audited.
+#[tokio::test]
+async fn dispatch_github_api_merge_allows_configurers_and_audits_the_attempt() {
+    let client = Arc::new(MockChatClient::new());
+    let (temp, mut agent) = test_agent(client);
+    let audit_path = temp.path().join("pr_merge_audit.jsonl");
+    agent.set_merge_audit_path(&audit_path);
+    agent.access_control = AccessControlStore::new(temp.path().join("access_control"));
+    agent
+        .access_control
+        .update(|access| {
+            access.configurer_ids.insert(7);
+        })
+        .await
+        .unwrap();
+    let sb = noop_sandbox();
+
+    let out = agent
+        .dispatch_tool(
+            "github_api",
+            &json!({"action": "merge_pull_request", "pull_request_number": 42}),
+            "7",
+            "admin_user",
+            0,
+            None,
+            &sb,
+        )
+        .await;
+
+    // The test reporter has no credentials, so the call stops at the GitHub
+    // layer rather than at the permission gate.
+    match out {
+        ToolOutcome::Text(text) => {
+            assert!(!text.contains("permission denied"), "unexpected: {text}");
+            assert!(text.contains("not configured"), "unexpected: {text}");
+        }
+        other => panic!("unexpected outcome: {other:?}"),
+    }
+
+    let logged = tokio::fs::read_to_string(&audit_path).await.unwrap();
+    let entry: Value = serde_json::from_str(logged.trim()).unwrap();
+    assert_eq!(entry["admin_id"], "7");
+    assert_eq!(entry["pull_request"], 42);
+    assert_eq!(entry["authorized"], true);
+    assert_eq!(entry["result"], "error");
 }
 
 #[tokio::test]

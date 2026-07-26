@@ -39,12 +39,11 @@ impl Agent {
             let _ = self.history.clear(user_id).await;
             self.finish_active_conversation(user_id).await;
             hooks
-                .on_progress("compact:100:Conversation cleared without saving a memory summary.")
+                .on_progress("compact:100:Conversation cleared without a carry-over summary.")
                 .await;
             return;
         }
         hooks.on_progress("compact:25").await;
-        let user_memory = self.memory.load(user_id).await;
         let convo: String = past
             .iter()
             .filter_map(|m| {
@@ -78,18 +77,25 @@ impl Agent {
         self.session_stats.lock().await.remove(user_id);
         let summary = completion.content.unwrap_or_default();
 
-        if !summary.trim().is_empty() {
-            let now = Local::now().format("%Y-%m-%d %H:%M");
-            let mut updated = String::new();
-            if !user_memory.trim().is_empty() {
-                updated.push_str(user_memory.trim_end());
-                updated.push_str("\n\n");
-            }
-            updated.push_str(&format!("## Conversation summary ({now})\n{summary}"));
-            let _ = self.memory.save(user_id, &updated).await;
-        }
         hooks.on_progress("compact:80").await;
         let _ = self.history.clear(user_id).await;
+        // The summary carries the previous session forward as conversation
+        // context only. Persistent memory is never written automatically —
+        // it changes solely through an explicit update_memory tool call.
+        if !summary.trim().is_empty() {
+            let now = Local::now().format("%Y-%m-%d %H:%M");
+            let carry_over = vec![
+                json!({
+                    "role": "user",
+                    "content": format!("## Summary of our earlier conversation ({now})\n{summary}"),
+                }),
+                json!({
+                    "role": "assistant",
+                    "content": "Understood — I'll continue from that summary.",
+                }),
+            ];
+            let _ = self.history.save(user_id, &carry_over).await;
+        }
         self.finish_active_conversation(user_id).await;
         hooks
             .on_progress("compact:100:Conversation compacted.")

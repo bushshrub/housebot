@@ -10,7 +10,7 @@ pub fn features_text() -> &'static str {
     "\
 **Slash commands**
 `/help` — show this reference
-`/session status|new|compact` — inspect the current session, start fresh, or summarise it into memory before starting fresh
+`/session status|new|compact` — inspect the current session, start fresh, or summarise it into a carry-over note before starting fresh (persistent memory is only changed when you ask)
 
 `/token_leaderboard [timeframe] [metric]` — rank token usage daily, weekly, monthly, or all-time by total tokens or cache efficiency; also shows your rank
 `/tool_ban propose|vote|status` — vote on server-specific user restrictions for individual tools

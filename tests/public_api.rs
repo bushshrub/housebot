@@ -4,12 +4,14 @@ use std::collections::BTreeMap;
 
 use housebot::agent::build_system_prompt;
 use housebot::bot::{extract_code_files, split_text};
+use housebot::github_issues::GitHubIssueReporter;
 use housebot::graph_render::{render_png, GraphBuilder};
 use housebot::history::History;
 use housebot::llm::ThinkingMode;
 use housebot::memory::Memory;
 use housebot::notes::Notes;
 use housebot::skills::{Skill, Skills};
+use housebot::tools::github_api::{handle_github_api, MergeAuditLog, ToolCaller};
 use serde_json::json;
 use tempfile::TempDir;
 
@@ -97,6 +99,35 @@ fn system_prompt_reflects_memory_and_skills() {
     assert!(prompt.contains("Prefers metric units"));
     assert!(prompt.contains("summarize"));
     assert!(prompt.contains("Be terse"));
+}
+
+#[tokio::test]
+async fn pull_request_merge_is_administrator_only_and_audited() {
+    let dir = TempDir::new().unwrap();
+    let audit_path = dir.path().join("pr_merge_audit.jsonl");
+    let audit = MergeAuditLog::new(&audit_path);
+    let reporter = GitHubIssueReporter::with_direct_token("token".into(), "owner/repo".into());
+    let member = ToolCaller {
+        user_id: "1001",
+        username: "member",
+        is_admin: false,
+    };
+
+    let denied = handle_github_api(
+        &reporter,
+        "merge_pull_request",
+        &json!({"pull_request_number": 305, "merge_method": "squash"}),
+        &member,
+        &audit,
+    )
+    .await;
+
+    assert!(denied.contains("permission denied"), "got: {denied}");
+    let logged = tokio::fs::read_to_string(&audit_path).await.unwrap();
+    let entry: serde_json::Value = serde_json::from_str(logged.trim()).unwrap();
+    assert_eq!(entry["admin_username"], "member");
+    assert_eq!(entry["pull_request"], 305);
+    assert_eq!(entry["authorized"], false);
 }
 
 #[test]

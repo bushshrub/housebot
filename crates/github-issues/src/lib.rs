@@ -59,6 +59,63 @@ pub struct ExistingIssue {
     pub pull_request: Option<serde_json::Value>,
 }
 
+/// Merge strategies accepted by the GitHub merge API.
+pub const MERGE_METHODS: [&str; 3] = ["merge", "squash", "rebase"];
+
+/// The result of attempting to merge a pull request.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum MergeOutcome {
+    Merged {
+        sha: String,
+        message: String,
+    },
+    /// The head and base branches conflict and cannot be merged automatically.
+    Conflict(String),
+    /// GitHub refused the merge (draft, failing required checks, missing reviews…).
+    Blocked(String),
+    /// The installation lacks write access to the repository.
+    NotPermitted(String),
+    NotFound(String),
+    Error(String),
+}
+
+impl MergeOutcome {
+    /// Short status word used in audit records and tool output.
+    pub fn status(&self) -> &'static str {
+        match self {
+            Self::Merged { .. } => "success",
+            Self::Conflict(_) => "conflict",
+            Self::Blocked(_) => "blocked",
+            Self::NotPermitted(_) => "not_permitted",
+            Self::NotFound(_) => "not_found",
+            Self::Error(_) => "error",
+        }
+    }
+}
+
+/// Map a GitHub merge-API response onto a [`MergeOutcome`].
+fn merge_outcome(status: u16, body: &str) -> MergeOutcome {
+    let parsed: serde_json::Value = serde_json::from_str(body).unwrap_or(serde_json::Value::Null);
+    let message = parsed["message"]
+        .as_str()
+        .unwrap_or("no details returned by GitHub")
+        .to_string();
+    match status {
+        200 => MergeOutcome::Merged {
+            sha: parsed["sha"].as_str().unwrap_or_default().to_string(),
+            message: parsed["message"]
+                .as_str()
+                .unwrap_or("Pull request successfully merged")
+                .to_string(),
+        },
+        403 => MergeOutcome::NotPermitted(message),
+        404 => MergeOutcome::NotFound(message),
+        405 => MergeOutcome::Blocked(message),
+        409 => MergeOutcome::Conflict(message),
+        _ => MergeOutcome::Error(format!("GitHub returned HTTP {status} — {message}")),
+    }
+}
+
 /// Files GitHub issues on behalf of the bot's GitHub App installation.
 /// Also supports direct GITHUB_TOKEN auth for integration testing.
 pub struct GitHubIssueReporter {
@@ -652,6 +709,51 @@ impl GitHubIssueReporter {
         }
     }
 
+    /// Merge a pull request. `merge_method` must be one of [`MERGE_METHODS`].
+    pub async fn merge_pull_request(&self, pull_number: u64, merge_method: &str) -> MergeOutcome {
+        if !self.is_configured() {
+            return MergeOutcome::Error(
+                "GitHub integration is not configured — merging requires GITHUB_APP_ID, \
+                 GITHUB_APP_PRIVATE_KEY, GITHUB_INSTALLATION_ID, and GITHUB_REPO to be set."
+                    .to_string(),
+            );
+        }
+        if pull_number == 0 {
+            return MergeOutcome::Error("a valid pull request number is required.".to_string());
+        }
+        if !MERGE_METHODS.contains(&merge_method) {
+            return MergeOutcome::Error(format!(
+                "unsupported merge_method '{merge_method}' — expected one of {}.",
+                MERGE_METHODS.join(", ")
+            ));
+        }
+        let token = match self.token().await {
+            Ok(token) => token,
+            Err(error) => return MergeOutcome::Error(error.to_string()),
+        };
+        let url = format!(
+            "https://api.github.com/repos/{}/pulls/{pull_number}/merge",
+            self.repo
+        );
+        let response = self
+            .http
+            .put(&url)
+            .header("Authorization", format!("Bearer {token}"))
+            .header("Accept", "application/vnd.github+json")
+            .header("X-GitHub-Api-Version", "2022-11-28")
+            .header("User-Agent", "house-chatbot")
+            .json(&json!({"merge_method": merge_method}))
+            .send()
+            .await;
+        let response = match response {
+            Ok(response) => response,
+            Err(error) => return MergeOutcome::Error(error.to_string()),
+        };
+        let status = response.status().as_u16();
+        let body = response.text().await.unwrap_or_default();
+        merge_outcome(status, &body)
+    }
+
     /// Create an issue that references a Sentry event, with no sensitive data in the body.
     pub async fn create_error_issue(&self, sentry_event_id: &str) -> Option<String> {
         if !self.is_configured() {
@@ -1162,6 +1264,82 @@ mod tests {
             GitHubIssueReporter::new(String::new(), String::new(), String::new(), String::new());
         assert!(r.create_issue("t", "b", &["bug"]).await.is_none());
         assert!(r.create_error_issue("evt123").await.is_none());
+    }
+
+    #[tokio::test]
+    async fn merge_pull_request_reports_missing_configuration() {
+        let r =
+            GitHubIssueReporter::new(String::new(), String::new(), String::new(), String::new());
+        let outcome = r.merge_pull_request(5, "merge").await;
+        assert_eq!(outcome.status(), "error");
+        assert!(matches!(outcome, MergeOutcome::Error(msg) if msg.contains("not configured")));
+    }
+
+    #[tokio::test]
+    async fn merge_pull_request_validates_arguments_before_calling_github() {
+        let r = GitHubIssueReporter::with_direct_token("token".into(), "owner/repo".into());
+        assert!(
+            matches!(r.merge_pull_request(0, "merge").await, MergeOutcome::Error(msg) if msg.contains("pull request number"))
+        );
+        assert!(
+            matches!(r.merge_pull_request(7, "fast-forward").await, MergeOutcome::Error(msg) if msg.contains("unsupported merge_method"))
+        );
+    }
+
+    #[test]
+    fn merge_outcome_maps_github_status_codes() {
+        assert_eq!(
+            merge_outcome(
+                200,
+                r#"{"sha":"abc123","merged":true,"message":"Pull Request successfully merged"}"#
+            ),
+            MergeOutcome::Merged {
+                sha: "abc123".into(),
+                message: "Pull Request successfully merged".into()
+            }
+        );
+        assert_eq!(
+            merge_outcome(409, r#"{"message":"Head branch was modified"}"#),
+            MergeOutcome::Conflict("Head branch was modified".into())
+        );
+        assert_eq!(
+            merge_outcome(405, r#"{"message":"Pull Request is not mergeable"}"#),
+            MergeOutcome::Blocked("Pull Request is not mergeable".into())
+        );
+        assert_eq!(
+            merge_outcome(
+                403,
+                r#"{"message":"Resource not accessible by integration"}"#
+            ),
+            MergeOutcome::NotPermitted("Resource not accessible by integration".into())
+        );
+        assert_eq!(
+            merge_outcome(404, r#"{"message":"Not Found"}"#),
+            MergeOutcome::NotFound("Not Found".into())
+        );
+        assert!(
+            matches!(merge_outcome(500, "<html>"), MergeOutcome::Error(msg) if msg.contains("HTTP 500"))
+        );
+    }
+
+    #[test]
+    fn merge_outcome_status_words_are_stable() {
+        assert_eq!(
+            MergeOutcome::Merged {
+                sha: "a".into(),
+                message: "m".into()
+            }
+            .status(),
+            "success"
+        );
+        assert_eq!(MergeOutcome::Conflict("c".into()).status(), "conflict");
+        assert_eq!(MergeOutcome::Blocked("b".into()).status(), "blocked");
+        assert_eq!(
+            MergeOutcome::NotPermitted("p".into()).status(),
+            "not_permitted"
+        );
+        assert_eq!(MergeOutcome::NotFound("n".into()).status(), "not_found");
+        assert_eq!(MergeOutcome::Error("e".into()).status(), "error");
     }
 
     #[test]

@@ -118,10 +118,30 @@ impl Agent {
                     }
                 }
             }
-            "github_api" => ToolOutcome::Text(
-                tools::github_api::handle_github_api(&self.reporter, str_arg(args, "action"), args)
+            "github_api" => {
+                // Merging is administrator-only; the tools layer re-checks this
+                // flag as a defence-in-depth measure and audits every attempt.
+                let is_admin = self
+                    .access_control
+                    .load()
+                    .await
+                    .is_configurer(user_id.parse::<u64>().unwrap_or(0), config::owner_id());
+                let caller = tools::github_api::ToolCaller {
+                    user_id,
+                    username,
+                    is_admin,
+                };
+                ToolOutcome::Text(
+                    tools::github_api::handle_github_api(
+                        &self.reporter,
+                        str_arg(args, "action"),
+                        args,
+                        &caller,
+                        &self.merge_audit,
+                    )
                     .await,
-            ),
+                )
+            }
             "create_feature_request" => ToolOutcome::Text(
                 tools::feature_request::create_feature_request(
                     &self.reporter,
