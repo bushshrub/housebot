@@ -142,10 +142,9 @@ impl Agent {
     /// Ask the LLM to classify a Lua script before it is executed.
     ///
     /// The model is forced to call `submit_lua_verdict` so the result is
-    /// always structured JSON rather than free-form text. Lua reviews use the
-    /// low-priority lane so ordinary bot conversations are admitted first when
-    /// all four LLM slots are occupied. Invalid or failed reviews are rejected
-    /// rather than allowing an unreviewed script to run.
+    /// always structured JSON rather than free-form text. Lua reviews share the
+    /// same four-request limit as every other LLM call. Invalid or failed
+    /// reviews are rejected rather than allowing an unreviewed script to run.
     pub async fn analyze_lua_script(&self, script: &str) -> LuaAnalysis {
         let verdict_tool = json!({
             "type": "function",
@@ -186,13 +185,14 @@ impl Agent {
         ];
         let completion = self
             .queued_client
-            .chat_stream_with_priority(
-                LlmPriority::LuaAnalysis,
+            .chat_stream(
                 &self.model,
                 &messages,
                 &[verdict_tool],
                 Some(json!("required")),
                 ThinkingMode::Low,
+                None,
+                None,
             )
             .await;
         let Ok(completion) = completion else {

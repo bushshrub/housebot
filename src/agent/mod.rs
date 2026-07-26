@@ -16,7 +16,7 @@ use crate::discord_bridge::DiscordBridge;
 use crate::github_issues::GitHubIssueReporter;
 use crate::history::History;
 use crate::llm::{ChatClient, OpenAiClient, TextSink, ThinkingMode, TokenUsage};
-use crate::llm_queue::{LlmPriority, LlmQueueInfo, LlmRequestQueue, QueuedChatClient};
+use crate::llm_queue::{LlmQueueInfo, LlmRequestQueue, QueuedChatClient};
 use crate::lua_engine::{self, ScriptHost};
 use crate::mcp::McpServer;
 use crate::memory::Memory;
@@ -188,9 +188,6 @@ pub struct Agent {
     client: Arc<dyn ChatClient>,
     queued_client: Arc<QueuedChatClient>,
     model: String,
-    /// Separate (cheaper) client + model for low-priority emoji-reaction tasks.
-    emoji_client: Arc<QueuedChatClient>,
-    emoji_model: String,
     context_window_tokens: usize,
     history: History,
     memory: Memory,
@@ -255,11 +252,10 @@ struct SessionStats {
 impl Agent {
     /// Build an agent from environment configuration and start MCP servers.
     pub async fn from_env(discord: Arc<DiscordBridge>) -> anyhow::Result<Self> {
-        let llm_base_url = config::env_or("LLM_BASE_URL", "http://server-slop:8080/v1");
-        let llm_api_key = config::env_or("LLM_API_KEY", "not-required");
-        let model = config::env_or("LLM_MODEL", "gemma-4-12b-qat-q4kxl");
-        let raw_client: Arc<dyn ChatClient> =
-            Arc::new(OpenAiClient::new(llm_base_url.clone(), llm_api_key.clone()));
+        let raw_client: Arc<dyn ChatClient> = Arc::new(OpenAiClient::new(
+            config::env_or("LLM_BASE_URL", "http://server-slop:8080/v1"),
+            config::env_or("LLM_API_KEY", "not-required"),
+        ));
         let mcp_servers = Arc::new(start_mcp_servers().await);
         let context_window_tokens = tokio::time::timeout(
             std::time::Duration::from_secs(10),
@@ -277,17 +273,8 @@ impl Agent {
             config::env_parse("MAX_CONTEXT_TOKENS", 200_000)
         });
         let queue = Arc::new(LlmRequestQueue::default());
-        let queued_client = Arc::new(QueuedChatClient::new(raw_client, Arc::clone(&queue)));
+        let queued_client = Arc::new(QueuedChatClient::new(raw_client, queue));
         let client: Arc<dyn ChatClient> = queued_client.clone();
-
-        // A separate client for cheap, low-priority emoji-reaction queries.
-        // It shares the same LlmRequestQueue so the priority ordering works
-        // across all LLM request types.
-        let emoji_raw_client: Arc<dyn ChatClient> = Arc::new(OpenAiClient::new(
-            config::env_or("EMOJI_BASE_URL", &llm_base_url),
-            config::env_or("EMOJI_API_KEY", &llm_api_key),
-        ));
-        let emoji_client = Arc::new(QueuedChatClient::new(emoji_raw_client, queue));
         let memory = match Memory::from_env().await {
             Ok(memory) => memory,
             Err(error) => {
@@ -311,9 +298,7 @@ impl Agent {
         Ok(Self {
             client,
             queued_client,
-            emoji_model: config::env_or("EMOJI_MODEL", &model),
-            model,
-            emoji_client,
+            model: config::env_or("LLM_MODEL", "gemma-4-12b-qat-q4kxl"),
             context_window_tokens,
             history: History::default(),
             memory,
@@ -403,18 +388,8 @@ impl Agent {
         }
     }
 
-    /// Accessor for the emoji-dedicated LLM client (shared queue, cheap model).
-    pub fn emoji_client(&self) -> Arc<QueuedChatClient> {
-        Arc::clone(&self.emoji_client)
-    }
-
-    /// The model name configured for emoji-reaction queries.
-    pub fn emoji_model(&self) -> &str {
-        &self.emoji_model
-    }
-
-    /// Ask the cheap emoji model whether an incoming mention should receive a
-    /// single emoji instead of a full agent response.
+    /// Ask the model whether an incoming mention should receive a single emoji
+    /// instead of a full agent response.
     /// Returns `None` when the model is unreachable or the response is empty.
     pub async fn select_emoji(&self, text: &str) -> Option<String> {
         let prompt = format!(
@@ -431,13 +406,8 @@ impl Agent {
         ];
         let start = std::time::Instant::now();
         let result = self
-            .emoji_client
-            .chat_once_with_priority(
-                LlmPriority::EmojiReaction,
-                &self.emoji_model,
-                &messages,
-                128,
-            )
+            .queued_client
+            .chat_once(&self.model, &messages, 128)
             .await;
         match result {
             Ok(completion) => {
@@ -535,16 +505,10 @@ impl Agent {
         reminders: Reminders,
     ) -> Self {
         let queue = Arc::new(LlmRequestQueue::default());
-        let queued_client = Arc::new(QueuedChatClient::new(
-            Arc::clone(&client),
-            Arc::clone(&queue),
-        ));
-        let emoji_client = Arc::new(QueuedChatClient::new(client, queue));
+        let queued_client = Arc::new(QueuedChatClient::new(client, queue));
         Self {
             client: queued_client.clone(),
             queued_client,
-            emoji_client,
-            emoji_model: "test-model".into(),
             model: "test-model".into(),
             context_window_tokens: 10_000,
             history,

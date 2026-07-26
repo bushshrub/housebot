@@ -782,10 +782,13 @@ impl Agent {
 
     /// The marketplace skills `user_id` has enabled.
     pub(crate) async fn enabled_skills_for(&self, user_id: &str) -> Vec<String> {
-        self.user_config
+        let mut enabled = self
+            .user_config
             .load(user_id.parse().unwrap_or(0))
             .await
-            .enabled_skills
+            .enabled_skills;
+        enabled.push(housebot_skills::SKILL_CREATOR_NAME.to_string());
+        enabled
     }
 
     /// Whether `user_id` has enabled the skill named `name`.

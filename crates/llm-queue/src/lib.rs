@@ -1,53 +1,14 @@
-//! Shared bounded, priority-aware scheduling for LLM requests.
+//! Shared bounded scheduling for LLM requests.
 
 use std::future::Future;
-use std::sync::{Arc, Mutex};
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::Arc;
 
 use async_trait::async_trait;
 use serde_json::Value;
-use tokio::sync::Notify;
+use tokio::sync::Semaphore;
 
 use housebot_llm::{ChatClient, ChatCompletion, TextSink, ThinkingMode};
-
-/// Emoji reactions have the lowest priority, then Lua safety checks,
-/// then normal bot conversations.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-pub enum LlmPriority {
-    EmojiReaction,
-    LuaAnalysis,
-    Normal,
-}
-
-#[derive(Default)]
-struct QueueState {
-    next_id: u64,
-    active: usize,
-    pending: Vec<PendingRequest>,
-}
-
-struct PendingRequest {
-    id: u64,
-    priority: LlmPriority,
-    notify: Arc<Notify>,
-}
-
-impl QueueState {
-    /// Wake the requests that could occupy the currently free slots, best
-    /// (highest priority, oldest) first. `Notify::notify_one` stores a permit,
-    /// so a request that has not started awaiting yet still observes the wake —
-    /// unlike `notify_waiters`, which only reaches already-registered waiters.
-    fn wake_eligible(&self, max_parallel: usize) {
-        let free = max_parallel.saturating_sub(self.active);
-        if free == 0 {
-            return;
-        }
-        let mut order: Vec<&PendingRequest> = self.pending.iter().collect();
-        order.sort_by_key(|request| (std::cmp::Reverse(request.priority), request.id));
-        for request in order.into_iter().take(free) {
-            request.notify.notify_one();
-        }
-    }
-}
 
 /// Snapshot of the queue's current utilization.
 #[derive(Debug, Clone, Copy)]
@@ -67,14 +28,12 @@ impl LlmQueueInfo {
     }
 }
 
-/// A shared scheduler allowing at most four LLM requests to execute at once.
-///
-/// Requests are FIFO within a priority. Normal bot requests are selected
-/// before Lua-analysis requests, which are selected before emoji-reaction
-/// requests, whenever a slot becomes available.
+/// A shared semaphore allowing at most four LLM requests to execute at once.
 pub struct LlmRequestQueue {
     max_parallel: usize,
-    state: Mutex<QueueState>,
+    permits: Arc<Semaphore>,
+    active: AtomicUsize,
+    pending: AtomicUsize,
 }
 
 impl Default for LlmRequestQueue {
@@ -88,83 +47,48 @@ impl LlmRequestQueue {
         assert!(max_parallel > 0, "LLM queue capacity must be positive");
         Self {
             max_parallel,
-            state: Mutex::new(QueueState::default()),
+            permits: Arc::new(Semaphore::new(max_parallel)),
+            active: AtomicUsize::new(0),
+            pending: AtomicUsize::new(0),
         }
     }
 
-    /// Run `operation` after this request reaches the front of the priority queue.
-    pub async fn execute<T, F, Fut>(self: &Arc<Self>, priority: LlmPriority, operation: F) -> T
+    /// Run `operation` once one of the shared LLM slots is available.
+    pub async fn execute<T, F, Fut>(self: &Arc<Self>, operation: F) -> T
     where
         F: FnOnce() -> Fut,
         Fut: Future<Output = T>,
     {
-        let notify = Arc::new(Notify::new());
-        let id = {
-            let mut state = self.state.lock().unwrap();
-            let id = state.next_id;
-            state.next_id += 1;
-            state.pending.push(PendingRequest {
-                id,
-                priority,
-                notify: Arc::clone(&notify),
-            });
-            id
-        };
-        let mut ticket = QueueTicket {
-            queue: Arc::clone(self),
-            id,
-            acquired: false,
-        };
-
-        loop {
-            let can_start = {
-                let mut state = self.state.lock().unwrap();
-                let selected = state
-                    .pending
-                    .iter()
-                    .min_by_key(|request| (std::cmp::Reverse(request.priority), request.id))
-                    .map(|request| request.id);
-                if state.active < self.max_parallel && selected == Some(id) {
-                    state.pending.retain(|request| request.id != id);
-                    state.active += 1;
-                    // With spare capacity the next pending request may still be
-                    // asleep from an earlier lost race; hand the remaining free
-                    // slots on explicitly.
-                    state.wake_eligible(self.max_parallel);
-                    true
-                } else {
-                    false
-                }
-            };
-            if can_start {
-                ticket.acquired = true;
-                break;
-            }
-            notify.notified().await;
-        }
-
-        let _permit = ActivePermit {
-            queue: Arc::clone(self),
+        self.pending.fetch_add(1, Ordering::SeqCst);
+        let pending = PendingGuard { queue: self };
+        let permit = Arc::clone(&self.permits)
+            .acquire_owned()
+            .await
+            .expect("LLM semaphore is never closed");
+        drop(pending);
+        self.active.fetch_add(1, Ordering::SeqCst);
+        let _active = ActiveGuard {
+            queue: self,
+            _permit: permit,
         };
         operation().await
     }
 
     /// Number of requests currently executing.
     pub fn active_count(&self) -> usize {
-        self.state.lock().unwrap().active
+        self.active.load(Ordering::SeqCst)
     }
 
     /// Number of requests waiting for a slot.
     pub fn pending_count(&self) -> usize {
-        self.state.lock().unwrap().pending.len()
+        self.pending.load(Ordering::SeqCst)
     }
 
     /// Snapshot of queue utilization: active, pending, and capacity.
     pub fn info(&self) -> LlmQueueInfo {
-        let state = self.state.lock().unwrap();
         LlmQueueInfo {
-            active: state.active,
-            pending: state.pending.len(),
+            active: self.active_count(),
+            pending: self.pending_count(),
             max_parallel: self.max_parallel,
         }
     }
@@ -175,31 +99,24 @@ impl LlmRequestQueue {
     }
 }
 
-struct QueueTicket {
-    queue: Arc<LlmRequestQueue>,
-    id: u64,
-    acquired: bool,
+struct PendingGuard<'a> {
+    queue: &'a LlmRequestQueue,
 }
 
-impl Drop for QueueTicket {
+impl Drop for PendingGuard<'_> {
     fn drop(&mut self) {
-        if !self.acquired {
-            let mut state = self.queue.state.lock().unwrap();
-            state.pending.retain(|request| request.id != self.id);
-            state.wake_eligible(self.queue.max_parallel);
-        }
+        self.queue.pending.fetch_sub(1, Ordering::SeqCst);
     }
 }
 
-struct ActivePermit {
-    queue: Arc<LlmRequestQueue>,
+struct ActiveGuard<'a> {
+    queue: &'a LlmRequestQueue,
+    _permit: tokio::sync::OwnedSemaphorePermit,
 }
 
-impl Drop for ActivePermit {
+impl Drop for ActiveGuard<'_> {
     fn drop(&mut self) {
-        let mut state = self.queue.state.lock().unwrap();
-        state.active = state.active.saturating_sub(1);
-        state.wake_eligible(self.queue.max_parallel);
+        self.queue.active.fetch_sub(1, Ordering::SeqCst);
     }
 }
 
@@ -217,49 +134,6 @@ impl QueuedChatClient {
     /// Current queue utilization snapshot.
     pub fn queue_info(&self) -> LlmQueueInfo {
         self.queue.info()
-    }
-
-    pub async fn chat_once_with_priority(
-        &self,
-        priority: LlmPriority,
-        model: &str,
-        messages: &[Value],
-        max_tokens: u32,
-    ) -> anyhow::Result<ChatCompletion> {
-        let inner = Arc::clone(&self.inner);
-        let model = model.to_string();
-        let messages = messages.to_vec();
-        self.queue
-            .execute(priority, move || async move {
-                inner.chat_once(&model, &messages, max_tokens).await
-            })
-            .await
-    }
-
-    /// Stream a completion through the priority queue, using a specific
-    /// `tool_choice` value. Pass `Some(json!("required"))` to force a tool
-    /// call. Unlike `chat_stream`, this method accepts an explicit priority so
-    /// lower-priority tasks (e.g. Lua safety reviews) yield to normal traffic.
-    pub async fn chat_stream_with_priority(
-        &self,
-        priority: LlmPriority,
-        model: &str,
-        messages: &[Value],
-        tools: &[Value],
-        tool_choice: Option<Value>,
-        thinking: ThinkingMode,
-    ) -> anyhow::Result<ChatCompletion> {
-        let inner = Arc::clone(&self.inner);
-        let model = model.to_string();
-        let messages = messages.to_vec();
-        let tools = tools.to_vec();
-        self.queue
-            .execute(priority, move || async move {
-                inner
-                    .chat_stream(&model, &messages, &tools, tool_choice, thinking, None, None)
-                    .await
-            })
-            .await
     }
 }
 
@@ -284,7 +158,7 @@ impl ChatClient for QueuedChatClient {
         let messages = messages.to_vec();
         let tools = tools.to_vec();
         self.queue
-            .execute(LlmPriority::Normal, move || async move {
+            .execute(move || async move {
                 inner
                     .chat_stream(
                         &model,
@@ -306,7 +180,11 @@ impl ChatClient for QueuedChatClient {
         messages: &[Value],
         max_tokens: u32,
     ) -> anyhow::Result<ChatCompletion> {
-        self.chat_once_with_priority(LlmPriority::Normal, model, messages, max_tokens)
+        let inner = Arc::clone(&self.inner);
+        let model = model.to_string();
+        let messages = messages.to_vec();
+        self.queue
+            .execute(move || async move { inner.chat_once(&model, &messages, max_tokens).await })
             .await
     }
 }
@@ -319,7 +197,7 @@ mod tests {
     use tokio::time::{sleep, Duration};
 
     #[tokio::test]
-    async fn never_exceeds_capacity() {
+    async fn never_exceeds_four_currently_running_requests() {
         let queue = Arc::new(LlmRequestQueue::new(4));
         let active = Arc::new(AtomicUsize::new(0));
         let peak = Arc::new(AtomicUsize::new(0));
@@ -330,7 +208,7 @@ mod tests {
             let peak_count = Arc::clone(&peak);
             tasks.push(tokio::spawn(async move {
                 queue
-                    .execute(LlmPriority::Normal, move || async move {
+                    .execute(move || async move {
                         let now = active_count.fetch_add(1, Ordering::SeqCst) + 1;
                         peak_count.fetch_max(now, Ordering::SeqCst);
                         sleep(Duration::from_millis(10)).await;
@@ -349,71 +227,34 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn priority_ordering_respected() {
-        // Verifies: Normal > LuaAnalysis > EmojiReaction
+    async fn cancelled_waiter_releases_pending_count() {
         let queue = Arc::new(LlmRequestQueue::new(1));
-        let first_started = Arc::new(Barrier::new(2));
-        let release = Arc::new(Notify::new());
-        let order = Arc::new(Mutex::new(Vec::new()));
-
-        // Slot 0: hold a Normal request.
-        let q1 = Arc::clone(&queue);
-        let s1 = Arc::clone(&first_started);
-        let r1 = Arc::clone(&release);
-        let first = tokio::spawn(async move {
-            q1.execute(LlmPriority::Normal, move || async move {
-                s1.wait().await;
-                r1.notified().await;
-            })
-            .await;
-        });
-        first_started.wait().await;
-
-        // Enqueue LuaAnalysis (will wait).
-        let q_lua = Arc::clone(&queue);
-        let o_lua = Arc::clone(&order);
-        let lua = tokio::spawn(async move {
-            q_lua
-                .execute(LlmPriority::LuaAnalysis, move || async move {
-                    o_lua.lock().unwrap().push("lua");
-                })
+        let hold = Arc::new(Notify::new());
+        let active_queue = Arc::clone(&queue);
+        let active_hold = Arc::clone(&hold);
+        let active = tokio::spawn(async move {
+            active_queue
+                .execute(move || async move { active_hold.notified().await })
                 .await;
         });
-        tokio::task::yield_now().await;
+        while queue.active_count() != 1 {
+            tokio::task::yield_now().await;
+        }
 
-        // Enqueue EmojiReaction (lowest priority, will wait).
-        let q_emoji = Arc::clone(&queue);
-        let o_emoji = Arc::clone(&order);
-        let emoji = tokio::spawn(async move {
-            q_emoji
-                .execute(LlmPriority::EmojiReaction, move || async move {
-                    o_emoji.lock().unwrap().push("emoji");
-                })
-                .await;
+        let waiting_queue = Arc::clone(&queue);
+        let waiting = tokio::spawn(async move {
+            waiting_queue.execute(|| async {}).await;
         });
-        tokio::task::yield_now().await;
+        while queue.pending_count() != 1 {
+            tokio::task::yield_now().await;
+        }
+        waiting.abort();
+        let _ = waiting.await;
+        assert_eq!(queue.pending_count(), 0);
 
-        // Enqueue another Normal (should jump ahead of lua and emoji).
-        let q_normal = Arc::clone(&queue);
-        let o_normal = Arc::clone(&order);
-        let normal = tokio::spawn(async move {
-            q_normal
-                .execute(LlmPriority::Normal, move || async move {
-                    o_normal.lock().unwrap().push("normal");
-                })
-                .await;
-        });
-        tokio::task::yield_now().await;
-
-        // Release the active slot — Normal should run first since it was
-        // enqueued after the holding Normal but before lua/emoji.
-        release.notify_one();
-
-        first.await.unwrap();
-        normal.await.unwrap();
-        lua.await.unwrap();
-        emoji.await.unwrap();
-        assert_eq!(*order.lock().unwrap(), vec!["normal", "lua", "emoji"]);
+        hold.notify_one();
+        active.await.unwrap();
+        assert_eq!(queue.active_count(), 0);
     }
 
     #[tokio::test]
@@ -430,7 +271,7 @@ mod tests {
         let s1 = Arc::clone(&started);
         let h1 = Arc::clone(&hold);
         let t1 = tokio::spawn(async move {
-            q1.execute(LlmPriority::Normal, move || async move {
+            q1.execute(move || async move {
                 s1.wait().await;
                 h1.notified().await;
             })
@@ -441,7 +282,7 @@ mod tests {
         let s2 = Arc::clone(&started);
         let h2 = Arc::clone(&hold);
         let t2 = tokio::spawn(async move {
-            q2.execute(LlmPriority::Normal, move || async move {
+            q2.execute(move || async move {
                 s2.wait().await;
                 h2.notified().await;
             })
@@ -457,7 +298,7 @@ mod tests {
         // A third request must wait.
         let q3 = Arc::clone(&queue);
         let t3 = tokio::spawn(async move {
-            q3.execute(LlmPriority::Normal, move || async {}).await;
+            q3.execute(move || async {}).await;
         });
         tokio::task::yield_now().await;
         assert_eq!(queue.active_count(), 2);
@@ -481,18 +322,12 @@ mod tests {
         let queue = Arc::new(LlmRequestQueue::new(2));
         let done = Arc::new(AtomicUsize::new(0));
         let mut tasks = Vec::new();
-        let priorities = [
-            LlmPriority::EmojiReaction,
-            LlmPriority::LuaAnalysis,
-            LlmPriority::Normal,
-        ];
-        for i in 0..64 {
+        for _ in 0..64 {
             let queue = Arc::clone(&queue);
             let done = Arc::clone(&done);
-            let priority = priorities[i % 3];
             tasks.push(tokio::spawn(async move {
                 queue
-                    .execute(priority, move || async move {
+                    .execute(move || async move {
                         tokio::task::yield_now().await;
                         done.fetch_add(1, Ordering::SeqCst);
                     })

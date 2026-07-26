@@ -9,6 +9,8 @@ use tokio::sync::Mutex;
 use housebot_config as config;
 use housebot_memory::ensure_dir;
 
+pub const SKILL_CREATOR_NAME: &str = "skill_creator";
+
 /// A trigger condition that determines when a skill should be activated.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SkillTrigger {
@@ -176,6 +178,53 @@ impl Skill {
     }
 }
 
+fn builtin_skill_creator() -> Skill {
+    Skill {
+        name: SKILL_CREATOR_NAME.to_string(),
+        description: Some(
+            "Design clear, reusable Housebot skills through a review-first workflow.".to_string(),
+        ),
+        instructions: "Help the user design or improve a Housebot skill. First clarify the \
+            desired behavior, boundaries, trigger conditions, and tools it genuinely needs. \
+            Prefer focused instructions over broad personality prompts. Use keyword triggers only \
+            for precise phrases; use intent or context triggers when literal matching would be \
+            brittle. Recommend only tools that actually exist. Add a small number of examples \
+            when they materially disambiguate behavior. Check the marketplace before choosing a \
+            name or duplicating an existing skill. Present a concise final draft containing the \
+            name, description, instructions, triggers, recommended tools, and examples. Obtain \
+            explicit user approval before calling create_skill or edit_skill."
+            .to_string(),
+        triggers: vec![
+            SkillTrigger {
+                trigger_type: "intent".to_string(),
+                value: "create, design, improve, or review a custom skill".to_string(),
+            },
+            SkillTrigger {
+                trigger_type: "keyword".to_string(),
+                value: "skill creator".to_string(),
+            },
+        ],
+        enabled_tools: vec![
+            "list_skills".to_string(),
+            "skill_info".to_string(),
+            "create_skill".to_string(),
+            "edit_skill".to_string(),
+        ],
+        examples: Vec::new(),
+        version: 1,
+        version_history: Vec::new(),
+        created_by: None,
+        editors: Vec::new(),
+        created_at: 0,
+        updated_at: 0,
+        prompt: None,
+    }
+}
+
+fn builtin_skills() -> BTreeMap<String, Skill> {
+    BTreeMap::from([(SKILL_CREATOR_NAME.to_string(), builtin_skill_creator())])
+}
+
 fn now_secs() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -214,10 +263,9 @@ impl Skills {
                 return skills.clone();
             }
         }
-        let raw = match tokio::fs::read_to_string(&self.path).await {
-            Ok(s) => s,
-            Err(_) => return BTreeMap::new(),
-        };
+        let raw = tokio::fs::read_to_string(&self.path)
+            .await
+            .unwrap_or_default();
         let mut skills: BTreeMap<String, Skill> = if raw.trim().is_empty() {
             BTreeMap::new()
         } else {
@@ -230,13 +278,14 @@ impl Skills {
                         path = %self.path.display(),
                         "Failed to parse skills file — returning empty store without caching"
                     );
-                    return BTreeMap::new();
+                    return builtin_skills();
                 }
             }
         };
         for skill in skills.values_mut() {
             skill.migrate_from_prompt();
         }
+        skills.insert(SKILL_CREATOR_NAME.to_string(), builtin_skill_creator());
         *self.cache.lock().await = Some(skills.clone());
         skills
     }
@@ -245,7 +294,12 @@ impl Skills {
         if let Some(parent) = self.path.parent() {
             ensure_dir(parent).await?;
         }
-        let body = serde_json::to_string_pretty(skills).unwrap_or_else(|_| "{}".into());
+        let persisted: BTreeMap<_, _> = skills
+            .iter()
+            .filter(|(name, _)| name.as_str() != SKILL_CREATOR_NAME)
+            .map(|(name, skill)| (name.clone(), skill.clone()))
+            .collect();
+        let body = serde_json::to_string_pretty(&persisted).unwrap_or_else(|_| "{}".into());
         tokio::fs::write(&self.path, body).await
     }
 
@@ -256,6 +310,12 @@ impl Skills {
 
     /// Save (or overwrite) a skill under its own name.
     pub async fn save(&self, skill: Skill) -> std::io::Result<()> {
+        if skill.name == SKILL_CREATOR_NAME {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::PermissionDenied,
+                "built-in skills cannot be overwritten",
+            ));
+        }
         let mut all = self.load_all().await;
         all.insert(skill.name.clone(), skill);
         self.write_all(&all).await?;
@@ -265,6 +325,12 @@ impl Skills {
 
     /// Delete a skill, returning whether it existed.
     pub async fn delete(&self, name: &str) -> std::io::Result<bool> {
+        if name == SKILL_CREATOR_NAME {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::PermissionDenied,
+                "built-in skills cannot be deleted",
+            ));
+        }
         let mut all = self.load_all().await;
         if all.remove(name).is_none() {
             return Ok(false);
@@ -278,6 +344,45 @@ impl Skills {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn skill_creator_is_builtin_and_not_persisted() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("skills.json");
+        let skills = Skills::new(&path);
+
+        let creator = skills.get(SKILL_CREATOR_NAME).await.unwrap();
+        assert_eq!(creator.version, 1);
+        assert!(creator.created_by.is_none());
+        assert!(creator.enabled_tools.contains(&"create_skill".to_string()));
+        assert_eq!(
+            skills.delete(SKILL_CREATOR_NAME).await.unwrap_err().kind(),
+            std::io::ErrorKind::PermissionDenied
+        );
+
+        skills
+            .save(Skill {
+                name: "custom".to_string(),
+                description: None,
+                instructions: "Do one thing well.".to_string(),
+                triggers: Vec::new(),
+                enabled_tools: Vec::new(),
+                examples: Vec::new(),
+                version: 1,
+                version_history: Vec::new(),
+                created_by: Some("1".to_string()),
+                editors: Vec::new(),
+                created_at: 0,
+                updated_at: 0,
+                prompt: None,
+            })
+            .await
+            .unwrap();
+
+        let persisted = tokio::fs::read_to_string(path).await.unwrap();
+        assert!(persisted.contains("\"custom\""));
+        assert!(!persisted.contains(SKILL_CREATOR_NAME));
+    }
     use tempfile::TempDir;
 
     fn store() -> (TempDir, Skills) {
@@ -337,9 +442,11 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn load_all_empty_when_no_file() {
+    async fn load_all_contains_only_builtin_when_no_file() {
         let (_t, s) = store();
-        assert!(s.load_all().await.is_empty());
+        let all = s.load_all().await;
+        assert_eq!(all.len(), 1);
+        assert!(all.contains_key(SKILL_CREATOR_NAME));
     }
 
     #[tokio::test]
