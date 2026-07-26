@@ -26,13 +26,6 @@ struct DiscordChannel {
     kind: u8,
 }
 
-#[derive(Deserialize)]
-struct ApplicationCommand {
-    name: String,
-    #[serde(default)]
-    options: Vec<serde_json::Value>,
-}
-
 struct Handler {
     messages: mpsc::UnboundedSender<Message>,
     ready: Mutex<Option<oneshot::Sender<()>>>,
@@ -74,7 +67,8 @@ pub async fn run() -> anyhow::Result<()> {
         messages: message_tx,
         ready: Mutex::new(Some(ready_tx)),
     };
-    let intents = GatewayIntents::GUILDS | GatewayIntents::GUILD_MESSAGES;
+    let intents =
+        GatewayIntents::GUILDS | GatewayIntents::GUILD_MESSAGES | GatewayIntents::MESSAGE_CONTENT;
     let mut client = Client::builder(&driver_token, intents)
         .event_handler(handler)
         .await?;
@@ -84,7 +78,6 @@ pub async fn run() -> anyhow::Result<()> {
         .await
         .context("driver did not become ready")??;
 
-    verify_slash_commands(&api, &housebot_token, &housebot_user.id, guild_id).await?;
     let http = Http::new(&driver_token);
     let result = Suite::new(
         &http,
@@ -97,51 +90,6 @@ pub async fn run() -> anyhow::Result<()> {
     shard_manager.shutdown_all().await;
     let _ = client_task.await;
     result
-}
-
-async fn verify_slash_commands(
-    client: &reqwest::Client,
-    token: &str,
-    application_id: &str,
-    guild_id: u64,
-) -> anyhow::Result<()> {
-    // Housebot intentionally upserts global commands one at a time before its
-    // atomic guild registration. Discord can rate-limit that startup work, so
-    // poll the resulting schemas instead of assuming registration is instant.
-    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(180);
-    loop {
-        let global: Vec<ApplicationCommand> = discord_get(
-            client,
-            token,
-            &format!("/applications/{application_id}/commands"),
-        )
-        .await?;
-        let guild: Vec<ApplicationCommand> = discord_get(
-            client,
-            token,
-            &format!("/applications/{application_id}/guilds/{guild_id}/commands"),
-        )
-        .await?;
-        let stats_registered = global.iter().any(|command| command.name == "stats");
-        let labs = guild.iter().find(|command| command.name == "labs");
-        if stats_registered && labs.is_some_and(|command| !command.options.is_empty()) {
-            println!("ok: global and guild slash-command schemas registered");
-            return Ok(());
-        }
-        anyhow::ensure!(
-            tokio::time::Instant::now() < deadline,
-            "Housebot slash-command schemas were not registered within 180 seconds (global: {:?}, guild: {:?})",
-            global
-                .iter()
-                .map(|command| command.name.as_str())
-                .collect::<Vec<_>>(),
-            guild
-                .iter()
-                .map(|command| command.name.as_str())
-                .collect::<Vec<_>>()
-        );
-        tokio::time::sleep(std::time::Duration::from_secs(1)).await;
-    }
 }
 
 async fn current_user(client: &reqwest::Client, token: &str) -> anyhow::Result<DiscordUser> {

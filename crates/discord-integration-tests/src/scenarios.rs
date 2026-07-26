@@ -13,7 +13,6 @@ pub struct Suite<'a> {
     pub events: &'a mut mpsc::UnboundedReceiver<Message>,
     pub channel_id: ChannelId,
     pub housebot_id: UserId,
-    cleanup: Vec<MessageId>,
 }
 
 impl<'a> Suite<'a> {
@@ -28,13 +27,23 @@ impl<'a> Suite<'a> {
             events,
             channel_id,
             housebot_id,
-            cleanup: Vec::new(),
         }
     }
 
     pub async fn run(mut self) -> anyhow::Result<()> {
+        let run_id = Uuid::new_v4();
+        self.channel_id
+            .say(self.http, format!("E2E_SESSION_START:{run_id}"))
+            .await?;
         let result = self.run_inner().await;
-        self.cleanup().await;
+        let status = if result.is_ok() { "PASS" } else { "FAIL" };
+        if let Err(error) = self
+            .channel_id
+            .say(self.http, format!("E2E_SESSION_STOP:{run_id}:{status}"))
+            .await
+        {
+            eprintln!("could not post test session stop marker: {error}");
+        }
         result
     }
 
@@ -83,7 +92,6 @@ impl<'a> Suite<'a> {
             .content(format!("<@{}> E2E_REPLY:{nonce}", self.housebot_id.get()))
             .reference_message(prior);
         let sent = self.channel_id.send_message(self.http, builder).await?;
-        self.cleanup.push(sent.id);
         self.wait_for_reply(sent.id, &format!("E2E_OK:{nonce}"), RESPONSE_TIMEOUT)
             .await
             .context("reply-followup scenario")?;
@@ -133,7 +141,6 @@ impl<'a> Suite<'a> {
                 message.content.chars().count() <= 2_000,
                 "Housebot emitted an oversized Discord message"
             );
-            self.cleanup.push(message.id);
             combined.push_str(&message.content);
             if combined.contains(&format!("E2E_LONG_END:{nonce}")) {
                 break;
@@ -167,9 +174,7 @@ impl<'a> Suite<'a> {
     }
 
     async fn send(&mut self, content: String) -> anyhow::Result<Message> {
-        let message = self.channel_id.say(self.http, content).await?;
-        self.cleanup.push(message.id);
-        Ok(message)
+        Ok(self.channel_id.say(self.http, content).await?)
     }
 
     async fn wait_for_reply(
@@ -193,7 +198,6 @@ impl<'a> Suite<'a> {
                 .as_ref()
                 .and_then(|reference| reference.message_id);
             if reference == Some(source_id) && message.content.contains(expected) {
-                self.cleanup.push(message.id);
                 return Ok(message);
             }
         }
@@ -215,18 +219,6 @@ impl<'a> Suite<'a> {
                     == Some(source_id)
             {
                 anyhow::bail!("Housebot produced multiple correlated responses");
-            }
-        }
-    }
-
-    async fn cleanup(&self) {
-        for message_id in self.cleanup.iter().rev() {
-            if let Err(error) = self
-                .http
-                .delete_message(self.channel_id, *message_id, None)
-                .await
-            {
-                eprintln!("could not delete test message {message_id}: {error}");
             }
         }
     }

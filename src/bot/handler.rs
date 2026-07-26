@@ -38,7 +38,11 @@ impl EventHandler for HouseBot {
         self.discord.set_http(ctx.http.clone()).await;
 
         let guild_ids: Vec<GuildId> = ready.guilds.iter().map(|guild| guild.id).collect();
-        register_slash_commands(&ctx, &guild_ids).await;
+        if config::env_parse("DISCORD_REGISTER_COMMANDS", true) {
+            register_slash_commands(&ctx, &guild_ids).await;
+        } else {
+            tracing::info!("Discord command registration disabled");
+        }
 
         if self.reminder_started.swap(true, Ordering::SeqCst) {
             return;
