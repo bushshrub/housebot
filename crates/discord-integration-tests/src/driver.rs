@@ -105,7 +105,10 @@ async fn verify_slash_commands(
     application_id: &str,
     guild_id: u64,
 ) -> anyhow::Result<()> {
-    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(30);
+    // Housebot intentionally upserts global commands one at a time before its
+    // atomic guild registration. Discord can rate-limit that startup work, so
+    // poll the resulting schemas instead of assuming registration is instant.
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(180);
     loop {
         let global: Vec<ApplicationCommand> = discord_get(
             client,
@@ -127,7 +130,15 @@ async fn verify_slash_commands(
         }
         anyhow::ensure!(
             tokio::time::Instant::now() < deadline,
-            "Housebot slash-command schemas were not registered within 30 seconds"
+            "Housebot slash-command schemas were not registered within 180 seconds (global: {:?}, guild: {:?})",
+            global
+                .iter()
+                .map(|command| command.name.as_str())
+                .collect::<Vec<_>>(),
+            guild
+                .iter()
+                .map(|command| command.name.as_str())
+                .collect::<Vec<_>>()
         );
         tokio::time::sleep(std::time::Duration::from_secs(1)).await;
     }
