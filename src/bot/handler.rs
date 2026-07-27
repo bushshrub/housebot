@@ -400,6 +400,9 @@ impl EventHandler for HouseBot {
                 false
             };
             if !respond {
+                let _ = msg
+                    .reply(&ctx.http, "You aren't allowed to speak to this bot.")
+                    .await;
                 return;
             }
             tracing::info!(
