@@ -329,5 +329,11 @@ pub async fn run() -> anyhow::Result<()> {
 }
 
 #[cfg(test)]
-#[path = "bot_tests.rs"]
-mod tests;
+#[path = "bot_tests_commands.rs"]
+mod bot_tests_commands;
+#[cfg(test)]
+#[path = "bot_tests_rendering.rs"]
+mod bot_tests_rendering;
+#[cfg(test)]
+#[path = "bot_tests_support.rs"]
+mod bot_tests_support;

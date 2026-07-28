@@ -626,9 +626,27 @@ impl Agent {
 }
 
 #[cfg(test)]
-#[path = "tests.rs"]
-mod tests;
+#[path = "tests_core.rs"]
+mod tests_core;
+#[cfg(test)]
+#[path = "tests_formatting.rs"]
+mod tests_formatting;
+#[cfg(test)]
+#[path = "tests_leaderboard.rs"]
+mod tests_leaderboard;
+#[cfg(test)]
+#[path = "tests_support.rs"]
+mod tests_support;
 
 #[cfg(test)]
-#[path = "tests_run.rs"]
-mod tests_run;
+#[path = "tests_run_dispatch.rs"]
+mod tests_run_dispatch;
+#[cfg(test)]
+#[path = "tests_run_persistence.rs"]
+mod tests_run_persistence;
+#[cfg(test)]
+#[path = "tests_run_stream.rs"]
+mod tests_run_stream;
+#[cfg(test)]
+#[path = "tests_run_support.rs"]
+mod tests_run_support;

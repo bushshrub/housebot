@@ -560,5 +560,11 @@ fn friendly_error(error: &mlua::Error, limits: &LuaLimits) -> String {
 }
 
 #[cfg(test)]
-#[path = "tests.rs"]
-mod tests;
+#[path = "tests_bridge.rs"]
+mod tests_bridge;
+#[cfg(test)]
+#[path = "tests_scripting.rs"]
+mod tests_scripting;
+#[cfg(test)]
+#[path = "tests_support.rs"]
+mod tests_support;
