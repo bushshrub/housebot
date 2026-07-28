@@ -262,7 +262,14 @@ pub struct Agent {
     merge_audit: tools::github_api::MergeAuditLog,
 }
 
+mod configure_bot;
 mod dispatch;
+mod dispatch_discord;
+mod dispatch_features;
+mod dispatch_lua;
+mod dispatch_sandbox;
+mod dispatch_skills;
+mod dispatch_web;
 mod leaderboard_fmt;
 mod lua;
 pub use lua::BotScriptHost;

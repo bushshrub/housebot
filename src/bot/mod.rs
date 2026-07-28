@@ -72,12 +72,16 @@ struct PaginatedResponse {
     pages: Vec<String>,
 }
 
+mod ban_messages;
 mod command_defs;
 mod config_cmd;
 mod develop;
 mod develop_actions;
 mod develop_component;
 mod handler;
+mod handler_interactions;
+mod handler_messages;
+mod handler_reactions;
 mod helpers;
 mod interactions;
 mod lua_cmd;
@@ -85,6 +89,8 @@ mod media;
 mod message_flow;
 mod progress;
 mod render;
+mod tool_ban;
+mod tool_restore;
 #[allow(unused_imports)]
 use command_defs::*;
 #[allow(unused_imports)]
