@@ -274,6 +274,8 @@ mod leaderboard_fmt;
 mod lua;
 pub use lua::BotScriptHost;
 mod prompt;
+mod prompt_base;
+mod prompt_suffix;
 mod run;
 mod session;
 mod tools_def;

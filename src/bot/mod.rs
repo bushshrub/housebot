@@ -78,6 +78,8 @@ mod command_defs_config;
 mod command_defs_moderation;
 mod command_defs_user;
 mod config_cmd;
+mod config_cmd_personalize;
+mod config_cmd_server;
 mod develop;
 mod develop_actions;
 mod develop_component;
