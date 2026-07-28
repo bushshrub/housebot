@@ -393,6 +393,37 @@ async fn tool_loop_is_bounded() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn tool_calls_are_dispatched_when_finish_reason_is_not_tool_calls() {
+    let client = Arc::new(MockChatClient::new());
+    client.push_completion(crate::llm::ChatCompletion {
+        content: None,
+        tool_calls: vec![crate::llm::ToolCall {
+            id: "call_a".into(),
+            name: "get_lua_docs".into(),
+            arguments: "{}".into(),
+        }],
+        finish_reason: Some("stop".into()),
+        usage: Default::default(),
+    });
+    client.push_text("Here is what the docs say.");
+    let (_t, agent) = test_agent(client);
+    let result = agent
+        .run(AgentRequest::text("u_finish", "Al", "lua docs"), &NoHooks)
+        .await;
+    assert_eq!(result.text, "Here is what the docs say.");
+    assert_eq!(result.tools_called, vec!["get_lua_docs".to_string()]);
+    let hist = agent.history.load("u_finish").await;
+    let assistant_tool_calls: usize = hist
+        .iter()
+        .filter_map(|m| m.get("tool_calls").and_then(|tc| tc.as_array()))
+        .map(Vec::len)
+        .sum();
+    let tool_results = hist.iter().filter(|m| m["role"] == "tool").count();
+    assert_eq!(assistant_tool_calls, 1);
+    assert_eq!(tool_results, 1);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn rate_limited_search_still_answers_every_tool_call_in_the_batch() {
     let client = Arc::new(MockChatClient::new());
     // One completion with two tool calls where the first result reads as a

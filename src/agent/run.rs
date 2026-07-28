@@ -201,9 +201,12 @@ impl Agent {
             messages.push(assistant.clone());
             turn_messages.push(assistant);
 
-            let is_tool_turn = completion.finish_reason.as_deref() == Some("tool_calls")
-                && !completion.tool_calls.is_empty();
-            if !is_tool_turn {
+            // The presence of tool calls decides the turn, not `finish_reason`:
+            // several OpenAI-compatible backends report "stop" (or omit the
+            // field entirely) alongside tool calls. Trusting it would answer the
+            // user with the model's empty text and strand the tool calls in the
+            // persisted history with no results.
+            if completion.tool_calls.is_empty() {
                 break completion.content.unwrap_or_default();
             }
 
@@ -295,7 +298,7 @@ impl Agent {
             text: if cancelled {
                 String::new()
             } else if final_text.is_empty() {
-                "(no response)".to_string()
+                "The model returned an empty reply — please try again.".to_string()
             } else {
                 final_text
             },
