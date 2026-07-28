@@ -99,6 +99,7 @@ mod prompt_base;
 mod prompt_suffix;
 mod run;
 mod session;
+mod tool_exec;
 mod tools_def;
 
 #[allow(unused_imports)]

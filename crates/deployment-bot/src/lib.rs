@@ -81,6 +81,7 @@ const SANDBOXD_CONTAINER: &str = "housebot-sandboxd";
 
 mod docker;
 mod handler;
+mod handler_interactions;
 use docker::{
     cleanup_old_images, container_commands_with_env, docker_object_missing, run_deployment_command,
     run_docker, short_sha, valid_housebot_image, DeploymentRunSummary,
