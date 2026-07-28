@@ -1,10 +1,11 @@
 //! Agent tool for fetching and summarizing a web page.
 
-use std::sync::LazyLock;
+use std::sync::{Arc, LazyLock};
 
 use regex::Regex;
 use serde_json::{json, Value};
 
+use crate::net_guard::PublicOnlyResolver;
 use crate::web_fetch::validate_public_url;
 use housebot_llm::ChatClient;
 
@@ -27,6 +28,18 @@ pub fn definition() -> Value {
         }
     })
 }
+
+/// Shared across calls so the connection pool and TLS session cache survive
+/// between summaries instead of being rebuilt on every tool invocation.
+static HTTP: LazyLock<reqwest::Client> = LazyLock::new(|| {
+    reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .dns_resolver(Arc::new(PublicOnlyResolver))
+        .timeout(std::time::Duration::from_secs(FETCH_TIMEOUT_SECS))
+        .user_agent("house-chatbot/1.0")
+        .build()
+        .expect("summarize_url HTTP client should build")
+});
 
 static TAG_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"<[^>]+>").unwrap());
 static WS_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\s+").unwrap());
@@ -66,15 +79,7 @@ pub async fn summarize_content(
 /// same private-address blocklist as `fetch_webpage` and `download_file`.
 pub async fn fetch_and_summarize(client: &dyn ChatClient, model: &str, url: &str) -> String {
     const MAX_REDIRECTS: usize = 5;
-    let http = reqwest::Client::builder()
-        .redirect(reqwest::redirect::Policy::none())
-        .timeout(std::time::Duration::from_secs(FETCH_TIMEOUT_SECS))
-        .user_agent("house-chatbot/1.0")
-        .build();
-    let http = match http {
-        Ok(c) => c,
-        Err(e) => return format!("Error: could not build HTTP client: {e}"),
-    };
+    let http = &*HTTP;
     let mut current = url.to_string();
     let mut final_response = None;
     for _ in 0..=MAX_REDIRECTS {

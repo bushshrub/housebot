@@ -1,7 +1,6 @@
 //! Fetch a public webpage and extract readable text (SSRF-guarded).
 
-use std::net::IpAddr;
-use std::sync::LazyLock;
+use std::sync::{Arc, LazyLock};
 use std::time::{Duration, Instant};
 
 use regex::Regex;
@@ -9,6 +8,7 @@ use reqwest::{Client, StatusCode, Url};
 use serde_json::{json, Value};
 use tokio::sync::Mutex;
 
+use crate::net_guard::{is_blocked_ip, PublicOnlyResolver};
 use crate::wait_for_slot;
 
 const MAX_REDIRECTS: usize = 5;
@@ -24,9 +24,12 @@ impl Default for WebFetch {
     fn default() -> Self {
         Self {
             // Redirects are followed manually so every hop is re-validated
-            // against the private-address blocklist.
+            // against the private-address blocklist, and the guarding resolver
+            // makes that blocklist authoritative at connect time rather than
+            // only at check time.
             client: Client::builder()
                 .redirect(reqwest::redirect::Policy::none())
+                .dns_resolver(Arc::new(PublicOnlyResolver))
                 .user_agent("Mozilla/5.0 (compatible; housebot/1.0)")
                 .timeout(Duration::from_secs(30))
                 .build()
@@ -140,12 +143,23 @@ pub(crate) async fn validate_public_url(raw: &str) -> Result<(), String> {
     if host.eq_ignore_ascii_case("localhost") || host.ends_with(".localhost") {
         return Err("loopback hosts are blocked".into());
     }
+    let host = host
+        .strip_prefix('[')
+        .and_then(|h| h.strip_suffix(']'))
+        .unwrap_or(host);
+    if let Ok(ip) = host.parse::<std::net::IpAddr>() {
+        return if is_blocked_ip(ip) {
+            Err(format!("host is a non-public address {ip}"))
+        } else {
+            Ok(())
+        };
+    }
     let port = url.port_or_known_default().ok_or("URL has no known port")?;
     let addresses = tokio::net::lookup_host((host, port))
         .await
         .map_err(|e| e.to_string())?;
     for address in addresses {
-        if blocked_ip(address.ip()) {
+        if is_blocked_ip(address.ip()) {
             return Err(format!(
                 "host resolves to non-public address {}",
                 address.ip()
@@ -153,25 +167,6 @@ pub(crate) async fn validate_public_url(raw: &str) -> Result<(), String> {
         }
     }
     Ok(())
-}
-
-fn blocked_ip(ip: IpAddr) -> bool {
-    match ip {
-        IpAddr::V4(ip) => {
-            ip.is_loopback()
-                || ip.is_private()
-                || ip.is_link_local()
-                || ip.is_unspecified()
-                || ip.is_multicast()
-        }
-        IpAddr::V6(ip) => {
-            ip.is_loopback()
-                || ip.is_unspecified()
-                || ip.is_multicast()
-                || (ip.segments()[0] & 0xfe00) == 0xfc00
-                || (ip.segments()[0] & 0xffc0) == 0xfe80
-        }
-    }
 }
 
 static CHROME_RE: LazyLock<Regex> = LazyLock::new(|| {
@@ -183,20 +178,29 @@ static TAG_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?is)<[^>]+>").un
 mod tests {
     use super::*;
 
-    #[test]
-    fn blocks_private_and_loopback_ips() {
-        assert!(blocked_ip("127.0.0.1".parse().unwrap()));
-        assert!(blocked_ip("10.1.2.3".parse().unwrap()));
-        assert!(blocked_ip("192.168.1.1".parse().unwrap()));
-        assert!(blocked_ip("::1".parse().unwrap()));
-        assert!(!blocked_ip("93.184.216.34".parse().unwrap()));
-    }
-
     #[tokio::test]
     async fn rejects_non_http_schemes_and_localhost() {
         assert!(validate_public_url("ftp://example.com").await.is_err());
         assert!(validate_public_url("http://localhost:8080").await.is_err());
         assert!(validate_public_url("http://foo.localhost").await.is_err());
+    }
+
+    /// Regression: an IP-literal URL must be rejected by the up-front check,
+    /// including the IPv4-mapped IPv6 spelling of a loopback address.
+    #[tokio::test]
+    async fn rejects_private_ip_literal_urls() {
+        for url in [
+            "http://127.0.0.1/",
+            "http://10.0.0.1/",
+            "http://169.254.169.254/latest/meta-data/",
+            "http://[::1]/",
+            "http://[::ffff:127.0.0.1]/",
+        ] {
+            assert!(
+                validate_public_url(url).await.is_err(),
+                "{url} should be refused"
+            );
+        }
     }
 
     #[test]

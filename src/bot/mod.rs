@@ -72,19 +72,37 @@ struct PaginatedResponse {
     pages: Vec<String>,
 }
 
+mod ban_messages;
 mod command_defs;
+mod command_defs_config;
+mod command_defs_moderation;
+mod command_defs_user;
 mod config_cmd;
+mod config_cmd_personalize;
+mod config_cmd_server;
 mod develop;
 mod develop_actions;
+mod develop_approve;
 mod develop_component;
+mod develop_component_effort;
+mod develop_components;
 mod handler;
+mod handler_interactions;
+mod handler_messages;
+mod handler_reactions;
 mod helpers;
 mod interactions;
+mod interactions_data;
+mod interactions_moderation;
+mod interactions_settings;
+mod leaderboard_cmd;
 mod lua_cmd;
 mod media;
 mod message_flow;
 mod progress;
 mod render;
+mod tool_ban;
+mod tool_restore;
 #[allow(unused_imports)]
 use command_defs::*;
 #[allow(unused_imports)]
@@ -329,5 +347,11 @@ pub async fn run() -> anyhow::Result<()> {
 }
 
 #[cfg(test)]
-#[path = "bot_tests.rs"]
-mod tests;
+#[path = "bot_tests_commands.rs"]
+mod bot_tests_commands;
+#[cfg(test)]
+#[path = "bot_tests_rendering.rs"]
+mod bot_tests_rendering;
+#[cfg(test)]
+#[path = "bot_tests_support.rs"]
+mod bot_tests_support;

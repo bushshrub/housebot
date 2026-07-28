@@ -37,191 +37,12 @@ use crate::tools::sandbox::LazySandbox;
 use crate::tools::searxng::SearxNg;
 use crate::tools::web_fetch::WebFetch;
 
-/// An inbound media attachment, base64-encoded for the multimodal API.
-#[derive(Debug, Clone)]
-pub struct MediaData {
-    pub media_type: String,
-    pub data: String,
-}
+mod emoji;
+mod startup;
+mod types;
 
-/// A one-shot cancellation flag for an active agent run.  When the flag is
-/// triggered the agent loop stops as soon as possible.
-#[derive(Debug, Default)]
-struct CancelState {
-    cancelled: AtomicBool,
-    notify: Notify,
-}
-
-#[derive(Debug, Clone, Default)]
-pub struct CancelToken(Arc<CancelState>);
-
-impl CancelToken {
-    pub(crate) fn cancel(&self) {
-        self.0.cancelled.store(true, Ordering::Release);
-        self.0.notify.notify_waiters();
-    }
-
-    pub(crate) fn is_cancelled(&self) -> bool {
-        self.0.cancelled.load(Ordering::Acquire)
-    }
-
-    pub(crate) async fn cancelled(&self) {
-        loop {
-            let notified = self.0.notify.notified();
-            if self.is_cancelled() {
-                return;
-            }
-            notified.await;
-        }
-    }
-}
-
-/// One user turn to run through the agent.
-#[derive(Debug, Clone)]
-pub struct AgentRequest<'a> {
-    pub user_id: &'a str,
-    pub username: &'a str,
-    pub text: &'a str,
-    pub media: &'a [MediaData],
-    /// Optional personality/tone override injected into the system prompt.
-    pub personality: Option<&'a str>,
-    /// Reasoning budget for this user's requests.
-    pub thinking: ThinkingMode,
-    /// Discord channel ID (0 if unknown). Used by the `prepare_feature_development` tool.
-    pub channel_id: u64,
-    /// Whether deep memory (update_memory tool + auto-summary) is enabled for this user.
-    pub deep_memory_enabled: bool,
-    /// User's display name from their profile (for personalized greetings).
-    pub display_name: &'a str,
-    /// User's guild nickname from their profile (empty if none).
-    pub nickname: &'a str,
-    /// User's Discord avatar URL from their persisted profile (empty if none).
-    pub avatar_url: &'a str,
-    pub profile_tags: &'a str,
-    pub quick_actions: &'a str,
-    pub guild_id: Option<u64>,
-    pub proactive: bool,
-    pub record_profile_usage: bool,
-    /// Per-user cap on completion output tokens, set by the bot's configurers.
-    pub max_output_tokens: Option<u32>,
-    /// Optional cancellation token. When triggered, the active LLM stream is
-    /// dropped and the agent loop stops without producing a response.
-    pub cancel: Option<CancelToken>,
-}
-
-impl<'a> AgentRequest<'a> {
-    /// A plain text request with default settings (used by tests and headless callers).
-    pub fn text(user_id: &'a str, username: &'a str, text: &'a str) -> Self {
-        Self {
-            user_id,
-            username,
-            text,
-            media: &[],
-            personality: None,
-            thinking: ThinkingMode::default(),
-            channel_id: 0,
-            deep_memory_enabled: true,
-            display_name: username,
-            nickname: "",
-            avatar_url: "",
-            profile_tags: "",
-            quick_actions: "",
-            guild_id: None,
-            proactive: false,
-            record_profile_usage: true,
-            max_output_tokens: None,
-            cancel: None,
-        }
-    }
-}
-
-/// Structured bot-control action extracted from a tool call, carried alongside text.
-#[derive(Debug, Clone)]
-pub enum AgentControlAction {
-    /// Owner wants to configure interactively.
-    OwnerConfigurationRequired { job_id: uuid::Uuid },
-    /// Non-owner request created; owner must approve.
-    OwnerApprovalRequired { job_id: uuid::Uuid },
-}
-
-/// A file produced by an agent tool for direct delivery to Discord.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct AgentAttachment {
-    pub filename: String,
-    pub bytes: Vec<u8>,
-}
-
-/// The outcome of one `Agent::run`.
-#[derive(Debug, Clone, Default)]
-pub struct AgentResult {
-    pub text: String,
-    pub session_notice: Option<String>,
-    pub tools_called: Vec<String>,
-    pub attachments: Vec<AgentAttachment>,
-    /// Set when a `prepare_feature_development` tool call produces a structured outcome.
-    pub control_action: Option<AgentControlAction>,
-    /// Set when the user cancelled this request mid-generation.
-    pub cancelled: bool,
-}
-
-/// The result of the pre-execution Lua safety review.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct LuaAnalysis {
-    pub allowed: bool,
-    pub reason: String,
-}
-
-#[derive(Debug, Clone, Copy)]
-pub struct SessionInfo {
-    pub context_tokens: usize,
-    pub context_window_tokens: usize,
-    pub messages: usize,
-    pub requests: u64,
-    pub input_tokens: u64,
-    pub output_tokens: u64,
-    pub cached_tokens: u64,
-}
-
-/// Per-request callbacks used to surface progress into the chat surface.
-#[async_trait]
-pub trait AgentHooks: Send + Sync {
-    /// Cumulative assistant text as it streams in.
-    async fn on_text_stream(&self, _partial: &str) {}
-    /// The current assistant text stream has ended.
-    async fn on_text_stream_end(&self) {}
-    /// A tool is about to run.
-    async fn on_tool_called(&self, _tool: &str, _args: &Value) {}
-    /// A progress update from a long-running operation.
-    async fn on_progress(&self, _line: &str) {}
-}
-
-/// No-op hooks (used in tests and headless contexts).
-pub struct NoHooks;
-#[async_trait]
-impl AgentHooks for NoHooks {}
-
-struct TextStreamAdapter<'a>(&'a dyn AgentHooks);
-#[async_trait]
-impl TextSink for TextStreamAdapter<'_> {
-    async fn push(&self, partial: &str) {
-        self.0.on_text_stream(partial).await;
-    }
-}
-
-/// Result of dispatching a single tool call.
-#[derive(Debug)]
-pub(crate) enum ToolOutcome {
-    Text(String),
-    Attachment {
-        text: String,
-        attachment: AgentAttachment,
-    },
-    /// A development-flow tool call that also carries a control action.
-    DevelopmentAction {
-        text: String,
-        action: AgentControlAction,
-    },
-}
+pub(crate) use emoji::*;
+pub use types::*;
 
 /// The agent: LLM client, storage, tools, and connected MCP servers.
 pub struct Agent {
@@ -262,13 +83,23 @@ pub struct Agent {
     merge_audit: tools::github_api::MergeAuditLog,
 }
 
+mod configure_bot;
 mod dispatch;
+mod dispatch_discord;
+mod dispatch_features;
+mod dispatch_lua;
+mod dispatch_sandbox;
+mod dispatch_skills;
+mod dispatch_web;
 mod leaderboard_fmt;
 mod lua;
 pub use lua::BotScriptHost;
 mod prompt;
+mod prompt_base;
+mod prompt_suffix;
 mod run;
 mod session;
+mod tool_exec;
 mod tools_def;
 
 #[allow(unused_imports)]
@@ -292,85 +123,6 @@ struct SessionStats {
 }
 
 impl Agent {
-    /// Build an agent from environment configuration and start MCP servers.
-    pub async fn from_env(discord: Arc<DiscordBridge>) -> anyhow::Result<Self> {
-        let raw_client: Arc<dyn ChatClient> = Arc::new(OpenAiClient::new(
-            config::env_or("LLM_BASE_URL", "http://server-slop:8080/v1"),
-            config::env_or("LLM_API_KEY", "not-required"),
-        ));
-        let mcp_servers = Arc::new(start_mcp_servers().await);
-        let context_window_tokens = tokio::time::timeout(
-            std::time::Duration::from_secs(10),
-            raw_client.context_window_tokens(),
-        )
-        .await
-        .unwrap_or(Ok(None))
-        .ok()
-        .flatten()
-        .map(|tokens| tokens as usize)
-        .unwrap_or_else(|| {
-            tracing::warn!(
-                "LLM /props probe timed out or failed — using MAX_CONTEXT_TOKENS fallback"
-            );
-            config::env_parse("MAX_CONTEXT_TOKENS", 200_000)
-        });
-        let queue = Arc::new(LlmRequestQueue::default());
-        let queued_client = Arc::new(QueuedChatClient::new(raw_client, queue));
-        let client: Arc<dyn ChatClient> = queued_client.clone();
-        let memory = match Memory::from_env().await {
-            Ok(memory) => memory,
-            Err(error) => {
-                tracing::warn!(%error, "PostgreSQL memory unavailable, falling back to file-based memory");
-                Memory::default()
-            }
-        };
-        // Unlike memory, access control must not silently fall back to an
-        // empty volatile store — that would forget configurers and per-user
-        // policies (fail-open), so refuse to start instead.
-        let access_control = AccessControlStore::from_env().await.map_err(|error| {
-            anyhow::anyhow!(
-                "persistent access control initialization failed; refusing volatile fallback: {error}"
-            )
-        })?;
-        let token_monitor = TokenMonitor::from_env().await.map_err(|error| {
-            anyhow::anyhow!(
-                "persistent token monitor initialization failed; refusing volatile fallback: {error}"
-            )
-        })?;
-        Ok(Self {
-            client,
-            queued_client,
-            model: config::env_or("LLM_MODEL", "gemma-4-12b-qat-q4kxl"),
-            context_window_tokens,
-            history: History::default(),
-            memory,
-            profile_store: ProfileStore::default(),
-            skills: Skills::default(),
-            reminders: Reminders::default(),
-            reporter: Arc::new(GitHubIssueReporter::default()),
-            rate_limiter: tools::feature_request::default_rate_limiter(),
-            feature_edit_limiter: tools::edit_feature_request::default_rate_limiter(),
-            non_owner_dev_limiter: tools::feature_development::default_rate_limiter(),
-            owner_dispatch_limiter: tools::feature_development::owner_dispatch_limiter(),
-            pending_jobs: Arc::new(PendingJobStore::default()),
-            searxng: Arc::new(SearxNg::from_env()),
-            web_fetch: WebFetch::default(),
-            file_downloader: FileDownloader::default(),
-            common_crawl: CommonCrawl::default(),
-            mcp_servers,
-            session_stats: tokio::sync::Mutex::new(HashMap::new()),
-            token_monitor,
-            active_conversations: tokio::sync::Mutex::new(HashMap::new()),
-            tool_permissions: ToolPermissions::default(),
-            access_control,
-            user_config: UserConfigStore::default(),
-            discord,
-            channel_log: ChannelLog::default(),
-            sandbox_client: housebot_sandbox::SandboxClient::from_env(),
-            merge_audit: tools::github_api::MergeAuditLog::default(),
-        })
-    }
-
     /// Current LLM queue utilization (active, pending, capacity).
     /// Use this to decide whether to surface a queue-position message to users.
     pub fn llm_queue_info(&self) -> LlmQueueInfo {
@@ -482,88 +234,6 @@ impl Agent {
     }
 }
 
-/// Heuristic: returns true for characters in the Unicode emoji ranges.
-fn is_emoji(c: char) -> bool {
-    let code = c as u32;
-    matches!(code,
-        0x231A..=0x23FA |
-        0x25AA..=0x25FE |
-        0x2600..=0x27BF |
-        0x2934..=0x2935 |
-        0x2B05..=0x2B55 |
-        0x3030 | 0x303D | 0x3297 | 0x3299 |
-        0x1F000..=0x1FFFF |
-        0xFE00..=0xFE0F   // variation selectors (applied after emoji)
-    )
-}
-
-fn is_emoji_modifier(c: char) -> bool {
-    matches!(c as u32, 0x1F3FB..=0x1F3FF)
-}
-
-fn is_regional_indicator(c: char) -> bool {
-    matches!(c as u32, 0x1F1E6..=0x1F1FF)
-}
-
-fn parse_emoji_selection(value: &str) -> Option<String> {
-    let value = value.trim();
-    if value.eq_ignore_ascii_case("none") || value.is_empty() {
-        return None;
-    }
-    let mut chars = value.chars();
-    let first = chars.next()?;
-    if !is_emoji(first) {
-        return None;
-    }
-    let mut after_joiner = false;
-    let mut regional_pair = false;
-    for c in chars {
-        if c == '\u{200D}' {
-            after_joiner = true;
-        } else if c == '\u{FE0F}' || is_emoji_modifier(c) {
-            continue;
-        } else if is_regional_indicator(first) && is_regional_indicator(c) && !regional_pair {
-            regional_pair = true;
-        } else if !is_emoji(c) || !after_joiner {
-            return None;
-        } else {
-            after_joiner = false;
-        }
-    }
-    if after_joiner {
-        return None;
-    }
-    Some(value.to_string())
-}
-
-// ── MCP server configuration ─────────────────────────────────────────────────
-
-async fn start_mcp_servers() -> Vec<McpServer> {
-    let mut servers = Vec::new();
-    match (
-        std::env::var("JELLYFIN_URL"),
-        std::env::var("JELLYFIN_API_KEY"),
-    ) {
-        (Ok(url), Ok(key)) if !url.is_empty() && !key.is_empty() => {
-            if let Some(s) = McpServer::start(
-                "jellyfin",
-                "jellyfin-mcp",
-                &["--read-only".to_string()],
-                &[
-                    ("JELLYFIN_URL".into(), url),
-                    ("JELLYFIN_API_KEY".into(), key),
-                ],
-            )
-            .await
-            {
-                servers.push(s);
-            }
-        }
-        _ => tracing::warn!("JELLYFIN_URL or JELLYFIN_API_KEY not set — Jellyfin MCP disabled"),
-    }
-    servers
-}
-
 #[cfg(test)]
 impl Agent {
     /// Construct an agent wired to a test client and temp-backed stores.
@@ -626,9 +296,27 @@ impl Agent {
 }
 
 #[cfg(test)]
-#[path = "tests.rs"]
-mod tests;
+#[path = "tests_core.rs"]
+mod tests_core;
+#[cfg(test)]
+#[path = "tests_formatting.rs"]
+mod tests_formatting;
+#[cfg(test)]
+#[path = "tests_leaderboard.rs"]
+mod tests_leaderboard;
+#[cfg(test)]
+#[path = "tests_support.rs"]
+mod tests_support;
 
 #[cfg(test)]
-#[path = "tests_run.rs"]
-mod tests_run;
+#[path = "tests_run_dispatch.rs"]
+mod tests_run_dispatch;
+#[cfg(test)]
+#[path = "tests_run_persistence.rs"]
+mod tests_run_persistence;
+#[cfg(test)]
+#[path = "tests_run_stream.rs"]
+mod tests_run_stream;
+#[cfg(test)]
+#[path = "tests_run_support.rs"]
+mod tests_run_support;
