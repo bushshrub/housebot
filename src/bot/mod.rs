@@ -309,7 +309,17 @@ impl HouseBot {
     }
 
     pub(crate) async fn respond(&self, ctx: &Context, msg: &Message, content: &str) {
-        let _ = reply_no_ping(ctx, msg, content).await;
+        for (index, chunk) in split_text(content, MAX_MESSAGE_LENGTH).iter().enumerate() {
+            let result = if index == 0 {
+                reply_no_ping(ctx, msg, chunk).await
+            } else {
+                msg.channel_id.say(&ctx.http, chunk).await
+            };
+            if let Err(error) = result {
+                tracing::warn!(%error, "Failed to send command response");
+                break;
+            }
+        }
     }
 }
 
