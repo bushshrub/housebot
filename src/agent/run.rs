@@ -108,6 +108,7 @@ impl Agent {
 
         let mut control_action: Option<AgentControlAction> = None;
         let mut cancelled = false;
+        let mut out_of_tokens = false;
 
         // Bound the tool loop so a model that keeps requesting tools cannot
         // spin forever (each iteration is a full LLM round trip).
@@ -207,6 +208,7 @@ impl Agent {
             // user with the model's empty text and strand the tool calls in the
             // persisted history with no results.
             if completion.tool_calls.is_empty() {
+                out_of_tokens = completion.finish_reason.as_deref() == Some("length");
                 break completion.content.unwrap_or_default();
             }
 
@@ -297,6 +299,8 @@ impl Agent {
         AgentResult {
             text: if cancelled {
                 String::new()
+            } else if final_text.is_empty() && out_of_tokens {
+                "I ran out of output tokens while thinking and never got to the answer. Try again, or lower your /effort setting.".to_string()
             } else if final_text.is_empty() {
                 "The model returned an empty reply — please try again.".to_string()
             } else {

@@ -37,6 +37,10 @@ impl ThinkingMode {
     /// Reserved for the visible answer, on top of any thinking budget.
     const RESPONSE_TOKENS: u32 = 4096;
 
+    /// Thinking allowance for [`ThinkingMode::Max`], which has no budget of its
+    /// own — the request ceiling is all that bounds it.
+    const UNLIMITED_THINKING_TOKENS: u32 = 28_672;
+
     /// Thinking-token budget; `None` means unlimited.
     pub fn budget_tokens(self) -> Option<u32> {
         match self {
@@ -63,10 +67,19 @@ impl ThinkingMode {
 
     /// `max_tokens` for a completion request: thinking budget plus room for the answer.
     pub fn max_completion_tokens(self) -> u32 {
-        match self.budget_tokens() {
-            Some(budget) => budget + Self::RESPONSE_TOKENS,
-            None => 32_768,
-        }
+        self.max_completion_tokens_capped(Self::RESPONSE_TOKENS)
+    }
+
+    /// `max_tokens` for a request whose visible answer is capped at
+    /// `response_cap` tokens (a per-user output limit). The cap applies on top
+    /// of the thinking budget rather than to the request total: taking it out
+    /// of the budget would let reasoning consume the whole allowance and leave
+    /// the model no tokens to answer with.
+    pub fn max_completion_tokens_capped(self, response_cap: u32) -> u32 {
+        let response = response_cap.min(Self::RESPONSE_TOKENS);
+        self.budget_tokens()
+            .unwrap_or(Self::UNLIMITED_THINKING_TOKENS)
+            + response
     }
 
     /// The `reasoning` request field sent to the backend (OpenRouter-style;
@@ -157,9 +170,9 @@ pub trait ChatClient: Send + Sync {
 
     /// Stream a completion, forwarding each cumulative text snapshot to `sink`.
     /// `thinking` sets the reasoning budget and the overall token ceiling;
-    /// `max_completion_tokens` further lowers that ceiling when set (per-user
-    /// output caps). `tool_choice` overrides the default `"auto"` tool
-    /// selection; pass `Some(json!("required"))` to force a tool call or
+    /// `max_completion_tokens` caps the visible answer when set (per-user
+    /// output caps), leaving that budget intact. `tool_choice` overrides the
+    /// default `"auto"` tool selection; pass `Some(json!("required"))` to force a tool call or
     /// `Some(json!({"type":"function","function":{"name":"…"}}))` to force a
     /// specific function. `None` keeps the default `"auto"` behavior.
     #[allow(clippy::too_many_arguments)]
@@ -387,8 +400,10 @@ impl ChatClient for OpenAiClient {
         max_completion_tokens: Option<u32>,
         sink: Option<&dyn TextSink>,
     ) -> anyhow::Result<ChatCompletion> {
-        let ceiling = thinking.max_completion_tokens();
-        let max_tokens = max_completion_tokens.map_or(ceiling, |cap| cap.min(ceiling));
+        let max_tokens = max_completion_tokens.map_or_else(
+            || thinking.max_completion_tokens(),
+            |cap| thinking.max_completion_tokens_capped(cap),
+        );
         let mut body = serde_json::json!({
             "model": model,
             "messages": messages,
@@ -554,6 +569,24 @@ mod tests {
         assert_eq!(ThinkingMode::High.budget_tokens(), Some(8_192));
         assert_eq!(ThinkingMode::XHigh.budget_tokens(), Some(16_384));
         assert_eq!(ThinkingMode::Max.budget_tokens(), None);
+    }
+
+    #[test]
+    fn output_cap_limits_the_answer_without_eating_the_thinking_budget() {
+        // A 512-token user cap must still leave the reasoning budget intact,
+        // otherwise thinking consumes the request and the answer comes back
+        // empty.
+        assert_eq!(
+            ThinkingMode::Medium.max_completion_tokens_capped(512),
+            4_096 + 512
+        );
+        assert_eq!(ThinkingMode::Max.max_completion_tokens_capped(512), 29_184);
+        // Caps above the reserved answer room leave the ceiling unchanged.
+        assert_eq!(
+            ThinkingMode::High.max_completion_tokens_capped(100_000),
+            ThinkingMode::High.max_completion_tokens()
+        );
+        assert_eq!(ThinkingMode::Instant.max_completion_tokens_capped(256), 256);
     }
 
     #[test]

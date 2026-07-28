@@ -251,6 +251,10 @@ impl HouseBot {
             }
         }
 
+        // Held until the reply is posted, so the channel shows the bot typing
+        // for every part of the turn regardless of the progress-update setting.
+        let _typing = TypingIndicator::start(ctx, msg.channel_id);
+
         let progress = if user_config.progress_updates_enabled {
             // Check LLM queue utilization so we can show the user their position
             // when the system is saturated (all 4 LLM slots occupied).

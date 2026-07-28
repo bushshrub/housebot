@@ -392,6 +392,26 @@ async fn tool_loop_is_bounded() {
     assert!(result.tools_called.len() <= 16);
 }
 
+#[tokio::test]
+async fn empty_completion_cut_off_by_the_token_ceiling_says_so() {
+    let client = Arc::new(MockChatClient::new());
+    client.push_completion(crate::llm::ChatCompletion {
+        content: None,
+        tool_calls: vec![],
+        finish_reason: Some("length".into()),
+        usage: Default::default(),
+    });
+    let (_t, agent) = test_agent(client);
+    let result = agent
+        .run(AgentRequest::text("u_len", "Al", "think hard"), &NoHooks)
+        .await;
+    assert!(
+        result.text.contains("ran out of output tokens"),
+        "unexpected: {}",
+        result.text
+    );
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn tool_calls_are_dispatched_when_finish_reason_is_not_tool_calls() {
     let client = Arc::new(MockChatClient::new());
