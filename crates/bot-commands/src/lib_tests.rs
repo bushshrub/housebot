@@ -2,7 +2,14 @@
 
 use super::*;
 use housebot_bot_config::UserConfigStore;
+use housebot_channel_log::ChannelLog;
+use housebot_grocery::GroceryList;
+use housebot_history::History;
+use housebot_memory::Memory;
+use housebot_message_log::MessageLog;
+use housebot_notes::Notes;
 use housebot_profile::ProfileStore;
+use housebot_reminders::Reminders;
 use tempfile::TempDir;
 
 fn stores() -> (

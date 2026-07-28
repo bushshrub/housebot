@@ -13,6 +13,7 @@ pub mod feature_request;
 pub mod features;
 pub mod file_download;
 pub mod github_api;
+pub mod github_api_dispatch;
 pub mod manage_skills;
 pub mod net_guard;
 pub mod remind;

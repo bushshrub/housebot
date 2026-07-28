@@ -1,6 +1,7 @@
 //! Unit tests for `lib` (split out to keep the module under 400 lines).
 
 use super::*;
+use crate::stream::*;
 
 fn chunk(json: &str) -> StreamChunk {
     serde_json::from_str(json).unwrap()

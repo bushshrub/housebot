@@ -1,6 +1,7 @@
 //! Unit tests for `github_api` (split out to keep the module under 400 lines).
 
 use super::*;
+use housebot_github_issues::GitHubIssueReporter;
 use tempfile::TempDir;
 
 fn admin() -> ToolCaller<'static> {

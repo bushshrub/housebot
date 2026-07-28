@@ -81,6 +81,7 @@ mod config_cmd;
 mod develop;
 mod develop_actions;
 mod develop_component;
+mod develop_components;
 mod handler;
 mod handler_interactions;
 mod handler_messages;

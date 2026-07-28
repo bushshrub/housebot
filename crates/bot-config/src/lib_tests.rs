@@ -1,6 +1,7 @@
 //! Unit tests for `lib` (split out to keep the module under 400 lines).
 
 use super::*;
+use housebot_llm::ThinkingMode;
 
 #[test]
 fn labs_pagination_is_off_by_default() {
