@@ -74,6 +74,9 @@ struct PaginatedResponse {
 
 mod ban_messages;
 mod command_defs;
+mod command_defs_config;
+mod command_defs_moderation;
+mod command_defs_user;
 mod config_cmd;
 mod develop;
 mod develop_actions;
@@ -84,6 +87,9 @@ mod handler_messages;
 mod handler_reactions;
 mod helpers;
 mod interactions;
+mod interactions_data;
+mod interactions_moderation;
+mod interactions_settings;
 mod lua_cmd;
 mod media;
 mod message_flow;
