@@ -1,7 +1,5 @@
 //! `/personalize` interaction handling.
 
-//! The /config, /server-config, and /personalize slash-command handlers.
-
 use super::*;
 
 /// The /personalize slash-command handler: per-user settings any user may change.

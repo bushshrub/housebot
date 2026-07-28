@@ -68,12 +68,11 @@ pub(crate) fn urlencoding(s: &str) -> String {
 /// Extract the `rel="next"` page URL from a GitHub API response's Link header.
 pub(crate) fn next_page_url(resp: &reqwest::Response) -> Option<String> {
     let link = resp.headers().get("link")?.to_str().ok()?;
-    for part in link.split(',') {
-        let part = part.trim();
-        if part.contains("rel=\"next\"") {
-            let start = part.find('<')?;
-            let end = part.find('>')?;
-            return Some(part[start + 1..end].to_string());
+    for part in link.split('<').skip(1) {
+        let end = part.find('>')?;
+        let url = &part[..end];
+        if part[end..].contains("rel=\"next\"") {
+            return Some(url.to_string());
         }
     }
     None

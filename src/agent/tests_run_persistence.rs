@@ -123,7 +123,7 @@ async fn dispatch_edit_skill_then_use_skill_reflects_update() {
         .save(fixture_skill("greeter", "owner_1"))
         .await
         .unwrap();
-    agent.enable_skill_for_user("owner_1", "greeter").await;
+    let _ = agent.enable_skill_for_user("owner_1", "greeter").await;
     let sb = noop_sandbox();
 
     let edit_out = agent

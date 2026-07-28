@@ -245,11 +245,11 @@ impl HouseBot {
             )
             .await;
 
+        let short_id = proposal.id.get(..8).unwrap_or(&proposal.id);
         let confirmation = self.redactor.redact(&format!(
             "✅ Restore proposal created! Everyone in the server can see it and vote with reactions. \
              Proposal ID: `{}`. Vote also with `/tool_restore vote proposal:{} approve:true|false`.",
-            &proposal.id[..8],
-            &proposal.id[..8],
+            short_id, short_id,
         ));
         let _ = cmd
             .edit_response(

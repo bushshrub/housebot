@@ -10,6 +10,7 @@ use serde::{Deserialize, Serialize};
 use crate::backend::*;
 use crate::user::default_respond;
 use crate::*;
+use anyhow::Context;
 use housebot_config::data_dir;
 
 /// Who may configure the bot, plus the per-user policies they manage.
@@ -136,9 +137,11 @@ impl AccessControlStore {
             .backend
             .load(ACCESS_CONTROL_KEY, ACCESS_CONTROL_KEY)
             .await?;
-        Ok(bytes
-            .and_then(|bytes| serde_json::from_slice(&bytes).ok())
-            .unwrap_or_default())
+        match bytes {
+            Some(bytes) => Ok(serde_json::from_slice(&bytes)
+                .context("stored access control snapshot is not valid JSON")?),
+            None => Ok(AccessControl::default()),
+        }
     }
 
     /// Atomically apply `mutate` to the freshly loaded state and persist the

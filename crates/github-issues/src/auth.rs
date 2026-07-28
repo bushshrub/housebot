@@ -15,7 +15,7 @@ pub(crate) struct Claims {
 /// Build the JWT claims for `app_id` relative to `now` (unix seconds).
 pub(crate) fn build_claims(app_id: &str, now: u64) -> Claims {
     Claims {
-        iat: now - 60,
+        iat: now.saturating_sub(60),
         exp: now + 600,
         iss: app_id.to_string(),
     }

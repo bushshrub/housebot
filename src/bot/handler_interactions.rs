@@ -227,11 +227,13 @@ impl HouseBot {
             }
             "data" => {
                 let Some(section) = cmd.data.options.first() else {
+                    respond_ephemeral(&ctx, &cmd, "No data section specified.").await;
                     return;
                 };
                 match section.name.as_str() {
                     "profile" => {
                         let Some(actions) = nested_options(section) else {
+                            respond_ephemeral(&ctx, &cmd, "No profile action specified.").await;
                             return;
                         };
                         handle_profile_interaction(
@@ -245,6 +247,7 @@ impl HouseBot {
                     }
                     "history" => {
                         let Some(actions) = nested_options(section) else {
+                            respond_ephemeral(&ctx, &cmd, "No history action specified.").await;
                             return;
                         };
                         handle_history_interaction(
@@ -283,7 +286,11 @@ impl HouseBot {
                             reply
                         }
                     }
-                    _ => return,
+                    other => {
+                        respond_ephemeral(&ctx, &cmd, &format!("Unknown data section `{other}`."))
+                            .await;
+                        return;
+                    }
                 }
             }
             "privacy" => {

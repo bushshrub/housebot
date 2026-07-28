@@ -19,7 +19,7 @@ pub(super) fn format_proposal_message(
         approvals,
         rejections,
         min_votes,
-        &proposal.id[..8],
+        proposal.id.get(..8).unwrap_or(&proposal.id),
     )
 }
 
@@ -58,7 +58,7 @@ pub(super) fn format_restore_proposal_message(
         approvals,
         rejections,
         min_votes,
-        &proposal.id[..8],
+        proposal.id.get(..8).unwrap_or(&proposal.id),
     )
 }
 

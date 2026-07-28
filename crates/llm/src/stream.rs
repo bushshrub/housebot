@@ -92,6 +92,10 @@ impl Accumulator {
         }
         if let Some(tcs) = choice.delta.tool_calls {
             for tc in tcs {
+                const MAX_TOOL_CALL_SLOTS: usize = 256;
+                if tc.index >= MAX_TOOL_CALL_SLOTS {
+                    continue;
+                }
                 while self.tool_calls.len() <= tc.index {
                     self.tool_calls
                         .push((String::new(), String::new(), String::new()));

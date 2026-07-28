@@ -59,6 +59,13 @@ pub(crate) fn develop_model_components(
     catalog: &AgentCatalog,
 ) -> Vec<CreateActionRow> {
     let models = catalog.models_for(agent);
+    if models.is_empty() {
+        return vec![CreateActionRow::Buttons(vec![CreateButton::new(format!(
+            "{DEVELOP_PREFIX}{job_id}:cancel"
+        ))
+        .label("No models available — Cancel")
+        .style(ButtonStyle::Danger)])];
+    }
     let options: Vec<CreateSelectMenuOption> = models
         .iter()
         .map(|m| {
@@ -95,6 +102,19 @@ pub(crate) fn develop_effort_components(
     catalog: &AgentCatalog,
 ) -> Vec<CreateActionRow> {
     let efforts = catalog.efforts_for(agent, model).unwrap_or(&[]);
+    if efforts.is_empty() {
+        return vec![CreateActionRow::Buttons(vec![
+            CreateButton::new(format!("{DEVELOP_PREFIX}{job_id}:confirm"))
+                .label("Dispatch (no effort selection needed)")
+                .style(ButtonStyle::Success),
+            CreateButton::new(format!("{DEVELOP_PREFIX}{job_id}:back"))
+                .label("← Back")
+                .style(ButtonStyle::Secondary),
+            CreateButton::new(format!("{DEVELOP_PREFIX}{job_id}:cancel"))
+                .label("Cancel")
+                .style(ButtonStyle::Danger),
+        ])];
+    }
     let options: Vec<CreateSelectMenuOption> = efforts
         .iter()
         .map(|e| {

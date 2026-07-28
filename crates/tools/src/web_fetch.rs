@@ -143,6 +143,17 @@ pub(crate) async fn validate_public_url(raw: &str) -> Result<(), String> {
     if host.eq_ignore_ascii_case("localhost") || host.ends_with(".localhost") {
         return Err("loopback hosts are blocked".into());
     }
+    let host = host
+        .strip_prefix('[')
+        .and_then(|h| h.strip_suffix(']'))
+        .unwrap_or(host);
+    if let Ok(ip) = host.parse::<std::net::IpAddr>() {
+        return if is_blocked_ip(ip) {
+            Err(format!("host is a non-public address {ip}"))
+        } else {
+            Ok(())
+        };
+    }
     let port = url.port_or_known_default().ok_or("URL has no known port")?;
     let addresses = tokio::net::lookup_host((host, port))
         .await

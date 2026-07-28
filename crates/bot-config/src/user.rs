@@ -100,14 +100,15 @@ impl UserConfigStore {
     }
 
     pub async fn load(&self, user_id: u64) -> UserConfig {
-        let bytes = self
+        match self
             .backend
             .load(&user_id.to_string(), &format!("user:{user_id}"))
             .await
-            .ok()
-            .flatten()
-            .unwrap_or_default();
-        serde_json::from_slice(&bytes).unwrap_or_default()
+        {
+            Ok(Some(bytes)) => serde_json::from_slice(&bytes).unwrap_or_default(),
+            Ok(None) => UserConfig::default(),
+            Err(_) => UserConfig::default(),
+        }
     }
 
     pub async fn save(&self, user_id: u64, cfg: &UserConfig) -> anyhow::Result<()> {

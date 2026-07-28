@@ -58,7 +58,8 @@ impl ToolPermissions {
         voter_id: u64,
         approve: bool,
     ) -> Result<VoteResult, String> {
-        if proposal_id.trim().len() < 4 {
+        let proposal_id = proposal_id.trim();
+        if proposal_id.len() < 4 {
             return Err("Provide at least four characters of the proposal ID.".into());
         }
         let _guard = self.lock.lock().await;
@@ -99,7 +100,12 @@ impl ToolPermissions {
                     let ban = state.bans.remove(idx);
                     VoteResult::RestoreVoted(ban)
                 }
-                None => VoteResult::Rejected,
+                None => VoteResult::RestoreVoted(ToolBan {
+                    guild_id,
+                    user_id: proposal.target_user_id,
+                    tool_name,
+                    approved_at: 0,
+                }),
             }
         } else if total >= self.min_votes && rejections > approvals {
             state.restore_proposals.remove(index);

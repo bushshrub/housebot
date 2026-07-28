@@ -103,13 +103,14 @@ impl ChatClient for OpenAiClient {
             .error_for_status()?;
 
         let mut acc = Accumulator::default();
-        let mut buf = String::new();
+        let mut buf: Vec<u8> = Vec::new();
         let mut stream = resp.bytes_stream();
         while let Some(chunk) = stream.next().await {
             let bytes = chunk?;
-            buf.push_str(&String::from_utf8_lossy(&bytes));
-            while let Some(nl) = buf.find('\n') {
-                let line: String = buf.drain(..=nl).collect();
+            buf.extend_from_slice(&bytes);
+            while let Some(nl) = buf.iter().position(|b| *b == b'\n') {
+                let raw: Vec<u8> = buf.drain(..=nl).collect();
+                let line = String::from_utf8_lossy(&raw);
                 let line = line.trim_end();
                 if line.is_empty() {
                     continue;

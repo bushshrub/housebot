@@ -93,6 +93,8 @@ impl HouseBot {
         let content = msg.content.trim().to_string();
         let channel_id = msg.channel_id.get();
         let user_id = msg.author.id.get();
+        let is_dm = msg.guild_id.is_none();
+        let guild_id = msg.guild_id.map(|g| g.get());
 
         // Configurers (and the owner) always get through; other users can be
         // silenced entirely by a configurer-set policy.
@@ -101,8 +103,17 @@ impl HouseBot {
             return;
         }
 
+        // ── channel allowlist (before any command) ──
+        if !self
+            .server_cfg
+            .is_channel_allowed(guild_id, channel_id)
+            .await
+        {
+            return;
+        }
+
         // ── commands ──
-        if msg.content.starts_with("!skill") {
+        if content.starts_with("!skill") {
             tracing::info!(target: "housebot::commands", user_id, "!skill command received");
             let (first, _rest) = split_command(&msg.content);
             let reply = skill_command(&self.skills, &self.user_cfg, &first, user_id).await;
@@ -131,17 +142,6 @@ impl HouseBot {
             return;
         }
         // ── routing ──
-        let is_dm = msg.guild_id.is_none();
-        let guild_id = msg.guild_id.map(|g| g.get());
-
-        // Check channel allowlist before doing anything else.
-        if !self
-            .server_cfg
-            .is_channel_allowed(guild_id, channel_id)
-            .await
-        {
-            return;
-        }
 
         if !is_dm {
             // Prefer server nickname, then global display name, over the raw username.

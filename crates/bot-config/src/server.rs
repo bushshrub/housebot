@@ -90,14 +90,15 @@ impl ServerConfigStore {
     }
 
     pub async fn load(&self, guild_id: u64) -> ServerConfig {
-        let bytes = self
+        match self
             .backend
             .load(&guild_id.to_string(), &format!("server:{guild_id}"))
             .await
-            .ok()
-            .flatten()
-            .unwrap_or_default();
-        serde_json::from_slice(&bytes).unwrap_or_default()
+        {
+            Ok(Some(bytes)) => serde_json::from_slice(&bytes).unwrap_or_default(),
+            Ok(None) => ServerConfig::default(),
+            Err(_) => ServerConfig::default(),
+        }
     }
 
     pub async fn save(&self, guild_id: u64, cfg: &ServerConfig) -> anyhow::Result<()> {

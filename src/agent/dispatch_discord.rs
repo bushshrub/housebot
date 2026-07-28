@@ -29,11 +29,9 @@ impl Agent {
             }
             "get_messages" => {
                 let mode = args.get("mode").and_then(Value::as_str).unwrap_or("recent");
-                let target_channel = args
-                    .get("channel_id")
-                    .and_then(Value::as_str)
-                    .and_then(|s| s.parse::<u64>().ok())
-                    .unwrap_or(channel_id);
+                // Channel overrides from the caller are ignored — the
+                // invoking channel is always used.
+                let target_channel = channel_id;
                 ToolOutcome::Text(match mode {
                     "search" => {
                         let pattern = str_arg(args, "pattern");
@@ -117,11 +115,9 @@ impl Agent {
             "find_discord_users" => {
                 let query = str_arg(args, "query");
                 let max_results = u64_arg(args, "max_results", 10).clamp(1, 20) as usize;
-                let target_channel = args
-                    .get("channel_id")
-                    .and_then(Value::as_str)
-                    .and_then(|value| value.parse::<u64>().ok())
-                    .unwrap_or(channel_id);
+                // Channel overrides from the caller are ignored — the
+                // invoking channel is always used.
+                let target_channel = channel_id;
                 ToolOutcome::Text(
                     match self
                         .channel_log

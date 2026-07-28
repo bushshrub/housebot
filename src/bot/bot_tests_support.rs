@@ -7,13 +7,11 @@ use tempfile::TempDir;
 
 pub(crate) fn stores() -> (TempDir, Skills, Notes, Memory, History) {
     let tmp = TempDir::new().unwrap();
-    (
-        TempDir::new().unwrap(),
-        Skills::new(tmp.path().join("skills.json")),
-        Notes::new(tmp.path().join("notes")),
-        Memory::new(tmp.path().join("memories")),
-        History::new(tmp.path().join("history"), 30),
-    )
+    let skills = Skills::new(tmp.path().join("skills.json"));
+    let notes = Notes::new(tmp.path().join("notes"));
+    let memory = Memory::new(tmp.path().join("memories"));
+    let history = History::new(tmp.path().join("history"), 30);
+    (tmp, skills, notes, memory, history)
 }
 
 pub(crate) fn test_skill(name: &str, author: &str) -> crate::skills::Skill {

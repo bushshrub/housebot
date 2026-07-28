@@ -12,8 +12,13 @@ impl Agent {
         let outcome = match name {
             "update_memory" => {
                 let new_content = str_arg(args, "memory_content");
-                let _ = self.memory.save(user_id, new_content).await;
-                ToolOutcome::Text("Memory updated.".to_string())
+                match self.memory.save(user_id, new_content).await {
+                    Ok(()) => ToolOutcome::Text("Memory updated.".to_string()),
+                    Err(error) => {
+                        tracing::error!(%error, %user_id, "failed to update memory");
+                        ToolOutcome::Text(format!("Error: failed to update memory: {error}"))
+                    }
+                }
             }
             "search_memory" => {
                 let query = str_arg(args, "query");
@@ -66,7 +71,7 @@ impl Agent {
                 let result =
                     tools::create_skill::dispatch_create_skill(&self.skills, user_id, args).await;
                 if !existed && result.starts_with('✅') {
-                    self.enable_skill_for_user(user_id, &skill_name).await;
+                    let _ = self.enable_skill_for_user(user_id, &skill_name).await;
                 }
                 ToolOutcome::Text(result)
             }
@@ -93,22 +98,28 @@ impl Agent {
                     ))
                 } else if name == housebot_skills::SKILL_CREATOR_NAME {
                     ToolOutcome::Text(format!("Skill '{name}' is built in and always enabled."))
-                } else if self.enable_skill_for_user(user_id, &name).await {
-                    ToolOutcome::Text(format!(
-                        "✅ Skill '{name}' enabled. You can now load it with use_skill."
-                    ))
                 } else {
-                    ToolOutcome::Text(format!("Skill '{name}' is already enabled."))
+                    match self.enable_skill_for_user(user_id, &name).await {
+                        Ok(true) => ToolOutcome::Text(format!(
+                            "✅ Skill '{name}' enabled. You can now load it with use_skill."
+                        )),
+                        Ok(false) => {
+                            ToolOutcome::Text(format!("Skill '{name}' is already enabled."))
+                        }
+                        Err(error) => ToolOutcome::Text(format!("⚠️ {error}")),
+                    }
                 }
             }
             "disable_skill" => {
                 let name = str_arg(args, "name").to_lowercase();
                 if name == housebot_skills::SKILL_CREATOR_NAME {
                     ToolOutcome::Text(format!("Skill '{name}' is built in and always enabled."))
-                } else if self.disable_skill_for_user(user_id, &name).await {
-                    ToolOutcome::Text(format!("✅ Skill '{name}' disabled."))
                 } else {
-                    ToolOutcome::Text(format!("Skill '{name}' was not enabled."))
+                    match self.disable_skill_for_user(user_id, &name).await {
+                        Ok(true) => ToolOutcome::Text(format!("✅ Skill '{name}' disabled.")),
+                        Ok(false) => ToolOutcome::Text(format!("Skill '{name}' was not enabled.")),
+                        Err(error) => ToolOutcome::Text(format!("⚠️ {error}")),
+                    }
                 }
             }
             _ => return None,
@@ -139,32 +150,40 @@ impl Agent {
             .any(|n| n == name)
     }
 
-    /// Enable `name` for `user_id`. Returns `false` if it was already enabled.
-    pub(crate) async fn enable_skill_for_user(&self, user_id: &str, name: &str) -> bool {
+    /// Enable `name` for `user_id`. Returns `Ok(true)` if newly enabled,
+    /// `Ok(false)` if already enabled, `Err` if the save failed.
+    pub(crate) async fn enable_skill_for_user(
+        &self,
+        user_id: &str,
+        name: &str,
+    ) -> Result<bool, String> {
         let uid = user_id.parse().unwrap_or(0);
         let mut cfg = self.user_config.load(uid).await;
         if cfg.enabled_skills.iter().any(|n| n == name) {
-            return false;
+            return Ok(false);
         }
         cfg.enabled_skills.push(name.to_string());
-        if let Err(error) = self.user_config.save(uid, &cfg).await {
-            tracing::error!(%error, %uid, %name, "failed to enable skill for user");
-        }
-        true
+        self.user_config
+            .save(uid, &cfg)
+            .await
+            .map_err(|e| format!("failed to enable skill: {e}"))?;
+        Ok(true)
     }
 
-    /// Disable `name` for `user_id`. Returns `false` if it was not enabled.
-    async fn disable_skill_for_user(&self, user_id: &str, name: &str) -> bool {
+    /// Disable `name` for `user_id`. Returns `Ok(true)` if newly disabled,
+    /// `Ok(false)` if not enabled, `Err` if the save failed.
+    async fn disable_skill_for_user(&self, user_id: &str, name: &str) -> Result<bool, String> {
         let uid = user_id.parse().unwrap_or(0);
         let mut cfg = self.user_config.load(uid).await;
         let before = cfg.enabled_skills.len();
         cfg.enabled_skills.retain(|n| n != name);
         if cfg.enabled_skills.len() == before {
-            return false;
+            return Ok(false);
         }
-        if let Err(error) = self.user_config.save(uid, &cfg).await {
-            tracing::error!(%error, %uid, %name, "failed to disable skill for user");
-        }
-        true
+        self.user_config
+            .save(uid, &cfg)
+            .await
+            .map_err(|e| format!("failed to disable skill: {e}"))?;
+        Ok(true)
     }
 }

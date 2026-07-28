@@ -201,15 +201,10 @@ impl HouseBot {
         };
 
         let (approvals, _) = proposal.vote_counts();
-        let text = self.redactor.redact(&format!(
-            "🗳️ **Ban proposal** by <@{}>\n\
-             Target: <@{}>\n\
-             Tool: `{}`\n\
-             Votes: **{approvals} approve** / **0 reject** (minimum {} votes)\n\
-             React with ✅ to approve, ❌ to reject (or use `/tool_ban vote`)",
-            proposal.proposed_by,
-            proposal.target_user_id,
-            proposal.tool_name,
+        let text = self.redactor.redact(&format_proposal_message(
+            &proposal,
+            approvals,
+            0,
             permissions.min_votes(),
         ));
         let msg = match cmd
@@ -271,11 +266,11 @@ impl HouseBot {
             .await;
 
         // Edit the deferred response with a confirmation.
+        let short_id = proposal.id.get(..8).unwrap_or(&proposal.id);
         let confirmation = self.redactor.redact(&format!(
             "✅ Proposal created! Everyone in the server can see it and vote with reactions. \
              Proposal ID: `{}`. Vote also with `/tool_ban vote proposal:{} approve:true|false`.",
-            &proposal.id[..8],
-            &proposal.id[..8],
+            short_id, short_id,
         ));
         let _ = cmd
             .edit_response(

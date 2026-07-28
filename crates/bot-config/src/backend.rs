@@ -70,13 +70,16 @@ impl Backend {
                 Err(error) => Err(error),
             },
             Backend::Postgres(client) => {
-                if let Err(error) = client
+                match client
                     .execute("DELETE FROM bot_config WHERE key = $1", &[&key])
                     .await
                 {
-                    tracing::error!(%error, key, "failed to delete bot config");
+                    Ok(_) => Ok(()),
+                    Err(error) => {
+                        tracing::error!(%error, key, "failed to delete bot config");
+                        Err(std::io::Error::other(error))
+                    }
                 }
-                Ok(())
             }
         }
     }

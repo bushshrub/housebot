@@ -143,14 +143,14 @@ pub async fn erase_data_command(
     let notes_result = notes.clear(user_id.to_string()).await;
     let profile_result = profile_store.clear(user_id.to_string()).await;
     let config_result = user_config.clear(user_id).await;
-    let _ = grocery.flush(user_id).await;
+    let grocery_result = grocery.flush(user_id).await;
 
     // Remove user's reminders
     let mut all_reminders = reminders.load().await;
     let before = all_reminders.len();
     all_reminders.retain(|r| r.user_id != user_id.to_string());
     let removed_reminders = before.saturating_sub(all_reminders.len());
-    let _ = reminders.store(&all_reminders).await;
+    let reminders_result = reminders.store(&all_reminders).await;
 
     // Remove user's entries from channel logs (per-channel files)
     let channel_log_result = channel_log.remove_user_entries(user_id.to_string()).await;
@@ -162,6 +162,8 @@ pub async fn erase_data_command(
         || profile_result.is_err()
         || config_result.is_err()
         || channel_log_result.is_err()
+        || grocery_result.is_err()
+        || reminders_result.is_err()
     {
         return "⚠️ Some data could not be erased. Please try again or contact an admin.".into();
     }

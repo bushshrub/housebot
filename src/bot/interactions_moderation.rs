@@ -40,14 +40,17 @@ pub(crate) async fn handle_tool_ban_interaction(
                 return "Please specify both a user and tool name.".into();
             };
             match permissions.propose(guild_id, target, tool, author_id).await {
-                Ok(proposal) => format!(
-                    "🗳️ Proposed banning <@{}> from `{}`. Proposal `{}` is open for 24 hours.\nVote with `/tool_ban vote proposal:{} approve:true|false`. The proposal needs at least {} votes; your approval was recorded automatically.",
-                    proposal.target_user_id,
-                    proposal.tool_name,
-                    &proposal.id[..8],
-                    &proposal.id[..8],
-                    permissions.min_votes()
-                ),
+                Ok(proposal) => {
+                    let short_id = proposal.id.get(..8).unwrap_or(&proposal.id);
+                    format!(
+                        "🗳️ Proposed banning <@{}> from `{}`. Proposal `{}` is open for 24 hours.\nVote with `/tool_ban vote proposal:{} approve:true|false`. The proposal needs at least {} votes; your approval was recorded automatically.",
+                        proposal.target_user_id,
+                        proposal.tool_name,
+                        short_id,
+                        short_id,
+                        permissions.min_votes()
+                    )
+                }
                 Err(error) => format!("⚠️ {error}"),
             }
         }
@@ -164,15 +167,21 @@ pub(crate) async fn handle_tool_restore_interaction(
             let (Some(target), Some(tool)) = (target, tool) else {
                 return "Please specify both a user and tool name.".into();
             };
-            match permissions.propose_restore(guild_id, target, tool, author_id).await {
-                Ok(proposal) => format!(
-                    "🗳️ Proposed restoring `{}` access for <@{}>. Proposal `{}` is open for 24 hours.\nVote with `/tool_restore vote proposal:{} approve:true|false`. The proposal needs at least {} votes; your approval was recorded automatically.",
-                    proposal.tool_name,
-                    proposal.target_user_id,
-                    &proposal.id[..8],
-                    &proposal.id[..8],
-                    permissions.min_votes()
-                ),
+            match permissions
+                .propose_restore(guild_id, target, tool, author_id)
+                .await
+            {
+                Ok(proposal) => {
+                    let short_id = proposal.id.get(..8).unwrap_or(&proposal.id);
+                    format!(
+                        "🗳️ Proposed restoring `{}` access for <@{}>. Proposal `{}` is open for 24 hours.\nVote with `/tool_restore vote proposal:{} approve:true|false`. The proposal needs at least {} votes; your approval was recorded automatically.",
+                        proposal.tool_name,
+                        proposal.target_user_id,
+                        short_id,
+                        short_id,
+                        permissions.min_votes()
+                    )
+                }
                 Err(error) => format!("⚠️ {error}"),
             }
         }
@@ -243,11 +252,10 @@ pub(crate) async fn handle_tool_restore_interaction(
                 lines.push("**Open ban proposals**".into());
                 for proposal in status.proposals.iter().take(10) {
                     let (approvals, rejections) = proposal.vote_counts();
+                    let short_id = proposal.id.get(..8).unwrap_or(&proposal.id);
                     lines.push(format!(
                         "• `{}`: <@{}> / `{}` — {approvals} approve, {rejections} reject",
-                        &proposal.id[..8],
-                        proposal.target_user_id,
-                        proposal.tool_name
+                        short_id, proposal.target_user_id, proposal.tool_name
                     ));
                 }
             }
@@ -255,11 +263,10 @@ pub(crate) async fn handle_tool_restore_interaction(
                 lines.push("**Open restore proposals**".into());
                 for p in status.restore_proposals.iter().take(10) {
                     let (approvals, rejections) = p.vote_counts();
+                    let short_id = p.id.get(..8).unwrap_or(&p.id);
                     lines.push(format!(
                         "• `{}`: <@{}> / `{}` — {approvals} approve, {rejections} reject",
-                        &p.id[..8],
-                        p.target_user_id,
-                        p.tool_name
+                        short_id, p.target_user_id, p.tool_name
                     ));
                 }
             }

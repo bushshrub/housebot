@@ -6,8 +6,8 @@ use tempfile::TempDir;
 
 fn admin() -> ToolCaller<'static> {
     ToolCaller {
-        user_id: "196556976866459648",
-        username: "derp_z",
+        user_id: "999999999999999999",
+        username: "admin_user",
         is_admin: true,
     }
 }
@@ -211,7 +211,7 @@ async fn merge_reports_unconfigured_github_and_audits_the_attempt() {
     assert!(result.contains("not configured"), "got: {result}");
     let entries = audit_entries(&temp).await;
     assert_eq!(entries.len(), 1);
-    assert_eq!(entries[0]["admin_id"], "196556976866459648");
+    assert_eq!(entries[0]["admin_id"], "999999999999999999");
     assert_eq!(entries[0]["pull_request"], 12);
     assert_eq!(entries[0]["authorized"], true);
     assert_eq!(entries[0]["result"], "error");

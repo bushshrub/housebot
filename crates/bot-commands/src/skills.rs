@@ -218,10 +218,7 @@ pub async fn skill_command(
     first_line: &str,
     author_id: u64,
 ) -> String {
-    let parts: Vec<&str> = first_line
-        .splitn(4, char::is_whitespace)
-        .filter(|s| !s.is_empty())
-        .collect();
+    let parts: Vec<&str> = first_line.split_whitespace().collect();
     if parts.len() < 2 {
         return "Usage: `!skill list` | `!skill delete <name>` | `!skill info <name>` \
                 | `!skill enable <name>` | `!skill disable <name>` \
