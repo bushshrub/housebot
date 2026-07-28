@@ -14,6 +14,7 @@ pub mod features;
 pub mod file_download;
 pub mod github_api;
 pub mod manage_skills;
+pub mod net_guard;
 pub mod remind;
 pub mod sandbox;
 pub mod searxng;

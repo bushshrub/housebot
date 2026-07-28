@@ -1,5 +1,6 @@
 //! Download a public HTTP(S) file for delivery as a Discord attachment.
 
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use futures_util::StreamExt;
@@ -7,6 +8,7 @@ use reqwest::{Client, StatusCode, Url};
 use serde_json::{json, Value};
 use tokio::sync::Mutex;
 
+use crate::net_guard::PublicOnlyResolver;
 use crate::wait_for_slot;
 use crate::web_fetch::validate_public_url;
 
@@ -31,6 +33,7 @@ impl Default for FileDownloader {
         Self {
             client: Client::builder()
                 .redirect(reqwest::redirect::Policy::none())
+                .dns_resolver(Arc::new(PublicOnlyResolver))
                 .user_agent("Mozilla/5.0 (compatible; housebot/1.0)")
                 .timeout(Duration::from_secs(45))
                 .build()

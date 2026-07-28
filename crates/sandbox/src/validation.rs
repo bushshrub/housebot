@@ -1,3 +1,5 @@
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
+
 use crate::limits;
 
 /// Validate a public HTTPS repository URL for cloning.
@@ -90,41 +92,74 @@ pub fn validate_workspace_path(path: &str) -> Result<(), String> {
     Ok(())
 }
 
-/// Check if a hostname resolves to a private or local address.
+/// Whether `ip` is anything other than a routable public address.
+///
+/// IPv4-mapped and IPv4-compatible IPv6 addresses are unwrapped first —
+/// `::ffff:127.0.0.1` is loopback no matter which family it is written in, and
+/// `Ipv6Addr::is_loopback` does not see through the mapping.
+pub fn is_blocked_ip(ip: IpAddr) -> bool {
+    match ip {
+        IpAddr::V4(ip) => is_blocked_v4(ip),
+        IpAddr::V6(ip) => match ip.to_ipv4() {
+            Some(mapped) => is_blocked_v4(mapped),
+            None => is_blocked_v6(ip),
+        },
+    }
+}
+
+fn is_blocked_v4(ip: Ipv4Addr) -> bool {
+    let [a, b, c, _] = ip.octets();
+    ip.is_loopback()
+        || ip.is_private()
+        || ip.is_link_local()
+        || ip.is_unspecified()
+        || ip.is_multicast()
+        || ip.is_broadcast()
+        // 0.0.0.0/8 "this network"
+        || a == 0
+        // 100.64.0.0/10 carrier-grade NAT
+        || (a == 100 && (64..128).contains(&b))
+        // 192.0.0.0/24 IETF protocol assignments
+        || (a == 192 && b == 0 && c == 0)
+        // 198.18.0.0/15 benchmarking
+        || (a == 198 && (b == 18 || b == 19))
+        // 240.0.0.0/4 reserved
+        || a >= 240
+}
+
+fn is_blocked_v6(ip: Ipv6Addr) -> bool {
+    let segments = ip.segments();
+    ip.is_loopback()
+        || ip.is_unspecified()
+        || ip.is_multicast()
+        // fc00::/7 unique local
+        || (segments[0] & 0xfe00) == 0xfc00
+        // fe80::/10 link local
+        || (segments[0] & 0xffc0) == 0xfe80
+        // 100::/64 discard-only
+        || segments[0..4] == [0x0100, 0, 0, 0]
+        // 2001:db8::/32 documentation
+        || (segments[0] == 0x2001 && segments[1] == 0x0db8)
+}
+
+/// Check whether a URL host names a private or local destination.
+///
+/// `Url::host_str` returns IPv6 literals in their bracketed form, which does not
+/// parse as an `IpAddr` — the brackets are stripped here so address literals are
+/// actually classified rather than falling through to the hostname checks.
 fn is_private_or_local(host: &str) -> bool {
-    // Localhost names
-    if host.eq_ignore_ascii_case("localhost")
+    let literal = host.strip_prefix('[').and_then(|h| h.strip_suffix(']'));
+    if let Ok(ip) = literal.unwrap_or(host).parse::<IpAddr>() {
+        return is_blocked_ip(ip);
+    }
+
+    host.eq_ignore_ascii_case("localhost")
         || host.eq_ignore_ascii_case("local")
-        || host == "127.0.0.1"
-        || host == "::1"
-        || host == "0.0.0.0"
-    {
-        return true;
-    }
-
-    // Private IP ranges
-    if let Ok(ip) = host.parse::<std::net::IpAddr>() {
-        match ip {
-            std::net::IpAddr::V4(v4) => {
-                return v4.is_loopback()
-                    || v4.is_private()
-                    || v4.is_link_local()
-                    || v4.is_unspecified()
-                    || v4.is_multicast();
-            }
-            std::net::IpAddr::V6(v6) => {
-                return v6.is_loopback() || v6.is_unspecified() || v6.is_multicast();
-            }
-        }
-    }
-
-    // Check for private-use hostname patterns (e.g., 10.x.x.x, 172.16-31.x.x, 192.168.x.x)
-    // We already handle this via std::net::IpAddr for valid IPs above.
-    // For hostnames that aren't IPs, we check common local-network patterns.
-    host.ends_with(".local")
+        || host.ends_with(".local")
         || host.ends_with(".internal")
         || host.ends_with(".lan")
         || host.ends_with(".localdomain")
+        || host.ends_with(".localhost")
         || host == "host.docker.internal"
 }
 
@@ -416,5 +451,61 @@ mod tests {
     #[test]
     fn rejects_branch_with_semicolon() {
         assert!(validate_branch("main; rm -rf /").is_err());
+    }
+
+    /// Regression: `Url::host_str` yields IPv6 literals wrapped in brackets, so
+    /// `[::1]` used to fail the `IpAddr` parse and slip through as a hostname.
+    #[test]
+    fn rejects_bracketed_ipv6_literals() {
+        for url in [
+            "https://[::1]/owner/repo",
+            "https://[::ffff:127.0.0.1]/owner/repo",
+            "https://[fc00::1]/owner/repo",
+            "https://[fe80::1]/owner/repo",
+            "https://[::]/owner/repo",
+        ] {
+            assert!(
+                validate_repository_url(url).is_err(),
+                "{url} should be rejected"
+            );
+        }
+    }
+
+    #[test]
+    fn rejects_reserved_ipv4_literals() {
+        for url in [
+            "https://127.0.0.1/owner/repo",
+            "https://10.0.0.1/owner/repo",
+            "https://169.254.169.254/owner/repo",
+            "https://100.64.0.1/owner/repo",
+            "https://0.0.0.0/owner/repo",
+            "https://198.18.0.1/owner/repo",
+            "https://240.0.0.1/owner/repo",
+        ] {
+            assert!(
+                validate_repository_url(url).is_err(),
+                "{url} should be rejected"
+            );
+        }
+    }
+
+    #[test]
+    fn still_accepts_ordinary_public_repository_urls() {
+        for url in [
+            "https://github.com/owner/repo",
+            "https://github.com/owner/repo.git",
+            "https://gitlab.com/owner/repo",
+            "https://100.63.0.1/owner/repo",
+        ] {
+            assert!(validate_repository_url(url).is_ok(), "{url} should be ok");
+        }
+    }
+
+    #[test]
+    fn is_blocked_ip_unwraps_ipv4_mapped_addresses() {
+        let mapped: IpAddr = "::ffff:10.0.0.1".parse().unwrap();
+        assert!(is_blocked_ip(mapped));
+        let public: IpAddr = "::ffff:93.184.216.34".parse().unwrap();
+        assert!(!is_blocked_ip(public));
     }
 }
