@@ -933,6 +933,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "housebot-arcade"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
 name = "housebot-bot-commands"
 version = "0.1.0"
 dependencies = [

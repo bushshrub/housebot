@@ -5,3 +5,7 @@
 # Local environment and runtime data
 .env
 data/
+
+# Arcade runtime data — and cartridges, which are never committed
+/arcade_scores.json
+/roms/

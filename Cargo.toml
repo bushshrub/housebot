@@ -8,6 +8,7 @@ license = "AGPL-3.0-or-later"
 
 [workspace]
 members = [
+    "crates/arcade",
     "crates/bot-commands",
     "crates/bot-config",
     "crates/bot-formatting",

@@ -33,6 +33,23 @@ Pushes both Docker images to GHCR on push to `main`/`master` or on tags (`v*`):
 ```
 Cargo.toml
 crates/
+  arcade/             # housebot-arcade crate + arcade binary — 3D arcade and NES emulator
+    src/
+      lib.rs          # public re-exports (serve, Board, Shelf, Nes)
+      server.rs       # routing + accept loop (HTTP/1.1 keep-alive over tokio)
+      http.rs         # request parsing and response writing — no web framework
+      scores.rs       # per-cabinet high score tables and submission validation
+      roms.rs         # the cartridge shelf — lists and loads *.nes by bare filename
+      assets.rs       # index.html / game.js / machines.js compiled into the binary
+      nes/
+        mod.rs        # Nes — wires CPU, PPU and bus; runs one frame at a time
+        cpu.rs        # 6502 core, official plus the common undocumented opcodes
+        ppu.rs        # scanline renderer, sprites, sprite-zero hit, NMI
+        bus.rs        # CPU address space, controllers, OAM DMA
+        cart.rs       # iNES parsing, mappers 0/1/2/3
+        demo.rs       # original homebrew cartridge, assembled at runtime
+        palette.rs    # the 2C02 palette as sRGB triples
+    static/           # the client: raw WebGL 2, no engine and no bundler
   deployment-bot/     # independent deployment controller crate and binary
   sandbox/            # housebot-sandbox crate + sandboxd binary
     src/
@@ -193,6 +210,42 @@ handshake, lists tools, and calls them. Tool names are namespaced `{server}__{to
 `jellyfin__get_movies`). A failed MCP startup is logged and skipped.
 
 ---
+
+## Arcade
+
+A walkable 3D arcade served by its own binary, independent of the Discord bot.
+
+```bash
+cargo run --bin arcade          # http://127.0.0.1:8088
+```
+
+| Variable | Default | Meaning |
+| --- | --- | --- |
+| `HOUSEBOT_ARCADE_ADDR` | `127.0.0.1:8088` | listen address |
+| `HOUSEBOT_ARCADE_SCORES` | `arcade_scores.json` | high score file |
+| `HOUSEBOT_ARCADE_ROMS` | `roms` | NES cartridge directory |
+
+Walk with WASD and the mouse, press `E` at a cabinet to play it, `Q` to step
+back.  Four machines: RUSH, BLOCKS and SNAKE run in the browser; the NES
+cabinet is emulated in Rust, one frame per HTTP round trip, with the pad state
+posted alongside it.
+
+The browser owns rendering only.  Scores are re-checked against each cabinet's
+ceiling in `scores.rs` before they reach the board, so a hand-written POST
+cannot mint a top score.
+
+### Cartridges
+
+**No commercial ROMs are shipped, and none should ever be committed.**  The
+only built-in cartridge is `housebot-demo`, an original homebrew image
+assembled at runtime by `nes/demo.rs`.  To play anything else, drop `.nes`
+files you are entitled to run into the ROM directory; only bare `*.nes`
+filenames in that directory are loadable, and `C` cycles through them.
+
+Emulated: 6502 (official and common undocumented opcodes), PPU background and
+sprites, mappers 0/1/2/3.  Not emulated: the APU — the arcade is silent — and
+timing is scanline-accurate rather than dot-accurate, so mid-scanline raster
+tricks will not be right.
 
 ## Code inspection sandbox
 
