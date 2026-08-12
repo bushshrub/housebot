@@ -18,6 +18,28 @@ work lands.
 | Code execution | gVisor sandbox, retained for skill scripts |
 | Feature dev | OpenCode only, full interactive Discord flow |
 | Landing strategy | Rewrite in place on `claude/bot-redesign-audit-7gecv3` |
+| Database | Purged on deploy — every legacy table dropped, schema rebuilt |
+
+## Database reset
+
+The new deployment starts on an empty database. `001_purge_all_data` drops the
+whole `public` schema and recreates it, which also clears anything created
+outside the migration ledger. The legacy migrations (`user_memories`,
+`token_monitor`, `bot_config`, `deployment_permissions`) are deleted from the
+repo rather than left in the ledger.
+
+Two invariants hold this together, both covered by tests in `crates/database`:
+
+- The purge is ordered immediately after the ledger bootstrap. Any migration
+  placed before it would be dropped along with its ledger row and re-applied on
+  the next run.
+- The purge recreates `schema_migrations` and re-records the bootstrap itself,
+  since the ledger lives in `public` and goes down with the schema. The runner
+  records the purge straight after, so it executes exactly once.
+
+New-schema migrations are numbered from `002` and land with the phase that needs
+them — the surviving stores (memory, config, token monitor, deployment
+permissions) are recreated with their new shapes, not restored from the old SQL.
 
 ## Scope
 
@@ -125,6 +147,7 @@ across restarts.
 ## Work plan
 
 ### Phase 1 — demolition
+- [x] Purge migration: drop the whole schema, delete legacy migrations
 - [ ] Delete cut crates and their workspace members
 - [ ] Delete cut tool modules from `crates/tools`
 - [ ] Delete cut slash commands and their handlers
@@ -161,7 +184,7 @@ across restarts.
 - [ ] OpenCode feature-development flow, Codex/Claude Code backends removed
 
 ### Phase 7 — finish
-- [ ] Migrations reconciled with the reduced schema
+- [ ] Every surviving store has a post-purge migration
 - [ ] `cargo test`, `cargo clippy --all-targets -- -D warnings`, `cargo fmt --check`
 - [ ] README and `.env.example` updated
 
