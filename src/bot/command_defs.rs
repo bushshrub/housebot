@@ -57,51 +57,6 @@ pub(crate) fn storage_command_definition() -> CreateCommand {
                 "Clear everything the bot remembers about you",
             )),
         )
-        .add_option(
-            CreateCommandOption::new(
-                CommandOptionType::SubCommandGroup,
-                "notes",
-                "Manage your named personal notes",
-            )
-            .add_sub_option(CreateCommandOption::new(
-                CommandOptionType::SubCommand,
-                "list",
-                "List your saved notes",
-            ))
-            .add_sub_option(
-                CreateCommandOption::new(CommandOptionType::SubCommand, "get", "Read a saved note")
-                    .add_sub_option(
-                        CreateCommandOption::new(CommandOptionType::String, "name", "Note name")
-                            .required(true),
-                    ),
-            )
-            .add_sub_option(
-                CreateCommandOption::new(
-                    CommandOptionType::SubCommand,
-                    "save",
-                    "Create or replace a saved note",
-                )
-                .add_sub_option(
-                    CreateCommandOption::new(CommandOptionType::String, "name", "Note name")
-                        .required(true),
-                )
-                .add_sub_option(
-                    CreateCommandOption::new(CommandOptionType::String, "content", "Text to save")
-                        .required(true),
-                ),
-            )
-            .add_sub_option(
-                CreateCommandOption::new(
-                    CommandOptionType::SubCommand,
-                    "delete",
-                    "Delete a saved note",
-                )
-                .add_sub_option(
-                    CreateCommandOption::new(CommandOptionType::String, "name", "Note name")
-                        .required(true),
-                ),
-            ),
-        )
 }
 
 pub(crate) fn skill_command_definition() -> CreateCommand {
@@ -135,23 +90,6 @@ pub(crate) fn skill_command_definition() -> CreateCommand {
 pub(crate) fn data_command_definition() -> CreateCommand {
     CreateCommand::new("data")
         .description("Inspect or delete data associated with your account")
-        .add_option(
-            CreateCommandOption::new(
-                CommandOptionType::SubCommandGroup,
-                "profile",
-                "Inspect or clear learned profile data",
-            )
-            .add_sub_option(CreateCommandOption::new(
-                CommandOptionType::SubCommand,
-                "show",
-                "Show your stored profile information",
-            ))
-            .add_sub_option(CreateCommandOption::new(
-                CommandOptionType::SubCommand,
-                "clear",
-                "Clear learned profile data and memory",
-            )),
-        )
         .add_option(
             CreateCommandOption::new(
                 CommandOptionType::SubCommandGroup,
@@ -228,22 +166,6 @@ pub(crate) async fn register_slash_commands(ctx: &Context, guild_ids: &[GuildId]
     // The /config global slash command (bot configuration, configurers only).
     let config_cmd = CreateCommand::new("config")
         .description("Configure the bot (authorized configurers only)")
-        // ── proactive subcommand (global proactive kill-switch) ──────────
-        .add_option(
-            CreateCommandOption::new(
-                CommandOptionType::SubCommand,
-                "proactive",
-                "Enable or disable proactive assistance for all users (configurers only)",
-            )
-            .add_sub_option(
-                CreateCommandOption::new(
-                    CommandOptionType::Boolean,
-                    "enabled",
-                    "Whether proactive assistance is available to anyone",
-                )
-                .required(true),
-            ),
-        )
         // ── dev_notify_channel subcommand (feature-development completion) ─
         .add_option(
             CreateCommandOption::new(
@@ -519,21 +441,6 @@ pub(crate) async fn register_slash_commands(ctx: &Context, guild_ids: &[GuildId]
                 "timeout",
                 "Seconds to keep the conversation open without a ping (default 300)",
             )),
-        )
-        .add_option(
-            CreateCommandOption::new(
-                CommandOptionType::SubCommand,
-                "proactive",
-                "Control whether the bot may respond to your messages unprompted",
-            )
-            .add_sub_option(
-                CreateCommandOption::new(
-                    CommandOptionType::Boolean,
-                    "enabled",
-                    "Enable or disable proactive assistance",
-                )
-                .required(true),
-            ),
         )
         .add_option(
             CreateCommandOption::new(

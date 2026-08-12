@@ -1,5 +1,5 @@
 //! The agentic loop: builds prompts, streams completions from the LLM, dispatches tool
-//! calls (built-in tools + MCP servers), and persists per-user history and memory.
+//! calls, and persists per-user history and memory.
 
 use std::collections::{BTreeMap, HashMap};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -19,20 +19,14 @@ use crate::github_issues::GitHubIssueReporter;
 use crate::history::History;
 use crate::llm::{ChatClient, OpenAiClient, TextSink, ThinkingMode, TokenUsage};
 use crate::llm_queue::{LlmQueueInfo, LlmRequestQueue, QueuedChatClient};
-use crate::lua_engine::{self, ScriptHost};
-use crate::mcp::McpServer;
 use crate::memory::Memory;
-use crate::profile::ProfileStore;
 use crate::rate_limit::RateLimiter;
 use crate::reminders::Reminders;
 use crate::skills::{Skill, Skills};
 use crate::token_monitor::{
     LeaderboardEntry, LeaderboardMetric, LeaderboardPeriod, TokenLeaderboard, TokenMonitor,
 };
-use crate::tool_permissions::ToolPermissions;
 use crate::tools;
-use crate::tools::common_crawl::CommonCrawl;
-use crate::tools::file_download::FileDownloader;
 use crate::tools::sandbox::LazySandbox;
 use crate::tools::searxng::SearxNg;
 use crate::tools::web_fetch::WebFetch;
@@ -97,11 +91,7 @@ pub struct AgentRequest<'a> {
     pub nickname: &'a str,
     /// User's Discord avatar URL from their persisted profile (empty if none).
     pub avatar_url: &'a str,
-    pub profile_tags: &'a str,
-    pub quick_actions: &'a str,
     pub guild_id: Option<u64>,
-    pub proactive: bool,
-    pub record_profile_usage: bool,
     /// Per-user cap on completion output tokens, set by the bot's configurers.
     pub max_output_tokens: Option<u32>,
     /// Optional cancellation token. When triggered, the active LLM stream is
@@ -124,11 +114,7 @@ impl<'a> AgentRequest<'a> {
             display_name: username,
             nickname: "",
             avatar_url: "",
-            profile_tags: "",
-            quick_actions: "",
             guild_id: None,
-            proactive: false,
-            record_profile_usage: true,
             max_output_tokens: None,
             cancel: None,
         }
@@ -144,20 +130,12 @@ pub enum AgentControlAction {
     OwnerApprovalRequired { job_id: uuid::Uuid },
 }
 
-/// A file produced by an agent tool for direct delivery to Discord.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct AgentAttachment {
-    pub filename: String,
-    pub bytes: Vec<u8>,
-}
-
 /// The outcome of one `Agent::run`.
 #[derive(Debug, Clone, Default)]
 pub struct AgentResult {
     pub text: String,
     pub session_notice: Option<String>,
     pub tools_called: Vec<String>,
-    pub attachments: Vec<AgentAttachment>,
     /// Set when a `prepare_feature_development` tool call produces a structured outcome.
     pub control_action: Option<AgentControlAction>,
     /// Set when the user cancelled this request mid-generation.
@@ -212,10 +190,6 @@ impl TextSink for TextStreamAdapter<'_> {
 #[derive(Debug)]
 pub(crate) enum ToolOutcome {
     Text(String),
-    Attachment {
-        text: String,
-        attachment: AgentAttachment,
-    },
     /// A development-flow tool call that also carries a control action.
     DevelopmentAction {
         text: String,
@@ -223,7 +197,7 @@ pub(crate) enum ToolOutcome {
     },
 }
 
-/// The agent: LLM client, storage, tools, and connected MCP servers.
+/// The agent: LLM client, storage, and tools.
 pub struct Agent {
     client: Arc<dyn ChatClient>,
     queued_client: Arc<QueuedChatClient>,
@@ -231,7 +205,6 @@ pub struct Agent {
     context_window_tokens: usize,
     history: History,
     memory: Memory,
-    profile_store: ProfileStore,
     skills: Skills,
     reminders: Reminders,
     reporter: Arc<GitHubIssueReporter>,
@@ -245,13 +218,9 @@ pub struct Agent {
     pending_jobs: Arc<PendingJobStore>,
     searxng: Arc<SearxNg>,
     web_fetch: WebFetch,
-    file_downloader: FileDownloader,
-    common_crawl: CommonCrawl,
-    mcp_servers: Arc<Vec<McpServer>>,
     session_stats: tokio::sync::Mutex<HashMap<String, SessionStats>>,
     token_monitor: TokenMonitor,
     active_conversations: tokio::sync::Mutex<HashMap<String, String>>,
-    tool_permissions: ToolPermissions,
     access_control: AccessControlStore,
     /// Per-user configuration, including each user's enabled marketplace skills.
     user_config: UserConfigStore,
@@ -264,8 +233,6 @@ pub struct Agent {
 
 mod dispatch;
 mod leaderboard_fmt;
-mod lua;
-pub use lua::BotScriptHost;
 mod prompt;
 mod run;
 mod session;
@@ -273,8 +240,6 @@ mod tools_def;
 
 #[allow(unused_imports)]
 use leaderboard_fmt::*;
-#[allow(unused_imports)]
-use lua::*;
 pub use prompt::build_system_prompt;
 #[allow(unused_imports)]
 use prompt::*;
@@ -298,7 +263,6 @@ impl Agent {
             config::env_or("LLM_BASE_URL", "http://server-slop:8080/v1"),
             config::env_or("LLM_API_KEY", "not-required"),
         ));
-        let mcp_servers = Arc::new(start_mcp_servers().await);
         let context_window_tokens = tokio::time::timeout(
             std::time::Duration::from_secs(10),
             raw_client.context_window_tokens(),
@@ -344,7 +308,6 @@ impl Agent {
             context_window_tokens,
             history: History::default(),
             memory,
-            profile_store: ProfileStore::default(),
             skills: Skills::default(),
             reminders: Reminders::default(),
             reporter: Arc::new(GitHubIssueReporter::default()),
@@ -355,13 +318,9 @@ impl Agent {
             pending_jobs: Arc::new(PendingJobStore::default()),
             searxng: Arc::new(SearxNg::from_env()),
             web_fetch: WebFetch::default(),
-            file_downloader: FileDownloader::default(),
-            common_crawl: CommonCrawl::default(),
-            mcp_servers,
             session_stats: tokio::sync::Mutex::new(HashMap::new()),
             token_monitor,
             active_conversations: tokio::sync::Mutex::new(HashMap::new()),
-            tool_permissions: ToolPermissions::default(),
             access_control,
             user_config: UserConfigStore::default(),
             discord,
@@ -387,11 +346,6 @@ impl Agent {
         self.memory.clone()
     }
 
-    /// Shared guild-scoped tool permission store used by Discord commands.
-    pub fn tool_permissions(&self) -> ToolPermissions {
-        self.tool_permissions.clone()
-    }
-
     /// Shared bot-configuration access-control store (configurers + user policies).
     pub fn access_control(&self) -> AccessControlStore {
         self.access_control.clone()
@@ -413,22 +367,6 @@ impl Agent {
         self.searxng
             .search(query, max_results.clamp(1, 20), "")
             .await
-    }
-
-    /// Search Jellyfin for the Lua scripting engine, via the MCP server's
-    /// search tool (matched by name, since the tool set is server-defined).
-    pub async fn jellyfin_search(&self, query: &str) -> String {
-        let Some(server) = self.mcp_servers.iter().find(|s| s.prefix == "jellyfin") else {
-            return "Error: Jellyfin is not available.".to_string();
-        };
-        let tools = server.list_tools().await;
-        let Some(tool) = tools.iter().find(|t| t.name == "search") else {
-            return "Error: the Jellyfin server exposes no search tool.".to_string();
-        };
-        match server.call_tool(&tool.name, json!({"query": query})).await {
-            Ok(text) => text,
-            Err(e) => format!("Error: {e}"),
-        }
     }
 
     /// Ask the model whether an incoming mention should receive a single emoji
@@ -536,34 +474,6 @@ fn parse_emoji_selection(value: &str) -> Option<String> {
     Some(value.to_string())
 }
 
-// ── MCP server configuration ─────────────────────────────────────────────────
-
-async fn start_mcp_servers() -> Vec<McpServer> {
-    let mut servers = Vec::new();
-    match (
-        std::env::var("JELLYFIN_URL"),
-        std::env::var("JELLYFIN_API_KEY"),
-    ) {
-        (Ok(url), Ok(key)) if !url.is_empty() && !key.is_empty() => {
-            if let Some(s) = McpServer::start(
-                "jellyfin",
-                "jellyfin-mcp",
-                &["--read-only".to_string()],
-                &[
-                    ("JELLYFIN_URL".into(), url),
-                    ("JELLYFIN_API_KEY".into(), key),
-                ],
-            )
-            .await
-            {
-                servers.push(s);
-            }
-        }
-        _ => tracing::warn!("JELLYFIN_URL or JELLYFIN_API_KEY not set — Jellyfin MCP disabled"),
-    }
-    servers
-}
-
 #[cfg(test)]
 impl Agent {
     /// Construct an agent wired to a test client and temp-backed stores.
@@ -571,7 +481,6 @@ impl Agent {
         client: Arc<dyn ChatClient>,
         history: History,
         memory: Memory,
-        profile_store: ProfileStore,
         skills: Skills,
         reminders: Reminders,
     ) -> Self {
@@ -584,7 +493,6 @@ impl Agent {
             context_window_tokens: 10_000,
             history,
             memory,
-            profile_store,
             skills,
             reminders,
             reporter: Arc::new(GitHubIssueReporter::new(
@@ -600,13 +508,9 @@ impl Agent {
             pending_jobs: Arc::new(PendingJobStore::default()),
             searxng: Arc::new(SearxNg::from_env()),
             web_fetch: WebFetch::default(),
-            file_downloader: FileDownloader::default(),
-            common_crawl: CommonCrawl::default(),
-            mcp_servers: Arc::new(vec![]),
             session_stats: tokio::sync::Mutex::new(HashMap::new()),
             token_monitor: TokenMonitor::default(),
             active_conversations: tokio::sync::Mutex::new(HashMap::new()),
-            tool_permissions: ToolPermissions::default(),
             access_control: AccessControlStore::default(),
             user_config: UserConfigStore::default(),
             discord: Arc::new(DiscordBridge::default()),

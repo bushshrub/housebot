@@ -5,11 +5,9 @@ use std::collections::BTreeMap;
 use housebot::agent::build_system_prompt;
 use housebot::bot::{extract_code_files, split_text};
 use housebot::github_issues::GitHubIssueReporter;
-use housebot::graph_render::{render_png, GraphBuilder};
 use housebot::history::History;
 use housebot::llm::ThinkingMode;
 use housebot::memory::Memory;
-use housebot::notes::Notes;
 use housebot::skills::{Skill, Skills};
 use housebot::tools::github_api::{handle_github_api, MergeAuditLog, ToolCaller};
 use serde_json::json;
@@ -19,12 +17,10 @@ use tempfile::TempDir;
 async fn storage_layer_round_trips_across_modules() {
     let dir = TempDir::new().unwrap();
     let memory = Memory::new(dir.path().join("memory"));
-    let notes = Notes::new(dir.path().join("notes"));
     let history = History::new(dir.path().join("history"), 30);
     let skills = Skills::new(dir.path().join("skills.json"));
 
     memory.save("42", "Likes strong tea").await.unwrap();
-    notes.save(42, "shopping", "milk, eggs").await.unwrap();
     history
         .append_turn(
             "42",
@@ -53,10 +49,6 @@ async fn storage_layer_round_trips_across_modules() {
         .unwrap();
 
     assert_eq!(memory.load("42").await, "Likes strong tea");
-    assert_eq!(
-        notes.get(42, "shopping").await.as_deref(),
-        Some("milk, eggs")
-    );
     assert_eq!(history.load("42").await.len(), 2);
     assert_eq!(
         skills.get("greet").await.unwrap().effective_instructions(),
@@ -148,14 +140,4 @@ fn message_splitting_and_code_extraction_are_public() {
     assert_eq!(files.len(), 1);
     assert!(files[0].0.ends_with(".py"));
     assert!(rendered.contains(&files[0].0));
-}
-
-#[test]
-fn graph_render_is_reachable_through_the_crate() {
-    let mut graph = GraphBuilder::default();
-    let a = graph.add_node("a", "A");
-    let b = graph.add_node("b", "B");
-    graph.add_edge(a, b);
-    let png = render_png(&graph).unwrap();
-    assert!(png.starts_with(b"\x89PNG\r\n\x1a\n"));
 }

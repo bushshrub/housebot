@@ -8,7 +8,6 @@ license = "AGPL-3.0-or-later"
 
 [dependencies]
 chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
-common-crawl = { path = "../common-crawl" }
 futures-util = "0.3"
 housebot-coding-agent = { path = "../coding-agent" }
 housebot-config = { path = "../config" }

@@ -55,8 +55,6 @@ pub fn build_system_prompt(
         all_skills,
         personality,
         deep_memory_enabled,
-        "",
-        "",
         &Local::now().format("%Y-%m-%d %H:%M").to_string(),
         "",
     )
@@ -291,8 +289,6 @@ impl<'a> DynamicSuffix<'a> {
         avatar_url: &'a str,
         user_memory: &'a str,
         personality: Option<&'a str>,
-        profile_tags: &'a str,
-        quick_actions: &'a str,
         now: &'a str,
     ) -> Self {
         let memory_section = if user_memory.trim().is_empty() {
@@ -309,36 +305,22 @@ impl<'a> DynamicSuffix<'a> {
         let profile_section = if display_name != username
             || !nickname.is_empty()
             || !avatar_url.is_empty()
-            || !profile_tags.is_empty()
-            || !quick_actions.is_empty()
         {
             let name_line = if !nickname.is_empty() {
                 format!("Display name: {display_name}, Nickname: {nickname}")
             } else {
                 format!("Display name: {display_name}")
             };
-            let tags_line = if profile_tags.is_empty() {
-                String::new()
-            } else {
-                format!("\nRelevant usage tags: {profile_tags}")
-            };
             let avatar_line = if avatar_url.is_empty() {
                 String::new()
             } else {
                 format!("\nAvatar URL: {avatar_url}")
             };
-            let actions_line = if quick_actions.is_empty() {
-                String::new()
-            } else {
-                format!("\nFrequently used actions: {quick_actions}")
-            };
             format!(
-                "\n\n## User profile\n{name_line}{avatar_line}{tags_line}{actions_line}\n\
+                "\n\n## User profile\n{name_line}{avatar_line}\n\
                  Personalization guidance:\n\
                  - If the user greets you, naturally address them by their nickname or display name.\n\
-                 - If they ask what to do or how you can help, suggest at most one relevant quick action.\n\
-                 - Use profile tags only to prioritize relevant help; do not announce, expose, or speculate about the profile.\n\
-                 - Never infer sensitive traits or make unsolicited personal claims from usage patterns."
+                 - Never infer sensitive traits or make unsolicited personal claims about the user."
             )
         } else {
             String::new()
@@ -365,8 +347,6 @@ pub(crate) fn build_system_prompt_with_profile(
     all_skills: &BTreeMap<String, Skill>,
     personality: Option<&str>,
     deep_memory_enabled: bool,
-    profile_tags: &str,
-    quick_actions: &str,
     now: &str,
     current_message: &str,
 ) -> String {
@@ -391,8 +371,6 @@ pub(crate) fn build_system_prompt_with_profile(
         avatar_url,
         user_memory,
         personality,
-        profile_tags,
-        quick_actions,
         now,
     );
 

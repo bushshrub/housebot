@@ -185,22 +185,19 @@ fn system_prompt_includes_usage_profile() {
     let p = build_system_prompt_with_profile(
         "Alice",
         "123",
-        "Alice",
-        "",
-        "",
+        "Ali",
+        "Al",
+        "https://ex/av.png",
         "",
         &empty_skills(),
         None,
         true,
-        "media, reminders",
-        "media (4), reminders (2)",
         "2026-07-17 12:00",
         "",
     );
-    assert!(p.contains("Relevant usage tags: media, reminders"));
-    assert!(p.contains("Frequently used actions: media (4), reminders (2)"));
+    assert!(p.contains("Display name: Ali, Nickname: Al"));
+    assert!(p.contains("Avatar URL: https://ex/av.png"));
     assert!(p.contains("naturally address them by their nickname or display name"));
-    assert!(p.contains("suggest at most one relevant quick action"));
     assert!(p.contains("Never infer sensitive traits"));
 }
 
@@ -216,8 +213,6 @@ fn system_prompt_includes_profile_avatar_with_safety_guidance() {
         &empty_skills(),
         None,
         true,
-        "",
-        "",
         "2026-07-17 12:00",
         "",
     );
@@ -364,8 +359,6 @@ fn prompt_stable_prefix_unchanged_by_dynamic_content() {
                 &skills,
                 None,
                 true,
-                "",
-                "",
                 "2026-07-17 12:00",
                 "",
             ),
@@ -382,8 +375,6 @@ fn prompt_stable_prefix_unchanged_by_dynamic_content() {
                 &skills,
                 None,
                 true,
-                "",
-                "",
                 "2026-07-18 08:30",
                 "",
             ),
@@ -400,8 +391,6 @@ fn prompt_stable_prefix_unchanged_by_dynamic_content() {
                 &skills,
                 None,
                 true,
-                "",
-                "",
                 "2026-07-17 12:00",
                 "",
             ),
@@ -418,8 +407,6 @@ fn prompt_stable_prefix_unchanged_by_dynamic_content() {
                 &skills,
                 None,
                 true,
-                "tags",
-                "actions",
                 "2026-07-17 12:00",
                 "",
             ),
@@ -436,8 +423,6 @@ fn prompt_stable_prefix_unchanged_by_dynamic_content() {
                 &skills,
                 None,
                 true,
-                "",
-                "",
                 "2026-07-17 12:00",
                 "",
             ),
@@ -454,8 +439,6 @@ fn prompt_stable_prefix_unchanged_by_dynamic_content() {
                 &skills,
                 Some("Friendly"),
                 true,
-                "",
-                "",
                 "2026-07-17 12:00",
                 "",
             ),
@@ -472,8 +455,6 @@ fn prompt_stable_prefix_unchanged_by_dynamic_content() {
                 &skills,
                 None,
                 true,
-                "media",
-                "search",
                 "2026-07-17 12:00",
                 "",
             ),
@@ -527,8 +508,6 @@ fn prompt_static_base_present_regardless_of_deep_memory_or_skills() {
             &skills,
             None,
             true,
-            "",
-            "",
             "2026-07-17 12:00",
             "",
         ),
@@ -543,8 +522,6 @@ fn prompt_static_base_present_regardless_of_deep_memory_or_skills() {
             &skills,
             None,
             false,
-            "",
-            "",
             "2026-07-17 12:00",
             "",
         ),
@@ -559,8 +536,6 @@ fn prompt_static_base_present_regardless_of_deep_memory_or_skills() {
             &skill_map,
             None,
             true,
-            "",
-            "",
             "2026-07-17 12:00",
             "",
         ),
@@ -575,8 +550,6 @@ fn prompt_static_base_present_regardless_of_deep_memory_or_skills() {
             &skill_map,
             None,
             false,
-            "",
-            "",
             "2026-07-17 12:00",
             "",
         ),
@@ -620,8 +593,6 @@ fn prompt_regression_dynamic_markers_after_guidelines_minimal() {
         &empty_skills(),
         None,
         false,
-        "",
-        "",
         "2026-07-17 12:00",
         "",
     );
@@ -670,8 +641,6 @@ fn prompt_regression_dynamic_markers_after_guidelines_maximal() {
         &skills,
         Some("Friendly"),
         true,
-        "tags",
-        "actions",
         "2026-07-17 12:00",
         "",
     );
@@ -708,8 +677,6 @@ fn prompt_memory_tools_separated_from_preceding_guidelines_bullet() {
         &empty_skills(),
         None,
         true,
-        "",
-        "",
         "2026-07-17 12:00",
         "",
     );
@@ -754,8 +721,6 @@ fn prompt_config_content_ordered_between_guidelines_and_dynamic() {
         &skills,
         Some("Friendly"),
         true,
-        "tags",
-        "actions",
         "2026-07-17 12:00",
         "",
     );
@@ -822,10 +787,7 @@ fn all_tool_names_matches_built_in_definitions() {
     // excluding conditionally-included sandbox and memory tools).
     let defined: BTreeSet<String> = [
         crate::tools::searxng::definition(),
-        crate::tools::searxng::deep_research_definition(),
         crate::tools::web_fetch::definition(),
-        crate::tools::file_download::definition(),
-        crate::tools::common_crawl::definition(),
         use_skill_tool(),
         create_skill_tool(),
         crate::tools::manage_skills::list_definition(),
@@ -839,15 +801,8 @@ fn all_tool_names_matches_built_in_definitions() {
         crate::tools::feature_development::definition(),
         crate::tools::github_api::definition(),
         crate::tools::remind::definition(),
-        crate::tools::summarize_url::definition(),
-        crate::tools::token_metrics::definition(),
-        crate::tools::translate::definition(),
         crate::tools::features::definition(),
         get_messages_tool(),
-        find_discord_users_tool(),
-        get_discord_user_tool(),
-        run_lua_tool(),
-        get_lua_docs_tool(),
     ]
     .into_iter()
     .map(|def| {

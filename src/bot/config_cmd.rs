@@ -23,37 +23,6 @@ pub(crate) async fn handle_config_interaction(
     }
 
     match top.name.as_str() {
-        "proactive" => {
-            let sub_opts = match &top.value {
-                CommandDataOptionValue::SubCommand(opts) => opts,
-                _ => return "Unexpected option structure.".into(),
-            };
-            let enabled =
-                sub_opts
-                    .iter()
-                    .find(|o| o.name == "enabled")
-                    .and_then(|o| match &o.value {
-                        CommandDataOptionValue::Boolean(b) => Some(*b),
-                        _ => None,
-                    });
-            let Some(enabled) = enabled else {
-                return "Please specify `enabled`.".into();
-            };
-            if access_store
-                .update(|access| access.proactive_enabled = enabled)
-                .await
-                .is_err()
-            {
-                return "Error: failed to save config.".into();
-            }
-            if enabled {
-                "✅ Proactive assistance is enabled again; server and personal settings apply."
-                    .into()
-            } else {
-                "✅ Proactive assistance is now disabled for everyone, regardless of server or personal settings.".into()
-            }
-        }
-
         "dev_notify_channel" => {
             let sub_opts = match &top.value {
                 CommandDataOptionValue::SubCommand(opts) => opts,
@@ -456,34 +425,6 @@ pub(crate) async fn handle_server_config_interaction(
             )
         }
 
-        "proactive" => {
-            let sub_opts = match &top.value {
-                CommandDataOptionValue::SubCommand(opts) => opts,
-                _ => return "Unexpected option structure.".into(),
-            };
-            let enabled =
-                sub_opts
-                    .iter()
-                    .find(|o| o.name == "enabled")
-                    .and_then(|o| match &o.value {
-                        CommandDataOptionValue::Boolean(b) => Some(*b),
-                        _ => None,
-                    });
-            let Some(enabled) = enabled else {
-                return "Please specify `enabled`.".into();
-            };
-            let mut cfg = server_cfg.load(gid).await;
-            cfg.proactive_allowed = enabled;
-            if server_cfg.save(gid, &cfg).await.is_err() {
-                return "Error: failed to save config.".into();
-            }
-            if enabled {
-                "✅ Proactive assistance is allowed in this server; users still opt in via `/personalize proactive`.".into()
-            } else {
-                "✅ Proactive assistance is disabled in this server for everyone.".into()
-            }
-        }
-
         other => format!("Unknown server-config option `{other}`."),
     }
 }
@@ -569,29 +510,6 @@ pub(crate) async fn handle_personalize_interaction(
                 "✅ Follow-up replies {status} (timeout: {}s).",
                 cfg.followup_timeout_secs
             )
-        }
-
-        "proactive" => {
-            let enabled =
-                sub_opts
-                    .iter()
-                    .find(|o| o.name == "enabled")
-                    .and_then(|o| match &o.value {
-                        CommandDataOptionValue::Boolean(b) => Some(*b),
-                        _ => None,
-                    });
-            let Some(enabled) = enabled else {
-                return "Please specify `enabled`.".into();
-            };
-            cfg.proactive_assistance_enabled = enabled;
-            if user_cfg.save(target_id, &cfg).await.is_err() {
-                return "Error: failed to save config.".into();
-            }
-            if enabled {
-                "✅ Proactive assistance enabled — I may chime in on obvious reminder requests and help questions. Server admins and bot configurers can disable this server-wide or globally.".into()
-            } else {
-                "✅ Proactive assistance disabled — I'll only respond when addressed.".into()
-            }
         }
 
         "progress" => {

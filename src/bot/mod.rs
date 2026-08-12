@@ -9,12 +9,11 @@ use std::time::{Duration, Instant};
 use async_trait::async_trait;
 use regex::Regex;
 use serenity::all::{
-    ButtonStyle, ChannelId, Command, CommandDataOptionValue, CommandOptionType,
-    ComponentInteractionDataKind, Context, CreateActionRow, CreateAllowedMentions,
-    CreateAttachment, CreateAutocompleteResponse, CreateButton, CreateCommand, CreateCommandOption,
-    CreateEmbed, CreateInteractionResponse, CreateInteractionResponseMessage, CreateSelectMenu,
-    CreateSelectMenuKind, CreateSelectMenuOption, EditInteractionResponse, EditMessage,
-    EventHandler, GatewayIntents, GuildId, Interaction, Message, Ready, UserId,
+    ButtonStyle, Command, CommandDataOptionValue, CommandOptionType, ComponentInteractionDataKind,
+    Context, CreateActionRow, CreateAllowedMentions, CreateAttachment, CreateButton, CreateCommand,
+    CreateCommandOption, CreateEmbed, CreateInteractionResponse, CreateInteractionResponseMessage,
+    CreateSelectMenu, CreateSelectMenuKind, CreateSelectMenuOption, EditInteractionResponse,
+    EditMessage, EventHandler, GatewayIntents, GuildId, Interaction, Message, Ready, UserId,
 };
 use serenity::builder::CreateMessage;
 use serenity::Client;
@@ -35,23 +34,16 @@ use crate::coding_agent::issue::{build_dispatch_prompt, dispatch_workflow_file};
 use crate::coding_agent::pending::{DiscordMessageRef, DispatchStage, PendingJobStore};
 use crate::config;
 use crate::discord_bridge::DiscordBridge;
-use crate::graph_render;
-use crate::grocery::GroceryList;
 use crate::history::History;
 use crate::llm::ThinkingMode;
-use crate::lua_engine;
 use crate::memory::Memory;
-use crate::message_log::MessageLog;
-use crate::notes::Notes;
-use crate::profile::ProfileStore;
 use crate::rate_limit::RateLimiter;
 use crate::skills::Skills;
 use crate::token_monitor::{LeaderboardMetric, LeaderboardPeriod};
-use crate::tool_permissions::{ToolPermissions, VoteResult};
 
 pub use crate::bot_commands::{
-    erase_data_command, grocery_command, memory_command, note_command, skill_command, skill_delete,
-    skill_info, skill_list, stats_command,
+    erase_data_command, memory_command, skill_command, skill_delete, skill_info, skill_list,
+    stats_command,
 };
 use crate::bot_formatting::{append_tool_summary, tool_status};
 pub use crate::bot_formatting::{extract_code_files, lang_ext, split_text, tool_hint};
@@ -60,12 +52,6 @@ const MAX_MESSAGE_LENGTH: usize = 2000;
 const EMBED_DESCRIPTION_LIMIT: usize = 4096;
 const PAGINATION_PREFIX: &str = "housebot_labs_page:";
 const DEVELOP_PREFIX: &str = "develop:";
-/// How often, and past what age, stray `/lua` graph scratch files are swept
-/// from the temp dir. Normal renders clean up immediately (see
-/// `graph_render::TempFileGuard`); this only catches leaks from a hard
-/// crash or an older build.
-const GRAPH_SWEEP_INTERVAL: Duration = Duration::from_secs(600);
-const GRAPH_SWEEP_MAX_AGE: Duration = Duration::from_secs(600);
 
 struct PaginatedResponse {
     owner_id: u64,
@@ -80,7 +66,6 @@ mod develop_component;
 mod handler;
 mod helpers;
 mod interactions;
-mod lua_cmd;
 mod media;
 mod message_flow;
 mod progress;
@@ -164,12 +149,9 @@ impl ConversationTracker {
 pub struct HouseBot {
     agent: Arc<Agent>,
     redactor: Arc<SecretRedactor>,
-    notes: Notes,
     skills: Skills,
     memory: Memory,
     history: History,
-    profile_store: ProfileStore,
-    message_log: MessageLog,
     server_cfg: ServerConfigStore,
     user_cfg: UserConfigStore,
     /// Shared with `Agent` — configurer allowlist and per-user policies.
@@ -177,20 +159,15 @@ pub struct HouseBot {
     conversations: Mutex<ConversationTracker>,
     processing: Mutex<HashSet<u64>>,
     responded: Mutex<VecDeque<u64>>,
-    proactive_cooldowns: Mutex<HashMap<(u64, u64), Instant>>,
     paginated: Mutex<HashMap<String, PaginatedResponse>>,
     reminder_started: AtomicBool,
-    graph_sweep_started: AtomicBool,
     chat_rate_limiter: RateLimiter,
-    lua_rate_limiter: RateLimiter,
     /// Shared with `Agent` — holds pending coding-agent dispatch jobs.
     pending_jobs: Arc<PendingJobStore>,
     /// Catalog of agents, models, and effort levels.
     catalog: AgentCatalog,
     /// Shared with `Agent` — provides Discord API access to the agent tools.
     discord: Arc<DiscordBridge>,
-    /// Per-user grocery lists.
-    grocery: GroceryList,
     /// Logs all guild channel messages for the get_messages tool's search mode.
     channel_log: ChannelLog,
     /// Tracks active progress messages so the ❌ cancel reaction can be
@@ -221,30 +198,20 @@ impl HouseBot {
         Self {
             agent,
             redactor: Arc::new(SecretRedactor::from_env()),
-            notes: Notes::default(),
             skills: Skills::default(),
             memory,
             history: History::default(),
-            profile_store: ProfileStore::default(),
-            message_log: MessageLog::default(),
             server_cfg,
             user_cfg,
             access,
             conversations: Mutex::new(ConversationTracker::new(idle)),
             processing: Mutex::new(HashSet::new()),
             responded: Mutex::new(VecDeque::with_capacity(200)),
-            proactive_cooldowns: Mutex::new(HashMap::new()),
             paginated: Mutex::new(HashMap::new()),
             reminder_started: AtomicBool::new(false),
-            graph_sweep_started: AtomicBool::new(false),
             chat_rate_limiter: RateLimiter::new(chat_rate_max, chat_rate_window),
-            lua_rate_limiter: RateLimiter::new(
-                config::env_parse("LUA_RATE_LIMIT_MAX", 6),
-                Duration::from_secs(config::env_parse("LUA_RATE_LIMIT_WINDOW_SECS", 60u64)),
-            ),
             pending_jobs,
             catalog: AgentCatalog::load_embedded(),
-            grocery: GroceryList::default(),
             discord,
             channel_log: ChannelLog::default(),
             progress_messages: Arc::new(Mutex::new(HashMap::new())),
@@ -275,37 +242,7 @@ impl HouseBot {
         tracing::info!(target: "housebot::commands", user_id, "Session reset requested");
         self.agent.reset_session(&user_id.to_string()).await;
         self.conversations.lock().await.remove(channel_id, user_id);
-        let name = self
-            .profile_store
-            .load(user_id)
-            .await
-            .best_name()
-            .to_string();
-        format!("New conversation started, {name}. Your previous conversation history has been cleared.")
-    }
-
-    pub(crate) async fn server_proactive_allowed(&self, guild_id: Option<u64>) -> bool {
-        match guild_id {
-            Some(gid) => self.server_cfg.load(gid).await.proactive_allowed,
-            None => false,
-        }
-    }
-
-    pub(crate) async fn proactive_cooldown_allows(&self, channel_id: u64, user_id: u64) -> bool {
-        let now = Instant::now();
-        let cooldown = Duration::from_secs(config::env_parse(
-            "PROACTIVE_ASSISTANCE_COOLDOWN_SECS",
-            300u64,
-        ));
-        let mut cooldowns = self.proactive_cooldowns.lock().await;
-        if cooldowns
-            .get(&(channel_id, user_id))
-            .is_some_and(|last| now.duration_since(*last) < cooldown)
-        {
-            return false;
-        }
-        cooldowns.insert((channel_id, user_id), now);
-        true
+        "New conversation started. Your previous conversation history has been cleared.".to_string()
     }
 
     pub(crate) async fn respond(&self, ctx: &Context, msg: &Message, content: &str) {

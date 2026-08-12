@@ -14,30 +14,21 @@ members = [
     "crates/bot-response",
     "crates/channel-log",
     "crates/coding-agent",
-    "crates/common-crawl",
     "crates/config",
     "crates/database",
     "crates/deployment-bot",
     "crates/discord-bridge",
     "crates/github-issues",
-    "crates/graph-render",
-    "crates/grocery",
     "crates/history",
     "crates/llm",
     "crates/llm-queue",
-    "crates/lua-engine",
-    "crates/mcp",
     "crates/memory",
-    "crates/message-log",
-    "crates/notes",
-    "crates/profile",
     "crates/rate-limit",
     "crates/reminders",
     "crates/sandbox",
     "crates/skills",
     "crates/testing",
     "crates/token-monitor",
-    "crates/tool-permissions",
     "crates/tools",
 ]
 exclude = ["fuzz"]
@@ -73,7 +64,6 @@ sentry = { version = "0.38.0", default-features = false, features = [
     "reqwest",
     "rustls",
 ] }
-common-crawl = { path = "crates/common-crawl" }
 housebot-bot-commands = { path = "crates/bot-commands" }
 housebot-bot-config = { path = "crates/bot-config" }
 housebot-bot-formatting = { path = "crates/bot-formatting" }
@@ -82,21 +72,13 @@ housebot-coding-agent = { path = "crates/coding-agent" }
 housebot-discord-bridge = { path = "crates/discord-bridge" }
 housebot-github-issues = { path = "crates/github-issues" }
 housebot-llm-queue = { path = "crates/llm-queue" }
-housebot-lua-engine = { path = "crates/lua-engine" }
-housebot-tool-permissions = { path = "crates/tool-permissions" }
 housebot-tools = { path = "crates/tools" }
-graph-render = { path = "crates/graph-render" }
 housebot-channel-log = { path = "crates/channel-log" }
 housebot-config = { path = "crates/config" }
 housebot-database = { path = "crates/database" }
-housebot-grocery = { path = "crates/grocery" }
 housebot-history = { path = "crates/history" }
 housebot-llm = { path = "crates/llm" }
-housebot-mcp = { path = "crates/mcp" }
 housebot-memory = { path = "crates/memory" }
-housebot-message-log = { path = "crates/message-log" }
-housebot-notes = { path = "crates/notes" }
-housebot-profile = { path = "crates/profile" }
 housebot-rate-limit = { path = "crates/rate-limit" }
 housebot-reminders = { path = "crates/reminders" }
 housebot-sandbox = { path = "crates/sandbox" }

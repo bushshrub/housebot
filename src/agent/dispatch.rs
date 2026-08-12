@@ -57,40 +57,6 @@ impl Agent {
                     )
                     .await,
             ),
-            "download_file" => match self
-                .file_downloader
-                .download(str_arg(args, "url"), str_arg(args, "filename"))
-                .await
-            {
-                Ok(file) => ToolOutcome::Attachment {
-                    text: format!(
-                        "Attached `{}` ({} bytes{}) to the Discord response.",
-                        file.filename,
-                        file.bytes.len(),
-                        file.content_type
-                            .as_deref()
-                            .map(|content_type| format!(", {content_type}"))
-                            .unwrap_or_default()
-                    ),
-                    attachment: AgentAttachment {
-                        filename: file.filename,
-                        bytes: file.bytes,
-                    },
-                },
-                Err(error) => ToolOutcome::Text(error),
-            },
-            "common_crawl__search" => ToolOutcome::Text(
-                self.common_crawl
-                    .search(
-                        str_arg(args, "pattern"),
-                        str_arg(args, "crawl"),
-                        args.get("match_type")
-                            .and_then(Value::as_str)
-                            .unwrap_or("exact"),
-                        u64_arg(args, "max_results", 10) as usize,
-                    )
-                    .await,
-            ),
             "update_memory" => {
                 let new_content = str_arg(args, "memory_content");
                 let _ = self.memory.save(user_id, new_content).await;
@@ -297,23 +263,6 @@ impl Agent {
                     .await,
                 )
             }
-            "summarize_url" => ToolOutcome::Text(
-                tools::summarize_url::fetch_and_summarize(
-                    &*self.client,
-                    &self.model,
-                    str_arg(args, "url"),
-                )
-                .await,
-            ),
-            "translate" => ToolOutcome::Text(
-                tools::translate::translate_text(
-                    &*self.client,
-                    &self.model,
-                    str_arg(args, "text"),
-                    str_arg(args, "target_language"),
-                )
-                .await,
-            ),
             "use_skill" => {
                 let skill_name = str_arg(args, "name");
                 match self.skills.get(skill_name).await {
@@ -387,15 +336,6 @@ impl Agent {
                 }
             }
             "get_bot_features" => ToolOutcome::Text(tools::features::features_text().to_string()),
-            "get_token_metrics" => ToolOutcome::Text(
-                tools::token_metrics::get_token_metrics(
-                    &self.token_monitor,
-                    args.get("user_id").and_then(Value::as_str),
-                    args.get("period").and_then(Value::as_str),
-                    args.get("metric").and_then(Value::as_str),
-                )
-                .await,
-            ),
             "get_messages" => {
                 let mode = args.get("mode").and_then(Value::as_str).unwrap_or("recent");
                 let target_channel = args
@@ -483,94 +423,6 @@ impl Agent {
                     }
                 })
             }
-            "find_discord_users" => {
-                let query = str_arg(args, "query");
-                let max_results = u64_arg(args, "max_results", 10).clamp(1, 20) as usize;
-                let target_channel = args
-                    .get("channel_id")
-                    .and_then(Value::as_str)
-                    .and_then(|value| value.parse::<u64>().ok())
-                    .unwrap_or(channel_id);
-                ToolOutcome::Text(
-                    match self
-                        .channel_log
-                        .find_authors(target_channel, query, max_results)
-                        .await
-                    {
-                        Err(error) => format!("Error: {error}"),
-                        Ok(authors) if authors.is_empty() => {
-                            "No matching Discord users found in this channel's history.".to_string()
-                        }
-                        Ok(authors) => authors
-                            .iter()
-                            .map(|author| {
-                                let nick = author.nick.as_deref().unwrap_or("(none)");
-                                format!(
-                                    "Username: {} | Nickname: {} | ID: {}",
-                                    author.username, nick, author.user_id
-                                )
-                            })
-                            .collect::<Vec<_>>()
-                            .join("\n"),
-                    },
-                )
-            }
-            "get_discord_user" => {
-                let uid: u64 = str_arg(args, "user_id").parse().unwrap_or(0);
-                ToolOutcome::Text(if uid == 0 {
-                    "Error: invalid user_id.".to_string()
-                } else {
-                    match self.discord.fetch_user(uid).await {
-                        Ok(u) => {
-                            let avatar = u.avatar_url.as_deref().unwrap_or("(none)");
-                            format!(
-                                "Username: {}\nDisplay name: {}\nID: {}\nBot: {}\nAccount created: {}\nAvatar URL: {}",
-                                u.username, u.display_name, u.id, u.bot, u.created_at, avatar
-                            )
-                        }
-                        Err(e) => format!("Error: {e}"),
-                    }
-                })
-            }
-            "run_lua" => {
-                let script = lua_engine::strip_code_fence(str_arg(args, "script")).to_string();
-                let host = Arc::new(AgentScriptHost {
-                    searxng: Arc::clone(&self.searxng),
-                    mcp_servers: Arc::clone(&self.mcp_servers),
-                });
-                let output = lua_engine::run_script(
-                    script,
-                    host,
-                    lua_engine::LuaLimits::from_env(),
-                    |s: &str| s.to_string(),
-                )
-                .await;
-                if let Some(image) = output.image {
-                    let text = if output.text.is_empty() {
-                        format!(
-                            "Graph rendered as PNG ({} bytes) and attached to the Discord response.",
-                            image.len()
-                        )
-                    } else {
-                        format!(
-                            "{}\n\nA graph PNG image ({} bytes) was also generated and \
-                             automatically attached to the Discord response.",
-                            output.text,
-                            image.len()
-                        )
-                    };
-                    ToolOutcome::Attachment {
-                        text,
-                        attachment: AgentAttachment {
-                            filename: "graph.png".to_string(),
-                            bytes: image,
-                        },
-                    }
-                } else {
-                    ToolOutcome::Text(output.text)
-                }
-            }
-            "get_lua_docs" => ToolOutcome::Text(LUA_DOCS.to_string()),
             // Offered only to configurers at the tool-definition layer, but
             // re-checked here as a defence-in-depth measure.
             "configure_bot" => {
@@ -642,18 +494,6 @@ impl Agent {
                 ),
                 _ => ToolOutcome::Text(format!("Unknown tool: {name}")),
             },
-            _ if name.contains("__") => {
-                let (prefix, tool_name) = name.split_once("__").unwrap();
-                for server in self.mcp_servers.iter() {
-                    if server.prefix == prefix {
-                        return match server.call_tool(tool_name, args.clone()).await {
-                            Ok(text) => ToolOutcome::Text(text),
-                            Err(e) => ToolOutcome::Text(format!("Error: {e}")),
-                        };
-                    }
-                }
-                ToolOutcome::Text(format!("Unknown tool: {name}"))
-            }
             _ => ToolOutcome::Text(format!("Unknown tool: {name}")),
         }
     }
@@ -668,14 +508,6 @@ impl Agent {
                     id => format!("<@{id}>"),
                 }
             )];
-            lines.push(format!(
-                "Proactive assistance (global): {}",
-                if access.proactive_enabled {
-                    "enabled"
-                } else {
-                    "disabled"
-                }
-            ));
             lines.push(format!(
                 "Dev notification channel: {}",
                 access
@@ -713,31 +545,6 @@ impl Agent {
                 }
             }
             return lines.join("\n");
-        }
-
-        if action == "set_proactive" {
-            let Some(enabled) = args.get("enabled").and_then(Value::as_bool) else {
-                return "Error: 'enabled' (true/false) is required for set_proactive.".to_string();
-            };
-            let updated = self
-                .access_control
-                .update(|access| {
-                    access.proactive_enabled = enabled;
-                })
-                .await;
-            return match updated {
-                Ok(_) => {
-                    if enabled {
-                        "Proactive assistance is now globally **enabled**.".to_string()
-                    } else {
-                        "Proactive assistance is now globally **disabled**.".to_string()
-                    }
-                }
-                Err(error) => {
-                    tracing::error!(%error, "failed to save bot access control");
-                    "Error: failed to save the bot configuration.".to_string()
-                }
-            };
         }
 
         if action == "set_dev_notify_channel" {
@@ -978,6 +785,18 @@ impl Agent {
     }
 }
 
+fn optional_nonzero_u32(args: &Value, key: &str) -> Result<Option<u32>, String> {
+    let Some(value) = args.get(key) else {
+        return Ok(None);
+    };
+    let parsed = value
+        .as_u64()
+        .and_then(|value| u32::try_from(value).ok())
+        .filter(|value| *value > 0)
+        .ok_or_else(|| format!("Error: '{key}' must be an integer from 1 to {}.", u32::MAX))?;
+    Ok(Some(parsed))
+}
+
 fn optional_nonzero_u64_string(args: &Value, key: &str) -> Result<Option<u64>, String> {
     let Some(value) = args.get(key) else {
         return Ok(None);
@@ -990,18 +809,6 @@ fn optional_nonzero_u64_string(args: &Value, key: &str) -> Result<Option<u64>, S
         .ok()
         .filter(|parsed| *parsed > 0)
         .ok_or_else(|| format!("Error: '{key}' must be a non-zero numeric string."))?;
-    Ok(Some(parsed))
-}
-
-fn optional_nonzero_u32(args: &Value, key: &str) -> Result<Option<u32>, String> {
-    let Some(value) = args.get(key) else {
-        return Ok(None);
-    };
-    let parsed = value
-        .as_u64()
-        .and_then(|value| u32::try_from(value).ok())
-        .filter(|value| *value > 0)
-        .ok_or_else(|| format!("Error: '{key}' must be an integer from 1 to {}.", u32::MAX))?;
     Ok(Some(parsed))
 }
 

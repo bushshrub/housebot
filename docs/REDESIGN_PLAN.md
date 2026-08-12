@@ -120,9 +120,18 @@ token-monitor   bot-formatting  bot-response    discord-bridge
 coding-agent    github-issues   deployment-bot  testing
 ```
 
-Deleted crates: `lua-engine`, `graph-render`, `mcp`, `notes`, `grocery`,
-`profile`, `message-log`, `tool-permissions`, `common-crawl`, `channel-log`,
-`bot-commands`, `llm-queue`, `rate-limit`.
+Deleted in Phase 1: `lua-engine`, `graph-render`, `mcp`, `notes`, `grocery`,
+`profile`, `message-log`, `tool-permissions`, `common-crawl`, `bot-commands`.
+
+Two crates are replaced in Phase 2 rather than deleted first, because removing
+them up front would leave every LLM call and `get_messages` as a compile hole
+for no benefit: `llm-queue` → `llm-scheduler`, `channel-log` →
+`channel-context`.
+
+`rate-limit` is **kept**, not cut: the surviving feature-request tools depend on
+it. `bot-commands` is kept too — it holds the command implementations for
+memory, skills, and stats, so only its notes/grocery/profile handlers were
+stripped.
 
 ### Skills
 
@@ -146,13 +155,15 @@ across restarts.
 
 ## Work plan
 
-### Phase 1 — demolition
+### Phase 1 — demolition ✅
 - [x] Purge migration: drop the whole schema, delete legacy migrations
-- [ ] Delete cut crates and their workspace members
-- [ ] Delete cut tool modules from `crates/tools`
-- [ ] Delete cut slash commands and their handlers
-- [ ] Delete `src/agent` and `src/bot` modules that are being rebuilt
-- [ ] Workspace compiles with the reduced member list
+- [x] Delete ten cut crates and their workspace members
+- [x] Delete cut tool modules from `crates/tools`
+- [x] Delete cut slash commands, subcommands, and their handlers
+- [x] Remove proactive messaging end to end (agent, config, commands, schema)
+- [x] Remove the outbound tool-attachment path (its only producers were cut)
+- [x] Drop the Jellyfin MCP build stage from the Dockerfile
+- [x] Workspace compiles clean; `cargo test`, `clippy -D warnings`, `fmt` all pass
 
 ### Phase 2 — core
 - [ ] `llm-scheduler`: priority queue, configurable in-flight cap, sub-agent cap
@@ -169,6 +180,7 @@ across restarts.
 - [ ] Sub-agent spawn tool, priority-aware
 
 ### Phase 4 — skills + sandbox
+- [ ] Add `SKILLS_DIR` (approved) pointing at the persistent skills volume
 - [ ] Skill discovery, frontmatter parsing, progressive disclosure
 - [ ] Skill authoring tools writing to the persistent volume
 - [ ] `sandboxd` wired as the script execution surface

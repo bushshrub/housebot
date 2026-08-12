@@ -49,16 +49,15 @@ pub(crate) fn bool_option(
         })
 }
 
-/// Handle `/storage memory ...` and `/storage notes ...` through the same
-/// store-backed handlers used by the prefix compatibility aliases.
+/// Handle `/storage memory ...` through the same store-backed handlers used by
+/// the prefix compatibility aliases.
 pub(crate) async fn handle_storage_interaction(
     memory: &Memory,
-    notes: &Notes,
     options: &[serenity::all::CommandDataOption],
     author_id: u64,
 ) -> String {
     let Some(group) = options.first() else {
-        return "Use `/storage memory ...` or `/storage notes ...`.".into();
+        return "Use `/storage memory ...`.".into();
     };
     let Some(actions) = nested_options(group) else {
         return "Unexpected storage command structure.".into();
@@ -78,28 +77,6 @@ pub(crate) async fn handle_storage_interaction(
                 return "Please provide a search query.".into();
             };
             memory_command(memory, &format!("!memory search {query}"), author_id).await
-        }
-        ("notes", "list") => note_command(notes, "!note list", "", author_id).await,
-        ("notes", "get" | "delete") => {
-            let Some(name) = string_option(action_options, "name") else {
-                return "Please provide a note name.".into();
-            };
-            note_command(
-                notes,
-                &format!("!note {} {name}", action.name),
-                "",
-                author_id,
-            )
-            .await
-        }
-        ("notes", "save") => {
-            let Some(name) = string_option(action_options, "name") else {
-                return "Please provide a note name.".into();
-            };
-            let Some(content) = string_option(action_options, "content") else {
-                return "Please provide note content.".into();
-            };
-            note_command(notes, &format!("!note save {name}"), content, author_id).await
         }
         _ => "Unknown storage action.".into(),
     }
@@ -136,24 +113,6 @@ pub(crate) async fn reply_with_mentions(
 
 pub(crate) fn help_response() -> String {
     crate::tools::features::features_text().to_string()
-}
-
-pub(crate) fn is_proactive_candidate(content: &str) -> bool {
-    let normalized = content.trim().to_ascii_lowercase();
-    if normalized.is_empty() {
-        return false;
-    }
-    normalized.contains('?')
-        || normalized.starts_with("how ")
-        || normalized.starts_with("what ")
-        || normalized.starts_with("where ")
-        || normalized.starts_with("when ")
-        || normalized.starts_with("why ")
-        || normalized.starts_with("can you ")
-        || normalized.starts_with("could you ")
-        || normalized.starts_with("remind me ")
-        || normalized.starts_with("how do i ")
-        || normalized.starts_with("what can you do")
 }
 
 pub(crate) fn commit_hash_response(sha: Option<&str>) -> String {
@@ -222,35 +181,6 @@ pub(crate) fn leaderboard_options(
         _ => LeaderboardMetric::TotalTokens,
     };
     (period, metric)
-}
-
-/// Wrap `/lua` output in a code fence sized to fit a single Discord message.
-pub(crate) fn format_lua_reply(output: &str) -> String {
-    let sanitized = output.replace("```", "`\u{200b}``");
-    let budget = MAX_MESSAGE_LENGTH - "```\n\n```".chars().count();
-    let body: String = if sanitized.chars().count() > budget {
-        let mut truncated: String = sanitized.chars().take(budget - 1).collect();
-        truncated.push('…');
-        truncated
-    } else {
-        sanitized
-    };
-    format!("```\n{body}\n```")
-}
-
-pub(crate) async fn respond_ephemeral(
-    ctx: &Context,
-    cmd: &serenity::all::CommandInteraction,
-    content: &str,
-) {
-    let response = CreateInteractionResponse::Message(
-        CreateInteractionResponseMessage::new()
-            .content(content)
-            .ephemeral(true),
-    );
-    if let Err(e) = cmd.create_response(&ctx.http, response).await {
-        tracing::warn!("Failed to send interaction response: {e}");
-    }
 }
 
 /// Scan text for Discord mention patterns (`<@ID>`) and return unique user IDs,

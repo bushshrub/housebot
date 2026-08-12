@@ -5,34 +5,25 @@ use std::time::{Duration, Instant};
 
 use tokio::sync::Mutex;
 
-pub mod common_crawl;
 pub mod create_skill;
 pub mod edit_feature_request;
 pub mod feature_development;
 pub mod feature_request;
 pub mod features;
-pub mod file_download;
 pub mod github_api;
 pub mod manage_skills;
 pub mod remind;
 pub mod sandbox;
 pub mod searxng;
-pub mod summarize_url;
-pub mod token_metrics;
-pub mod translate;
 pub mod web_fetch;
 
-/// Single Source of Truth for all built-in tool names (used by autocomplete and
-/// tool-ban validation). Does not include dynamically-discovered MCP tools.
+/// Single Source of Truth for all built-in tool names (used by autocomplete).
 /// The special name `housebot` represents full bot interaction (not a tool).
 pub fn all_tool_names() -> &'static [&'static str] {
     &[
         "housebot",
         "web_search",
-        "deep_research",
         "fetch_webpage",
-        "download_file",
-        "common_crawl__search",
         "create_skill",
         "use_skill",
         "list_skills",
@@ -46,15 +37,8 @@ pub fn all_tool_names() -> &'static [&'static str] {
         "prepare_feature_development",
         "github_api",
         "set_reminder",
-        "summarize_url",
-        "get_token_metrics",
-        "translate",
         "get_bot_features",
         "get_messages",
-        "find_discord_users",
-        "get_discord_user",
-        "run_lua",
-        "get_lua_docs",
         "update_memory",
         "search_memory",
         "sandbox_clone_repository",
