@@ -5,6 +5,14 @@ deployment bot and the OpenCode feature-development flow. This file is the
 source of truth for what is in scope and what is done; update the checkboxes as
 work lands.
 
+Resuming in a new session? Start with [`HANDOFF.md`](../HANDOFF.md) — it covers
+current state, gotchas, and the one question still blocking Phase 4.
+
+## Open question
+
+**Is skill authoring owner-gated, or open to any user?** Unanswered. Blocks
+Phase 4 only; Phases 2–3 can proceed without it.
+
 ## Decisions
 
 | Question | Decision |
@@ -38,8 +46,18 @@ Two invariants hold this together, both covered by tests in `crates/database`:
   records the purge straight after, so it executes exactly once.
 
 New-schema migrations are numbered from `002` and land with the phase that needs
-them — the surviving stores (memory, config, token monitor, deployment
-permissions) are recreated with their new shapes, not restored from the old SQL.
+them. The surviving stores are recreated with their new shapes, not restored
+from the old SQL:
+
+| Table | Queried by | Recreated in |
+|---|---|---|
+| `user_memories` | `crates/memory` | Phase 2 |
+| `bot_config` | `crates/bot-config` | Phase 5 |
+| `conversations`, `conversation_messages`, `token_usage_events` | `crates/token-monitor` | Phase 5 |
+| `deployment_permissions` | `crates/deployment-bot` | Phase 6 |
+
+Until each lands, the bot cannot run against a migrated database. That is
+expected during the rebuild.
 
 ## Scope
 
@@ -166,12 +184,21 @@ across restarts.
 - [x] Workspace compiles clean; `cargo test`, `clippy -D warnings`, `fmt` all pass
 
 ### Phase 2 — core
+
+Build the scheduler first: sub-agents (Phase 3) and the config commands
+(Phase 5) both depend on its shape.
+
 - [ ] `llm-scheduler`: priority queue, configurable in-flight cap, sub-agent cap
-- [ ] `llm`: point at `gemma-4-26b-a4b-qat`, streaming, tool-call parsing
+- [ ] Delete `llm-queue` once the scheduler replaces it
+- [ ] Switch the model default to `gemma-4-26b-a4b-qat` in `src/agent/mod.rs`
+      and `.env.example` (still `gemma-4-12b-qat-q4kxl`; Phase 1 stayed
+      subtractive)
 - [ ] Agent loop: multi-step tool dispatch, cancellation, progress
-- [ ] Memory: markdown in Postgres, read/write tools
+- [ ] Memory: migration recreating `user_memories` — the Postgres backend in
+      `crates/memory` already exists and already stores markdown
 - [ ] History: per-user conversation persistence
 - [ ] `channel-context`: in-memory ring buffer + `get_messages`
+- [ ] Delete `channel-log` once the ring buffer replaces it
 
 ### Phase 3 — tools
 - [ ] `web_search` (SearXNG) + `fetch_webpage`
@@ -192,11 +219,14 @@ across restarts.
 - [ ] `/stats` + token leaderboards
 
 ### Phase 6 — subsystems
-- [ ] Deployment bot verified against the new core
-- [ ] OpenCode feature-development flow, Codex/Claude Code backends removed
+- [ ] Deployment bot verified against the new core; `deployment_permissions`
+      migration
+- [ ] OpenCode feature-development flow; drop the `Codex` and `ClaudeCode`
+      variants from `crates/coding-agent/src/catalog.rs` (all three still exist)
 
 ### Phase 7 — finish
-- [ ] Every surviving store has a post-purge migration
+- [ ] Every surviving store has a post-purge migration (see the table above)
+- [ ] `HANDOFF.md` deleted or rewritten for whatever remains
 - [ ] `cargo test`, `cargo clippy --all-targets -- -D warnings`, `cargo fmt --check`
 - [ ] README and `.env.example` updated
 
