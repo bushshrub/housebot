@@ -4,8 +4,6 @@
 use std::collections::HashMap;
 use std::time::{Duration, SystemTime};
 
-use serde_json::Value;
-
 use super::MemoryData;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -240,13 +238,6 @@ fn sort_entries(entries: &mut [LeaderboardEntry], metric: LeaderboardMetric) {
             .total_cmp(&left.cache_efficiency())
             .then_with(|| right.total_tokens().cmp(&left.total_tokens())),
     });
-}
-
-pub(super) fn message_role(message: &Value) -> &str {
-    message
-        .get("role")
-        .and_then(Value::as_str)
-        .unwrap_or("unknown")
 }
 
 pub(super) fn to_i64(value: u64) -> i64 {

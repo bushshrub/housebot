@@ -81,23 +81,12 @@ async fn aggregates_users_and_conversations() {
 }
 
 #[tokio::test]
-async fn archives_every_message_and_erases_user_data() {
+async fn erases_user_data() {
     let monitor = TokenMonitor::default();
     monitor
         .start_conversation("c1", "u1", "Alice", 10)
         .await
         .unwrap();
-    monitor
-        .record_turn(
-            "c1",
-            &json!({"role":"user","content":"hello"}),
-            &[json!({"role":"assistant","content":"hi"})],
-        )
-        .await
-        .unwrap();
-    if let Backend::Memory(data) = &monitor.backend {
-        assert_eq!(data.lock().await.messages.len(), 2);
-    }
     monitor.clear_user("u1").await.unwrap();
     assert!(monitor.leaderboard(10).await.unwrap().users.is_empty());
 }

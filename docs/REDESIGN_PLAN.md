@@ -53,7 +53,7 @@ from the old SQL:
 |---|---|---|
 | `user_memories` | `crates/memory` | Phase 2 |
 | `bot_config` | `crates/bot-config` | Phase 5 |
-| `conversations`, `conversation_messages`, `token_usage_events` | `crates/token-monitor` | Phase 5 |
+| `conversations`, `token_usage_events` | `crates/token-monitor` | Phase 5 |
 | `deployment_permissions` | `crates/deployment-bot` | Phase 6 |
 
 Until each lands, the bot cannot run against a migrated database. That is

@@ -247,14 +247,6 @@ impl Agent {
             }
         };
 
-        if let Err(error) = self
-            .token_monitor
-            .record_turn(&conversation_id, &history_user_message, &turn_messages)
-            .await
-        {
-            tracing::error!(%error, %user_id, %conversation_id, "failed to archive conversation turn");
-        }
-
         if let Err(e) = self
             .history
             .append_turn(user_id, history_user_message, turn_messages)

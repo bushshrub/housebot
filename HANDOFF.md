@@ -145,7 +145,7 @@ control, so those tables are load-bearing.
 |---|---|---|
 | `user_memories` | `crates/memory` | `002` ✅ |
 | `bot_config` | `crates/bot-config` | missing |
-| `conversations`, `conversation_messages`, `token_usage_events` | `crates/token-monitor` | missing |
+| `conversations`, `token_usage_events` | `crates/token-monitor` | missing |
 | `deployment_permissions` | `crates/deployment-bot` | missing |
 
 Recreate the rest with their **new** shapes, numbered from `003`. Do not
@@ -225,6 +225,15 @@ Do not re-ask these; they are in the plan's decisions table.
 - **No durable transcript.** Channel context stays RAM-only and dies with the
   process. This was proposed and declined — do not re-propose a
   `channel_messages` table.
+- **No conversation archive either.** `token-monitor` used to mirror every
+  message of every turn into `conversation_messages` — user text, assistant
+  replies, and all tool traffic. Nothing ever read it: no command, no
+  leaderboard, no context rebuild. The working history the bot actually uses is
+  `crates/history` (per-user JSONL on the data volume). The table and its
+  `record_turn` write path were removed rather than recreated post-purge. It
+  was the only record that outlived compaction, and that was decided against
+  deliberately — do not reintroduce it. `token-monitor` now does exactly one
+  job: counting tokens.
 
 ## Things that will surprise you
 

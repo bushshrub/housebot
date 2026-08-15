@@ -4,7 +4,6 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 
-use serde_json::Value;
 use tokio::sync::Mutex;
 use tokio_postgres::NoTls;
 
@@ -17,7 +16,7 @@ const DEFAULT_CONNECT_RETRY_SECS: u64 = 2;
 const DEFAULT_CONNECT_TIMEOUT_SECS: u64 = 10;
 
 mod leaderboard;
-use leaderboard::{finish_leaderboard, from_i64, memory_leaderboard, message_role, to_i64};
+use leaderboard::{finish_leaderboard, from_i64, memory_leaderboard, to_i64};
 pub use leaderboard::{
     GlobalTokenStats, LeaderboardEntry, LeaderboardMetric, LeaderboardPeriod, LeaderboardRank,
     TokenLeaderboard,
@@ -32,7 +31,6 @@ enum Backend {
 #[derive(Default)]
 struct MemoryData {
     conversations: HashMap<String, MemoryConversation>,
-    messages: Vec<MemoryMessage>,
     usage_events: Vec<MemoryUsageEvent>,
 }
 
@@ -55,14 +53,6 @@ struct MemoryUsageEvent {
     output_tokens: u64,
     cached_tokens: u64,
     created_at: SystemTime,
-}
-
-struct MemoryMessage {
-    conversation_id: String,
-    #[allow(dead_code)]
-    role: String,
-    #[allow(dead_code)]
-    content: String,
 }
 
 /// Shared handle for conversation and token persistence.
@@ -203,47 +193,6 @@ impl TokenMonitor {
         Ok(())
     }
 
-    pub async fn record_turn(
-        &self,
-        conversation_id: &str,
-        user_message: &Value,
-        assistant_messages: &[Value],
-    ) -> anyhow::Result<()> {
-        let turn_id = uuid::Uuid::new_v4().to_string();
-        let messages = std::iter::once(user_message).chain(assistant_messages.iter());
-        match &self.backend {
-            Backend::Memory(data) => {
-                let mut data = data.lock().await;
-                for message in messages {
-                    data.messages.push(MemoryMessage {
-                        conversation_id: conversation_id.into(),
-                        role: message_role(message).into(),
-                        content: serde_json::to_string(message)?,
-                    });
-                }
-            }
-            Backend::Postgres(client) => {
-                for (index, message) in messages.enumerate() {
-                    client
-                        .execute(
-                            "INSERT INTO conversation_messages \
-                             (conversation_id, turn_id, message_index, role, content) \
-                             VALUES ($1, $2, $3, $4, $5)",
-                            &[
-                                &conversation_id,
-                                &turn_id,
-                                &(index as i32),
-                                &message_role(message),
-                                &serde_json::to_string(message)?,
-                            ],
-                        )
-                        .await?;
-                }
-            }
-        }
-        Ok(())
-    }
-
     pub async fn finish_conversation(&self, conversation_id: &str) -> anyhow::Result<()> {
         match &self.backend {
             Backend::Memory(data) => {
@@ -273,8 +222,6 @@ impl TokenMonitor {
                     .retain(|_, conversation| conversation.user_id != user_id);
                 let retained: std::collections::HashSet<_> =
                     data.conversations.keys().cloned().collect();
-                data.messages
-                    .retain(|message| retained.contains(&message.conversation_id));
                 data.usage_events
                     .retain(|event| retained.contains(&event.conversation_id));
             }
