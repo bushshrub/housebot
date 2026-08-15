@@ -116,7 +116,7 @@ async fn cancellation_drops_the_active_llm_stream() {
         stream_dropped.load(Ordering::Acquire),
         "the in-flight chat_stream future kept running"
     );
-    assert_eq!(agent.llm_queue_info().active, 0);
+    assert_eq!(agent.llm_scheduler_info().active, 0);
 }
 
 #[tokio::test]

@@ -188,11 +188,10 @@ across restarts.
 Build the scheduler first: sub-agents (Phase 3) and the config commands
 (Phase 5) both depend on its shape.
 
-- [ ] `llm-scheduler`: priority queue, configurable in-flight cap, sub-agent cap
-- [ ] Delete `llm-queue` once the scheduler replaces it
-- [ ] Switch the model default to `gemma-4-26b-a4b-qat` in `src/agent/mod.rs`
-      and `.env.example` (still `gemma-4-12b-qat-q4kxl`; Phase 1 stayed
-      subtractive)
+- [x] `llm-scheduler`: priority queue, configurable in-flight cap, sub-agent cap
+- [x] Delete `llm-queue` once the scheduler replaces it
+- [x] Switch the model default to `gemma-4-26b-a4b-qat` in `src/agent/mod.rs`
+      and `.env.example`
 - [ ] Agent loop: multi-step tool dispatch, cancellation, progress
 - [ ] Memory: migration recreating `user_memories` — the Postgres backend in
       `crates/memory` already exists and already stores markdown

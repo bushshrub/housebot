@@ -43,9 +43,9 @@ pub use housebot_history as history;
 /// Re-exported from the `housebot-llm` workspace crate; kept at this path so
 /// existing `crate::llm::…` references continue to resolve.
 pub use housebot_llm as llm;
-/// Re-exported from the `housebot-llm-queue` workspace crate; kept at this path so
-/// existing `crate::llm_queue::…` references continue to resolve.
-pub use housebot_llm_queue as llm_queue;
+/// Re-exported from the `housebot-llm-scheduler` workspace crate; kept at this path so
+/// existing `crate::llm_scheduler::…` references continue to resolve.
+pub use housebot_llm_scheduler as llm_scheduler;
 /// Re-exported from the `housebot-memory` workspace crate; kept at this path so
 /// existing `crate::memory::…` references continue to resolve.
 pub use housebot_memory as memory;

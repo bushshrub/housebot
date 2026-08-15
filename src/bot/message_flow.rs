@@ -202,11 +202,11 @@ impl HouseBot {
         let _typing = TypingIndicator::start(ctx, msg.channel_id);
 
         let progress = if user_config.progress_updates_enabled {
-            // Check LLM queue utilization so we can show the user their position
-            // when the system is saturated (all 4 LLM slots occupied).
-            let queue_info = self.agent.llm_queue_info();
-            let progress_msg = if queue_info.is_saturated() {
-                let position = queue_info.pending + 1;
+            // Check LLM scheduler utilization so we can show the user their
+            // position when every slot is occupied.
+            let scheduler_info = self.agent.llm_scheduler_info();
+            let progress_msg = if scheduler_info.is_saturated() {
+                let position = scheduler_info.pending + 1;
                 format!("⏳ **You are #{position} in line. Waiting for an LLM slot to open up...**")
             } else {
                 "🧠 **Thinking...**".to_string()

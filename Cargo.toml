@@ -21,7 +21,7 @@ members = [
     "crates/github-issues",
     "crates/history",
     "crates/llm",
-    "crates/llm-queue",
+    "crates/llm-scheduler",
     "crates/memory",
     "crates/rate-limit",
     "crates/reminders",
@@ -71,7 +71,7 @@ housebot-bot-response = { path = "crates/bot-response" }
 housebot-coding-agent = { path = "crates/coding-agent" }
 housebot-discord-bridge = { path = "crates/discord-bridge" }
 housebot-github-issues = { path = "crates/github-issues" }
-housebot-llm-queue = { path = "crates/llm-queue" }
+housebot-llm-scheduler = { path = "crates/llm-scheduler" }
 housebot-tools = { path = "crates/tools" }
 housebot-channel-log = { path = "crates/channel-log" }
 housebot-config = { path = "crates/config" }

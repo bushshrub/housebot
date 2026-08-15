@@ -110,8 +110,10 @@ data/                # runtime — gitignored
 | `DATABASE_CONNECT_RETRY_SECS` | no | `2` | Delay between token-monitor connection attempts |
 | `DATABASE_CONNECT_TIMEOUT_SECS` | no | `10` | Deadline for each token-monitor connection attempt |
 | `LLM_BASE_URL` | yes | `http://server-slop:8080/v1` | OpenAI-compatible LLM endpoint |
-| `LLM_MODEL` | yes | `gemma-4-12b-qat-q4kxl` | Model name |
+| `LLM_MODEL` | yes | `gemma-4-26b-a4b-qat` | Model name |
 | `LLM_API_KEY` | no | `not-required` | API key (llama.cpp ignores it) |
+| `MAX_INFLIGHT_LLM` | no | `4` | Total concurrent LLM requests |
+| `MAX_SUBAGENT_CONCURRENCY` | no | `2` | Ceiling on concurrent sub-agent requests |
 | `MAX_HISTORY_TURNS` | no | `30` | Conversation turn pairs kept |
 | `MAX_CONTEXT_TOKENS` | no | `10000` | Fallback context window (tokens) when the LLM server's `/props` probe fails |
 | `CONVERSATION_IDLE_TIMEOUT` | no | `300` | Seconds a channel conversation stays "active" |

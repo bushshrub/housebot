@@ -823,7 +823,7 @@ dependencies = [
  "housebot-github-issues",
  "housebot-history",
  "housebot-llm",
- "housebot-llm-queue",
+ "housebot-llm-scheduler",
  "housebot-memory",
  "housebot-rate-limit",
  "housebot-reminders",
@@ -978,7 +978,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "housebot-llm-queue"
+name = "housebot-llm-scheduler"
 version = "0.1.0"
 dependencies = [
  "anyhow",

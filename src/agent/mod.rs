@@ -18,7 +18,7 @@ use crate::discord_bridge::DiscordBridge;
 use crate::github_issues::GitHubIssueReporter;
 use crate::history::History;
 use crate::llm::{ChatClient, OpenAiClient, TextSink, ThinkingMode, TokenUsage};
-use crate::llm_queue::{LlmQueueInfo, LlmRequestQueue, QueuedChatClient};
+use crate::llm_scheduler::{LlmScheduler, ScheduledChatClient, SchedulerInfo};
 use crate::memory::Memory;
 use crate::rate_limit::RateLimiter;
 use crate::reminders::Reminders;
@@ -200,7 +200,7 @@ pub(crate) enum ToolOutcome {
 /// The agent: LLM client, storage, and tools.
 pub struct Agent {
     client: Arc<dyn ChatClient>,
-    queued_client: Arc<QueuedChatClient>,
+    scheduled_client: Arc<ScheduledChatClient>,
     model: String,
     context_window_tokens: usize,
     history: History,
@@ -278,9 +278,18 @@ impl Agent {
             );
             config::env_parse("MAX_CONTEXT_TOKENS", 200_000)
         });
-        let queue = Arc::new(LlmRequestQueue::default());
-        let queued_client = Arc::new(QueuedChatClient::new(raw_client, queue));
-        let client: Arc<dyn ChatClient> = queued_client.clone();
+        let scheduler = Arc::new(LlmScheduler::new(
+            config::env_parse(
+                "MAX_INFLIGHT_LLM",
+                housebot_llm_scheduler::DEFAULT_MAX_INFLIGHT,
+            ),
+            config::env_parse(
+                "MAX_SUBAGENT_CONCURRENCY",
+                housebot_llm_scheduler::DEFAULT_MAX_SUBAGENT,
+            ),
+        ));
+        let scheduled_client = Arc::new(ScheduledChatClient::new(raw_client, scheduler));
+        let client: Arc<dyn ChatClient> = scheduled_client.clone();
         let memory = match Memory::from_env().await {
             Ok(memory) => memory,
             Err(error) => {
@@ -303,8 +312,8 @@ impl Agent {
         })?;
         Ok(Self {
             client,
-            queued_client,
-            model: config::env_or("LLM_MODEL", "gemma-4-12b-qat-q4kxl"),
+            scheduled_client,
+            model: config::env_or("LLM_MODEL", "gemma-4-26b-a4b-qat"),
             context_window_tokens,
             history: History::default(),
             memory,
@@ -330,10 +339,15 @@ impl Agent {
         })
     }
 
-    /// Current LLM queue utilization (active, pending, capacity).
+    /// Current LLM scheduler utilization (active, pending, and both ceilings).
     /// Use this to decide whether to surface a queue-position message to users.
-    pub fn llm_queue_info(&self) -> LlmQueueInfo {
-        self.queued_client.queue_info()
+    pub fn llm_scheduler_info(&self) -> SchedulerInfo {
+        self.scheduled_client.scheduler_info()
+    }
+
+    /// The shared LLM scheduler, for callers adjusting its limits at runtime.
+    pub fn llm_scheduler(&self) -> &Arc<LlmScheduler> {
+        self.scheduled_client.scheduler()
     }
 
     /// Access to the reminders store (the bot's delivery loop needs it).
@@ -388,7 +402,7 @@ impl Agent {
         let start = std::time::Instant::now();
         let result = tokio::time::timeout(
             std::time::Duration::from_secs(15),
-            self.queued_client.chat_once(&self.model, &messages, 128),
+            self.scheduled_client.chat_once(&self.model, &messages, 128),
         )
         .await
         .unwrap_or_else(|_| Err(anyhow::anyhow!("emoji selection timed out")));
@@ -484,11 +498,11 @@ impl Agent {
         skills: Skills,
         reminders: Reminders,
     ) -> Self {
-        let queue = Arc::new(LlmRequestQueue::default());
-        let queued_client = Arc::new(QueuedChatClient::new(client, queue));
+        let scheduler = Arc::new(LlmScheduler::default());
+        let scheduled_client = Arc::new(ScheduledChatClient::new(client, scheduler));
         Self {
-            client: queued_client.clone(),
-            queued_client,
+            client: scheduled_client.clone(),
+            scheduled_client,
             model: "test-model".into(),
             context_window_tokens: 10_000,
             history,
