@@ -6,7 +6,7 @@ source of truth for what is in scope and what is done; update the checkboxes as
 work lands.
 
 Resuming in a new session? Start with [`HANDOFF.md`](../HANDOFF.md) — it covers
-current state and gotchas. Phases 1 and 2 are done; Phase 3 is next.
+current state and gotchas. Phases 1–3 are done; Phase 4 is next.
 
 ## Decisions
 
@@ -201,11 +201,16 @@ Build the scheduler first: sub-agents (Phase 3) and the config commands
 - [x] `channel-context`: in-memory ring buffer + `get_messages`
 - [x] Delete `channel-log` once the ring buffer replaces it
 
-### Phase 3 — tools
-- [ ] `web_search` (SearXNG) + `fetch_webpage`
-- [ ] `set_reminder` + DM delivery
-- [ ] Attachment handling (image/PDF)
-- [ ] Sub-agent spawn tool, priority-aware
+### Phase 3 — tools ✅
+- [x] `web_search` (SearXNG) + `fetch_webpage` — both already existed in
+      `crates/tools` and survived Phase 1 wired; the dead `deep_research` path
+      beside them was removed
+- [x] `set_reminder` + DM delivery — the tool, the JSON store, and the 30s
+      delivery loop in `handler.rs` all already existed
+- [x] Attachment handling (image/PDF) — `src/bot/media.rs` already decoded
+      images, rendered PDFs to PNG pages, and converted GIFs to video
+- [x] Sub-agent spawn tool, priority-aware — `spawn_subagent`, built on
+      `ScheduledChatClient::with_priority(Priority::SubAgent)`
 
 ### Phase 4 — skills + sandbox
 - [ ] Add `SKILLS_DIR` (approved) pointing at the persistent skills volume

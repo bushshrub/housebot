@@ -14,7 +14,8 @@ plan covers what to build.
 | Database purge migration | done |
 | Phase 1 — demolition | done |
 | Phase 2 — core | done |
-| Phases 3–7 | not started |
+| Phase 3 — tools | done |
+| Phases 4–7 | not started |
 
 Before starting, confirm the tree is green: `cargo test --workspace`,
 `cargo clippy --all-targets -- -D warnings`, `cargo fmt --check`. All three
@@ -33,6 +34,70 @@ kept rather than rewritten. Read the code before assuming a gap:
 - **History** was already per-user JSONL on the data volume in `crates/history`.
 
 The real work was the scheduler and the ring buffer.
+
+## What Phase 3 actually changed
+
+The same pattern, harder: **three of the four Phase 3 items were already
+built and wired**, so the phase was mostly an audit. Read the code before
+assuming a gap — this has now happened in two consecutive phases.
+
+- **`web_search` + `fetch_webpage`** already existed in `crates/tools`
+  (`searxng.rs`, `web_fetch.rs`), registered in `build_tools` and dispatched.
+  `fetch_webpage` resolves DNS and rejects loopback/private ranges, so it is
+  SSRF-guarded; keep that if you touch it.
+- **`set_reminder`** already had all three pieces: the tool
+  (`crates/tools/src/remind.rs`), the JSON-backed store (`crates/reminders`),
+  and the delivery loop in `handler.rs`, which polls `pop_due` every 30s and
+  DMs the user. The loop is spawned once, guarded by `reminder_started`.
+- **Attachment handling** already lived in `src/bot/media.rs`: images inline
+  as base64, PDFs rendered to PNG pages, GIFs converted to video (Gemma reads
+  animation as video, not stills), all size-capped and URL-validated.
+
+Only the sub-agent tool was genuinely missing.
+
+### `spawn_subagent`
+
+The definition is `crates/tools/src/subagent.rs`; the loop is
+`src/agent/subagent.rs`, dispatched from `dispatch.rs`.
+
+- Its client is `self.scheduled_client.with_priority(Priority::SubAgent)`.
+  That is the whole point of the tool — build it any other way and sub-agents
+  compete with user chat. There is a test (`subagent_runs_at_subagent_priority`)
+  that watches `SchedulerInfo::subagent_active` from inside a probe client,
+  since occupancy is the only externally visible proof of priority.
+- **Recursion is structurally impossible, not depth-limited.** The sub-agent's
+  tool surface is exactly `web_search` + `fetch_webpage` — `spawn_subagent` is
+  not in it, so it cannot fan out. If you widen `subagent_tools`, keep it out,
+  and keep memory/reminders/skills out too: the sub-agent has no user and must
+  not mutate anything the parent owns.
+- Bounded at `MAX_SUBAGENT_ROUNDS = 8`, half the parent's 16.
+- Token usage is recorded against the **parent's** conversation, so the
+  leaderboard bills the user who caused the spawn. `dispatch.rs` looks the
+  conversation ID up via `current_conversation_id`, which hits the already
+  populated in-memory map rather than the database.
+- It takes no `CancelToken`. Cancelling the parent turn abandons the sub-agent
+  in place rather than stopping it — acceptable at 8 rounds, but if sub-agents
+  ever get longer, thread the token through.
+
+### The system prompt was lying to the model
+
+`STATIC_BASE` in `src/agent/prompt.rs` still advertised roughly a dozen tools
+Phase 1 deleted — Jellyfin, `download_file`, `run_lua`/`get_lua_docs`,
+`deep_research`, `translate`, `common_crawl__search`, `get_token_metrics`,
+`find_discord_users`, `get_discord_user` — and the Guidelines told the model to
+route complex questions to `deep_research`. Nothing catches this: the prompt is
+a string constant, so the compiler and clippy are both blind to it. Four tests
+actually *asserted* the dead tools were present and had to be replaced.
+
+`system_prompt_does_not_advertise_removed_tools` now guards the list. **Add to
+it whenever you cut a tool** — it is the only thing standing between a deleted
+tool and a model that keeps trying to call it.
+
+`deep_research` was the same story in code: cut from the plan in Phase 1, but
+its dispatch arm, its SearXNG implementation, and a 100-line dossier formatter
+all survived because they were `pub` and therefore invisible to dead-code
+analysis. All removed. Expect more of this in `crates/tools` — `pub fn` in a
+library crate is never reported as dead.
 
 ### `llm-scheduler` replaced `llm-queue`
 
@@ -53,9 +118,9 @@ Things worth knowing before you touch it:
 - Limits come from `MAX_INFLIGHT_LLM` and `MAX_SUBAGENT_CONCURRENCY`.
   `set_max_inflight` / `set_max_subagent` are already there for Phase 5's
   runtime config commands; nothing calls them yet.
-- `ScheduledChatClient::with_priority` exists for Phase 3's sub-agent spawn
-  tool — build the sub-agent's client with it so sub-agents actually schedule
-  at `SubAgent`.
+- `ScheduledChatClient::with_priority` is now used by `spawn_subagent`
+  (Phase 3). Any future background work — reminders, maintenance — should get
+  its own client the same way, at `Background`.
 
 ### `channel-context` replaced `channel-log`
 
