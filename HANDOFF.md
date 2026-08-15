@@ -157,6 +157,9 @@ Do not re-ask these; they are in the plan's decisions table.
 - **Cross-channel reads are allowed**, for any channel the requesting user can
   read.
 - **Retention is both a count cap and an age limit**, whichever binds first.
+- **No durable transcript.** Channel context stays RAM-only and dies with the
+  process. This was proposed and declined — do not re-propose a
+  `channel_messages` table.
 
 ## Things that will surprise you
 

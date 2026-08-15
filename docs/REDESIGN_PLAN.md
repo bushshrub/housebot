@@ -21,6 +21,7 @@ current state and gotchas. Phases 1 and 2 are done; Phase 3 is next.
 | Skill authoring | Open to any user the bot talks to, not owner-gated |
 | Channel context | Bot stores every channel it can see; reads are gated on the requesting user's live Discord permissions |
 | Context retention | Per-channel message cap and an age limit, whichever binds first |
+| Context durability | RAM only — no durable transcript. Context dies with the process, by decision |
 | Code execution | gVisor sandbox, retained for skill scripts |
 | Sandbox lifetime | Per session, reaped after an admin-configurable idle timeout (default 5 min) |
 | Feature dev | OpenCode only, full interactive Discord flow |
@@ -237,16 +238,14 @@ Build the scheduler first: sub-agents (Phase 3) and the config commands
 
 ## Future work
 
-- **Durable transcript.** The ring buffer is RAM-only, so context dies with the
-  process. Moving it to a `channel_messages` table keeps the same two retention
-  limits, survives restarts, and gives the erase-data path a single place to
-  delete from. The permission gate sits above storage and does not change.
 - **Embeddings.** An embedding model plus a vector index over the transcript,
   for the "what were people saying about X" queries regex loses. Needs a second
   resident model on the llama.cpp server, a chunking choice (per message
   retrieves poorly — Discord messages are short and context-dependent), and a
   vector store. Layer it over the durable transcript, not instead of it: the
   raw text is still needed to quote exactly and to re-embed after a model
-  change. Embed on ingest at `Background` priority so it cannot compete with
-  user chat. The permission gate applies unchanged — filter candidates by
-  channel access *before* returning them, never after ranking.
+  change — which, with no durable transcript, means the index can only ever
+  cover what is still in the ring buffer and must be rebuilt from it on restart.
+  Embed on ingest at `Background` priority so it cannot compete with user chat.
+  The permission gate applies unchanged — filter candidates by channel access
+  *before* returning them, never after ranking.
