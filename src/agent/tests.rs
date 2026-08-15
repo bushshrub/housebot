@@ -92,16 +92,8 @@ fn system_prompt_lists_skills() {
             name: "greet".into(),
             description: Some("Say hello".into()),
             instructions: "..".into(),
-            triggers: Vec::new(),
-            enabled_tools: Vec::new(),
-            examples: Vec::new(),
-            version: 1,
-            version_history: Vec::new(),
             created_by: None,
-            editors: Vec::new(),
-            created_at: 0,
-            updated_at: 0,
-            prompt: None,
+            ..Skill::default()
         },
     );
     let p = build_system_prompt("Alice", "123", "Alice", "", "", &skills, None, true);
@@ -196,7 +188,6 @@ fn system_prompt_includes_usage_profile() {
         None,
         true,
         "2026-07-17 12:00",
-        "",
     );
     assert!(p.contains("Display name: Ali, Nickname: Al"));
     assert!(p.contains("Avatar URL: https://ex/av.png"));
@@ -217,7 +208,6 @@ fn system_prompt_includes_profile_avatar_with_safety_guidance() {
         None,
         true,
         "2026-07-17 12:00",
-        "",
     );
     assert!(p.contains("Avatar URL: https://cdn.discordapp.com/avatars/123/avatar.png"));
     assert!(p.contains("Never infer sensitive traits, identity, or intent from a user's avatar."));
@@ -357,7 +347,6 @@ fn prompt_stable_prefix_unchanged_by_dynamic_content() {
                 None,
                 true,
                 "2026-07-17 12:00",
-                "",
             ),
         ),
         (
@@ -373,7 +362,6 @@ fn prompt_stable_prefix_unchanged_by_dynamic_content() {
                 None,
                 true,
                 "2026-07-18 08:30",
-                "",
             ),
         ),
         (
@@ -389,7 +377,6 @@ fn prompt_stable_prefix_unchanged_by_dynamic_content() {
                 None,
                 true,
                 "2026-07-17 12:00",
-                "",
             ),
         ),
         (
@@ -405,7 +392,6 @@ fn prompt_stable_prefix_unchanged_by_dynamic_content() {
                 None,
                 true,
                 "2026-07-17 12:00",
-                "",
             ),
         ),
         (
@@ -421,7 +407,6 @@ fn prompt_stable_prefix_unchanged_by_dynamic_content() {
                 None,
                 true,
                 "2026-07-17 12:00",
-                "",
             ),
         ),
         (
@@ -437,7 +422,6 @@ fn prompt_stable_prefix_unchanged_by_dynamic_content() {
                 Some("Friendly"),
                 true,
                 "2026-07-17 12:00",
-                "",
             ),
         ),
         (
@@ -453,7 +437,6 @@ fn prompt_stable_prefix_unchanged_by_dynamic_content() {
                 None,
                 true,
                 "2026-07-17 12:00",
-                "",
             ),
         ),
     ];
@@ -480,16 +463,8 @@ fn prompt_static_base_present_regardless_of_deep_memory_or_skills() {
             name: "greet".into(),
             description: Some("Say hello".into()),
             instructions: "..".into(),
-            triggers: Vec::new(),
-            enabled_tools: Vec::new(),
-            examples: Vec::new(),
-            version: 1,
-            version_history: Vec::new(),
             created_by: None,
-            editors: Vec::new(),
-            created_at: 0,
-            updated_at: 0,
-            prompt: None,
+            ..Skill::default()
         },
     );
 
@@ -506,7 +481,6 @@ fn prompt_static_base_present_regardless_of_deep_memory_or_skills() {
             None,
             true,
             "2026-07-17 12:00",
-            "",
         ),
         // deep_memory disabled, no skills
         build_system_prompt_with_profile(
@@ -520,7 +494,6 @@ fn prompt_static_base_present_regardless_of_deep_memory_or_skills() {
             None,
             false,
             "2026-07-17 12:00",
-            "",
         ),
         // deep_memory enabled, with skills
         build_system_prompt_with_profile(
@@ -534,7 +507,6 @@ fn prompt_static_base_present_regardless_of_deep_memory_or_skills() {
             None,
             true,
             "2026-07-17 12:00",
-            "",
         ),
         // deep_memory disabled, with skills
         build_system_prompt_with_profile(
@@ -548,7 +520,6 @@ fn prompt_static_base_present_regardless_of_deep_memory_or_skills() {
             None,
             false,
             "2026-07-17 12:00",
-            "",
         ),
     ];
 
@@ -591,7 +562,6 @@ fn prompt_regression_dynamic_markers_after_guidelines_minimal() {
         None,
         false,
         "2026-07-17 12:00",
-        "",
     );
     let guidelines_pos = p
         .find("## Guidelines")
@@ -616,16 +586,8 @@ fn prompt_regression_dynamic_markers_after_guidelines_maximal() {
             name: "greet".into(),
             description: Some("Say hello".into()),
             instructions: "..".into(),
-            triggers: Vec::new(),
-            enabled_tools: Vec::new(),
-            examples: Vec::new(),
-            version: 1,
-            version_history: Vec::new(),
             created_by: None,
-            editors: Vec::new(),
-            created_at: 0,
-            updated_at: 0,
-            prompt: None,
+            ..Skill::default()
         },
     );
     let p = build_system_prompt_with_profile(
@@ -639,7 +601,6 @@ fn prompt_regression_dynamic_markers_after_guidelines_maximal() {
         Some("Friendly"),
         true,
         "2026-07-17 12:00",
-        "",
     );
     let guidelines_pos = p
         .find("## Guidelines")
@@ -675,7 +636,6 @@ fn prompt_memory_tools_separated_from_preceding_guidelines_bullet() {
         None,
         true,
         "2026-07-17 12:00",
-        "",
     );
     assert!(
         p.contains("summarizing what they asked.\n- When a user asks what was discussed"),
@@ -696,16 +656,8 @@ fn prompt_config_content_ordered_between_guidelines_and_dynamic() {
             name: "greet".into(),
             description: Some("Say hello".into()),
             instructions: "..".into(),
-            triggers: Vec::new(),
-            enabled_tools: Vec::new(),
-            examples: Vec::new(),
-            version: 1,
-            version_history: Vec::new(),
             created_by: None,
-            editors: Vec::new(),
-            created_at: 0,
-            updated_at: 0,
-            prompt: None,
+            ..Skill::default()
         },
     );
     let p = build_system_prompt_with_profile(
@@ -719,7 +671,6 @@ fn prompt_config_content_ordered_between_guidelines_and_dynamic() {
         Some("Friendly"),
         true,
         "2026-07-17 12:00",
-        "",
     );
     let last_stable_pos = p
         .find("summarizing what they asked.")

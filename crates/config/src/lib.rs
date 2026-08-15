@@ -11,6 +11,16 @@ pub fn data_dir() -> PathBuf {
     PathBuf::from(env_or("DATA_DIR", "data"))
 }
 
+/// Directory holding one subdirectory per skill (`SKILLS_DIR`, default
+/// `<DATA_DIR>/skills`). Split from `DATA_DIR` so skills can live on their own
+/// persistent volume.
+pub fn skills_dir() -> PathBuf {
+    match env::var("SKILLS_DIR") {
+        Ok(value) if !value.trim().is_empty() => PathBuf::from(value),
+        _ => data_dir().join("skills"),
+    }
+}
+
 /// Read an environment variable, returning `default` when unset or empty.
 pub fn env_or(name: &str, default: &str) -> String {
     match env::var(name) {

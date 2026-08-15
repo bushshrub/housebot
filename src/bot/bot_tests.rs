@@ -498,16 +498,8 @@ fn test_skill(name: &str, author: &str) -> crate::skills::Skill {
         name: name.to_string(),
         description: Some("You greet people".to_string()),
         instructions: "You greet people".to_string(),
-        triggers: Vec::new(),
-        enabled_tools: Vec::new(),
-        examples: Vec::new(),
-        version: 1,
-        version_history: Vec::new(),
         created_by: Some(author.to_string()),
-        editors: Vec::new(),
-        created_at: 0,
-        updated_at: 0,
-        prompt: None,
+        ..housebot_skills::Skill::default()
     }
 }
 
@@ -542,9 +534,8 @@ async fn skill_add_cannot_overwrite_an_existing_skill_owned_by_someone_else() {
     let out = skill_command(&skills, &user_config, "!skill add greeter", 999).await;
     assert!(out.contains("create_skill"), "out: {out}");
     let unchanged = skills.get("greeter").await.unwrap();
-    assert_eq!(unchanged.instructions, "You greet people");
+    assert_eq!(unchanged.instructions.trim(), "You greet people");
     assert_eq!(unchanged.created_by.as_deref(), Some("7"));
-    assert_eq!(unchanged.version, 1);
 }
 
 /// Regression test: the `/skill add` Discord slash subcommand was removed

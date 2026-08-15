@@ -115,38 +115,20 @@ pub async fn skill_info(skills: &Skills, name: &str) -> String {
                 let list: Vec<String> = skill.editors.iter().map(|id| format!("<@{id}>")).collect();
                 format!("\n**Editors:** {}", list.join(", "))
             };
-            let version = format!("\n**Version:** v{}", skill.version);
-            let trigger_info = if skill.has_triggers() {
-                let triggers: Vec<String> = skill
-                    .triggers
-                    .iter()
-                    .map(|t| format!("{}: {}", t.trigger_type, t.value))
-                    .collect();
-                format!("\n**Triggers:** {}", triggers.join("; "))
-            } else {
-                String::new()
-            };
             let tools_info = if skill.enabled_tools.is_empty() {
                 String::new()
             } else {
                 format!("\n**Tools:** {}", skill.enabled_tools.join(", "))
             };
-            let example_count = skill.examples.len();
-            let examples_info = if example_count > 0 {
-                format!("\n**Examples:** {example_count}")
-            } else {
-                String::new()
-            };
+            let bundled = skill.bundled_summary();
             format!(
-                "**Skill: {}**\nDescription: {}{}{}{}{}{}{}\n```\n{}\n```",
+                "**Skill: {}**\nDescription: {}{}{}{}{}\n```\n{}\n```",
                 skill.name,
                 skill.description.as_deref().unwrap_or("(none)"),
                 author,
                 editors,
-                version,
-                trigger_info,
                 tools_info,
-                examples_info,
+                bundled,
                 preview,
             )
         }

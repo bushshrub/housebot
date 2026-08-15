@@ -56,7 +56,6 @@ pub fn build_system_prompt(
         personality,
         deep_memory_enabled,
         &Local::now().format("%Y-%m-%d %H:%M").to_string(),
-        "",
     )
 }
 
@@ -203,11 +202,7 @@ struct ConfigSuffix {
 }
 
 impl ConfigSuffix {
-    fn new(
-        deep_memory_enabled: bool,
-        all_skills: &BTreeMap<String, Skill>,
-        current_message: &str,
-    ) -> Self {
+    fn new(deep_memory_enabled: bool, all_skills: &BTreeMap<String, Skill>) -> Self {
         let memory_tool_line = if deep_memory_enabled {
             "- update_memory — Persist important facts about the current user for future conversations. Write the full memory each time.\n- search_memory — Search stored memory for a keyword or phrase. Use when the user refers to something you may have remembered.\n"
         } else {
@@ -226,25 +221,12 @@ impl ConfigSuffix {
                 .values()
                 .map(|s| format!("  - **{}**", s.name))
                 .collect();
-            let mut section = format!(
+            format!(
                 "\n- use_skill — Load a custom skill's full instructions into your context by name, \
                  then follow them yourself using your normal tools. Use list_skills or skill_info \
                  to see what a skill does. Available skills:\n{}",
                 lines.join("\n")
-            );
-            let matched: Vec<String> = all_skills
-                .values()
-                .filter(|s| s.matches_message(current_message))
-                .map(|s| format!("**{}**", s.name))
-                .collect();
-            if !matched.is_empty() {
-                section.push_str(&format!(
-                    "\n\nThe current message matches the triggers of these skills — strongly \
-                     consider loading them with use_skill: {}.",
-                    matched.join(", ")
-                ));
-            }
-            section
+            )
         };
         Self {
             memory_tool_line,
@@ -333,7 +315,6 @@ pub(crate) fn build_system_prompt_with_profile(
     personality: Option<&str>,
     deep_memory_enabled: bool,
     now: &str,
-    current_message: &str,
 ) -> String {
     let memory_guidance = if deep_memory_enabled {
         "Actively use memory: when the user says 'remember', 'don't forget', 'keep in mind', \
@@ -347,7 +328,7 @@ pub(crate) fn build_system_prompt_with_profile(
          still works normally."
     };
 
-    let config = ConfigSuffix::new(deep_memory_enabled, all_skills, current_message);
+    let config = ConfigSuffix::new(deep_memory_enabled, all_skills);
     let dynamic = DynamicSuffix::new(
         username,
         user_id,
@@ -425,19 +406,20 @@ pub(crate) fn build_loaded_skill_content(skill: &Skill, instructions: &str) -> S
         ));
     }
 
-    if !skill.examples.is_empty() {
-        let examples: Vec<String> = skill
-            .examples
-            .iter()
-            .map(|ex| {
-                format!(
-                    "User: {}\nAssistant: {}",
-                    ex.input.replace('\n', "\n  "),
-                    ex.output.replace('\n', "\n  ")
-                )
-            })
-            .collect();
-        parts.push(format!("## Examples\n{}", examples.join("\n\n")));
+    if !skill.references.is_empty() {
+        parts.push(format!(
+            "## Reference files\nRead these with read_skill_file only when the instructions above \
+             call for them: {}.",
+            skill.references.join(", ")
+        ));
+    }
+
+    if !skill.scripts.is_empty() {
+        parts.push(format!(
+            "## Scripts\nRun these in the sandbox with run_skill_script when the instructions \
+             call for them: {}. They have no network access.",
+            skill.scripts.join(", ")
+        ));
     }
 
     parts.join("\n\n")

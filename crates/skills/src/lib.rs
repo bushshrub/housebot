@@ -1,86 +1,57 @@
+//! Skills stored as directories on the bot's persistent volume.
+//!
+//! ```text
+//! <SKILLS_DIR>/<skill-name>/
+//!   SKILL.md      # YAML frontmatter + instruction body
+//!   references/   # read on demand
+//!   scripts/      # executed in the sandbox on demand
+//! ```
+//!
+//! Progressive disclosure has three levels: the system prompt carries skill
+//! *names* only, `SKILL.md`'s body is loaded when a skill is invoked, and
+//! `references/` and `scripts/` are opened only when the body calls for them.
+//!
+//! A skill's description is user-authored and never reaches the system prompt —
+//! it is surfaced through the `list_skills` tool result instead, where it is
+//! data the model read rather than instructions it believes.
+
 use std::collections::BTreeMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use serde::{Deserialize, Serialize};
 use tokio::sync::Mutex;
 
 use housebot_config as config;
 use housebot_memory::ensure_dir;
 
+pub mod frontmatter;
+
 pub const SKILL_CREATOR_NAME: &str = "skill_creator";
+const SKILL_FILE: &str = "SKILL.md";
+const REFERENCES_DIR: &str = "references";
+const SCRIPTS_DIR: &str = "scripts";
 
-/// A trigger condition that determines when a skill should be activated.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct SkillTrigger {
-    pub trigger_type: String,
-    pub value: String,
-}
-
-/// A few-shot example pair for a skill.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct SkillExample {
-    pub input: String,
-    pub output: String,
-}
-
-/// An archived version of a skill's core configuration.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct SkillArchive {
-    pub version: u32,
-    pub description: Option<String>,
-    pub instructions: String,
-    pub triggers: Vec<SkillTrigger>,
-    pub enabled_tools: Vec<String>,
-    pub examples: Vec<SkillExample>,
-    pub archived_at: u64,
-}
-
-/// A user-defined skill — a packaged unit of capability with trigger
-/// conditions, instructions, tool integration, few-shot examples, and
-/// version history.
-///
-/// Skills are globally visible and executable by anyone. Editing and
-/// deletion are restricted to the author and any delegated editors.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+/// A packaged unit of capability. Globally visible and usable by anyone;
+/// editing and deletion are restricted to the author and delegated editors.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct Skill {
     pub name: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
-    /// Core behavioral instructions (replaces the legacy `prompt` field).
-    #[serde(default)]
+    /// The `SKILL.md` body — the instructions loaded at disclosure level 2.
     pub instructions: String,
-    /// Conditions that determine when this skill should be activated.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub triggers: Vec<SkillTrigger>,
-    /// Tool names the skill is authorized to use during execution.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    /// Tools the skill suggests. Advisory only: this never narrows the agent's
+    /// tool surface, it is shown as a recommendation when the skill loads.
     pub enabled_tools: Vec<String>,
-    /// Few-shot input/output examples.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub examples: Vec<SkillExample>,
-    /// Current version number (increments on each modification).
-    #[serde(default)]
-    pub version: u32,
-    /// Archived previous versions.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub version_history: Vec<SkillArchive>,
     /// Discord user ID of the skill's author.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub created_by: Option<String>,
     /// Discord user IDs of delegated editors.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub editors: Vec<String>,
-    /// Unix timestamp of creation.
-    #[serde(default)]
     pub created_at: u64,
-    /// Unix timestamp of last modification.
-    #[serde(default)]
     pub updated_at: u64,
-    /// Deprecated: migrated to `instructions` on load.
-    #[serde(default, skip_serializing)]
-    pub prompt: Option<String>,
+    /// Bundled file names discovered beside `SKILL.md`, for disclosure level 3.
+    pub references: Vec<String>,
+    pub scripts: Vec<String>,
 }
 
 impl Skill {
@@ -89,7 +60,6 @@ impl Skill {
         self.description.as_deref().unwrap_or(&self.name)
     }
 
-    /// Whether `user_id` is the original author of this skill.
     pub fn is_author(&self, user_id: &str) -> bool {
         self.created_by.as_deref() == Some(user_id)
     }
@@ -116,66 +86,115 @@ impl Skill {
         self.editors.len() < before
     }
 
-    /// Return the effective instructions, falling back to the legacy `prompt`
-    /// field when `instructions` is empty (backward compatibility).
     pub fn effective_instructions(&self) -> &str {
-        if !self.instructions.is_empty() {
-            &self.instructions
-        } else if let Some(ref prompt) = self.prompt {
-            prompt
-        } else {
-            ""
+        &self.instructions
+    }
+
+    /// A one-line summary of the skill's bundled files, empty when it has none.
+    /// Names only — level 3 content stays on disk until it is asked for.
+    pub fn bundled_summary(&self) -> String {
+        let mut out = String::new();
+        if !self.references.is_empty() {
+            out.push_str(&format!("\n**References:** {}", self.references.join(", ")));
         }
-    }
-
-    /// Migrate the legacy `prompt` field into `instructions` if instructions
-    /// is empty.  Safe to call multiple times.
-    pub fn migrate_from_prompt(&mut self) {
-        if self.instructions.is_empty() {
-            if let Some(prompt) = self.prompt.take() {
-                self.instructions = prompt;
-                if self.version == 0 {
-                    self.version = 1;
-                }
-            }
+        if !self.scripts.is_empty() {
+            out.push_str(&format!("\n**Scripts:** {}", self.scripts.join(", ")));
         }
+        out
     }
 
-    /// Archive the current version's configuration, increment the version,
-    /// and set `updated_at` to now.
-    pub fn bump_version(&mut self) {
-        self.version_history.push(SkillArchive {
-            version: self.version,
-            description: self.description.clone(),
-            instructions: self.instructions.clone(),
-            triggers: self.triggers.clone(),
-            enabled_tools: self.enabled_tools.clone(),
-            examples: self.examples.clone(),
-            archived_at: now_secs(),
-        });
-        self.version += 1;
-        self.updated_at = now_secs();
+    /// Render the skill as the `SKILL.md` text that `parse_skill_md` reads back.
+    pub fn to_skill_md(&self) -> String {
+        let mut out = String::from("---\n");
+        out.push_str(&format!("name: {}\n", frontmatter::emit_scalar(&self.name)));
+        if let Some(description) = &self.description {
+            out.push_str(&format!(
+                "description: {}\n",
+                frontmatter::emit_scalar(description)
+            ));
+        }
+        if let Some(created_by) = &self.created_by {
+            out.push_str(&format!(
+                "created_by: {}\n",
+                frontmatter::emit_scalar(created_by)
+            ));
+        }
+        if !self.editors.is_empty() {
+            out.push_str(&format!("editors: [{}]\n", join_list(&self.editors)));
+        }
+        if !self.enabled_tools.is_empty() {
+            out.push_str(&format!(
+                "enabled_tools: [{}]\n",
+                join_list(&self.enabled_tools)
+            ));
+        }
+        out.push_str(&format!("created_at: {}\n", self.created_at));
+        out.push_str(&format!("updated_at: {}\n", self.updated_at));
+        out.push_str("---\n");
+        out.push_str(&self.instructions);
+        if !self.instructions.ends_with('\n') {
+            out.push('\n');
+        }
+        out
     }
+}
 
-    /// Check whether the skill has any trigger conditions defined.
-    pub fn has_triggers(&self) -> bool {
-        !self.triggers.is_empty()
-    }
+fn join_list(items: &[String]) -> String {
+    items
+        .iter()
+        .map(|item| frontmatter::emit_scalar(item))
+        .collect::<Vec<_>>()
+        .join(", ")
+}
 
-    /// Whether this skill's triggers fire for `message`.
-    ///
-    /// Only deterministically matchable trigger types participate: `always`
-    /// always fires and `keyword` fires on a case-insensitive substring match.
-    /// `intent` and `context` are advisory — they are surfaced to the agent for
-    /// its own judgement rather than matched here.
-    pub fn matches_message(&self, message: &str) -> bool {
-        let lower = message.to_lowercase();
-        self.triggers.iter().any(|t| match t.trigger_type.as_str() {
-            "always" => true,
-            "keyword" => lower.contains(&t.value.to_lowercase()),
-            _ => false,
-        })
+/// Parse a `SKILL.md`. `fallback_name` is used when the frontmatter omits
+/// `name`, so a directory rename cannot orphan its skill.
+pub fn parse_skill_md(source: &str, fallback_name: &str) -> Result<Skill, String> {
+    let (block, body) = frontmatter::split(source)
+        .ok_or_else(|| "SKILL.md must begin with a '---' frontmatter block".to_string())?;
+    let front = frontmatter::parse(block)?;
+    let name = front
+        .scalar("name")
+        .filter(|name| !name.is_empty())
+        .unwrap_or(fallback_name)
+        .to_string();
+    Ok(Skill {
+        name,
+        description: front
+            .scalar("description")
+            .filter(|d| !d.is_empty())
+            .map(str::to_string),
+        instructions: body.to_string(),
+        enabled_tools: front.list("enabled_tools"),
+        created_by: front
+            .scalar("created_by")
+            .filter(|c| !c.is_empty())
+            .map(str::to_string),
+        editors: front.list("editors"),
+        created_at: front.number("created_at"),
+        updated_at: front.number("updated_at"),
+        references: Vec::new(),
+        scripts: Vec::new(),
+    })
+}
+
+/// Reject names that are not a single safe path segment. Skill names come from
+/// users and become directory names, so traversal and separators are refused
+/// outright rather than sanitised into something the caller did not ask for.
+pub fn validate_name(name: &str) -> Result<(), String> {
+    if name.is_empty() {
+        return Err("skill name cannot be empty".into());
     }
+    if name.len() > 64 {
+        return Err("skill name cannot exceed 64 characters".into());
+    }
+    if !name
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+    {
+        return Err("skill name may only contain letters, digits, hyphens, and underscores".into());
+    }
+    Ok(())
 }
 
 fn builtin_skill_creator() -> Skill {
@@ -185,44 +204,29 @@ fn builtin_skill_creator() -> Skill {
             "Design clear, reusable Housebot skills through a review-first workflow.".to_string(),
         ),
         instructions: "Help the user design or improve a Housebot skill. First clarify the \
-            desired behavior, boundaries, trigger conditions, and tools it genuinely needs. \
-            Prefer focused instructions over broad personality prompts. Use keyword triggers only \
-            for precise phrases; use intent or context triggers when literal matching would be \
-            brittle. Recommend only tools that actually exist. Add a small number of examples \
-            when they materially disambiguate behavior. Check the marketplace before choosing a \
-            name or duplicating an existing skill. Present a concise final draft containing the \
-            name, description, instructions, triggers, recommended tools, and examples. Obtain \
-            explicit user approval before calling create_skill or edit_skill."
+            desired behaviour, its boundaries, and the tools it genuinely needs. Prefer focused \
+            instructions over broad personality prompts, and recommend only tools that actually \
+            exist. A skill is a directory: SKILL.md holds the instructions, references/ holds \
+            material to read on demand, and scripts/ holds code run in the sandbox. Keep SKILL.md \
+            short and move detail into references/ so it is loaded only when needed. Sandbox \
+            scripts have no network access — have the agent gather data and pass it in. Check \
+            list_skills before choosing a name so you do not duplicate an existing skill. Present \
+            a concise final draft of the name, description, instructions, and recommended tools, \
+            and obtain explicit user approval before calling create_skill or edit_skill."
             .to_string(),
-        triggers: vec![
-            SkillTrigger {
-                trigger_type: "intent".to_string(),
-                value: "create, design, improve, or review a custom skill".to_string(),
-            },
-            SkillTrigger {
-                trigger_type: "keyword".to_string(),
-                value: "skill creator".to_string(),
-            },
-        ],
         enabled_tools: vec![
             "list_skills".to_string(),
             "skill_info".to_string(),
             "create_skill".to_string(),
             "edit_skill".to_string(),
         ],
-        examples: Vec::new(),
-        version: 1,
-        version_history: Vec::new(),
         created_by: None,
         editors: Vec::new(),
         created_at: 0,
         updated_at: 0,
-        prompt: None,
+        references: Vec::new(),
+        scripts: Vec::new(),
     }
-}
-
-fn builtin_skills() -> BTreeMap<String, Skill> {
-    BTreeMap::from([(SKILL_CREATOR_NAME.to_string(), builtin_skill_creator())])
 }
 
 fn now_secs() -> u64 {
@@ -232,82 +236,88 @@ fn now_secs() -> u64 {
         .as_secs()
 }
 
-/// Handle to the global skills store.
+/// Handle to the on-disk skills directory.
 #[derive(Clone)]
 pub struct Skills {
-    path: PathBuf,
+    root: PathBuf,
     cache: Arc<Mutex<Option<BTreeMap<String, Skill>>>>,
 }
 
 impl Default for Skills {
     fn default() -> Self {
-        Self::new(config::data_dir().join("skills.json"))
+        Self::new(config::skills_dir())
     }
 }
 
 impl Skills {
-    /// Create a store backed by the JSON file at `path`.
-    pub fn new(path: impl Into<PathBuf>) -> Self {
+    /// Create a store rooted at `root`, one directory per skill.
+    pub fn new(root: impl Into<PathBuf>) -> Self {
         Self {
-            path: path.into(),
+            root: root.into(),
             cache: Arc::new(Mutex::new(None)),
         }
     }
 
-    async fn load_from_disk(&self) -> std::io::Result<BTreeMap<String, Skill>> {
+    fn skill_dir(&self, name: &str) -> PathBuf {
+        self.root.join(name)
+    }
+
+    async fn scan(&self) -> std::io::Result<BTreeMap<String, Skill>> {
         {
-            let cache = self.cache.lock().await;
-            if let Some(skills) = &*cache {
+            if let Some(skills) = &*self.cache.lock().await {
                 return Ok(skills.clone());
             }
         }
-        let raw = match tokio::fs::read_to_string(&self.path).await {
-            Ok(raw) => raw,
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => String::new(),
+        let mut skills = BTreeMap::new();
+        match tokio::fs::read_dir(&self.root).await {
+            Ok(mut entries) => {
+                while let Some(entry) = entries.next_entry().await? {
+                    if !entry.file_type().await?.is_dir() {
+                        continue;
+                    }
+                    let Some(dir_name) = entry.file_name().to_str().map(str::to_string) else {
+                        continue;
+                    };
+                    if validate_name(&dir_name).is_err() {
+                        continue;
+                    }
+                    match load_skill_dir(&entry.path(), &dir_name).await {
+                        Ok(skill) => {
+                            skills.insert(skill.name.clone(), skill);
+                        }
+                        // One unreadable skill must not take the whole store
+                        // down: skip it loudly and keep the rest usable.
+                        Err(error) => tracing::error!(
+                            target: "housebot::skills",
+                            %error,
+                            skill = %dir_name,
+                            "Skipping unreadable skill"
+                        ),
+                    }
+                }
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
             Err(error) => return Err(error),
-        };
-        let mut skills: BTreeMap<String, Skill> = if raw.trim().is_empty() {
-            BTreeMap::new()
-        } else {
-            serde_json::from_str(&raw)
-                .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))?
-        };
-        for skill in skills.values_mut() {
-            skill.migrate_from_prompt();
         }
         skills.insert(SKILL_CREATOR_NAME.to_string(), builtin_skill_creator());
         *self.cache.lock().await = Some(skills.clone());
         Ok(skills)
     }
 
-    /// Load every defined skill, keyed by name (cached after first load).
-    /// Automatically migrates any legacy `prompt`-based skills.
+    /// Load every skill, keyed by name (cached after the first scan).
     pub async fn load_all(&self) -> BTreeMap<String, Skill> {
-        match self.load_from_disk().await {
+        match self.scan().await {
             Ok(skills) => skills,
             Err(error) => {
                 tracing::error!(
                     target: "housebot::skills",
                     %error,
-                    path = %self.path.display(),
-                    "Failed to load skills file — returning built-ins without caching"
+                    root = %self.root.display(),
+                    "Failed to scan skills directory — returning built-ins without caching"
                 );
-                builtin_skills()
+                BTreeMap::from([(SKILL_CREATOR_NAME.to_string(), builtin_skill_creator())])
             }
         }
-    }
-
-    async fn write_all(&self, skills: &BTreeMap<String, Skill>) -> std::io::Result<()> {
-        if let Some(parent) = self.path.parent() {
-            ensure_dir(parent).await?;
-        }
-        let persisted: BTreeMap<_, _> = skills
-            .iter()
-            .filter(|(name, _)| name.as_str() != SKILL_CREATOR_NAME)
-            .map(|(name, skill)| (name.clone(), skill.clone()))
-            .collect();
-        let body = serde_json::to_string_pretty(&persisted).unwrap_or_else(|_| "{}".into());
-        tokio::fs::write(&self.path, body).await
     }
 
     /// Fetch a single skill by name.
@@ -315,22 +325,34 @@ impl Skills {
         self.load_all().await.remove(name)
     }
 
-    /// Save (or overwrite) a skill under its own name.
-    pub async fn save(&self, skill: Skill) -> std::io::Result<()> {
+    /// Write a skill's `SKILL.md`, creating its directory if needed.
+    pub async fn save(&self, mut skill: Skill) -> std::io::Result<()> {
         if skill.name == SKILL_CREATOR_NAME {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::PermissionDenied,
                 "built-in skills cannot be overwritten",
             ));
         }
-        let mut all = self.load_from_disk().await?;
-        all.insert(skill.name.clone(), skill);
-        self.write_all(&all).await?;
-        *self.cache.lock().await = Some(all);
+        validate_name(&skill.name)
+            .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidInput, error))?;
+        if skill.created_at == 0 {
+            skill.created_at = now_secs();
+        }
+        skill.updated_at = now_secs();
+
+        let dir = self.skill_dir(&skill.name);
+        ensure_dir(&dir).await?;
+        let mut file = tokio::fs::File::create(dir.join(SKILL_FILE)).await?;
+        {
+            use tokio::io::AsyncWriteExt;
+            file.write_all(skill.to_skill_md().as_bytes()).await?;
+            file.flush().await?;
+        }
+        self.cache.lock().await.take();
         Ok(())
     }
 
-    /// Delete a skill, returning whether it existed.
+    /// Delete a skill's whole directory, returning whether it existed.
     pub async fn delete(&self, name: &str) -> std::io::Result<bool> {
         if name == SKILL_CREATOR_NAME {
             return Err(std::io::Error::new(
@@ -338,434 +360,84 @@ impl Skills {
                 "built-in skills cannot be deleted",
             ));
         }
-        let mut all = self.load_from_disk().await?;
-        if all.remove(name).is_none() {
+        validate_name(name)
+            .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidInput, error))?;
+        let dir = self.skill_dir(name);
+        if !tokio::fs::try_exists(&dir).await.unwrap_or(false) {
             return Ok(false);
         }
-        self.write_all(&all).await?;
-        *self.cache.lock().await = Some(all);
+        tokio::fs::remove_dir_all(&dir).await?;
+        self.cache.lock().await.take();
         Ok(true)
     }
+
+    /// Read one bundled file (disclosure level 3).
+    ///
+    /// `kind` selects `references/` or `scripts/`; `file` must be a plain file
+    /// name, since it originates with the model.
+    pub async fn read_bundled(
+        &self,
+        name: &str,
+        kind: BundleKind,
+        file: &str,
+    ) -> Result<String, String> {
+        validate_name(name)?;
+        if file.is_empty() || file.contains('/') || file.contains('\\') || file.contains("..") {
+            return Err(format!("Error: '{file}' is not a valid file name."));
+        }
+        let path = self.skill_dir(name).join(kind.dir_name()).join(file);
+        tokio::fs::read_to_string(&path)
+            .await
+            .map_err(|error| format!("Error: could not read {}/{file}: {error}", kind.dir_name()))
+    }
+}
+
+/// Which bundled directory of a skill to address.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BundleKind {
+    References,
+    Scripts,
+}
+
+impl BundleKind {
+    pub fn dir_name(self) -> &'static str {
+        match self {
+            BundleKind::References => REFERENCES_DIR,
+            BundleKind::Scripts => SCRIPTS_DIR,
+        }
+    }
+}
+
+async fn load_skill_dir(dir: &Path, fallback_name: &str) -> Result<Skill, String> {
+    let source = tokio::fs::read_to_string(dir.join(SKILL_FILE))
+        .await
+        .map_err(|error| format!("{SKILL_FILE}: {error}"))?;
+    let mut skill = parse_skill_md(&source, fallback_name)?;
+    skill.references = list_dir(&dir.join(REFERENCES_DIR)).await;
+    skill.scripts = list_dir(&dir.join(SCRIPTS_DIR)).await;
+    Ok(skill)
+}
+
+async fn list_dir(dir: &Path) -> Vec<String> {
+    let mut names = Vec::new();
+    let Ok(mut entries) = tokio::fs::read_dir(dir).await else {
+        return names;
+    };
+    while let Ok(Some(entry)) = entries.next_entry().await {
+        if entry
+            .file_type()
+            .await
+            .map(|t| t.is_file())
+            .unwrap_or(false)
+        {
+            if let Some(name) = entry.file_name().to_str() {
+                names.push(name.to_string());
+            }
+        }
+    }
+    names.sort();
+    names
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[tokio::test]
-    async fn skill_creator_is_builtin_and_not_persisted() {
-        let temp = tempfile::tempdir().unwrap();
-        let path = temp.path().join("skills.json");
-        let skills = Skills::new(&path);
-
-        let creator = skills.get(SKILL_CREATOR_NAME).await.unwrap();
-        assert_eq!(creator.version, 1);
-        assert!(creator.created_by.is_none());
-        assert!(creator.enabled_tools.contains(&"create_skill".to_string()));
-        assert_eq!(
-            skills.delete(SKILL_CREATOR_NAME).await.unwrap_err().kind(),
-            std::io::ErrorKind::PermissionDenied
-        );
-
-        skills
-            .save(Skill {
-                name: "custom".to_string(),
-                description: None,
-                instructions: "Do one thing well.".to_string(),
-                triggers: Vec::new(),
-                enabled_tools: Vec::new(),
-                examples: Vec::new(),
-                version: 1,
-                version_history: Vec::new(),
-                created_by: Some("1".to_string()),
-                editors: Vec::new(),
-                created_at: 0,
-                updated_at: 0,
-                prompt: None,
-            })
-            .await
-            .unwrap();
-
-        let persisted = tokio::fs::read_to_string(path).await.unwrap();
-        assert!(persisted.contains("\"custom\""));
-        assert!(!persisted.contains(SKILL_CREATOR_NAME));
-    }
-
-    #[tokio::test]
-    async fn corrupt_store_is_not_overwritten() {
-        let temp = tempfile::tempdir().unwrap();
-        let path = temp.path().join("skills.json");
-        tokio::fs::write(&path, "{not json").await.unwrap();
-        let skills = Skills::new(&path);
-
-        assert!(skills.load_all().await.contains_key(SKILL_CREATOR_NAME));
-        let mut custom = builtin_skill_creator();
-        custom.name = "custom".to_string();
-        assert_eq!(
-            skills.save(custom).await.unwrap_err().kind(),
-            std::io::ErrorKind::InvalidData
-        );
-        assert_eq!(tokio::fs::read_to_string(path).await.unwrap(), "{not json");
-    }
-    use tempfile::TempDir;
-
-    fn store() -> (TempDir, Skills) {
-        let tmp = TempDir::new().unwrap();
-        let s = Skills::new(tmp.path().join("skills.json"));
-        (tmp, s)
-    }
-
-    fn skill(name: &str, desc: Option<&str>, instructions: &str) -> Skill {
-        Skill {
-            name: name.to_string(),
-            description: desc.map(String::from),
-            instructions: instructions.to_string(),
-            triggers: Vec::new(),
-            enabled_tools: Vec::new(),
-            examples: Vec::new(),
-            version: 1,
-            version_history: Vec::new(),
-            created_by: None,
-            editors: Vec::new(),
-            created_at: 0,
-            updated_at: 0,
-            prompt: None,
-        }
-    }
-
-    fn full_skill(name: &str) -> Skill {
-        Skill {
-            name: name.to_string(),
-            description: Some("A full-featured skill".into()),
-            instructions: "Do the thing".into(),
-            triggers: vec![SkillTrigger {
-                trigger_type: "keyword".into(),
-                value: "standup".into(),
-            }],
-            enabled_tools: vec!["web_search".into(), "fetch_webpage".into()],
-            examples: vec![SkillExample {
-                input: "summarize my week".into(),
-                output: "Here's your weekly summary...".into(),
-            }],
-            version: 2,
-            version_history: vec![SkillArchive {
-                version: 1,
-                description: None,
-                instructions: "Old instructions".into(),
-                triggers: vec![],
-                enabled_tools: vec![],
-                examples: vec![],
-                archived_at: 100,
-            }],
-            created_by: Some("author".into()),
-            editors: vec!["editor1".into()],
-            created_at: 50,
-            updated_at: 200,
-            prompt: None,
-        }
-    }
-
-    #[tokio::test]
-    async fn load_all_contains_only_builtin_when_no_file() {
-        let (_t, s) = store();
-        let all = s.load_all().await;
-        assert_eq!(all.len(), 1);
-        assert!(all.contains_key(SKILL_CREATOR_NAME));
-    }
-
-    #[tokio::test]
-    async fn save_and_load_skill() {
-        let (_t, s) = store();
-        s.save(skill("greet", Some("Say hello"), "Hello!"))
-            .await
-            .unwrap();
-        let all = s.load_all().await;
-        assert_eq!(all.get("greet").unwrap().effective_instructions(), "Hello!");
-    }
-
-    #[tokio::test]
-    async fn get_existing_skill() {
-        let (_t, s) = store();
-        s.save(skill("greet", Some("Say hello"), "Hello!"))
-            .await
-            .unwrap();
-        assert_eq!(s.get("greet").await.unwrap().name, "greet");
-    }
-
-    #[tokio::test]
-    async fn get_missing_returns_none() {
-        let (_t, s) = store();
-        assert!(s.get("nonexistent").await.is_none());
-    }
-
-    #[tokio::test]
-    async fn save_overwrites_existing() {
-        let (_t, s) = store();
-        s.save(skill("greet", Some("old"), "Hi")).await.unwrap();
-        s.save(skill("greet", Some("new"), "Hey")).await.unwrap();
-        assert_eq!(
-            s.get("greet").await.unwrap().description.as_deref(),
-            Some("new")
-        );
-    }
-
-    #[tokio::test]
-    async fn delete_existing_skill() {
-        let (_t, s) = store();
-        s.save(skill("greet", Some("Say hello"), "Hello!"))
-            .await
-            .unwrap();
-        assert!(s.delete("greet").await.unwrap());
-        assert!(s.get("greet").await.is_none());
-    }
-
-    #[tokio::test]
-    async fn delete_missing_returns_false() {
-        let (_t, s) = store();
-        assert!(!s.delete("nonexistent").await.unwrap());
-    }
-
-    #[tokio::test]
-    async fn multiple_skills_coexist() {
-        let (_t, s) = store();
-        s.save(skill("a", None, "A instructions")).await.unwrap();
-        s.save(skill("b", None, "B instructions")).await.unwrap();
-        let all = s.load_all().await;
-        assert!(all.contains_key("a"));
-        assert!(all.contains_key("b"));
-    }
-
-    #[test]
-    fn skill_without_description_uses_name() {
-        let sk = skill("a", None, "A instructions");
-        assert_eq!(sk.description_or_name(), "a");
-    }
-
-    #[test]
-    fn effective_instructions_falls_back_to_legacy_prompt() {
-        let mut sk = skill("x", None, "");
-        sk.prompt = Some("legacy prompt".into());
-        assert_eq!(sk.effective_instructions(), "legacy prompt");
-    }
-
-    #[test]
-    fn effective_instructions_prefers_instructions_over_prompt() {
-        let mut sk = skill("x", None, "new instructions");
-        sk.prompt = Some("old prompt".into());
-        assert_eq!(sk.effective_instructions(), "new instructions");
-    }
-
-    #[test]
-    fn migrate_from_prompt_moves_to_instructions() {
-        let mut sk = Skill {
-            name: "x".into(),
-            description: None,
-            instructions: String::new(),
-            triggers: Vec::new(),
-            enabled_tools: Vec::new(),
-            examples: Vec::new(),
-            version: 1,
-            version_history: Vec::new(),
-            created_by: None,
-            editors: Vec::new(),
-            created_at: 0,
-            updated_at: 0,
-            prompt: Some("legacy".into()),
-        };
-        sk.migrate_from_prompt();
-        assert_eq!(sk.instructions, "legacy");
-        assert!(sk.prompt.is_none());
-    }
-
-    #[test]
-    fn bump_version_archives_and_increments() {
-        let mut sk = skill("x", None, "v1 instructions");
-        sk.description = Some("v1 desc".into());
-        sk.triggers = vec![SkillTrigger {
-            trigger_type: "keyword".into(),
-            value: "test".into(),
-        }];
-        sk.enabled_tools = vec!["search".into()];
-        assert_eq!(sk.version, 1);
-        sk.bump_version();
-        assert_eq!(sk.version, 2);
-        assert_eq!(sk.version_history.len(), 1);
-        assert_eq!(sk.version_history[0].version, 1);
-        assert_eq!(sk.version_history[0].instructions, "v1 instructions");
-        assert_eq!(
-            sk.version_history[0].description.as_deref(),
-            Some("v1 desc")
-        );
-        assert_eq!(sk.version_history[0].triggers.len(), 1);
-        assert_eq!(sk.version_history[0].enabled_tools, vec!["search"]);
-    }
-
-    #[test]
-    fn full_skill_round_trip() {
-        let sk = full_skill("test_skill");
-        assert_eq!(sk.name, "test_skill");
-        assert_eq!(sk.triggers.len(), 1);
-        assert_eq!(sk.enabled_tools.len(), 2);
-        assert_eq!(sk.examples.len(), 1);
-        assert_eq!(sk.version, 2);
-        assert!(sk.has_triggers());
-    }
-
-    #[test]
-    fn has_triggers_false_when_empty() {
-        let sk = skill("x", None, "instructions");
-        assert!(!sk.has_triggers());
-    }
-
-    fn skill_with_triggers(triggers: Vec<(&str, &str)>) -> Skill {
-        let mut sk = skill("x", None, "instructions");
-        sk.triggers = triggers
-            .into_iter()
-            .map(|(trigger_type, value)| SkillTrigger {
-                trigger_type: trigger_type.into(),
-                value: value.into(),
-            })
-            .collect();
-        sk
-    }
-
-    #[test]
-    fn matches_message_keyword_case_insensitive() {
-        let sk = skill_with_triggers(vec![("keyword", "Standup")]);
-        assert!(sk.matches_message("time for the daily standup"));
-        assert!(sk.matches_message("STANDUP now"));
-    }
-
-    #[test]
-    fn matches_message_keyword_miss() {
-        let sk = skill_with_triggers(vec![("keyword", "standup")]);
-        assert!(!sk.matches_message("what's for lunch"));
-    }
-
-    #[test]
-    fn matches_message_always_fires() {
-        let sk = skill_with_triggers(vec![("always", "")]);
-        assert!(sk.matches_message("anything at all"));
-    }
-
-    #[test]
-    fn matches_message_intent_is_advisory() {
-        let sk = skill_with_triggers(vec![("intent", "user wants a summary")]);
-        assert!(!sk.matches_message("user wants a summary"));
-    }
-
-    #[test]
-    fn matches_message_no_triggers() {
-        let sk = skill("x", None, "instructions");
-        assert!(!sk.matches_message("standup"));
-    }
-
-    // ── permission tests ─────────────────────────────────────────────────
-    fn authored_skill(author: &str) -> Skill {
-        Skill {
-            name: "x".into(),
-            description: None,
-            instructions: "p".into(),
-            triggers: Vec::new(),
-            enabled_tools: Vec::new(),
-            examples: Vec::new(),
-            version: 1,
-            version_history: Vec::new(),
-            created_by: Some(author.to_string()),
-            editors: vec!["300".into(), "400".into()],
-            created_at: 0,
-            updated_at: 0,
-            prompt: None,
-        }
-    }
-
-    #[test]
-    fn is_author_matches() {
-        let sk = authored_skill("100");
-        assert!(sk.is_author("100"));
-        assert!(!sk.is_author("200"));
-    }
-
-    #[test]
-    fn can_edit_author_or_editor() {
-        let sk = authored_skill("100");
-        assert!(sk.can_edit("100"));
-        assert!(sk.can_edit("300"));
-        assert!(sk.can_edit("400"));
-        assert!(!sk.can_edit("500"));
-    }
-
-    #[test]
-    fn can_edit_author_when_no_created_by() {
-        let sk = Skill {
-            name: "x".into(),
-            description: None,
-            instructions: "p".into(),
-            triggers: Vec::new(),
-            enabled_tools: Vec::new(),
-            examples: Vec::new(),
-            version: 1,
-            version_history: Vec::new(),
-            created_by: None,
-            editors: vec![],
-            created_at: 0,
-            updated_at: 0,
-            prompt: None,
-        };
-        assert!(!sk.can_edit("100"));
-    }
-
-    #[test]
-    fn add_editor_duplicate() {
-        let mut sk = authored_skill("100");
-        assert!(!sk.add_editor("300"));
-        assert_eq!(sk.editors.len(), 2);
-    }
-
-    #[test]
-    fn add_editor_new() {
-        let mut sk = authored_skill("100");
-        assert!(sk.add_editor("500"));
-        assert!(sk.editors.contains(&"500".to_string()));
-    }
-
-    #[test]
-    fn remove_editor_present() {
-        let mut sk = authored_skill("100");
-        assert!(sk.remove_editor("300"));
-        assert!(!sk.editors.contains(&"300".to_string()));
-    }
-
-    #[test]
-    fn remove_editor_missing() {
-        let mut sk = authored_skill("100");
-        assert!(!sk.remove_editor("999"));
-    }
-
-    #[tokio::test]
-    async fn legacy_prompt_is_migrated_on_load() {
-        let (_t, s) = store();
-        // Write old-format JSON with `prompt` field
-        let old_json = r#"{"greet":{"name":"greet","description":"old","prompt":"Hello!"}}"#;
-        tokio::fs::write(&s.path, old_json).await.unwrap();
-        let all = s.load_all().await;
-        let skill = all.get("greet").unwrap();
-        assert_eq!(skill.effective_instructions(), "Hello!");
-        assert_eq!(skill.instructions, "Hello!");
-        // prompt should be None after migration
-        assert!(skill.prompt.is_none());
-        // migrated legacy skills should be at version 1
-        assert_eq!(skill.version, 1);
-    }
-
-    #[tokio::test]
-    async fn new_skills_dont_write_prompt_field() {
-        let (_t, s) = store();
-        s.save(skill("new_skill", None, "new instructions"))
-            .await
-            .unwrap();
-        let raw = tokio::fs::read_to_string(&s.path).await.unwrap();
-        assert!(!raw.contains("\"prompt\""));
-        assert!(raw.contains("\"instructions\""));
-    }
-}
+mod tests;

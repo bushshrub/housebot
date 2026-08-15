@@ -81,7 +81,6 @@ impl Agent {
                 personality,
                 deep_memory_enabled,
                         &now,
-                text,
             ),
         });
         let mut messages: Vec<Value> = Vec::with_capacity(past.len() + 2);

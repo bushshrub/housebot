@@ -225,6 +225,26 @@ Do not re-ask these; they are in the plan's decisions table.
 - **No durable transcript.** Channel context stays RAM-only and dies with the
   process. This was proposed and declined — do not re-propose a
   `channel_messages` table.
+- **Skill descriptions never enter the system prompt.** The plan's
+  progressive-disclosure level 1 says "name + description"; that was decided
+  against. Descriptions are user-authored, authoring is open to everyone, and
+  the system prompt is the one place text carries the bot's own authority — so
+  a description there is a prompt-injection surface. The prompt lists **names
+  only**; descriptions reach the model through the `list_skills` *tool result*,
+  where they are data the bot read rather than orders it believes. This is
+  already how the code behaves; keep it that way. There is a test asserting a
+  skill's description does not appear in the prompt.
+- **`enabled_tools` is advisory, never enforced.** It is shown as recommended
+  tools when a skill loads; it does not narrow the agent's tool surface.
+  Enforcing it would rebuild the tool-permission system Phase 1 deliberately
+  cut.
+- **Skill scripts get no network.** They run in the caller's existing session
+  sandbox and must never trigger a network upgrade — a container's network mode
+  is fixed at creation and `reuse_session` refuses to change it. Scripts
+  compute; the agent gathers data with `web_search` / `fetch_webpage` and passes
+  it in.
+- **No skills migration.** There is no live `skills.json` worth preserving, so
+  the directory-based store starts empty. Do not write a migration path.
 - **No conversation archive either.** `token-monitor` used to mirror every
   message of every turn into `conversation_messages` — user text, assistant
   replies, and all tool traffic. Nothing ever read it: no command, no

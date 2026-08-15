@@ -19,6 +19,9 @@ current state and gotchas. Phases 1–3 are done; Phase 4 is next.
 | LLM concurrency | Admin-configurable max in-flight |
 | Scheduling | Priority queue — user chat outranks sub-agents; excess is queued |
 | Skill authoring | Open to any user the bot talks to, not owner-gated |
+| Skill metadata | `SKILL.md` frontmatter keeps name, description, author, editors, and advisory `enabled_tools`. Version history, triggers, and examples are dropped |
+| Skill descriptions | Never in the system prompt — user-authored text must not carry system authority. Surfaced via the `list_skills` tool result |
+| Skill script network | None. Scripts run in the caller's session sandbox and never upgrade its network mode |
 | Channel context | Bot stores every channel it can see; reads are gated on the requesting user's live Discord permissions |
 | Context retention | Per-channel message cap and an age limit, whichever binds first |
 | Context durability | RAM only — no durable transcript. Context dies with the process, by decision |
@@ -164,7 +167,9 @@ Claude Skills model. Each skill is a directory on the persistent volume:
 
 Progressive disclosure, three levels:
 
-1. Name + description of every enabled skill sits in the system prompt
+1. **Name only** of every enabled skill sits in the system prompt. Descriptions
+   are user-authored and deliberately excluded — see the decisions table — and
+   reach the model through the `list_skills` tool result instead
 2. `SKILL.md` body is loaded when the agent invokes the skill
 3. `references/` files and `scripts/` are read or run only when the body calls for them
 
@@ -213,16 +218,16 @@ Build the scheduler first: sub-agents (Phase 3) and the config commands
       `ScheduledChatClient::with_priority(Priority::SubAgent)`
 
 ### Phase 4 — skills + sandbox
-- [ ] Add `SKILLS_DIR` (approved) pointing at the persistent skills volume
-- [ ] Skill discovery, frontmatter parsing, progressive disclosure
-- [ ] Skill authoring tools writing to the persistent volume
+- [x] Add `SKILLS_DIR` (approved) pointing at the persistent skills volume
+- [x] Skill discovery, frontmatter parsing, progressive disclosure
+- [x] Skill authoring tools writing to the persistent volume
 - [ ] `sandboxd` wired as the script execution surface
 - [ ] Skill scripts run sandboxed with bounded time and memory
 - [x] Session-scoped sandboxes: keyed by user, reaped by an idle timer in
       `sandboxd` (`SANDBOX_IDLE_TIMEOUT_SECS`, default 300, admin-configurable)
       instead of destroyed at the end of every `Agent::run`
-- [ ] Make the workspace usable for coding: drop `noexec` from the `/workspace`
-      tmpfs and add a `write_file` method
+- [ ] Make the workspace usable for coding: `noexec` is dropped from the
+      `/workspace` tmpfs; a `write_file` method is still outstanding
 
 ### Phase 5 — Discord surface
 - [ ] Message handler, streaming render, cancel reaction, progress
