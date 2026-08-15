@@ -22,6 +22,32 @@ Before starting, confirm the tree is green: `cargo test --workspace`,
 `cargo clippy --all-targets -- -D warnings`, `cargo fmt --check`. All three
 pass as of the last commit, so a later failure is yours.
 
+## Start here — Phase 5
+
+**Expect an audit, not a build.** Phases 2, 3, and 4 each found work already
+done, and Phase 5's Discord surface looks like more of the same: `handler.rs`,
+`message_flow.rs`, `render.rs`, `progress.rs`, and `config_cmd.rs` all exist and
+compile (~1,650 lines between them). Read them before writing anything. The
+likely real work is the migrations, not the surface.
+
+Suggested order:
+
+1. **Read the code first.** Streaming render, cancel reaction, and progress are
+   probably present — `AgentHooks` and the reminder loop already run through
+   this layer.
+2. **Write migrations `003` and `004`** — `bot_config`, then `conversations` +
+   `token_usage_events`. New shapes; do not restore old SQL from git history.
+   `conversation_messages` is **deliberately gone** — see the decisions table.
+3. **Wire the scheduler config commands.** `set_max_inflight` and
+   `set_max_subagent` exist on `LlmScheduler` and nothing calls them yet; that
+   is the one piece Phase 2 explicitly left for Phase 5.
+4. `/stats` and token leaderboards — `leaderboard_fmt.rs` and the token-monitor
+   queries already exist.
+
+Those two migrations are also what makes the bot **bootable** for the first time
+since the purge. Nothing before Phase 5 can be exercised against a running bot,
+so expect the first real startup to surface things unit tests could not.
+
 ## What Phase 2 actually changed
 
 Three of the seven Phase 2 items turned out to be **already built** and were
@@ -205,6 +231,15 @@ control, so those tables are load-bearing.
 Recreate the rest with their **new** shapes, numbered from `003`. Do not
 restore the deleted SQL from git history — the schemas are meant to change.
 
+**Only three of those tables block the bot.** `bot_config` plus the two
+token-monitor tables are what `Agent::from_env` refuses to start without.
+`deployment_permissions` belongs to `crates/deployment-bot`, which is **not
+linked into the `housebot` binary at all** — it is a separate crate with its own
+container (`Dockerfile.deployment-bot`), so its migration can land with Phase 6
+without holding up a bootable bot.
+
+No store creates its own tables; they all assume migrations have run.
+
 **The purge must stay at index 1 in the `MIGRATIONS` array.** A migration
 inserted before it would be applied, dropped along with its ledger row, and
 re-applied on the next run — an invisible loop that wipes the database on every
@@ -307,6 +342,15 @@ Do not re-ask these; they are in the plan's decisions table.
   job: counting tokens.
 
 ## Things that will surprise you
+
+**Nothing in this rebuild has run against live infrastructure.** Every phase so
+far was verified by `cargo test`, clippy, and reading code — no session has
+started the bot, reached a real Postgres, a Discord gateway, an LLM server, or a
+Docker daemon. "Done" in the table above means compiled, wired, and unit-tested.
+Two areas are most exposed, because they are new code rather than surviving
+code: `write_file` / `run_skill_script` (which need a live `sandboxd` and gVisor
+to prove out at all) and the directory-based skills store. Treat first startup
+as a debugging session, not a formality.
 
 **Two crates on the Phase 1 cut list were replaced, not deleted** — that work is
 done: `llm-queue` → `llm-scheduler` and `channel-log` → `channel-context` both
