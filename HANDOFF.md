@@ -22,14 +22,12 @@ passes, `cargo clippy --all-targets -- -D warnings` is clean, `cargo fmt
 --check` is clean. Verify this before starting, so you know a later failure is
 yours.
 
-## Blocking question for the user
+## Answered: skill authoring is open
 
-**Should skill authoring be owner-gated, or open to any user the bot talks to?**
-
-Asked twice, not yet answered. It is not needed until Phase 4, so Phases 2–3
-can proceed without it. Do not guess — the bot writes skills to a persistent
-volume and executes their scripts in the sandbox, so the blast radius of
-"anyone can author" is real.
+Any user the bot talks to may author skills — not owner-gated. Skills still
+land on the persistent volume and their scripts still run in the gVisor
+sandbox, so the sandbox is the only thing standing between an authored script
+and the host. Treat its limits as load-bearing.
 
 ## The database is empty
 

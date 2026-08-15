@@ -6,12 +6,7 @@ source of truth for what is in scope and what is done; update the checkboxes as
 work lands.
 
 Resuming in a new session? Start with [`HANDOFF.md`](../HANDOFF.md) — it covers
-current state, gotchas, and the one question still blocking Phase 4.
-
-## Open question
-
-**Is skill authoring owner-gated, or open to any user?** Unanswered. Blocks
-Phase 4 only; Phases 2–3 can proceed without it.
+current state and gotchas.
 
 ## Decisions
 
@@ -23,7 +18,9 @@ Phase 4 only; Phases 2–3 can proceed without it.
 | Sub-agents | Yes, with admin-configurable concurrency |
 | LLM concurrency | Admin-configurable max in-flight |
 | Scheduling | Priority queue — user chat outranks sub-agents; excess is queued |
+| Skill authoring | Open to any user the bot talks to, not owner-gated |
 | Code execution | gVisor sandbox, retained for skill scripts |
+| Sandbox lifetime | Per session, reaped after an admin-configurable idle timeout (default 5 min) |
 | Feature dev | OpenCode only, full interactive Discord flow |
 | Landing strategy | Rewrite in place on `claude/bot-redesign-audit-7gecv3` |
 | Database | Purged on deploy — every legacy table dropped, schema rebuilt |
@@ -211,6 +208,9 @@ Build the scheduler first: sub-agents (Phase 3) and the config commands
 - [ ] Skill authoring tools writing to the persistent volume
 - [ ] `sandboxd` wired as the script execution surface
 - [ ] Skill scripts run sandboxed with bounded time and memory
+- [ ] Session-scoped sandboxes: keyed by session, reaped by an idle timer in
+      `sandboxd` (`SANDBOX_IDLE_TIMEOUT_SECS`, default 300, admin-configurable)
+      instead of destroyed at the end of every `Agent::run`
 
 ### Phase 5 — Discord surface
 - [ ] Message handler, streaming render, cancel reaction, progress
