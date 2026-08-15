@@ -190,9 +190,11 @@ pub fn validate_name(name: &str) -> Result<(), String> {
     }
     if !name
         .chars()
-        .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+        .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_')
     {
-        return Err("skill name may only contain letters, digits, hyphens, and underscores".into());
+        return Err(
+            "skill name may only contain lowercase letters, digits, and underscores".into(),
+        );
     }
     Ok(())
 }

@@ -473,6 +473,32 @@ async fn docker_sandbox_search_code() {
 
 #[tokio::test]
 #[ignore = "requires Docker daemon + sandbox image; set HOUSEBOT_SANDBOX_RUNTIME=runc in CI"]
+async fn docker_sandbox_search_code_no_matches_is_not_an_error() {
+    let socket = test_socket("search-empty");
+    spawn_sandboxd(&socket).await;
+
+    let client = SandboxClient::new(&socket);
+    let sandbox = client
+        .start("integration-session", NetworkAccess::None)
+        .await
+        .expect("start failed");
+
+    sandbox
+        .run("printf 'fn hello() {}\\n' > /workspace/lib.rs", None, None)
+        .await
+        .expect("write failed");
+
+    let result = sandbox
+        .search_code("this_pattern_does_not_exist", None, None)
+        .await
+        .expect("search_code must succeed with rg exit code 1 (no matches)");
+    assert!(result.matches.is_empty());
+
+    sandbox.close().await.expect("close failed");
+}
+
+#[tokio::test]
+#[ignore = "requires Docker daemon + sandbox image; set HOUSEBOT_SANDBOX_RUNTIME=runc in CI"]
 async fn docker_sandbox_nonzero_exit_returned_not_error() {
     let socket = test_socket("nonzero");
     spawn_sandboxd(&socket).await;

@@ -209,3 +209,14 @@ fn a_missing_name_falls_back_to_the_directory() {
 fn skill_md_without_frontmatter_is_an_error() {
     assert!(parse_skill_md("just a body", "dirname").is_err());
 }
+
+#[test]
+fn validate_name_rejects_hyphens_and_uppercase() {
+    // The lookup paths (get/delete/edit) lowercase the requested name before
+    // matching, so a stored name with a hyphen or uppercase letter would be
+    // loadable but permanently unreachable through them.
+    assert!(validate_name("my-skill").is_err());
+    assert!(validate_name("MySkill").is_err());
+    assert!(validate_name("my_skill").is_ok());
+    assert!(validate_name("skill123").is_ok());
+}

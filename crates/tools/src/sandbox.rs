@@ -175,7 +175,11 @@ impl LazySandbox {
         sandbox.write_file(&path, source, true).await?;
 
         let quoted: Vec<String> = args.iter().map(|a| shell_quote(a)).collect();
-        let command = format!("{interpreter} /workspace/{path} {}", quoted.join(" "));
+        let command = format!(
+            "{interpreter} {} {}",
+            shell_quote(&format!("/workspace/{path}")),
+            quoted.join(" ")
+        );
         self.run(&command, None, timeout_secs).await
     }
 }

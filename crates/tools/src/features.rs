@@ -11,58 +11,38 @@ pub fn features_text() -> &'static str {
 **Slash commands**
 `/help` — show this reference
 `/session status|new|compact` — inspect the current session, start fresh, or summarise it into a carry-over note before starting fresh (persistent memory is only changed when you ask)
-
 `/token_leaderboard [timeframe] [metric]` — rank token usage daily, weekly, monthly, or all-time by total tokens or cache efficiency; also shows your rank
-`/tool_ban propose|vote|status` — vote on server-specific user restrictions for individual tools
 `/status` — show your current settings at a glance (effort, follow-up, personality)
 `/effort [level] [user]` — set thinking depth: `instant` (off) · `low` (2k tokens) · `medium` (4k, default) · `high` (8k) · `xhigh` (16k) · `max` (unlimited); server administrators and bot configurers may target another user
 `/personalize personality [text]` — set (or clear) a personal tone/personality override
 `/personalize followup enabled [timeout]` — toggle unpinged follow-up replies in a server channel
-`/personalize proactive enabled` — opt in or out of proactive assistance
 `/personalize progress enabled [user]` — show or hide intermediate reasoning/tool progress; server administrators and bot configurers may target another user
+`/config dev_notify_channel [channel]` — set which channel receives feature-development completion notices (configurers only)
 `/config access allow|revoke|list` — manage who may configure the bot (configurers only; the owner is always allowed)
 `/config user limit|respond|show` — per-user output-token caps and respond policies (configurers only)
-`/config proactive enabled` — globally enable or disable proactive assistance for all users (configurers only)
 `/server-config channel add|remove|list|clear` — restrict which channels the bot responds in (server admins and configurers)
 `/server-config leaderboard visibility|role_add|role_remove|role_list` — make leaderboard responses public, private, or role-restricted
 `/server-config bot_pings enabled` — toggle responses to other bots' @-mentions
-`/server-config proactive enabled` — allow or disallow proactive assistance in this server
-`/labs pagination enabled` — toggle paginated responses (experimental)
+`/labs list|pagination enabled` — list experimental features, or toggle paginated responses
 `/commit` — show the running commit hash
 `/model` — show the current model name and context size
-`/data profile show|clear` — inspect your stored profile or clear learned profile data and memory
 `/data history show|clear` — inspect or clear your global conversation history
 `/data erase confirm:true` — permanently delete all your stored data, including archived conversations and token statistics
 `/privacy status|deep_memory` — view or change privacy settings
-`/storage memory show|search|clear` — inspect or clear persistent memory about you
-`/storage notes list|get|save|delete` — manage your named personal notes
-`/lua <script>` — run a sandboxed Lua script with `discord.send_message`, `discord.web_search`, `discord.jellyfin_search`, and `graph.node`/`graph.edge`/`graph.title` to render a flowchart or network diagram as an image (requires the Scripting role or higher, or guild administrator / bot owner)
-`/skill list|info|add|delete` — manage custom prompt skills shared across all users
+`/storage memory show|search|clear` — inspect or clear persistent memory the bot has saved about you
+`/skill list|info|delete` — manage custom prompt skills shared across all users
 `/stats` — show your conversation and memory statistics
 
-**Prefix commands**
-`!grocery` — show your grocery list
-`!grocery add <item>` — add an item to your grocery list
-`!grocery remove <item>` — remove an item from your grocery list
-`!grocery flush` — clear your entire grocery list
-
 **Capabilities**
-- Web search, multi-step deep research with cross-referenced sources, webpage fetching, and public-file downloads delivered as Discord attachments
-- Jellyfin media server queries (movies, shows, music) — read-only
-- URL summarisation and translation
+- Web search and webpage fetching
 - Timed reminders delivered by DM
 - Create and edit your own GitHub feature requests and bug reports
 - Native GitHub issue management via LLM tool (`github_api`): list, search, view detail, close, label, prune issues
-- Custom skills (user-defined prompt templates) via `!skill`
-- Personal grocery list management (`!grocery`) with persistent storage across sessions
-- Personal notes and persistent memory across sessions
+- Custom skills (user-defined prompt templates), runnable via scripts in a sandboxed container
+- Persistent memory about you across sessions, updated only when you ask
 - Persistent conversation archives and global token-usage leaderboards
-- Guild voting for user-specific tool-call restrictions and bans
-- Software development help: discuss, explain, review, advise on code, and execute sandboxed Lua scripts for calculations or data processing
-- Self-executing Lua: the bot can write and run Lua 5.4 scripts internally to handle complex calculations, data processing, or algorithmic tasks (web search and Jellyfin search available from scripts)
-- Chat search: search channel messages by regex to find what was said or who mentioned something
-- Discord user profiles: look up a user's username, display name, and account creation date by their user ID
-- Opt-in proactive assistance plus privacy-aware greetings and contextual quick-action suggestions
+- Sandboxed development environment: clone a repository, list/read/search files, and run commands in an isolated container
+- Bounded sub-agent delegation for research tasks that need several search/fetch steps
 "
 }
 

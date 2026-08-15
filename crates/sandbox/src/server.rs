@@ -465,7 +465,16 @@ async fn handle_search_code(
 
     let args = docker::build_exec_args(&container_name, &rg_cmd, None);
 
-    match run_docker_with_timeout(&args, limits::DEFAULT_COMMAND_TIMEOUT_SECS).await {
+    // rg exits 1 for "no matches" (not an error) and 2 for an actual error.
+    let result =
+        match run_docker_with_timeout_raw(&args, limits::DEFAULT_COMMAND_TIMEOUT_SECS).await {
+            Ok((stdout, _, 0)) => Ok(stdout),
+            Ok((_, _, 1)) => Ok(String::new()),
+            Ok((_, stderr, code)) => Err(format!("command exited with code {code}: {stderr}")),
+            Err(e) => Err(e),
+        };
+
+    match result {
         Ok(output) => {
             let mut matches = Vec::new();
             let mut truncated = false;

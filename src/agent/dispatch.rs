@@ -36,8 +36,13 @@ impl Agent {
             ),
             "update_memory" => {
                 let new_content = str_arg(args, "memory_content");
-                let _ = self.memory.save(user_id, new_content).await;
-                ToolOutcome::Text("Memory updated.".to_string())
+                match self.memory.save(user_id, new_content).await {
+                    Ok(()) => ToolOutcome::Text("Memory updated.".to_string()),
+                    Err(error) => {
+                        tracing::error!(target: "housebot::memory", user_id, %error, "Failed to save memory");
+                        ToolOutcome::Text("Error: failed to save memory.".to_string())
+                    }
+                }
             }
             "search_memory" => {
                 let query = str_arg(args, "query");

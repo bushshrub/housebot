@@ -4,7 +4,8 @@ Read this together with [`docs/REDESIGN_PLAN.md`](docs/REDESIGN_PLAN.md), which
 is the authoritative scope document — this file covers state and gotchas, the
 plan covers what to build.
 
-**Branch:** `claude/bot-redesign-audit-remaining-9aj83g`. No PR opened.
+**Branch:** `claude/bot-redesign-audit-continue-cinqt6` (continues PR #320's
+`claude/bot-redesign-audit-remaining-9aj83g`).
 
 ## Where things stand
 
@@ -16,11 +17,44 @@ plan covers what to build.
 | Phase 2 — core | done |
 | Phase 3 — tools | done |
 | Phase 4 — skills + sandbox | done |
+| PR #320 review fixups | done |
 | Phases 5–7 | not started |
 
 Before starting, confirm the tree is green: `cargo test --workspace`,
 `cargo clippy --all-targets -- -D warnings`, `cargo fmt --check`. All three
 pass as of the last commit, so a later failure is yours.
+
+### PR #320 review fixups
+
+The automated review on PR #320 found a real CI failure and several
+medium/low-severity issues, now fixed:
+
+- `Dockerfile.deployment-bot` still `COPY`'d Cargo.toml/src paths for crates
+  deleted in Phase 1 (`common-crawl`, `graph-render`, `lua-engine`, `mcp`,
+  etc.), which broke the `docker-build (deployment-bot)` CI job. Rewritten to
+  match the current workspace member list and the real `deployment-bot →
+  config, database` dependency graph.
+- Removed the dead `/tool_ban`, `/tool_restore`, and `/lua` slash command
+  registrations and the `/server-config proactive` subcommand — their
+  handlers were deleted in Phase 1, so they silently no-op'd in guilds.
+  Rewrote `crates/tools/src/features.rs` (the `/help` and `get_bot_features`
+  reference text) to match the surviving command set.
+- Fixed an unused-import clippy warning in `crates/token-monitor/src/tests.rs`
+  that made the PR's claimed lint status inaccurate.
+- `sandbox_search_code` no longer errors when a search has zero matches (`rg`
+  exits 1 on no matches; that's now treated as success with empty output).
+- `run_skill_script` now shell-quotes the script path, not just its
+  arguments.
+- `update_memory` reports a save failure instead of always claiming success.
+- `housebot_skills::validate_name` now matches `create_skill`'s charset
+  (lowercase alphanumeric + underscore, no hyphen/uppercase) so a
+  hand-placed skill directory can't end up unreachable through the
+  lowercase-normalizing get/delete/edit paths.
+
+Not addressed here (deliberately left for Phase 5, see below): the purge
+migration's lack of a DB rollback path, and DB-backed config/token
+persistence being broken until migrations `003`/`004` land. Both are
+scope/architecture calls, not bugs to patch around.
 
 ## Start here — Phase 5
 

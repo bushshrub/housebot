@@ -1,4 +1,4 @@
-//! Slash-command interaction handlers (effort, tool bans, status, data, privacy, skill, stats).
+//! Slash-command interaction handlers (effort, status, data, privacy, skill, stats).
 
 use super::*;
 
@@ -75,7 +75,6 @@ pub(crate) async fn handle_effort_interaction(
     }
 }
 
-/// Handle guild-scoped `/tool_ban` proposals, votes, and status requests.
 pub(crate) async fn handle_status_interaction(
     user_cfg: &UserConfigStore,
     author_id: u64,

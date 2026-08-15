@@ -2,7 +2,6 @@
 
 use super::*;
 use housebot_llm::PromptTokenDetails;
-use serde_json::json;
 
 fn usage(input: u64, output: u64, cached: u64) -> TokenUsage {
     TokenUsage {
