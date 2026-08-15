@@ -116,6 +116,7 @@ data/                # runtime — gitignored
 | `MAX_SUBAGENT_CONCURRENCY` | no | `2` | Ceiling on concurrent sub-agent requests |
 | `MAX_HISTORY_TURNS` | no | `30` | Conversation turn pairs kept |
 | `CHANNEL_CONTEXT_CAPACITY` | no | `2000` | Messages buffered in RAM per channel |
+| `CHANNEL_CONTEXT_RETENTION_SECS` | no | `2592000` | Age at which a buffered message is dropped (30 days) |
 | `MAX_CONTEXT_TOKENS` | no | `10000` | Fallback context window (tokens) when the LLM server's `/props` probe fails |
 | `CONVERSATION_IDLE_TIMEOUT` | no | `300` | Seconds a channel conversation stays "active" |
 | `CHAT_RATE_LIMIT_MAX` | no | `20` | Max chat messages per user per window |

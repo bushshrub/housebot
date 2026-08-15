@@ -5,8 +5,8 @@ use std::sync::Arc;
 
 use housebot_bot_response::SecretRedactor;
 use serenity::all::{
-    ChannelId, CreateAllowedMentions, CreateMessage, GetMessages, Message, MessageId, Timestamp,
-    UserId,
+    ChannelId, CreateAllowedMentions, CreateMessage, GetMessages, GuildId, Message, MessageId,
+    Timestamp, UserId,
 };
 use tokio::sync::RwLock;
 
@@ -195,6 +195,45 @@ impl DiscordBridge {
         }
         collected.sort_by_key(|m| m.timestamp.unix_timestamp());
         Ok(collected.iter().map(FetchedMessage::from).collect())
+    }
+
+    /// Whether `user_id` can read `channel_id`, resolved against Discord live.
+    ///
+    /// Answered from the user's current roles and the channel's overwrites, not
+    /// from anything recorded when a message arrived: a user who has since lost
+    /// a role must lose the history that came with it.
+    pub async fn can_view_channel(
+        &self,
+        guild_id: u64,
+        user_id: u64,
+        channel_id: u64,
+    ) -> Result<bool, String> {
+        let guard = self.http.read().await;
+        let Some(http) = guard.as_ref() else {
+            return Err("Discord bridge not available.".to_string());
+        };
+        let guild_id = GuildId::new(guild_id);
+        let channel = http
+            .get_channel(ChannelId::new(channel_id))
+            .await
+            .map_err(|error| format!("could not resolve channel: {error}"))?
+            .guild()
+            .ok_or_else(|| "channel is not a guild channel".to_string())?;
+        // Resolving permissions against the wrong guild's roles would answer a
+        // question nobody asked, so refuse a channel from another guild.
+        if channel.guild_id != guild_id {
+            return Ok(false);
+        }
+        let guild = http
+            .get_guild(guild_id)
+            .await
+            .map_err(|error| format!("could not resolve guild: {error}"))?;
+        let member = match http.get_member(guild_id, UserId::new(user_id)).await {
+            Ok(member) => member,
+            // Not a member of the guild at all.
+            Err(_) => return Ok(false),
+        };
+        Ok(guild.user_permissions_in(&channel, &member).view_channel())
     }
 }
 

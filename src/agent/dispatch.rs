@@ -343,6 +343,12 @@ impl Agent {
                     .and_then(Value::as_str)
                     .and_then(|s| s.parse::<u64>().ok())
                     .unwrap_or(channel_id);
+                if let Err(denial) = self
+                    .authorize_channel_read(guild_id, user_id, channel_id, target_channel)
+                    .await
+                {
+                    return ToolOutcome::Text(denial);
+                }
                 ToolOutcome::Text(match mode {
                     "search" => {
                         let pattern = str_arg(args, "pattern");
@@ -356,7 +362,7 @@ impl Agent {
                                 .iter()
                                 .map(|m| {
                                     let author = m.nick.as_deref().unwrap_or(&m.username);
-                                    format!("[{}] {}: {}", m.ts, author, m.content)
+                                    format!("[{}] {}: {}", m.at.to_rfc3339(), author, m.content)
                                 })
                                 .collect::<Vec<_>>()
                                 .join("\n"),
@@ -491,6 +497,55 @@ impl Agent {
                 _ => ToolOutcome::Text(format!("Unknown tool: {name}")),
             },
             _ => ToolOutcome::Text(format!("Unknown tool: {name}")),
+        }
+    }
+
+    /// Gate a `get_messages` call on the requesting user's own access to the
+    /// channel being read, returning the message to show them when refused.
+    ///
+    /// The buffer holds every channel the bot can see, and both the Discord
+    /// fetch paths run with the *bot's* permissions, so without this a user
+    /// could read a channel they cannot open themselves. Reading the channel
+    /// the conversation is already happening in needs no check — they are
+    /// demonstrably in it. Anything else fails closed.
+    async fn authorize_channel_read(
+        &self,
+        guild_id: u64,
+        user_id: &str,
+        current_channel: u64,
+        target_channel: u64,
+    ) -> Result<(), String> {
+        if target_channel == current_channel {
+            return Ok(());
+        }
+        if guild_id == 0 {
+            return Err(
+                "Error: messages from a server channel cannot be read from a DM.".to_string(),
+            );
+        }
+        let Ok(user) = user_id.parse::<u64>() else {
+            return Err("Error: could not verify your access to that channel.".to_string());
+        };
+        match self
+            .discord
+            .can_view_channel(guild_id, user, target_channel)
+            .await
+        {
+            Ok(true) => Ok(()),
+            Ok(false) => Err(
+                "Error: you do not have access to that channel, so I can't read it for you."
+                    .to_string(),
+            ),
+            Err(error) => {
+                tracing::warn!(
+                    target: "housebot::agent",
+                    user_id,
+                    target_channel,
+                    %error,
+                    "channel access check failed — denying the read"
+                );
+                Err("Error: could not verify your access to that channel.".to_string())
+            }
         }
     }
 

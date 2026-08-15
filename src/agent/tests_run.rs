@@ -812,6 +812,90 @@ async fn history_turn_contains_discord_context_metadata() {
     assert!(history[0]["discord_context"]["timestamp"].is_string());
 }
 
+/// The channel buffer holds every channel the bot can see, so reading one the
+/// requesting user cannot open themselves must be refused.
+#[tokio::test]
+async fn get_messages_refuses_a_channel_the_user_cannot_be_shown_to_have_access_to() {
+    let client = Arc::new(MockChatClient::new());
+    let (_temp, agent) = test_agent(client);
+    let sb = noop_sandbox();
+
+    // No Discord HTTP handle in tests, so the access check cannot succeed —
+    // which is the point: an unverifiable read is refused, not allowed.
+    let out = agent
+        .dispatch_tool(
+            "get_messages",
+            &json!({"mode": "search", "pattern": ".*", "channel_id": "999"}),
+            "u1",
+            "alice",
+            42,
+            Some(7),
+            &sb,
+        )
+        .await;
+
+    match out {
+        ToolOutcome::Text(text) => assert!(
+            text.contains("could not verify your access"),
+            "unexpected: {text}"
+        ),
+        other => panic!("unexpected outcome: {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn get_messages_refuses_a_server_channel_asked_for_from_a_dm() {
+    let client = Arc::new(MockChatClient::new());
+    let (_temp, agent) = test_agent(client);
+    let sb = noop_sandbox();
+
+    let out = agent
+        .dispatch_tool(
+            "get_messages",
+            &json!({"mode": "search", "pattern": ".*", "channel_id": "999"}),
+            "u1",
+            "alice",
+            42,
+            None,
+            &sb,
+        )
+        .await;
+
+    match out {
+        ToolOutcome::Text(text) => assert!(text.contains("from a DM"), "unexpected: {text}"),
+        other => panic!("unexpected outcome: {other:?}"),
+    }
+}
+
+/// The user is demonstrably in the channel the conversation is happening in, so
+/// reading it must not depend on a Discord round trip that tests cannot make.
+#[tokio::test]
+async fn get_messages_reads_the_current_channel_without_an_access_check() {
+    let client = Arc::new(MockChatClient::new());
+    let (_temp, agent) = test_agent(client);
+    let sb = noop_sandbox();
+
+    let out = agent
+        .dispatch_tool(
+            "get_messages",
+            &json!({"mode": "search", "pattern": ".*", "channel_id": "42"}),
+            "u1",
+            "alice",
+            42,
+            Some(7),
+            &sb,
+        )
+        .await;
+
+    match out {
+        ToolOutcome::Text(text) => assert!(
+            !text.contains("could not verify") && !text.contains("do not have access"),
+            "the current channel must not be gated: {text}"
+        ),
+        other => panic!("unexpected outcome: {other:?}"),
+    }
+}
+
 /// Regression test for issue #301: merging a pull request must be refused for
 /// anyone outside the administrator list, and the attempt must be audited.
 #[tokio::test]

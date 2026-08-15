@@ -1,23 +1,30 @@
 //! Per-channel message ring buffer backing the `get_messages` tool's search mode.
 //!
 //! Messages live in RAM only and are never written to disk: a restart starts
-//! the buffer empty, and each channel keeps at most `CHANNEL_CONTEXT_CAPACITY`
-//! of its most recent messages.
+//! the buffer empty. Two limits bound what is kept, whichever binds first — at
+//! most `CHANNEL_CONTEXT_CAPACITY` messages per channel, and nothing older than
+//! `CHANNEL_CONTEXT_RETENTION_SECS`.
+//!
+//! This store holds messages from every channel the bot can see, including ones
+//! a given user cannot. It performs no access control of its own: callers must
+//! resolve the requesting user's permission for a channel before searching it.
 
 use std::collections::HashMap;
 use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
 
-use chrono::Utc;
+use chrono::{DateTime, Duration, Utc};
 use regex::Regex;
 
 use housebot_config as config;
 
 pub const DEFAULT_CAPACITY: usize = 2000;
+/// 30 days.
+pub const DEFAULT_RETENTION_SECS: i64 = 30 * 24 * 60 * 60;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Message {
-    pub ts: String,
+    pub at: DateTime<Utc>,
     pub user_id: String,
     pub username: String,
     /// Server nickname or global display name, when it differs from the username.
@@ -29,23 +36,26 @@ pub struct Message {
 pub struct ChannelContext {
     channels: Arc<Mutex<HashMap<u64, VecDeque<Message>>>>,
     capacity: usize,
+    retention: Duration,
 }
 
 impl Default for ChannelContext {
     fn default() -> Self {
-        Self::new(config::env_parse(
-            "CHANNEL_CONTEXT_CAPACITY",
-            DEFAULT_CAPACITY,
-        ))
+        Self::new(
+            config::env_parse("CHANNEL_CONTEXT_CAPACITY", DEFAULT_CAPACITY),
+            config::env_parse("CHANNEL_CONTEXT_RETENTION_SECS", DEFAULT_RETENTION_SECS),
+        )
     }
 }
 
 impl ChannelContext {
-    /// Create a buffer keeping the most recent `capacity` messages per channel.
-    pub fn new(capacity: usize) -> Self {
+    /// Create a buffer keeping the most recent `capacity` messages per channel,
+    /// discarding anything older than `retention_secs`.
+    pub fn new(capacity: usize, retention_secs: i64) -> Self {
         Self {
             channels: Arc::new(Mutex::new(HashMap::new())),
             capacity: capacity.max(1),
+            retention: Duration::seconds(retention_secs.max(1)),
         }
     }
 
@@ -62,13 +72,16 @@ impl ChannelContext {
         nick: Option<&str>,
         content: &str,
     ) {
+        let cutoff = Utc::now() - self.retention;
         let mut channels = self.lock();
+        let capacity = self.capacity;
         let buffer = channels.entry(channel_id).or_default();
-        if buffer.len() == self.capacity {
+        expire(buffer, cutoff);
+        if buffer.len() >= capacity {
             buffer.pop_front();
         }
         buffer.push_back(Message {
-            ts: Utc::now().to_rfc3339(),
+            at: Utc::now(),
             user_id: user_id.to_string(),
             username: username.to_string(),
             nick: nick.map(str::to_string),
@@ -85,10 +98,12 @@ impl ChannelContext {
         max_results: usize,
     ) -> Result<Vec<Message>, String> {
         let regex = Regex::new(pattern).map_err(|error| format!("Invalid regex: {error}"))?;
-        let channels = self.lock();
-        let Some(buffer) = channels.get(&channel_id) else {
+        let cutoff = Utc::now() - self.retention;
+        let mut channels = self.lock();
+        let Some(buffer) = channels.get_mut(&channel_id) else {
             return Ok(Vec::new());
         };
+        expire(buffer, cutoff);
         let matches = buffer.iter().filter(|message| {
             regex.is_match(&message.content)
                 || regex.is_match(&message.username)
@@ -117,7 +132,13 @@ impl ChannelContext {
 
     /// How many messages are buffered for `channel_id`.
     pub fn len(&self, channel_id: u64) -> usize {
-        self.lock().get(&channel_id).map_or(0, VecDeque::len)
+        let cutoff = Utc::now() - self.retention;
+        let mut channels = self.lock();
+        let Some(buffer) = channels.get_mut(&channel_id) else {
+            return 0;
+        };
+        expire(buffer, cutoff);
+        buffer.len()
     }
 
     pub fn is_empty(&self, channel_id: u64) -> bool {
@@ -130,11 +151,35 @@ impl ChannelContext {
 }
 
 #[cfg(test)]
+impl ChannelContext {
+    /// Insert a message as though it had arrived at `at`, for exercising expiry
+    /// without waiting out a retention window.
+    fn append_at(&self, channel_id: u64, user_id: u64, content: &str, at: DateTime<Utc>) {
+        let mut channels = self.lock();
+        channels.entry(channel_id).or_default().push_back(Message {
+            at,
+            user_id: user_id.to_string(),
+            username: "User".to_string(),
+            nick: None,
+            content: content.to_string(),
+        });
+    }
+}
+
+/// Drop messages older than `cutoff`. The buffer is chronological, so expiry
+/// only ever removes a prefix.
+fn expire(buffer: &mut VecDeque<Message>, cutoff: DateTime<Utc>) {
+    while buffer.front().is_some_and(|message| message.at < cutoff) {
+        buffer.pop_front();
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
 
     fn context() -> ChannelContext {
-        ChannelContext::new(DEFAULT_CAPACITY)
+        ChannelContext::new(DEFAULT_CAPACITY, DEFAULT_RETENTION_SECS)
     }
 
     #[test]
@@ -217,12 +262,12 @@ mod tests {
         context.append(1, 42, "TestUser", None, "content");
         let results = context.search(1, "content", 10).unwrap();
         assert_eq!(results[0].user_id, "42");
-        assert!(!results[0].ts.is_empty());
+        assert!(results[0].at <= Utc::now());
     }
 
     #[test]
     fn the_buffer_evicts_the_oldest_message_when_full() {
-        let context = ChannelContext::new(3);
+        let context = ChannelContext::new(3, DEFAULT_RETENTION_SECS);
         for index in 0..5u64 {
             context.append(1, index, "User", None, &format!("message {index}"));
         }
@@ -234,7 +279,7 @@ mod tests {
 
     #[test]
     fn a_full_buffer_holds_capacity_per_channel_not_in_total() {
-        let context = ChannelContext::new(2);
+        let context = ChannelContext::new(2, DEFAULT_RETENTION_SECS);
         for channel_id in 1..=3u64 {
             for index in 0..4u64 {
                 context.append(channel_id, index, "User", None, "match");
@@ -247,7 +292,7 @@ mod tests {
 
     #[test]
     fn a_zero_capacity_still_buffers_one_message() {
-        let context = ChannelContext::new(0);
+        let context = ChannelContext::new(0, DEFAULT_RETENTION_SECS);
         context.append(1, 10, "Alice", None, "hello");
         assert_eq!(context.len(1), 1);
     }
@@ -294,6 +339,57 @@ mod tests {
         assert_eq!(results.len(), 2);
         assert_eq!(results[0].user_id, "20");
         assert_eq!(results[1].content, "after removal");
+    }
+
+    #[test]
+    fn messages_past_the_retention_window_are_dropped() {
+        let context = ChannelContext::new(DEFAULT_CAPACITY, 3600);
+        let now = Utc::now();
+        context.append_at(1, 10, "ancient", now - Duration::seconds(7200));
+        context.append_at(1, 11, "recent", now - Duration::seconds(60));
+
+        let results = context.search(1, ".*", 10).unwrap();
+        assert_eq!(
+            results.len(),
+            1,
+            "the expired message must not be searchable"
+        );
+        assert_eq!(results[0].content, "recent");
+        assert_eq!(context.len(1), 1);
+    }
+
+    #[test]
+    fn expiry_keeps_a_message_that_is_only_just_inside_the_window() {
+        let context = ChannelContext::new(DEFAULT_CAPACITY, 3600);
+        context.append_at(1, 10, "just inside", Utc::now() - Duration::seconds(3500));
+        assert_eq!(context.len(1), 1);
+    }
+
+    #[test]
+    fn appending_expires_the_channel_it_touches() {
+        let context = ChannelContext::new(DEFAULT_CAPACITY, 3600);
+        context.append_at(1, 10, "ancient", Utc::now() - Duration::seconds(7200));
+        context.append(1, 11, "Bob", None, "fresh");
+        assert_eq!(
+            context.len(1),
+            1,
+            "a write must not resurrect expired history"
+        );
+    }
+
+    #[test]
+    fn whichever_limit_binds_first_wins() {
+        let context = ChannelContext::new(2, 3600);
+        let now = Utc::now();
+        context.append_at(1, 10, "old one", now - Duration::seconds(7200));
+        context.append_at(1, 11, "old two", now - Duration::seconds(7200));
+        context.append_at(1, 12, "in window", now - Duration::seconds(60));
+        context.append(1, 13, "Dave", None, "newest");
+
+        let results = context.search(1, ".*", 10).unwrap();
+        assert_eq!(results.len(), 2);
+        assert_eq!(results[0].content, "in window");
+        assert_eq!(results[1].content, "newest");
     }
 
     #[test]

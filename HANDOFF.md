@@ -59,8 +59,10 @@ Things worth knowing before you touch it:
 
 ### `channel-context` replaced `channel-log`
 
-Now an in-memory bounded ring buffer per channel (`CHANNEL_CONTEXT_CAPACITY`,
-default 2000), RAM-only, gone on restart. It carries only `append`, `search`,
+Now an in-memory ring buffer per channel, RAM-only and gone on restart, bounded
+by whichever limit binds first: `CHANNEL_CONTEXT_CAPACITY` (default 2000) or
+`CHANNEL_CONTEXT_RETENTION_SECS` (default 30 days). Expiry only ever removes a
+prefix, since the buffer is chronological. It carries only `append`, `search`,
 and `remove_user_entries` — `channel-log`'s `get_recent`, `find_authors`, and
 all the fuzzy/levenshtein matching had **no callers outside their own tests**
 (`get_messages`'s recent/before/after modes go to the Discord API), so they
@@ -114,6 +116,31 @@ today is a heredoc through `run`, capped at `MAX_COMMAND_LENGTH` (4096). Both
 are on the Phase 4 checklist. Dropping `noexec` is deliberate loosening — keep
 `nosuid`.
 
+## Channel reads are permission-gated
+
+`get_messages` used to take a `channel_id` straight from the model with no
+check at all, while `handler.rs` buffered every guild message the bot could
+see. A user in one channel could have the bot regex-search a channel they
+cannot open. Both Discord fetch paths have the same shape — they run with the
+*bot's* permissions, not the caller's.
+
+`Agent::authorize_channel_read` now gates every mode of `get_messages`:
+
+- Reading the channel the conversation is in needs no check — the user is
+  demonstrably there. Everything else is verified.
+- Verification is `DiscordBridge::can_view_channel`, which resolves the user's
+  **current** roles and the channel's overwrites live. Do not be tempted to
+  record access at ingest time: a user who loses a role must lose the history
+  that came with it.
+- It **fails closed**. An unreachable bridge, an unparseable user ID, a channel
+  in another guild, a non-member — all refuse.
+- It costs three HTTP calls per cross-channel read. If that becomes a rate-limit
+  problem, cache with a short TTL; do not cache indefinitely.
+
+`channel-context` itself performs no access control and its doc comment says so.
+Keep it that way — one gate, in the dispatcher, is easier to audit than a gate
+per store. If you add another reader over the buffer, it needs the same gate.
+
 ## Decisions that are settled
 
 Do not re-ask these; they are in the plan's decisions table.
@@ -122,6 +149,14 @@ Do not re-ask these; they are in the plan's decisions table.
   is therefore the only barrier between an authored script and the host — treat
   its limits as load-bearing.
 - **Sandbox session key is the user ID**, and reaping destroys the workspace.
+- **Channel context stores every channel the bot can see**, and filters per
+  requesting user at query time — rather than only storing @everyone-visible
+  channels. That makes the permission gate load-bearing security, not a
+  convenience. Denying the bot `VIEW_CHANNEL` in Discord remains the way to
+  keep a channel out of the store entirely.
+- **Cross-channel reads are allowed**, for any channel the requesting user can
+  read.
+- **Retention is both a count cap and an age limit**, whichever binds first.
 
 ## Things that will surprise you
 
