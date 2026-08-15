@@ -95,7 +95,7 @@ impl Agent {
             .await
             .is_configurer(user_id.parse::<u64>().unwrap_or(0), config::owner_id());
         let tools = self.build_tools(deep_memory_enabled, is_configurer).await;
-        let sandbox = LazySandbox::new(self.sandbox_client.clone());
+        let sandbox = LazySandbox::new(self.sandbox_client.clone(), user_id);
         let mut turn_messages: Vec<Value> = Vec::new();
         let mut tools_called = Vec::new();
 
@@ -246,8 +246,6 @@ impl Agent {
                     .to_string();
             }
         };
-
-        sandbox.close().await;
 
         if let Err(error) = self
             .token_monitor

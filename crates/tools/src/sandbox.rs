@@ -12,48 +12,44 @@ use tokio::sync::Mutex;
 
 use housebot_sandbox::{NetworkAccess, Sandbox, SandboxClient};
 
-/// A sandbox that is lazily created on first tool use within a single
-/// `Agent::run` invocation, and destroyed when the agent finishes.
+/// A per-turn handle to the session's sandbox, attached on first tool use.
+///
+/// The container itself belongs to the session, not to this handle: sandboxd
+/// keeps it alive between turns so the workspace survives, and reaps it once
+/// the session falls idle.
 pub struct LazySandbox {
     client: SandboxClient,
+    session_key: String,
     inner: Arc<Mutex<Option<Sandbox>>>,
-    network: Arc<Mutex<NetworkAccess>>,
     /// Track whether any sandbox tool has been called (to provide better errors).
     started: Arc<Mutex<bool>>,
 }
 
 impl LazySandbox {
-    pub fn new(client: SandboxClient) -> Self {
+    pub fn new(client: SandboxClient, session_key: impl Into<String>) -> Self {
         Self {
             client,
+            session_key: session_key.into(),
             inner: Arc::new(Mutex::new(None)),
-            network: Arc::new(Mutex::new(NetworkAccess::None)),
             started: Arc::new(Mutex::new(false)),
         }
     }
 
-    /// Get or create the sandbox container.
+    /// Attach to the session's sandbox, starting one if the session has none.
     async fn get_or_start(&self, network: NetworkAccess) -> Result<Sandbox, String> {
         let mut guard = self.inner.lock().await;
         if let Some(ref sandbox) = *guard {
-            let current = *self.network.lock().await;
-            if network == NetworkAccess::PublicInternet && current == NetworkAccess::None {
-                return Err("Sandbox is already running without network access. \
-                     Clone the repository before using other sandbox tools."
-                    .to_string());
-            }
             return Ok(sandbox.clone());
         }
 
-        let sandbox = self.client.start(network).await?;
-        *self.network.lock().await = network;
+        let sandbox = self.client.start(&self.session_key, network).await?;
         *self.started.lock().await = true;
         let result = sandbox.clone();
         *guard = Some(sandbox);
         Ok(result)
     }
 
-    /// Destroy the sandbox container if it was started.
+    /// Discard the session's workspace before the idle timeout would.
     pub async fn close(&self) {
         let mut guard = self.inner.lock().await;
         if let Some(sandbox) = guard.take() {

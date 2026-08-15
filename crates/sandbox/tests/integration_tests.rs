@@ -302,7 +302,7 @@ async fn docker_sandbox_run_command() {
 
     let client = SandboxClient::new(&socket);
     let sandbox = client
-        .start(NetworkAccess::None)
+        .start("integration-session", NetworkAccess::None)
         .await
         .expect("start failed");
 
@@ -328,7 +328,7 @@ async fn docker_sandbox_runs_as_non_root() {
 
     let client = SandboxClient::new(&socket);
     let sandbox = client
-        .start(NetworkAccess::None)
+        .start("integration-session", NetworkAccess::None)
         .await
         .expect("start failed");
 
@@ -347,7 +347,7 @@ async fn docker_sandbox_no_docker_socket() {
 
     let client = SandboxClient::new(&socket);
     let sandbox = client
-        .start(NetworkAccess::None)
+        .start("integration-session", NetworkAccess::None)
         .await
         .expect("start failed");
 
@@ -375,7 +375,7 @@ async fn docker_sandbox_workspace_is_writable() {
 
     let client = SandboxClient::new(&socket);
     let sandbox = client
-        .start(NetworkAccess::None)
+        .start("integration-session", NetworkAccess::None)
         .await
         .expect("start failed");
 
@@ -405,7 +405,7 @@ async fn docker_sandbox_list_and_read_file() {
 
     let client = SandboxClient::new(&socket);
     let sandbox = client
-        .start(NetworkAccess::None)
+        .start("integration-session", NetworkAccess::None)
         .await
         .expect("start failed");
 
@@ -445,7 +445,7 @@ async fn docker_sandbox_search_code() {
 
     let client = SandboxClient::new(&socket);
     let sandbox = client
-        .start(NetworkAccess::None)
+        .start("integration-session", NetworkAccess::None)
         .await
         .expect("start failed");
 
@@ -479,7 +479,7 @@ async fn docker_sandbox_nonzero_exit_returned_not_error() {
 
     let client = SandboxClient::new(&socket);
     let sandbox = client
-        .start(NetworkAccess::None)
+        .start("integration-session", NetworkAccess::None)
         .await
         .expect("start failed");
 
@@ -500,7 +500,7 @@ async fn docker_sandbox_close_removes_container() {
 
     let client = SandboxClient::new(&socket);
     let sandbox = client
-        .start(NetworkAccess::None)
+        .start("integration-session", NetworkAccess::None)
         .await
         .expect("start failed");
     let id = sandbox.id().to_string();

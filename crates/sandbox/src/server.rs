@@ -26,11 +26,21 @@ use crate::validation;
 
 type ContainerMap = Arc<Mutex<HashMap<String, ContainerState>>>;
 
-#[allow(dead_code)]
 struct ContainerState {
     container_name: String,
+    session_key: String,
     network: NetworkAccess,
-    created_at: std::time::Instant,
+    last_used_at: std::time::Instant,
+}
+
+/// How long a sandbox may sit unused before it is destroyed.
+fn idle_timeout() -> std::time::Duration {
+    let secs = std::env::var("SANDBOX_IDLE_TIMEOUT_SECS")
+        .ok()
+        .and_then(|value| value.parse::<u64>().ok())
+        .filter(|secs| *secs > 0)
+        .unwrap_or(limits::DEFAULT_SANDBOX_IDLE_TIMEOUT_SECS);
+    std::time::Duration::from_secs(secs)
 }
 
 /// Run the sandboxd daemon.
@@ -59,6 +69,10 @@ pub async fn run_daemon(socket_path: &str) -> anyhow::Result<()> {
     tracing::info!(socket_path, "sandboxd listening");
 
     let containers: ContainerMap = Arc::new(Mutex::new(HashMap::new()));
+    tokio::spawn(reap_idle_containers(
+        Arc::clone(&containers),
+        idle_timeout(),
+    ));
 
     loop {
         let (stream, _addr) = listener.accept().await?;
@@ -138,15 +152,47 @@ fn get_sandbox_id(params: &serde_json::Value) -> Result<String, String> {
         .ok_or_else(|| "missing sandbox_id".to_string())
 }
 
+/// Resolve a sandbox and mark it as used, so the idle reaper leaves it alone
+/// for another full timeout.
 async fn require_sandbox<'a>(
     containers: &'a ContainerMap,
     sandbox_id: &str,
 ) -> Result<tokio::sync::MutexGuard<'a, HashMap<String, ContainerState>>, String> {
-    let map = containers.lock().await;
-    if !map.contains_key(sandbox_id) {
+    let mut map = containers.lock().await;
+    let Some(state) = map.get_mut(sandbox_id) else {
         return Err(format!("unknown sandbox: {sandbox_id}"));
-    }
+    };
+    state.last_used_at = std::time::Instant::now();
     Ok(map)
+}
+
+/// Destroy sandboxes that have gone untouched for longer than `timeout`.
+/// Everything in the container is tmpfs, so reaping discards the workspace.
+async fn reap_idle_containers(containers: ContainerMap, timeout: std::time::Duration) {
+    let mut ticker = tokio::time::interval(sweep_interval(timeout));
+    loop {
+        ticker.tick().await;
+        let expired = {
+            let mut map = containers.lock().await;
+            let expired: Vec<(String, String)> = map
+                .iter()
+                .filter(|(_, state)| state.last_used_at.elapsed() >= timeout)
+                .map(|(id, state)| (id.clone(), state.container_name.clone()))
+                .collect();
+            for (id, _) in &expired {
+                map.remove(id);
+            }
+            expired
+        };
+        for (id, container_name) in expired {
+            tracing::info!(sandbox_id = %id, "reaping idle sandbox");
+            let _ = destroy_container(&container_name).await;
+        }
+    }
+}
+
+fn sweep_interval(timeout: std::time::Duration) -> std::time::Duration {
+    (timeout / 2).max(std::time::Duration::from_secs(1))
 }
 
 // ── Handlers ────────────────────────────────────────────────────────────────
@@ -160,6 +206,14 @@ async fn handle_start(
         Ok(p) => p,
         Err(e) => return SandboxResponse::err(id.to_string(), format!("invalid params: {e}")),
     };
+
+    if let Err(e) = validation::validate_session_key(&start_params.session_key) {
+        return SandboxResponse::err(id.to_string(), format!("invalid session key: {e}"));
+    }
+
+    if let Some(response) = reuse_session(id, &start_params, containers).await {
+        return response;
+    }
 
     let sandbox_id = uuid::Uuid::new_v4().to_string();
     let args = docker::build_run_args(&sandbox_id, start_params.network);
@@ -197,8 +251,9 @@ async fn handle_start(
         sandbox_id.clone(),
         ContainerState {
             container_name: container_name.clone(),
+            session_key: start_params.session_key.clone(),
             network: start_params.network,
-            created_at: std::time::Instant::now(),
+            last_used_at: std::time::Instant::now(),
         },
     );
 
@@ -206,6 +261,34 @@ async fn handle_start(
         id.to_string(),
         serde_json::json!({"sandbox_id": sandbox_id}),
     )
+}
+
+/// Hand back the session's existing sandbox when it has one. A container's
+/// network mode is fixed at creation, so a request needing more access than the
+/// live container has must be refused rather than silently downgraded.
+async fn reuse_session(
+    id: &str,
+    start_params: &StartParams,
+    containers: &ContainerMap,
+) -> Option<SandboxResponse> {
+    let mut map = containers.lock().await;
+    let (sandbox_id, state) = map
+        .iter_mut()
+        .find(|(_, state)| state.session_key == start_params.session_key)?;
+    if start_params.network == NetworkAccess::PublicInternet && state.network == NetworkAccess::None
+    {
+        return Some(SandboxResponse::err(
+            id.to_string(),
+            "This session's sandbox is already running without network access. \
+             Close it before running a tool that needs the internet."
+                .to_string(),
+        ));
+    }
+    state.last_used_at = std::time::Instant::now();
+    Some(SandboxResponse::ok(
+        id.to_string(),
+        serde_json::json!({"sandbox_id": sandbox_id}),
+    ))
 }
 
 async fn handle_clone_repository(
@@ -710,5 +793,197 @@ pub async fn cleanup_stale_containers() {
         Err(e) => {
             tracing::warn!("failed to list stale sandbox containers: {e}");
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn state(
+        session_key: &str,
+        network: NetworkAccess,
+        idle: std::time::Duration,
+    ) -> ContainerState {
+        ContainerState {
+            container_name: format!("housebot-sandbox-{session_key}"),
+            session_key: session_key.to_string(),
+            network,
+            last_used_at: std::time::Instant::now() - idle,
+        }
+    }
+
+    fn start_params(session_key: &str, network: NetworkAccess) -> StartParams {
+        StartParams {
+            session_key: session_key.to_string(),
+            network,
+        }
+    }
+
+    #[tokio::test]
+    async fn a_session_reuses_its_existing_sandbox() {
+        let containers: ContainerMap = Arc::new(Mutex::new(HashMap::new()));
+        containers.lock().await.insert(
+            "sandbox-1".to_string(),
+            state("user-1", NetworkAccess::None, std::time::Duration::ZERO),
+        );
+
+        let response = reuse_session(
+            "req",
+            &start_params("user-1", NetworkAccess::None),
+            &containers,
+        )
+        .await
+        .expect("the session already has a sandbox");
+
+        assert_eq!(
+            response.result.unwrap()["sandbox_id"],
+            "sandbox-1",
+            "a second turn must land in the same container"
+        );
+        assert_eq!(containers.lock().await.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn a_different_session_gets_its_own_sandbox() {
+        let containers: ContainerMap = Arc::new(Mutex::new(HashMap::new()));
+        containers.lock().await.insert(
+            "sandbox-1".to_string(),
+            state("user-1", NetworkAccess::None, std::time::Duration::ZERO),
+        );
+
+        assert!(
+            reuse_session(
+                "req",
+                &start_params("user-2", NetworkAccess::None),
+                &containers,
+            )
+            .await
+            .is_none(),
+            "one user's workspace must never be handed to another"
+        );
+    }
+
+    #[tokio::test]
+    async fn reusing_a_networkless_sandbox_for_network_work_is_refused() {
+        let containers: ContainerMap = Arc::new(Mutex::new(HashMap::new()));
+        containers.lock().await.insert(
+            "sandbox-1".to_string(),
+            state("user-1", NetworkAccess::None, std::time::Duration::ZERO),
+        );
+
+        let response = reuse_session(
+            "req",
+            &start_params("user-1", NetworkAccess::PublicInternet),
+            &containers,
+        )
+        .await
+        .expect("the session has a sandbox");
+        assert!(
+            response.error.is_some(),
+            "network mode is fixed at creation"
+        );
+    }
+
+    #[tokio::test]
+    async fn reuse_defers_the_idle_deadline() {
+        let containers: ContainerMap = Arc::new(Mutex::new(HashMap::new()));
+        containers.lock().await.insert(
+            "sandbox-1".to_string(),
+            state(
+                "user-1",
+                NetworkAccess::None,
+                std::time::Duration::from_secs(120),
+            ),
+        );
+
+        reuse_session(
+            "req",
+            &start_params("user-1", NetworkAccess::None),
+            &containers,
+        )
+        .await
+        .expect("the session has a sandbox");
+
+        let map = containers.lock().await;
+        assert!(
+            map["sandbox-1"].last_used_at.elapsed() < std::time::Duration::from_secs(1),
+            "an active session must not be reaped mid-use"
+        );
+    }
+
+    #[tokio::test]
+    async fn require_sandbox_defers_the_idle_deadline() {
+        let containers: ContainerMap = Arc::new(Mutex::new(HashMap::new()));
+        containers.lock().await.insert(
+            "sandbox-1".to_string(),
+            state(
+                "user-1",
+                NetworkAccess::None,
+                std::time::Duration::from_secs(120),
+            ),
+        );
+
+        drop(
+            require_sandbox(&containers, "sandbox-1")
+                .await
+                .expect("sandbox is registered"),
+        );
+
+        let map = containers.lock().await;
+        assert!(map["sandbox-1"].last_used_at.elapsed() < std::time::Duration::from_secs(1));
+    }
+
+    #[tokio::test]
+    async fn the_reaper_drops_only_idle_sandboxes() {
+        let containers: ContainerMap = Arc::new(Mutex::new(HashMap::new()));
+        {
+            let mut map = containers.lock().await;
+            map.insert(
+                "idle".to_string(),
+                state(
+                    "user-1",
+                    NetworkAccess::None,
+                    std::time::Duration::from_secs(600),
+                ),
+            );
+            map.insert(
+                "busy".to_string(),
+                state("user-2", NetworkAccess::None, std::time::Duration::ZERO),
+            );
+        }
+
+        let reaper = tokio::spawn(reap_idle_containers(
+            Arc::clone(&containers),
+            std::time::Duration::from_secs(300),
+        ));
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            loop {
+                if containers.lock().await.len() == 1 {
+                    return;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("the idle sandbox must be reaped");
+        reaper.abort();
+
+        let map = containers.lock().await;
+        assert!(map.contains_key("busy"), "an active session must survive");
+        assert!(!map.contains_key("idle"));
+    }
+
+    #[test]
+    fn the_sweep_runs_at_least_twice_per_timeout() {
+        assert_eq!(
+            sweep_interval(std::time::Duration::from_secs(300)),
+            std::time::Duration::from_secs(150)
+        );
+        assert_eq!(
+            sweep_interval(std::time::Duration::from_secs(1)),
+            std::time::Duration::from_secs(1),
+            "a very short timeout must not produce a zero-length interval"
+        );
     }
 }

@@ -208,9 +208,11 @@ Build the scheduler first: sub-agents (Phase 3) and the config commands
 - [ ] Skill authoring tools writing to the persistent volume
 - [ ] `sandboxd` wired as the script execution surface
 - [ ] Skill scripts run sandboxed with bounded time and memory
-- [ ] Session-scoped sandboxes: keyed by session, reaped by an idle timer in
+- [x] Session-scoped sandboxes: keyed by user, reaped by an idle timer in
       `sandboxd` (`SANDBOX_IDLE_TIMEOUT_SECS`, default 300, admin-configurable)
       instead of destroyed at the end of every `Agent::run`
+- [ ] Make the workspace usable for coding: drop `noexec` from the `/workspace`
+      tmpfs and add a `write_file` method
 
 ### Phase 5 — Discord surface
 - [ ] Message handler, streaming render, cancel reaction, progress

@@ -95,12 +95,23 @@ impl SandboxClient {
         Ok(response)
     }
 
-    /// Request that sandboxd create a new sandbox container.
-    pub async fn start(&self, network: NetworkAccess) -> Result<Sandbox, String> {
+    /// Get the session's sandbox container, creating it if the session has none.
+    ///
+    /// The container outlives the request that created it and is destroyed by
+    /// sandboxd once the session has been idle past its timeout.
+    pub async fn start(
+        &self,
+        session_key: &str,
+        network: NetworkAccess,
+    ) -> Result<Sandbox, String> {
+        validation::validate_session_key(session_key)?;
         let req = SandboxRequest::new(
             "start",
-            serde_json::to_value(StartParams { network })
-                .map_err(|e| format!("serialisation error: {e}"))?,
+            serde_json::to_value(StartParams {
+                session_key: session_key.to_string(),
+                network,
+            })
+            .map_err(|e| format!("serialisation error: {e}"))?,
         );
         let resp = self.send_request(req).await?;
         let result = resp.into_result()?;
@@ -118,9 +129,9 @@ impl SandboxClient {
 
 /// A handle to a running sandbox container.
 ///
-/// Dropping this without calling `close()` will leak the container, but
-/// sandboxd also cleans stale containers at startup.  The preferred
-/// path is to call `close()` explicitly.
+/// The handle is cheap and does not own the container: sandboxd keeps the
+/// container alive for the session and destroys it once it falls idle.  Call
+/// `close()` to discard the workspace before then.
 #[derive(Debug, Clone)]
 pub struct Sandbox {
     id: String,

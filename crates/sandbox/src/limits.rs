@@ -23,3 +23,10 @@ pub const MAX_QUERY_LENGTH: usize = 512;
 
 pub const MAX_REQUEST_FRAME_BYTES: usize = 1024 * 1024; // 1 MiB
 pub const SOCKET_TIMEOUT_SECS: u64 = 30;
+
+pub const MAX_SESSION_KEY_LENGTH: usize = 128;
+
+/// How long a sandbox may sit unused before `sandboxd` destroys it. Unlike the
+/// constants above this is a default, not a ceiling: admins override it with
+/// `SANDBOX_IDLE_TIMEOUT_SECS`.
+pub const DEFAULT_SANDBOX_IDLE_TIMEOUT_SECS: u64 = 300;

@@ -115,6 +115,9 @@ impl SandboxResponse {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StartParams {
+    /// Identifies the owning session. Two `start` calls with the same key share
+    /// one container, so work survives across turns.
+    pub session_key: String,
     pub network: NetworkAccess,
 }
 

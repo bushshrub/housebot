@@ -195,9 +195,58 @@ pub fn validate_branch(branch: &str) -> Result<(), String> {
     Ok(())
 }
 
+/// Session keys are opaque identifiers: sandboxd matches on them and logs them,
+/// but never passes them to Docker. Bounded and restricted anyway so a
+/// malformed key cannot bloat the map or smuggle control characters into logs.
+pub fn validate_session_key(session_key: &str) -> Result<(), String> {
+    if session_key.is_empty() {
+        return Err("Session key must not be empty".to_string());
+    }
+    if session_key.len() > limits::MAX_SESSION_KEY_LENGTH {
+        return Err(format!(
+            "Session key exceeds maximum length of {} characters",
+            limits::MAX_SESSION_KEY_LENGTH
+        ));
+    }
+    if !session_key
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+    {
+        return Err("Session key contains invalid characters".to_string());
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // ── Session key validation ────────────────────────────────────────────
+
+    #[test]
+    fn accepts_a_discord_user_id_as_a_session_key() {
+        assert!(validate_session_key("123456789012345678").is_ok());
+    }
+
+    #[test]
+    fn rejects_empty_session_key() {
+        assert!(validate_session_key("").is_err());
+    }
+
+    #[test]
+    fn rejects_oversized_session_key() {
+        assert!(validate_session_key(&"a".repeat(limits::MAX_SESSION_KEY_LENGTH + 1)).is_err());
+    }
+
+    #[test]
+    fn rejects_session_key_with_control_characters() {
+        for key in ["user 1", "user/1", "user;rm", "user\n1", "user\0"] {
+            assert!(
+                validate_session_key(key).is_err(),
+                "session keys are plain identifiers: {key}"
+            );
+        }
+    }
 
     // ── Repository URL validation ─────────────────────────────────────────
 

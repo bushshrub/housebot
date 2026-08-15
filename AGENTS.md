@@ -127,6 +127,7 @@ data/                # runtime — gitignored
 | `OWNER_DISCORD_ID` | no | `0` | Discord user ID allowed to dispatch coding jobs; `0` disables dispatch |
 | `SANDBOX_SOCKET_PATH` | no | `/run/housebot-sandbox/sandbox.sock` | Unix socket path for sandboxd |
 | `HOUSEBOT_SANDBOX_RUNTIME` | no | `runsc` | Container runtime for sandboxd (gVisor); set to `runc` in dev/CI |
+| `SANDBOX_IDLE_TIMEOUT_SECS` | no | `300` | Idle time before sandboxd destroys a session's sandbox |
 
 (`DOCKER_NETWORK` is read only by the independent `deployment-bot` crate, not the chatbot.)
 
@@ -215,7 +216,9 @@ Housebot  →  Unix socket  →  sandboxd  →  docker run --runtime=runsc  → 
 - Container is `--read-only`, `--cap-drop=ALL`, `--no-new-privileges`,
   `--user=sandbox`, with tmpfs mounts only on `/workspace`, `/tmp`,
   `/home/sandbox`.
-- One sandbox per `Agent::run`; destroyed unconditionally when the response ends.
+- One sandbox per user session, shared across turns; `sandboxd` destroys it after
+  `SANDBOX_IDLE_TIMEOUT_SECS` of inactivity. Everything in it is tmpfs, so reaping
+  discards the workspace.
 
 ### sandboxd
 

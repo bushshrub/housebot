@@ -21,7 +21,7 @@ fn test_agent(client: Arc<dyn ChatClient>) -> (TempDir, Agent) {
 }
 
 fn noop_sandbox() -> LazySandbox {
-    LazySandbox::new(SandboxClient::new("/dev/null"))
+    LazySandbox::new(SandboxClient::new("/dev/null"), "test-session")
 }
 
 #[derive(Default)]
