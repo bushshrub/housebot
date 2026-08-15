@@ -18,6 +18,46 @@ pub fn list_definition() -> Value {
     })
 }
 
+pub fn read_file_definition() -> Value {
+    json!({
+        "name": "read_skill_file",
+        "description": "Read one file from a skill's references/ directory. Skill instructions \
+            list their reference files; load one only when the instructions call for it, so bulk \
+            material stays out of your context until it is needed.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "skill": {"type": "string", "description": "The skill that owns the file."},
+                "file": {"type": "string", "description": "File name within references/, exactly as listed."}
+            },
+            "required": ["skill", "file"]
+        }
+    })
+}
+
+pub fn run_script_definition() -> Value {
+    json!({
+        "name": "run_skill_script",
+        "description": "Run one script from a skill's scripts/ directory inside the sandbox and \
+            return its output. Supported types are .py, .sh, and .js. The script has NO network \
+            access — gather any data you need with web_search or fetch_webpage first and pass it \
+            in through args. Run a script only when the skill's instructions call for it.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "skill": {"type": "string", "description": "The skill that owns the script."},
+                "file": {"type": "string", "description": "Script name within scripts/, exactly as listed."},
+                "args": {
+                    "type": "array",
+                    "description": "Command-line arguments passed to the script.",
+                    "items": {"type": "string"}
+                }
+            },
+            "required": ["skill", "file"]
+        }
+    })
+}
+
 pub fn info_definition() -> Value {
     json!({
         "name": "skill_info",
@@ -396,6 +436,20 @@ mod tests {
         // Fields not passed to edit_skill are preserved.
         assert_eq!(updated.enabled_tools, vec!["web_search".to_string()]);
         assert_eq!(updated.description.as_deref(), Some("desc of greet"));
+    }
+
+    #[test]
+    fn bundled_tool_definitions_are_well_formed() {
+        let read = read_file_definition();
+        assert_eq!(read["name"], "read_skill_file");
+        assert_eq!(read["input_schema"]["required"], json!(["skill", "file"]));
+
+        let run = run_script_definition();
+        assert_eq!(run["name"], "run_skill_script");
+        assert_eq!(run["input_schema"]["required"], json!(["skill", "file"]));
+        // The no-network constraint must reach the model, not just the runtime.
+        let description = run["description"].as_str().unwrap();
+        assert!(description.contains("NO network"));
     }
 
     #[tokio::test]

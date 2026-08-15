@@ -17,6 +17,10 @@ pub const MAX_FILE_READ_LINES: usize = 2000;
 pub const MAX_CLONE_BRANCH_LENGTH: usize = 256;
 pub const MAX_URL_LENGTH: usize = 2048;
 pub const MAX_COMMAND_LENGTH: usize = 4096;
+/// Ceiling on a single `write_file` payload. Generous enough for a skill
+/// script, far below the 1 MiB request frame so the framing limit is never the
+/// thing that rejects a write.
+pub const MAX_WRITE_FILE_BYTES: usize = 256 * 1024;
 pub const MAX_PATH_DEPTH: usize = 64;
 pub const MAX_GLOB_LENGTH: usize = 256;
 pub const MAX_QUERY_LENGTH: usize = 512;

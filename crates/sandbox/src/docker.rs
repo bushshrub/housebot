@@ -165,6 +165,21 @@ pub fn build_exec_args(
     args
 }
 
+/// Build a `docker exec` command that runs a program directly, with no shell.
+///
+/// Every element is passed as its own argv entry, so nothing in `argv` is ever
+/// interpreted — use this instead of `build_exec_args` whenever any part of the
+/// command derives from user input.
+pub fn build_exec_argv(container_name: &str, argv: &[String], interactive: bool) -> Vec<String> {
+    let mut args = vec!["exec".to_string()];
+    if interactive {
+        args.push("-i".to_string());
+    }
+    args.push(container_name.to_string());
+    args.extend(argv.iter().cloned());
+    args
+}
+
 /// Build a `docker exec git clone` command using separate argv elements.
 ///
 /// Every argument is passed individually to avoid shell interpretation of
@@ -351,6 +366,33 @@ mod tests {
     /// Nothing from the host filesystem may ever reach a sandbox. Every
     /// writable path is an in-memory tmpfs, so a bind mount of any kind is a
     /// bug, not a configuration choice.
+    #[test]
+    fn exec_argv_passes_every_element_separately() {
+        let argv = vec![
+            "/usr/bin/tee".to_string(),
+            "/workspace/a b;rm -rf /".to_string(),
+        ];
+        let args = build_exec_argv("c1", &argv, true);
+        assert_eq!(
+            args,
+            vec![
+                "exec".to_string(),
+                "-i".to_string(),
+                "c1".to_string(),
+                "/usr/bin/tee".to_string(),
+                "/workspace/a b;rm -rf /".to_string(),
+            ]
+        );
+        // No shell is involved, so nothing can reinterpret the path.
+        assert!(!args.iter().any(|a| a == "/bin/bash" || a == "-c"));
+    }
+
+    #[test]
+    fn exec_argv_omits_interactive_when_not_requested() {
+        let args = build_exec_argv("c1", &["/bin/mkdir".to_string()], false);
+        assert!(!args.contains(&"-i".to_string()));
+    }
+
     #[test]
     fn run_args_never_bind_mount_a_host_path() {
         for network in [NetworkAccess::None, NetworkAccess::PublicInternet] {

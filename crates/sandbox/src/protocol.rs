@@ -160,6 +160,23 @@ pub struct RunParams {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WriteFileParams {
+    pub sandbox_id: String,
+    pub path: String,
+    pub content: String,
+    /// Mark the file executable after writing. `/workspace` allows execution,
+    /// so skill scripts need this.
+    #[serde(default)]
+    pub executable: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WriteFileResult {
+    pub path: String,
+    pub bytes_written: usize,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CloseParams {
     pub sandbox_id: String,
 }

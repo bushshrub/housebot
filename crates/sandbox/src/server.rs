@@ -139,6 +139,7 @@ async fn process_request(request: &SandboxRequest, containers: &ContainerMap) ->
         "search_code" => handle_search_code(id, &request.params, containers).await,
         "read_file" => handle_read_file(id, &request.params, containers).await,
         "run" => handle_run(id, &request.params, containers).await,
+        "write_file" => handle_write_file(id, &request.params, containers).await,
         "close" => handle_close(id, &request.params, containers).await,
         _ => SandboxResponse::err(id.clone(), format!("Unknown method: {}", request.method)),
     }
@@ -708,6 +709,148 @@ async fn run_docker(args: &[String], timeout_secs: u64) -> Result<String, String
 }
 
 /// Run a docker command and return (stdout, stderr, exit_code) with timeout.
+/// Run a docker command feeding `stdin` to the child, returning its exit code.
+///
+/// Content passed this way never appears in argv or a shell command line, so a
+/// file body cannot be reinterpreted as part of the command.
+async fn run_docker_with_stdin(
+    args: &[String],
+    stdin_data: &[u8],
+    timeout_secs: u64,
+) -> Result<(String, i32), String> {
+    use tokio::io::AsyncWriteExt;
+
+    let mut child = Command::new("docker")
+        .args(args)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .kill_on_drop(true)
+        .spawn()
+        .map_err(|e| format!("failed to execute docker: {e}"))?;
+
+    let mut stdin = child
+        .stdin
+        .take()
+        .ok_or_else(|| "failed to open docker stdin".to_string())?;
+    let data = stdin_data.to_vec();
+    let writer = tokio::spawn(async move {
+        let _ = stdin.write_all(&data).await;
+        let _ = stdin.flush().await;
+        drop(stdin);
+    });
+
+    let output = tokio::time::timeout(
+        std::time::Duration::from_secs(timeout_secs),
+        child.wait_with_output(),
+    )
+    .await
+    .map_err(|_| format!("command timed out after {timeout_secs}s"))?
+    .map_err(|e| format!("failed to execute docker: {e}"))?;
+    let _ = writer.await;
+
+    Ok((
+        utf8_safe_string(&output.stderr),
+        output.status.code().unwrap_or(-1),
+    ))
+}
+
+async fn handle_write_file(
+    id: &str,
+    params: &serde_json::Value,
+    containers: &ContainerMap,
+) -> SandboxResponse {
+    let write_params: WriteFileParams = match serde_json::from_value(params.clone()) {
+        Ok(p) => p,
+        Err(e) => return SandboxResponse::err(id.to_string(), format!("invalid params: {e}")),
+    };
+
+    if let Err(e) = validation::validate_workspace_path(&write_params.path) {
+        return SandboxResponse::err(id.to_string(), format!("invalid path: {e}"));
+    }
+    if write_params.content.len() > limits::MAX_WRITE_FILE_BYTES {
+        return SandboxResponse::err(
+            id.to_string(),
+            format!("content exceeds {} bytes", limits::MAX_WRITE_FILE_BYTES),
+        );
+    }
+
+    let sandbox_id = write_params.sandbox_id.clone();
+    let container_name = {
+        let guard = match require_sandbox(containers, &sandbox_id).await {
+            Ok(s) => s,
+            Err(e) => return SandboxResponse::err(id.to_string(), e),
+        };
+        guard
+            .get(&sandbox_id)
+            .map(|s| s.container_name.clone())
+            .unwrap_or_default()
+    };
+
+    // Resolve before writing so an existing symlink at the target cannot
+    // redirect the write outside /workspace. `-m` allows the file itself not to
+    // exist yet while still resolving the directories above it.
+    let resolve_cmd = format!(
+        "realpath -m /workspace/{} 2>/dev/null || true",
+        shell_escape_path(&write_params.path)
+    );
+    let resolve_args = docker::build_exec_args(&container_name, &resolve_cmd, None);
+    let resolved = match run_docker_with_timeout(&resolve_args, 10).await {
+        Ok(out) => out.trim().to_string(),
+        Err(_) => {
+            return SandboxResponse::err(id.to_string(), "failed to resolve path".to_string())
+        }
+    };
+    if resolved.is_empty() || !resolved.starts_with("/workspace/") {
+        return SandboxResponse::err(id.to_string(), "path escapes /workspace".to_string());
+    }
+
+    if let Some(parent) = std::path::Path::new(&resolved).parent() {
+        let mkdir = vec![
+            "/bin/mkdir".to_string(),
+            "-p".to_string(),
+            parent.to_string_lossy().to_string(),
+        ];
+        let args = docker::build_exec_argv(&container_name, &mkdir, false);
+        if let Err(e) = run_docker_with_timeout(&args, 10).await {
+            return SandboxResponse::err(
+                id.to_string(),
+                format!("failed to create directory: {e}"),
+            );
+        }
+    }
+
+    let tee = vec!["/usr/bin/tee".to_string(), resolved.clone()];
+    let args = docker::build_exec_argv(&container_name, &tee, true);
+    match run_docker_with_stdin(&args, write_params.content.as_bytes(), 30).await {
+        Ok((_, 0)) => {}
+        Ok((stderr, code)) => {
+            return SandboxResponse::err(
+                id.to_string(),
+                format!("write failed with code {code}: {stderr}"),
+            )
+        }
+        Err(e) => return SandboxResponse::err(id.to_string(), e),
+    }
+
+    if write_params.executable {
+        let chmod = vec!["/bin/chmod".to_string(), "+x".to_string(), resolved.clone()];
+        let args = docker::build_exec_argv(&container_name, &chmod, false);
+        if let Err(e) = run_docker_with_timeout(&args, 10).await {
+            return SandboxResponse::err(id.to_string(), format!("chmod failed: {e}"));
+        }
+    }
+
+    SandboxResponse::ok(
+        id.to_string(),
+        serde_json::to_value(WriteFileResult {
+            path: resolved,
+            bytes_written: write_params.content.len(),
+        })
+        .unwrap_or_default(),
+    )
+}
+
 async fn run_docker_with_timeout_raw(
     args: &[String],
     timeout_secs: u64,

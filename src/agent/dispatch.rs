@@ -254,6 +254,61 @@ impl Agent {
                     .await,
                 )
             }
+            "read_skill_file" => {
+                let skill_name = str_arg(args, "skill");
+                if !self.skill_enabled_for(user_id, skill_name).await {
+                    return ToolOutcome::Text(format!(
+                        "Error: Skill '{skill_name}' is not enabled for this user."
+                    ));
+                }
+                match self
+                    .skills
+                    .read_bundled(
+                        skill_name,
+                        housebot_skills::BundleKind::References,
+                        str_arg(args, "file"),
+                    )
+                    .await
+                {
+                    Ok(body) => ToolOutcome::Text(body),
+                    Err(error) => ToolOutcome::Text(error),
+                }
+            }
+            "run_skill_script" => {
+                let skill_name = str_arg(args, "skill");
+                let file = str_arg(args, "file");
+                if !self.skill_enabled_for(user_id, skill_name).await {
+                    return ToolOutcome::Text(format!(
+                        "Error: Skill '{skill_name}' is not enabled for this user."
+                    ));
+                }
+                let source = match self
+                    .skills
+                    .read_bundled(skill_name, housebot_skills::BundleKind::Scripts, file)
+                    .await
+                {
+                    Ok(source) => source,
+                    Err(error) => return ToolOutcome::Text(error),
+                };
+                let script_args: Vec<String> = args
+                    .get("args")
+                    .and_then(Value::as_array)
+                    .map(|items| {
+                        items
+                            .iter()
+                            .filter_map(Value::as_str)
+                            .map(str::to_string)
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                match sandbox
+                    .run_skill_script(skill_name, file, &source, &script_args, None)
+                    .await
+                {
+                    Ok(output) => ToolOutcome::Text(output),
+                    Err(error) => ToolOutcome::Text(format!("Error: {error}")),
+                }
+            }
             "use_skill" => {
                 let skill_name = str_arg(args, "name");
                 match self.skills.get(skill_name).await {

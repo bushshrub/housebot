@@ -6,7 +6,7 @@ source of truth for what is in scope and what is done; update the checkboxes as
 work lands.
 
 Resuming in a new session? Start with [`HANDOFF.md`](../HANDOFF.md) — it covers
-current state and gotchas. Phases 1–3 are done; Phase 4 is next.
+current state and gotchas. Phases 1–4 are done; Phase 5 is next.
 
 ## Decisions
 
@@ -217,17 +217,17 @@ Build the scheduler first: sub-agents (Phase 3) and the config commands
 - [x] Sub-agent spawn tool, priority-aware — `spawn_subagent`, built on
       `ScheduledChatClient::with_priority(Priority::SubAgent)`
 
-### Phase 4 — skills + sandbox
+### Phase 4 — skills + sandbox ✅
 - [x] Add `SKILLS_DIR` (approved) pointing at the persistent skills volume
 - [x] Skill discovery, frontmatter parsing, progressive disclosure
 - [x] Skill authoring tools writing to the persistent volume
-- [ ] `sandboxd` wired as the script execution surface
-- [ ] Skill scripts run sandboxed with bounded time and memory
+- [x] `sandboxd` wired as the script execution surface
+- [x] Skill scripts run sandboxed with bounded time and memory
 - [x] Session-scoped sandboxes: keyed by user, reaped by an idle timer in
       `sandboxd` (`SANDBOX_IDLE_TIMEOUT_SECS`, default 300, admin-configurable)
       instead of destroyed at the end of every `Agent::run`
-- [ ] Make the workspace usable for coding: `noexec` is dropped from the
-      `/workspace` tmpfs; a `write_file` method is still outstanding
+- [x] Make the workspace usable for coding: `noexec` dropped from the
+      `/workspace` tmpfs, plus a `write_file` method
 
 ### Phase 5 — Discord surface
 - [ ] Message handler, streaming render, cancel reaction, progress

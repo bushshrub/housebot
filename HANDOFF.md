@@ -15,7 +15,8 @@ plan covers what to build.
 | Phase 1 — demolition | done |
 | Phase 2 — core | done |
 | Phase 3 — tools | done |
-| Phases 4–7 | not started |
+| Phase 4 — skills + sandbox | done |
+| Phases 5–7 | not started |
 
 Before starting, confirm the tree is green: `cargo test --workspace`,
 `cargo clippy --all-targets -- -D warnings`, `cargo fmt --check`. All three
@@ -99,6 +100,59 @@ all survived because they were `pub` and therefore invisible to dead-code
 analysis. All removed. Expect more of this in `crates/tools` — `pub fn` in a
 library crate is never reported as dead.
 
+## What Phase 4 actually changed
+
+This one was real work, not an audit. Skills went from a single JSON blob to
+one directory per skill under `SKILLS_DIR`.
+
+### Skills are directories now
+
+`<SKILLS_DIR>/<name>/SKILL.md` — YAML frontmatter plus an instruction body —
+beside optional `references/` and `scripts/`. Progressive disclosure is now
+literal: names in the prompt, body on `use_skill`, bundled files listed by name
+and opened only by `read_skill_file` / `run_skill_script`.
+
+- **Frontmatter is parsed by a hand-written YAML subset** (`frontmatter.rs`),
+  not a dependency: the workspace has no YAML crate and `serde_yaml` has been
+  archived since 2024. It accepts only `key: scalar` and `key: [a, b]` and
+  **rejects** anything else rather than half-understanding it. If you add a
+  field, add it there and to `Skill::to_skill_md`, and keep the round-trip test
+  green — a description containing a colon is the case that breaks naive
+  emitters.
+- **`validate_name` is security, not tidiness.** Skill names come from users and
+  become directory names. Names are refused, never sanitised. `read_bundled`
+  separately refuses separators and `..` in file names, since those also come
+  from the model.
+- **The version number was load-bearing** in a way that is easy to miss. It was
+  optimistic concurrency: you had to pass the current version to update, which
+  is what stopped `create_skill` silently clobbering an existing skill. Versions
+  are gone, so an explicit `update: true` flag now carries that job. Do not drop
+  it without putting something else in its place.
+- One unreadable skill is skipped with a log rather than failing the whole scan.
+- `skill_creator` is still a built-in, injected on every load and never written
+  to disk.
+
+### Sandbox: `write_file` and skill scripts
+
+- `/workspace` no longer mounts `noexec` (`nosuid` stays; `/tmp` and
+  `/home/sandbox` keep `noexec`). The workspace is the only executable path.
+- **Nothing from the host is mounted into a sandbox** — every writable path is
+  an in-memory tmpfs and the root filesystem is read-only. There is now a test
+  asserting no `-v`/`--volume`/`--mount`/`--volumes-from` ever reaches the run
+  arguments. Keep it that way; a bind mount here would be a bug, not a config
+  choice.
+- `write_file` feeds content to `tee` **on stdin** via `build_exec_argv`, which
+  runs a program with no shell at all. File bodies therefore never touch argv or
+  a command line. Use `build_exec_argv` for anything user-derived; only use
+  `build_exec_args` (which goes through `bash -c`) for fixed commands.
+- The write target is resolved with `realpath -m` and checked against
+  `/workspace/` **before** writing, so a pre-existing symlink cannot redirect it.
+- **Skill scripts get no network, ever.** `run_skill_script` attaches at
+  `NetworkAccess::None`. A container's network mode is fixed at creation, so
+  attaching with network here would silently upgrade the user's whole session
+  sandbox. Scripts compute; the agent gathers data and passes it in as args.
+- Supported types are `.py`, `.sh`, `.js`, checked before any sandbox work.
+
 ### `llm-scheduler` replaced `llm-queue`
 
 `llm-queue` was a flat `Semaphore`. `llm-scheduler` is a `Mutex`-guarded state
@@ -173,13 +227,10 @@ after `SANDBOX_IDLE_TIMEOUT_SECS` (default 300).
   than silently downgrading it. If a session needs network, it has to start
   that way.
 
-**The workspace is not yet usable for real coding, by design — this is Phase 4
-work.** `/workspace` is mounted `noexec`, so interpreted code runs but nothing
-compiled does (no `./a.out`, no `cargo build && ./target/...`, no native node
-modules). There is also no `write_file` method; the only way to create a file
-today is a heredoc through `run`, capped at `MAX_COMMAND_LENGTH` (4096). Both
-are on the Phase 4 checklist. Dropping `noexec` is deliberate loosening — keep
-`nosuid`.
+The workspace is usable for coding as of Phase 4: `noexec` is gone from
+`/workspace` and `write_file` exists (capped at `MAX_WRITE_FILE_BYTES`, 256
+KiB). Creating a file no longer means a heredoc through `run` bounded by
+`MAX_COMMAND_LENGTH` (4096).
 
 ## Channel reads are permission-gated
 

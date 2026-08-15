@@ -154,6 +154,47 @@ impl LazySandbox {
         }
         Ok(text)
     }
+
+    /// Copy a skill script into the workspace and execute it.
+    ///
+    /// Always attaches at `NetworkAccess::None`: a skill script never gets the
+    /// internet, and it must never cause a session's sandbox to be started with
+    /// network it would not otherwise have.
+    pub async fn run_skill_script(
+        &self,
+        skill: &str,
+        file: &str,
+        source: &str,
+        args: &[String],
+        timeout_secs: Option<u64>,
+    ) -> Result<String, String> {
+        let interpreter = script_interpreter(file)?;
+
+        let sandbox = self.get_or_start(NetworkAccess::None).await?;
+        let path = format!("skills/{skill}/{file}");
+        sandbox.write_file(&path, source, true).await?;
+
+        let quoted: Vec<String> = args.iter().map(|a| shell_quote(a)).collect();
+        let command = format!("{interpreter} /workspace/{path} {}", quoted.join(" "));
+        self.run(&command, None, timeout_secs).await
+    }
+}
+
+/// Map a script's extension to its interpreter, rejecting anything else.
+fn script_interpreter(file: &str) -> Result<&'static str, String> {
+    match file.rsplit_once('.').map(|(_, ext)| ext) {
+        Some("py") => Ok("python3"),
+        Some("sh") => Ok("bash"),
+        Some("js") => Ok("node"),
+        _ => Err(format!(
+            "Error: cannot run '{file}' — supported script types are .py, .sh, and .js."
+        )),
+    }
+}
+
+/// Single-quote an argument for the shell, escaping embedded quotes.
+fn shell_quote(arg: &str) -> String {
+    format!("'{}'", arg.replace('\'', "'\\''"))
 }
 
 fn truncate_output(s: &str) -> String {
@@ -307,4 +348,33 @@ pub fn sandbox_run_definition() -> Value {
             "required": ["command"]
         }
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn known_script_types_map_to_interpreters() {
+        assert_eq!(script_interpreter("run.py").unwrap(), "python3");
+        assert_eq!(script_interpreter("run.sh").unwrap(), "bash");
+        assert_eq!(script_interpreter("run.js").unwrap(), "node");
+    }
+
+    #[test]
+    fn unknown_script_types_are_refused_before_any_sandbox_work() {
+        for file in ["run", "run.rb", "run.exe", "a.out", ""] {
+            assert!(
+                script_interpreter(file).is_err(),
+                "{file} should be refused"
+            );
+        }
+    }
+
+    #[test]
+    fn script_arguments_cannot_break_out_of_their_quoting() {
+        let quoted = shell_quote("; rm -rf /");
+        assert_eq!(quoted, "'; rm -rf /'");
+        assert_eq!(shell_quote("it's"), r"'it'\''s'");
+    }
 }

@@ -273,6 +273,37 @@ impl Sandbox {
         serde_json::from_value(result).map_err(|e| format!("failed to parse command result: {e}"))
     }
 
+    /// Write a file into the workspace.
+    ///
+    /// The content travels as request data and is fed to the container on
+    /// stdin, so it is never interpreted as part of a command. Set
+    /// `executable` for scripts — `/workspace` permits execution.
+    pub async fn write_file(
+        &self,
+        path: &str,
+        content: &str,
+        executable: bool,
+    ) -> Result<WriteFileResult, String> {
+        validation::validate_workspace_path(path)?;
+        if content.len() > limits::MAX_WRITE_FILE_BYTES {
+            return Err(format!(
+                "content exceeds {} bytes",
+                limits::MAX_WRITE_FILE_BYTES
+            ));
+        }
+
+        let params = serde_json::to_value(WriteFileParams {
+            sandbox_id: self.id.clone(),
+            path: path.to_string(),
+            content: content.to_string(),
+            executable,
+        })
+        .map_err(|e| format!("serialisation error: {e}"))?;
+
+        let result = self.send("write_file", params).await?;
+        serde_json::from_value(result).map_err(|e| format!("failed to parse write result: {e}"))
+    }
+
     /// Destroy the sandbox container.
     pub async fn close(self) -> Result<(), String> {
         let params = serde_json::to_value(CloseParams {

@@ -296,6 +296,8 @@ impl Agent {
             tools::manage_skills::edit_definition(),
             tools::manage_skills::enable_definition(),
             tools::manage_skills::disable_definition(),
+            tools::manage_skills::read_file_definition(),
+            tools::manage_skills::run_script_definition(),
             tools::feature_request::definition(),
             tools::edit_feature_request::definition(),
             tools::feature_development::definition(),

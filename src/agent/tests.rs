@@ -744,6 +744,8 @@ fn all_tool_names_matches_built_in_definitions() {
         crate::tools::manage_skills::edit_definition(),
         crate::tools::manage_skills::enable_definition(),
         crate::tools::manage_skills::disable_definition(),
+        crate::tools::manage_skills::read_file_definition(),
+        crate::tools::manage_skills::run_script_definition(),
         crate::tools::feature_request::definition(),
         crate::tools::edit_feature_request::definition(),
         crate::tools::feature_development::definition(),
