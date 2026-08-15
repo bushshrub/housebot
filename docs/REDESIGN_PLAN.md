@@ -6,7 +6,7 @@ source of truth for what is in scope and what is done; update the checkboxes as
 work lands.
 
 Resuming in a new session? Start with [`HANDOFF.md`](../HANDOFF.md) — it covers
-current state and gotchas.
+current state and gotchas. Phases 1 and 2 are done; Phase 3 is next.
 
 ## Decisions
 
@@ -180,7 +180,7 @@ across restarts.
 - [x] Drop the Jellyfin MCP build stage from the Dockerfile
 - [x] Workspace compiles clean; `cargo test`, `clippy -D warnings`, `fmt` all pass
 
-### Phase 2 — core
+### Phase 2 — core ✅
 
 Build the scheduler first: sub-agents (Phase 3) and the config commands
 (Phase 5) both depend on its shape.
@@ -189,7 +189,8 @@ Build the scheduler first: sub-agents (Phase 3) and the config commands
 - [x] Delete `llm-queue` once the scheduler replaces it
 - [x] Switch the model default to `gemma-4-26b-a4b-qat` in `src/agent/mod.rs`
       and `.env.example`
-- [ ] Agent loop: multi-step tool dispatch, cancellation, progress
+- [x] Agent loop: multi-step tool dispatch, cancellation, progress — the loop
+      in `src/agent/run.rs` already had all three and survived Phase 1 intact
 - [x] Memory: migration recreating `user_memories` (`002`) — the Postgres
       backend in `crates/memory` already existed and already stored markdown
 - [x] History: per-user conversation persistence — `crates/history` already
