@@ -44,8 +44,11 @@ impl ContainerConfig {
             memory_swap: "2g".to_string(),
             cpus: 1.0,
             ulimit: vec![("nofile".to_string(), "512:512".to_string())],
+            // `/workspace` deliberately omits `noexec`: skill scripts and
+            // compiled binaries have to run from it. `nosuid` stays, and the
+            // other mounts keep `noexec` so only the workspace is executable.
             tmpfs: vec![
-                "/workspace:size=256m,noexec,nosuid,uid=1000,gid=1000".to_string(),
+                "/workspace:size=256m,nosuid,uid=1000,gid=1000".to_string(),
                 "/tmp:size=64m,noexec,nosuid".to_string(),
                 "/home/sandbox:size=32m,noexec,nosuid".to_string(),
             ],
@@ -343,6 +346,51 @@ mod tests {
         let args = build_run_args("test-1", NetworkAccess::None);
         let is_docker_socket = |a: &str| a.contains("/var/run/docker.sock");
         assert!(!args.iter().any(|a| is_docker_socket(a)));
+    }
+
+    /// Nothing from the host filesystem may ever reach a sandbox. Every
+    /// writable path is an in-memory tmpfs, so a bind mount of any kind is a
+    /// bug, not a configuration choice.
+    #[test]
+    fn run_args_never_bind_mount_a_host_path() {
+        for network in [NetworkAccess::None, NetworkAccess::PublicInternet] {
+            let args = build_run_args("test-1", network);
+            for flag in ["-v", "--volume", "--mount", "--volumes-from"] {
+                assert!(
+                    !args
+                        .iter()
+                        .any(|a| a == flag || a.starts_with(&format!("{flag}="))),
+                    "{flag} would expose a host path to the sandbox: {args:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn workspace_is_executable_but_never_setuid() {
+        let args = build_run_args("test-1", NetworkAccess::None);
+        let workspace = args
+            .iter()
+            .find(|a| a.starts_with("/workspace:"))
+            .expect("workspace tmpfs mount");
+        assert!(
+            !workspace.contains("noexec"),
+            "skill scripts must be executable from /workspace: {workspace}"
+        );
+        assert!(workspace.contains("nosuid"));
+    }
+
+    #[test]
+    fn only_the_workspace_is_executable() {
+        let args = build_run_args("test-1", NetworkAccess::None);
+        for mount in ["/tmp:", "/home/sandbox:"] {
+            let entry = args
+                .iter()
+                .find(|a| a.starts_with(mount))
+                .unwrap_or_else(|| panic!("{mount} tmpfs mount"));
+            assert!(entry.contains("noexec"), "{entry} must stay non-executable");
+            assert!(entry.contains("nosuid"));
+        }
     }
 
     #[test]
