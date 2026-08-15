@@ -190,11 +190,12 @@ Build the scheduler first: sub-agents (Phase 3) and the config commands
 - [x] Switch the model default to `gemma-4-26b-a4b-qat` in `src/agent/mod.rs`
       and `.env.example`
 - [ ] Agent loop: multi-step tool dispatch, cancellation, progress
-- [ ] Memory: migration recreating `user_memories` — the Postgres backend in
-      `crates/memory` already exists and already stores markdown
-- [ ] History: per-user conversation persistence
-- [ ] `channel-context`: in-memory ring buffer + `get_messages`
-- [ ] Delete `channel-log` once the ring buffer replaces it
+- [x] Memory: migration recreating `user_memories` (`002`) — the Postgres
+      backend in `crates/memory` already existed and already stored markdown
+- [x] History: per-user conversation persistence — `crates/history` already
+      does this as JSONL on the data volume; kept as is
+- [x] `channel-context`: in-memory ring buffer + `get_messages`
+- [x] Delete `channel-log` once the ring buffer replaces it
 
 ### Phase 3 — tools
 - [ ] `web_search` (SearXNG) + `fetch_webpage`

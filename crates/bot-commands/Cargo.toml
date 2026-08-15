@@ -8,7 +8,7 @@ license = "AGPL-3.0-or-later"
 
 [dependencies]
 housebot-bot-config = { path = "../bot-config" }
-housebot-channel-log = { path = "../channel-log" }
+housebot-channel-context = { path = "../channel-context" }
 housebot-history = { path = "../history" }
 housebot-memory = { path = "../memory" }
 housebot-reminders = { path = "../reminders" }

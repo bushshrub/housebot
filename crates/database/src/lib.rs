@@ -16,6 +16,10 @@ const MIGRATIONS: &[(&str, &str)] = &[
         "001_purge_all_data",
         include_str!("../../../db/migrations/001_purge_all_data.sql"),
     ),
+    (
+        "002_create_user_memories",
+        include_str!("../../../db/migrations/002_create_user_memories.sql"),
+    ),
 ];
 const MIGRATION_LOCK_ID: i64 = 1_593_778_914;
 const DEFAULT_DATABASE_URL: &str = "postgres://housebot:housebot@postgres/housebot";

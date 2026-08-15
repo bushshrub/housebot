@@ -209,7 +209,7 @@ impl EventHandler for HouseBot {
                                 &self.memory,
                                 &self.user_cfg,
                                 &self.agent.reminders().clone(),
-                                &self.channel_log,
+                                &self.channel_context,
                                 user_id,
                             )
                             .await;
@@ -352,9 +352,8 @@ impl EventHandler for HouseBot {
                 .and_then(|m| m.nick.as_deref())
                 .or(msg.author.global_name.as_deref())
                 .filter(|n| *n != msg.author.name);
-            self.channel_log
-                .append(channel_id, user_id, &msg.author.name, nick, &content)
-                .await;
+            self.channel_context
+                .append(channel_id, user_id, &msg.author.name, nick, &content);
         }
 
         let is_reply_to_bot = msg

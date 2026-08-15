@@ -347,11 +347,7 @@ impl Agent {
                     "search" => {
                         let pattern = str_arg(args, "pattern");
                         let limit = u64_arg(args, "limit", 10).clamp(1, 100) as usize;
-                        match self
-                            .channel_log
-                            .search(target_channel, pattern, limit)
-                            .await
-                        {
+                        match self.channel_context.search(target_channel, pattern, limit) {
                             Err(e) => format!("Error: {e}"),
                             Ok(msgs) if msgs.is_empty() => {
                                 "No matching messages found.".to_string()

@@ -1,7 +1,7 @@
 //! Store-backed command handlers, independent of Discord transport.
 
 use housebot_bot_config::UserConfigStore;
-use housebot_channel_log::ChannelLog;
+use housebot_channel_context::ChannelContext;
 use housebot_history::History;
 use housebot_memory::Memory;
 use housebot_reminders::Reminders;
@@ -298,14 +298,14 @@ pub async fn skill_command(
     }
 }
 
-/// Erase all stored data for the requesting user: message log, history, memory, notes, profile, reminders, and channel log entries.
+/// Erase all stored data for the requesting user: history, memory, per-user config, reminders, and buffered channel messages.
 #[allow(clippy::too_many_arguments)]
 pub async fn erase_data_command(
     history: &History,
     memory: &Memory,
     user_config: &UserConfigStore,
     reminders: &Reminders,
-    channel_log: &ChannelLog,
+    channel_context: &ChannelContext,
     user_id: u64,
 ) -> String {
     let history_result = history.clear(user_id.to_string()).await;
@@ -319,14 +319,9 @@ pub async fn erase_data_command(
     let removed_reminders = before.saturating_sub(all_reminders.len());
     let _ = reminders.store(&all_reminders).await;
 
-    // Remove user's entries from channel logs (per-channel files)
-    let channel_log_result = channel_log.remove_user_entries(user_id.to_string()).await;
+    channel_context.remove_user_entries(&user_id.to_string());
 
-    if history_result.is_err()
-        || memory_result.is_err()
-        || config_result.is_err()
-        || channel_log_result.is_err()
-    {
+    if history_result.is_err() || memory_result.is_err() || config_result.is_err() {
         return "⚠️ Some data could not be erased. Please try again or contact an admin.".into();
     }
 
@@ -435,20 +430,27 @@ mod tests {
         Memory,
         UserConfigStore,
         Reminders,
-        ChannelLog,
+        ChannelContext,
     ) {
         let tmp = TempDir::new().unwrap();
         let history = History::new(tmp.path().join("history"), 30);
         let memory = Memory::new(tmp.path().join("memories"));
         let user_config = UserConfigStore::new(tmp.path().join("user_config"));
         let reminders = Reminders::new(tmp.path().join("reminders.json"));
-        let channel_log = ChannelLog::new(tmp.path().join("channel_log"));
-        (tmp, history, memory, user_config, reminders, channel_log)
+        let channel_context = ChannelContext::default();
+        (
+            tmp,
+            history,
+            memory,
+            user_config,
+            reminders,
+            channel_context,
+        )
     }
 
     #[tokio::test]
     async fn erase_data_clears_all_stores() {
-        let (_tmp, history, memory, user_config, reminders, channel_log) = stores();
+        let (_tmp, history, memory, user_config, reminders, channel_context) = stores();
         let user_id = 123u64;
 
         // Populate all stores
@@ -485,15 +487,13 @@ mod tests {
             )
             .await
             .unwrap();
-        channel_log
-            .append(1, user_id, "Alice", None, "channel msg")
-            .await;
+        channel_context.append(1, user_id, "Alice", None, "channel msg");
         let reply = erase_data_command(
             &history,
             &memory,
             &user_config,
             &reminders,
-            &channel_log,
+            &channel_context,
             user_id,
         )
         .await;
@@ -512,7 +512,7 @@ mod tests {
 
     #[tokio::test]
     async fn erase_data_preserves_other_users() {
-        let (_tmp, history, memory, user_config, reminders, channel_log) = stores();
+        let (_tmp, history, memory, user_config, reminders, channel_context) = stores();
         let user_a = 100u64;
         let user_b = 200u64;
 
@@ -555,8 +555,8 @@ mod tests {
             )
             .await
             .unwrap();
-        channel_log.append(1, user_a, "Alice", None, "msg a").await;
-        channel_log.append(1, user_b, "Bob", None, "msg b").await;
+        channel_context.append(1, user_a, "Alice", None, "msg a");
+        channel_context.append(1, user_b, "Bob", None, "msg b");
 
         // Erase user A
         erase_data_command(
@@ -564,7 +564,7 @@ mod tests {
             &memory,
             &user_config,
             &reminders,
-            &channel_log,
+            &channel_context,
             user_a,
         )
         .await;

@@ -19,9 +19,9 @@ pub use housebot_bot_formatting as bot_formatting;
 /// Re-exported from the `housebot-bot-response` workspace crate; kept at this path so
 /// existing `crate::bot_response::…` references continue to resolve.
 pub use housebot_bot_response as bot_response;
-/// Re-exported from the `housebot-channel-log` workspace crate; kept at this path so
-/// existing `crate::channel_log::…` references continue to resolve.
-pub use housebot_channel_log as channel_log;
+/// Re-exported from the `housebot-channel-context` workspace crate; kept at this path so
+/// existing `crate::channel_context::…` references continue to resolve.
+pub use housebot_channel_context as channel_context;
 /// Re-exported from the `housebot-coding-agent` workspace crate; kept at this path so
 /// existing `crate::coding_agent::…` references continue to resolve.
 pub use housebot_coding_agent as coding_agent;

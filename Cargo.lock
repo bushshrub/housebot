@@ -815,7 +815,7 @@ dependencies = [
  "housebot-bot-config",
  "housebot-bot-formatting",
  "housebot-bot-response",
- "housebot-channel-log",
+ "housebot-channel-context",
  "housebot-coding-agent",
  "housebot-config",
  "housebot-database",
@@ -849,7 +849,7 @@ name = "housebot-bot-commands"
 version = "0.1.0"
 dependencies = [
  "housebot-bot-config",
- "housebot-channel-log",
+ "housebot-channel-context",
  "housebot-history",
  "housebot-memory",
  "housebot-reminders",
@@ -887,18 +887,13 @@ name = "housebot-bot-response"
 version = "0.1.0"
 
 [[package]]
-name = "housebot-channel-log"
+name = "housebot-channel-context"
 version = "0.1.0"
 dependencies = [
  "chrono",
  "housebot-config",
- "housebot-memory",
  "regex",
- "serde_json",
- "strsim",
- "tempfile",
  "tokio",
- "tracing",
 ]
 
 [[package]]
@@ -2635,12 +2630,6 @@ dependencies = [
  "unicode-normalization",
  "unicode-properties",
 ]
-
-[[package]]
-name = "strsim"
-version = "0.11.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7da8b5736845d9f2fcb837ea5d9e2628564b3b043a70948a3f0b778838c5fb4f"
 
 [[package]]
 name = "subtle"

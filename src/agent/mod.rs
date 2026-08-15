@@ -11,7 +11,7 @@ use serde_json::{json, Value};
 use tokio::sync::Notify;
 
 use crate::bot_config::{AccessControl, AccessControlStore, UserConfigStore};
-use crate::channel_log::ChannelLog;
+use crate::channel_context::ChannelContext;
 use crate::coding_agent::pending::PendingJobStore;
 use crate::config;
 use crate::discord_bridge::DiscordBridge;
@@ -225,7 +225,7 @@ pub struct Agent {
     /// Per-user configuration, including each user's enabled marketplace skills.
     user_config: UserConfigStore,
     discord: Arc<DiscordBridge>,
-    channel_log: ChannelLog,
+    channel_context: ChannelContext,
     sandbox_client: housebot_sandbox::SandboxClient,
     /// Audit trail of administrator pull-request merges.
     merge_audit: tools::github_api::MergeAuditLog,
@@ -333,7 +333,7 @@ impl Agent {
             access_control,
             user_config: UserConfigStore::default(),
             discord,
-            channel_log: ChannelLog::default(),
+            channel_context: ChannelContext::default(),
             sandbox_client: housebot_sandbox::SandboxClient::from_env(),
             merge_audit: tools::github_api::MergeAuditLog::default(),
         })
@@ -528,7 +528,7 @@ impl Agent {
             access_control: AccessControlStore::default(),
             user_config: UserConfigStore::default(),
             discord: Arc::new(DiscordBridge::default()),
-            channel_log: ChannelLog::default(),
+            channel_context: ChannelContext::default(),
             sandbox_client: housebot_sandbox::SandboxClient::new("/dev/null"),
             merge_audit: tools::github_api::MergeAuditLog::default(),
         }

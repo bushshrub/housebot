@@ -28,7 +28,7 @@ use crate::bot_config::{
     AccessControlStore, LeaderboardVisibility, ServerConfig, ServerConfigStore, UserConfigStore,
 };
 pub use crate::bot_response::SecretRedactor;
-use crate::channel_log::ChannelLog;
+use crate::channel_context::ChannelContext;
 use crate::coding_agent::catalog::{AgentCatalog, CodingAgent};
 use crate::coding_agent::issue::{build_dispatch_prompt, dispatch_workflow_file};
 use crate::coding_agent::pending::{DiscordMessageRef, DispatchStage, PendingJobStore};
@@ -169,7 +169,7 @@ pub struct HouseBot {
     /// Shared with `Agent` — provides Discord API access to the agent tools.
     discord: Arc<DiscordBridge>,
     /// Logs all guild channel messages for the get_messages tool's search mode.
-    channel_log: ChannelLog,
+    channel_context: ChannelContext,
     /// Tracks active progress messages so the ❌ cancel reaction can be
     /// matched to the right user and agent run.  Keyed by progress message ID.
     progress_messages: Arc<Mutex<HashMap<u64, (u64, CancelToken)>>>,
@@ -213,7 +213,7 @@ impl HouseBot {
             pending_jobs,
             catalog: AgentCatalog::load_embedded(),
             discord,
-            channel_log: ChannelLog::default(),
+            channel_context: ChannelContext::default(),
             progress_messages: Arc::new(Mutex::new(HashMap::new())),
         }
     }

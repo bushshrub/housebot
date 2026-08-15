@@ -12,7 +12,7 @@ members = [
     "crates/bot-config",
     "crates/bot-formatting",
     "crates/bot-response",
-    "crates/channel-log",
+    "crates/channel-context",
     "crates/coding-agent",
     "crates/config",
     "crates/database",
@@ -73,7 +73,7 @@ housebot-discord-bridge = { path = "crates/discord-bridge" }
 housebot-github-issues = { path = "crates/github-issues" }
 housebot-llm-scheduler = { path = "crates/llm-scheduler" }
 housebot-tools = { path = "crates/tools" }
-housebot-channel-log = { path = "crates/channel-log" }
+housebot-channel-context = { path = "crates/channel-context" }
 housebot-config = { path = "crates/config" }
 housebot-database = { path = "crates/database" }
 housebot-history = { path = "crates/history" }
