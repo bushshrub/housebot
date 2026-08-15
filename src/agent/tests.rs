@@ -128,34 +128,37 @@ fn system_prompt_has_tldr_and_500() {
 }
 
 #[test]
-fn system_prompt_explains_guarded_file_delivery() {
-    let prompt = build_system_prompt("Alice", "123", "", "", "", &empty_skills(), None, true);
-    assert!(prompt.contains("download_file"));
-    assert!(prompt.contains("specific file"));
-    assert!(prompt.contains("private-network URLs"));
+fn system_prompt_does_not_advertise_removed_tools() {
+    let p = build_system_prompt("Alice", "123", "", "", "", &empty_skills(), None, true);
+    for removed in [
+        "deep_research",
+        "summarize_url",
+        "download_file",
+        "common_crawl",
+        "run_lua",
+        "get_lua_docs",
+        "translate",
+        "get_token_metrics",
+        "find_discord_users",
+        "get_discord_user",
+        "jellyfin",
+    ] {
+        assert!(!p.contains(removed), "system prompt still offers {removed}");
+    }
 }
 
 #[test]
-fn system_prompt_routes_complex_questions_to_deep_research() {
+fn system_prompt_describes_the_search_and_delegation_tools() {
     let p = build_system_prompt("Alice", "123", "", "", "", &empty_skills(), None, true);
-    assert!(p.contains("deep_research"));
-    assert!(p.contains("multiple perspectives"));
-    assert!(p.contains("source links"));
+    assert!(p.contains("web_search"));
+    assert!(p.contains("fetch_webpage"));
+    assert!(p.contains("spawn_subagent"));
 }
 
 #[test]
 fn system_prompt_excludes_code_execution() {
     let p = build_system_prompt("Alice", "123", "Alice", "", "", &empty_skills(), None, true);
     assert!(!p.contains("code execution"));
-}
-
-#[test]
-fn system_prompt_lists_discord_user_tools_once_and_in_order() {
-    let p = build_system_prompt("Alice", "123", "Alice", "", "", &empty_skills(), None, true);
-    let find = p.find("- find_discord_users —").unwrap();
-    let get = p.find("- get_discord_user —").unwrap();
-    assert!(find < get);
-    assert_eq!(p.matches("- get_discord_user —").count(), 1);
 }
 
 #[test]
@@ -315,12 +318,6 @@ fn build_user_message_with_audio_and_video() {
     assert_eq!(message["content"][0]["input_audio"]["data"], "audio-bytes");
     assert_eq!(message["content"][1]["type"], "input_video");
     assert_eq!(message["content"][1]["input_video"]["data"], "video-bytes");
-}
-#[test]
-fn system_prompt_mentions_run_lua() {
-    let p = build_system_prompt("Alice", "123", "Alice", "", "", &empty_skills(), None, true);
-    assert!(p.contains("run_lua"));
-    assert!(p.contains("get_lua_docs"));
 }
 
 // ── stable-prefix / ordering tests ─────────────────────────────────────────
@@ -801,6 +798,7 @@ fn all_tool_names_matches_built_in_definitions() {
         crate::tools::feature_development::definition(),
         crate::tools::github_api::definition(),
         crate::tools::remind::definition(),
+        crate::tools::subagent::definition(),
         crate::tools::features::definition(),
         get_messages_tool(),
     ]

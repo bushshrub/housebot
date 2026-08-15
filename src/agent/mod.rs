@@ -236,6 +236,7 @@ mod leaderboard_fmt;
 mod prompt;
 mod run;
 mod session;
+mod subagent;
 mod tools_def;
 
 #[allow(unused_imports)]

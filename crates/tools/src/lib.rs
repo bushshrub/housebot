@@ -15,6 +15,7 @@ pub mod manage_skills;
 pub mod remind;
 pub mod sandbox;
 pub mod searxng;
+pub mod subagent;
 pub mod web_fetch;
 
 /// Single Source of Truth for all built-in tool names (used by autocomplete).
@@ -37,6 +38,7 @@ pub fn all_tool_names() -> &'static [&'static str] {
         "prepare_feature_development",
         "github_api",
         "set_reminder",
+        "spawn_subagent",
         "get_bot_features",
         "get_messages",
         "update_memory",

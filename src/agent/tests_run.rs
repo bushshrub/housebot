@@ -1025,3 +1025,99 @@ async fn build_tools_includes_configure_bot_only_for_configurers() {
         .collect();
     assert!(names.contains(&"configure_bot"));
 }
+
+/// Records the scheduler's sub-agent occupancy at the moment the model is
+/// called, which is the only externally visible proof of the request's
+/// priority.
+struct PriorityProbeClient {
+    scheduler: Arc<std::sync::OnceLock<Arc<crate::llm_scheduler::LlmScheduler>>>,
+    subagent_active: Arc<AtomicBool>,
+}
+
+#[async_trait]
+impl ChatClient for PriorityProbeClient {
+    async fn context_window_tokens(&self) -> anyhow::Result<Option<u64>> {
+        Ok(Some(10_000))
+    }
+
+    async fn chat_stream(
+        &self,
+        _model: &str,
+        _messages: &[Value],
+        _tools: &[Value],
+        _tool_choice: Option<Value>,
+        _thinking: ThinkingMode,
+        _max_completion_tokens: Option<u32>,
+        _sink: Option<&dyn TextSink>,
+    ) -> anyhow::Result<ChatCompletion> {
+        if let Some(scheduler) = self.scheduler.get() {
+            if scheduler.info().subagent_active > 0 {
+                self.subagent_active.store(true, Ordering::Release);
+            }
+        }
+        Ok(ChatCompletion {
+            content: Some("report body".into()),
+            ..Default::default()
+        })
+    }
+
+    async fn chat_once(
+        &self,
+        _model: &str,
+        _messages: &[Value],
+        _max_tokens: u32,
+    ) -> anyhow::Result<ChatCompletion> {
+        Ok(ChatCompletion::default())
+    }
+}
+
+#[tokio::test]
+async fn subagent_runs_at_subagent_priority() {
+    let scheduler = Arc::new(std::sync::OnceLock::new());
+    let subagent_active = Arc::new(AtomicBool::new(false));
+    let client = Arc::new(PriorityProbeClient {
+        scheduler: scheduler.clone(),
+        subagent_active: subagent_active.clone(),
+    });
+    let (_t, agent) = test_agent(client);
+    let _ = scheduler.set(agent.llm_scheduler().clone());
+
+    let out = agent.run_subagent("find X", "", "42", "conv-1").await;
+    assert_eq!(out, "report body");
+    assert!(
+        subagent_active.load(Ordering::Acquire),
+        "sub-agent request did not occupy a SubAgent scheduler slot"
+    );
+}
+
+#[tokio::test]
+async fn subagent_rejects_an_empty_task() {
+    let client = Arc::new(MockChatClient::new());
+    let (_t, agent) = test_agent(client);
+    let out = agent.run_subagent("   ", "", "42", "conv-1").await;
+    assert!(out.starts_with("Error:"));
+}
+
+#[tokio::test]
+async fn subagent_cannot_spawn_or_reach_stateful_tools() {
+    let client = Arc::new(MockChatClient::new());
+    let (_t, agent) = test_agent(client);
+    let names: Vec<String> = agent
+        .subagent_tools()
+        .iter()
+        .filter_map(|t| t["function"]["name"].as_str().map(str::to_string))
+        .collect();
+    assert_eq!(names, vec!["web_search", "fetch_webpage"]);
+}
+
+#[tokio::test]
+async fn build_tools_includes_spawn_subagent() {
+    let client = Arc::new(MockChatClient::new());
+    let (_t, agent) = test_agent(client);
+    let tools = agent.build_tools(true, false).await;
+    let names: Vec<&str> = tools
+        .iter()
+        .filter_map(|t| t["function"]["name"].as_str())
+        .collect();
+    assert!(names.contains(&"spawn_subagent"));
+}

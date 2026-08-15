@@ -310,6 +310,7 @@ impl Agent {
             tools::feature_development::definition(),
             tools::github_api::definition(),
             tools::remind::definition(),
+            tools::subagent::definition(),
             tools::features::definition(),
             get_messages_tool(),
         ];

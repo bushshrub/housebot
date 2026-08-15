@@ -25,29 +25,6 @@ impl Agent {
                     )
                     .await,
             ),
-            "deep_research" => {
-                let questions: Vec<String> = args
-                    .get("questions")
-                    .and_then(Value::as_array)
-                    .map(|questions| {
-                        questions
-                            .iter()
-                            .filter_map(Value::as_str)
-                            .map(str::to_string)
-                            .collect()
-                    })
-                    .unwrap_or_default();
-                ToolOutcome::Text(
-                    self.searxng
-                        .deep_research(
-                            str_arg(args, "topic"),
-                            &questions,
-                            u64_arg(args, "max_results_per_query", 5) as usize,
-                            str_arg(args, "language"),
-                        )
-                        .await,
-                )
-            }
             "fetch_webpage" => ToolOutcome::Text(
                 self.web_fetch
                     .fetch_content(
@@ -259,6 +236,20 @@ impl Agent {
                         user_id,
                         str_arg(args, "message"),
                         delay,
+                    )
+                    .await,
+                )
+            }
+            "spawn_subagent" => {
+                let conversation_id = self
+                    .current_conversation_id(user_id, username, channel_id)
+                    .await;
+                ToolOutcome::Text(
+                    self.run_subagent(
+                        str_arg(args, "task"),
+                        str_arg(args, "context"),
+                        user_id,
+                        &conversation_id,
                     )
                     .await,
                 )
