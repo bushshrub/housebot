@@ -77,12 +77,12 @@ src/
     feature_development.rs # prepare_feature_development + owner auth + rate limit
     sandbox.rs         # LazySandbox + five tool definitions
   coding_agent/
-    catalog.rs       # versioned agent/model/effort catalog (loaded from .github/agents/catalog.json)
+    catalog.rs       # versioned agent/model catalog (loaded from .github/agents/catalog.json)
     pending.rs       # PendingDevelopmentJob state machine (15-min expiry, atomic dispatch guard)
     issue.rs         # GitHub issue body builder + hidden metadata comment
 .github/
   agents/
-    catalog.json     # single source of truth for selectable agent/model/effort combos
+    catalog.json     # single source of truth for selectable agent/model combos
     common.sh        # shared shell utilities for adapter scripts
     run-codex.sh     # Codex adapter
     run-claude.sh    # Claude Code adapter
@@ -269,9 +269,9 @@ specification, runner requirements, and security model.
 - **Owner-only.** Only the configured `OWNER_DISCORD_ID` can dispatch.  
   This is enforced in Rust (`src/tools/feature_development.rs`) — not in the system prompt.
 - **Two-step flow.** The LLM calls `prepare_feature_development` to draft a spec, then the
-  Discord owner selects agent/model/effort and explicitly confirms.  The LLM cannot dispatch
+  Discord owner selects agent/model and explicitly confirms.  The LLM cannot dispatch
   unilaterally.
-- **Catalog.** Agent, model, and effort combinations are defined in
+- **Catalog.** Agent and model combinations are defined in
   `.github/agents/catalog.json`.  Update `catalog_revision` whenever you add or remove entries.
 - **Labels.** `agent:queued` → `agent:running` → `agent:completed` / `agent:no-changes` /
   `agent:failed`.  Do not add or remove these labels manually outside the workflow.

@@ -29,7 +29,7 @@ Continue on this branch rather than cutting a new one. If you must, branch from
 its tip, never from `master`.
 
 Before starting, confirm the tree is green: `cargo test --workspace`
-(618 passing), `cargo clippy --all-targets -- -D warnings`, `cargo fmt --check`.
+(617 passing), `cargo clippy --all-targets -- -D warnings`, `cargo fmt --check`.
 All three pass as of the last commit, so a later failure is yours.
 
 ## Start here
@@ -44,38 +44,23 @@ Two areas are most exposed, because they are new code rather than surviving
 code: `write_file` / `run_skill_script` (which need a live `sandboxd` and gVisor
 to prove out at all) and the directory-based skills store.
 
-### Three things are knowingly unfinished
+### Two things are knowingly unfinished
 
-1. **The model/effort picker does not reach the runner.** This is the one with
-   user-visible impact, and the best first task. The interactive flow offers six
-   OpenCode models and several effort levels; the user's choice is written into
-   the issue metadata and then ignored.
-   `.github/workflows/opencode-dispatch.yml:51` hardcodes
-   `model: opencode/deepseek-v4-flash-free` and `variant: high`, while the bot
-   dispatches only `issue_number`, `prompt`, and `requester_id`.
+The model picker reaching the runner is **done**: `opencode-dispatch.yml`
+declares a `model` input, and `develop_on_confirm` / `develop_on_approve` both
+forward the selection. Effort was dropped instead of wired — every OpenCode
+level declared `mechanism: execution_budget`, which nothing consumed and which
+is a different axis from the action's `variant:` key. `EffortDescriptor`,
+`EffortMechanism`, `DispatchStage::ChoosingEffort`, the `efforts` arrays in
+`catalog.json`, and `DEVELOPMENT_DEFAULT_EFFORT` are all gone; the picker is
+agent → model → confirm. The unrelated `/effort` slash command, which sets the
+chat model's thinking budget, is untouched.
 
-   Closing it means declaring `model` and `effort` as `workflow_dispatch` inputs
-   and forwarding them from the two places the inputs map is built —
-   `develop_on_confirm` (`src/bot/develop_actions.rs:88`) and `develop_on_approve`
-   (`:218`). Both already hold a `ValidatedAgentSelection`, so the values are to
-   hand; note that `trigger_workflow_dispatch` sends every input as a **string**
-   because the API returns 422 for non-string values even on `type: number`
-   inputs.
-
-   Model is the easy half. **Effort is not**: all three OpenCode effort levels
-   declare `mechanism: execution_budget`, meaning the CLI has no native control
-   and effort is supposed to be expressed as timeout/turn/prompt bounds. It does
-   not map onto the action's `variant:` key, which is a different axis — decide
-   what `execution_budget` should actually do here before wiring it, or forward
-   model only and drop the effort step from the picker.
-
-   `CLAUDE.md` forbids an automated run from editing the workflow, so the YAML
-   half needs a human or an explicit exemption.
-2. **Retired CI outlived its backends.** `claude-dispatch.yml`, `run-codex.sh`,
+1. **Retired CI outlived its backends.** `claude-dispatch.yml`, `run-codex.sh`,
    and `run-claude.sh` are unreachable from Rust now that `CodingAgent` has one
    variant. They were left because `CLAUDE.md` forbids an automated run from
    modifying CI; delete them by hand.
-3. **The agent-selection stage is a one-item menu.** `DispatchStage::ChoosingAgent`
+2. **The agent-selection stage is a one-item menu.** `DispatchStage::ChoosingAgent`
    survives with OpenCode as its only option. Collapsing the stage means
    changing the initial stage in `feature_development.rs`, the back-button
    target in `develop_component.rs`, and `pending.rs`. Not done, because it is

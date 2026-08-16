@@ -31,7 +31,7 @@ use crate::bot_config::{
 pub use crate::bot_response::SecretRedactor;
 use crate::channel_context::ChannelContext;
 use crate::coding_agent::catalog::{AgentCatalog, CodingAgent};
-use crate::coding_agent::issue::{build_dispatch_prompt, dispatch_workflow_file};
+use crate::coding_agent::issue::{dispatch_inputs, dispatch_workflow_file};
 use crate::coding_agent::pending::{DiscordMessageRef, DispatchStage, PendingJobStore};
 use crate::config;
 use crate::discord_bridge::DiscordBridge;
@@ -166,7 +166,7 @@ pub struct HouseBot {
     chat_rate_limiter: RateLimiter,
     /// Shared with `Agent` — holds pending coding-agent dispatch jobs.
     pending_jobs: Arc<PendingJobStore>,
-    /// Catalog of agents, models, and effort levels.
+    /// Catalog of agents and models.
     catalog: AgentCatalog,
     /// Shared with `Agent` — provides Discord API access to the agent tools.
     discord: Arc<DiscordBridge>,

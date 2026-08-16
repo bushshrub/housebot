@@ -41,18 +41,15 @@ impl HouseBot {
         let job_data = self.pending_jobs.with_job(job_id, |j| {
             let agent = j.selection.agent?;
             let model = j.selection.model.clone()?;
-            let effort = j.selection.effort.clone()?;
             Some((
                 j.specification.clone(),
                 agent,
                 model,
-                effort,
                 j.requester.username.clone(),
                 j.requester.user_id,
             ))
         });
-        let Some(Some((spec, agent, model, effort, _requester_name, requester_user_id))) = job_data
-        else {
+        let Some(Some((spec, agent, model, _requester_name, requester_user_id))) = job_data else {
             self.pending_jobs.mark_dispatch_failed(job_id);
             let _ = component
                 .edit_response(
@@ -65,7 +62,7 @@ impl HouseBot {
             return;
         };
 
-        let _selection = match self.catalog.validate_selection(agent, &model, &effort) {
+        let _selection = match self.catalog.validate_selection(agent, &model) {
             Ok(s) => s,
             Err(e) => {
                 self.pending_jobs.mark_dispatch_failed(job_id);
@@ -82,21 +79,7 @@ impl HouseBot {
 
         // Get the reporter from the agent.
         let reporter = self.agent.reporter();
-        let mut inputs = serde_json::Map::new();
-        // The workflow_dispatch API rejects non-string input values with 422,
-        // even for inputs declared `type: number` in the workflow.
-        inputs.insert(
-            "issue_number".into(),
-            serde_json::Value::String(spec.issue_number.to_string()),
-        );
-        inputs.insert(
-            "prompt".into(),
-            serde_json::Value::String(build_dispatch_prompt(spec.issue_number)),
-        );
-        inputs.insert(
-            "requester_id".into(),
-            serde_json::Value::String(requester_user_id.to_string()),
-        );
+        let inputs = dispatch_inputs(spec.issue_number, &model, requester_user_id);
         if reporter
             .trigger_workflow_dispatch(dispatch_workflow_file(agent), "master", &inputs)
             .await
@@ -109,19 +92,19 @@ impl HouseBot {
                 "Development job dispatched"
             );
             let _ = component
-                            .edit_response(
-                                &ctx.http,
-                                EditInteractionResponse::new().content(format!(
-                                    "✅ **Dispatched!**\n\
+                .edit_response(
+                    &ctx.http,
+                    EditInteractionResponse::new().content(format!(
+                        "✅ **Dispatched!**\n\
                                      Existing issue #{num}\n\
-                                     Agent: **{agent_name}** | Model: `{model}` | Effort: `{effort}`\n\
+                                     Agent: **{agent_name}** | Model: `{model}`\n\
                                      The `{workflow}` workflow was triggered.",
-                                    num = spec.issue_number,
-                                    agent_name = agent.display_name(),
-                                    workflow = dispatch_workflow_file(agent),
-                                )),
-                            )
-                            .await;
+                        num = spec.issue_number,
+                        agent_name = agent.display_name(),
+                        workflow = dispatch_workflow_file(agent),
+                    )),
+                )
+                .await;
         } else {
             self.pending_jobs.mark_dispatch_failed(job_id);
             let _ = component
@@ -173,19 +156,16 @@ impl HouseBot {
         let job_data = self.pending_jobs.with_job(job_id, |j| {
             let agent = j.selection.agent?;
             let model = j.selection.model.clone()?;
-            let effort = j.selection.effort.clone()?;
             Some((
                 j.specification.clone(),
                 agent,
                 model,
-                effort,
                 j.requester.username.clone(),
                 j.requester.user_id,
                 j.requester.channel_id,
             ))
         });
-        let Some(Some((spec, agent, model, effort, _req_name, req_id, req_channel))) = job_data
-        else {
+        let Some(Some((spec, agent, model, _req_name, req_id, req_channel))) = job_data else {
             self.pending_jobs.mark_dispatch_failed(job_id);
             let _ = component
                 .edit_response(
@@ -196,7 +176,7 @@ impl HouseBot {
             return;
         };
 
-        let _selection = match self.catalog.validate_selection(agent, &model, &effort) {
+        let _selection = match self.catalog.validate_selection(agent, &model) {
             Ok(s) => s,
             Err(e) => {
                 self.pending_jobs.mark_dispatch_failed(job_id);
@@ -212,21 +192,7 @@ impl HouseBot {
         };
 
         let reporter = self.agent.reporter();
-        let mut inputs = serde_json::Map::new();
-        // The workflow_dispatch API rejects non-string input values with 422,
-        // even for inputs declared `type: number` in the workflow.
-        inputs.insert(
-            "issue_number".into(),
-            serde_json::Value::String(spec.issue_number.to_string()),
-        );
-        inputs.insert(
-            "prompt".into(),
-            serde_json::Value::String(build_dispatch_prompt(spec.issue_number)),
-        );
-        inputs.insert(
-            "requester_id".into(),
-            serde_json::Value::String(req_id.to_string()),
-        );
+        let inputs = dispatch_inputs(spec.issue_number, &model, req_id);
         if reporter
             .trigger_workflow_dispatch(dispatch_workflow_file(agent), "master", &inputs)
             .await
@@ -241,7 +207,7 @@ impl HouseBot {
             let success_msg = format!(
                 "✅ **Dispatched!**\n\
                              Existing issue #{num}\n\
-                             Agent: **{agent_name}** | Model: `{model}` | Effort: `{effort}`\n\
+                             Agent: **{agent_name}** | Model: `{model}`\n\
                              The `{workflow}` workflow was triggered.",
                 num = spec.issue_number,
                 agent_name = agent.display_name(),
@@ -256,19 +222,19 @@ impl HouseBot {
             // Notify original requester.
             let channel = serenity::all::ChannelId::new(req_channel);
             let _ = channel
-                            .say(
-                                &ctx.http,
-                                format!(
-                                    "✅ <@{req_id}> The bot owner approved your development request. \
-                                     Development has started using {agent_name}, `{model}`, `{effort}`.\n\
+                .say(
+                    &ctx.http,
+                    format!(
+                        "✅ <@{req_id}> The bot owner approved your development request. \
+                                     Development has started using {agent_name}, `{model}`.\n\
                                      Existing issue: #{issue_number}\n\
                                      The `{workflow}` workflow was triggered.",
-                                    agent_name = agent.display_name(),
-                                    issue_number = spec.issue_number,
-                                    workflow = dispatch_workflow_file(agent),
-                                ),
-                            )
-                            .await;
+                        agent_name = agent.display_name(),
+                        issue_number = spec.issue_number,
+                        workflow = dispatch_workflow_file(agent),
+                    ),
+                )
+                .await;
         } else {
             self.pending_jobs.mark_dispatch_failed(job_id);
             let _ = component
@@ -289,7 +255,7 @@ impl HouseBot {
         job_id: Uuid,
         id_str: &str,
     ) {
-        // Owner wants to change agent/model/effort before approving.
+        // Owner wants to change agent/model before approving.
         if !self.pending_jobs.try_begin_configuration(job_id) {
             let _ = component
                 .create_response(

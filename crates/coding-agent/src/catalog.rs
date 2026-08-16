@@ -1,4 +1,4 @@
-//! Versioned catalog of coding agents, models, and effort levels.
+//! Versioned catalog of coding agents and models.
 //!
 //! The catalog embedded at compile time is the single source of truth for every
 //! selectable combination. Neither Rust code nor shell scripts hardcode model lists
@@ -54,44 +54,11 @@ impl std::fmt::Display for CodingAgent {
     }
 }
 
-/// How a particular effort level is communicated to the agent.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum EffortMechanism {
-    /// The CLI exposes a direct reasoning/effort flag.
-    Native,
-    /// Effort is selected by choosing a different model variant.
-    Variant,
-    /// No native control; bounded by timeout/turn/prompt configuration.
-    ExecutionBudget,
-}
-
-impl std::fmt::Display for EffortMechanism {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let s = match self {
-            EffortMechanism::Native => "native",
-            EffortMechanism::Variant => "variant",
-            EffortMechanism::ExecutionBudget => "execution_budget",
-        };
-        f.write_str(s)
-    }
-}
-
-#[derive(Debug, Clone, Deserialize, Serialize)]
-pub struct EffortDescriptor {
-    pub id: String,
-    pub display_name: String,
-    pub description: Option<String>,
-    pub mechanism: EffortMechanism,
-}
-
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct ModelDescriptor {
     pub id: String,
     pub display_name: String,
     pub description: Option<String>,
-    pub default_effort: String,
-    pub efforts: Vec<EffortDescriptor>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -140,62 +107,36 @@ impl AgentCatalog {
             .unwrap_or(&[])
     }
 
-    pub fn efforts_for(&self, agent: CodingAgent, model: &str) -> Option<&[EffortDescriptor]> {
-        self.agents
-            .get(&agent)?
-            .models
-            .iter()
-            .find(|m| m.id == model)
-            .map(|m| m.efforts.as_slice())
-    }
-
-    /// Validate that agent/model/effort is a known combination and return a `ValidatedAgentSelection`.
+    /// Validate that agent/model is a known combination and return a `ValidatedAgentSelection`.
     pub fn validate_selection(
         &self,
         agent: CodingAgent,
         model: &str,
-        effort: &str,
     ) -> Result<ValidatedAgentSelection> {
         let agent_desc = self
             .agents
             .get(&agent)
             .ok_or_else(|| anyhow::anyhow!("Unknown agent: {:?}", agent))?;
-        let model_desc = agent_desc
+        agent_desc
             .models
             .iter()
             .find(|m| m.id == model)
             .ok_or_else(|| {
                 anyhow::anyhow!("Model '{}' is not configured for agent {:?}", model, agent)
             })?;
-        let effort_desc = model_desc
-            .efforts
-            .iter()
-            .find(|e| e.id == effort)
-            .ok_or_else(|| {
-                anyhow::anyhow!(
-                    "Effort '{}' is not valid for model '{}' on agent {:?}",
-                    effort,
-                    model,
-                    agent
-                )
-            })?;
         Ok(ValidatedAgentSelection {
             agent,
             model: model.to_string(),
-            effort: effort.to_string(),
-            effort_mechanism: effort_desc.mechanism,
             catalog_revision: self.catalog_revision.clone(),
         })
     }
 }
 
-/// A fully validated agent/model/effort combination ready for dispatch.
+/// A fully validated agent/model combination ready for dispatch.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ValidatedAgentSelection {
     pub agent: CodingAgent,
     pub model: String,
-    pub effort: String,
-    pub effort_mechanism: EffortMechanism,
     pub catalog_revision: String,
 }
 
@@ -243,46 +184,18 @@ mod tests {
     }
 
     #[test]
-    fn efforts_for_returns_some_for_known_model() {
-        let catalog = test_catalog();
-        let models = catalog.models_for(CodingAgent::OpenCode);
-        let model_id = &models[0].id;
-        assert!(catalog
-            .efforts_for(CodingAgent::OpenCode, model_id)
-            .is_some());
-    }
-
-    #[test]
-    fn efforts_for_returns_none_for_unknown_model() {
-        let catalog = test_catalog();
-        assert!(catalog
-            .efforts_for(CodingAgent::OpenCode, "nonexistent-model")
-            .is_none());
-    }
-
-    #[test]
     fn validate_selection_succeeds_for_valid_combo() {
         let catalog = test_catalog();
         let models = catalog.models_for(CodingAgent::OpenCode);
-        let model = &models[0];
-        let effort = &model.efforts[0];
         assert!(catalog
-            .validate_selection(CodingAgent::OpenCode, &model.id, &effort.id)
+            .validate_selection(CodingAgent::OpenCode, &models[0].id)
             .is_ok());
-    }
-
-    #[test]
-    fn validate_selection_rejects_invalid_effort() {
-        let catalog = test_catalog();
-        let models = catalog.models_for(CodingAgent::OpenCode);
-        let result = catalog.validate_selection(CodingAgent::OpenCode, &models[0].id, "ultra");
-        assert!(result.is_err());
     }
 
     #[test]
     fn validate_selection_rejects_invalid_model() {
         let catalog = test_catalog();
-        let result = catalog.validate_selection(CodingAgent::OpenCode, "gpt-5", "high");
+        let result = catalog.validate_selection(CodingAgent::OpenCode, "gpt-5");
         assert!(result.is_err());
     }
 

@@ -185,11 +185,9 @@ impl Agent {
                         "DEVELOPMENT_DEFAULT_MODEL",
                         "opencode/deepseek-v4-flash-free",
                     );
-                    let effort = config::env_or("DEVELOPMENT_DEFAULT_EFFORT", "medium");
                     PartialAgentSelection {
                         agent: CodingAgent::from_str(&agent_str).ok(),
                         model: Some(model),
-                        effort: Some(effort),
                     }
                 };
 

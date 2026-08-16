@@ -62,17 +62,16 @@ impl DevelopmentSpecification {
     }
 }
 
-/// Partially-filled agent/model/effort selection built during the Discord component flow.
+/// Partially-filled agent/model selection built during the Discord component flow.
 #[derive(Debug, Clone, Default)]
 pub struct PartialAgentSelection {
     pub agent: Option<CodingAgent>,
     pub model: Option<String>,
-    pub effort: Option<String>,
 }
 
 impl PartialAgentSelection {
     pub fn is_complete(&self) -> bool {
-        self.agent.is_some() && self.model.is_some() && self.effort.is_some()
+        self.agent.is_some() && self.model.is_some()
     }
 }
 
@@ -83,7 +82,6 @@ pub enum DispatchStage {
     AwaitingOwnerApproval,
     ChoosingAgent,
     ChoosingModel,
-    ChoosingEffort,
     Confirming,
     /// Atomic transition: issue is being created.
     Dispatching,

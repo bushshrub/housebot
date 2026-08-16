@@ -257,12 +257,12 @@ Build the scheduler first: sub-agents (Phase 3) and the config commands
 - [x] README and `.env.example` updated
 
 ### Left open
-- [ ] **The model and effort picker does not reach the runner.**
-      `opencode-dispatch.yml` hardcodes `model: opencode/deepseek-v4-flash-free`
-      and `variant: high`; the bot passes only `issue_number`, `prompt`, and
-      `requester_id`. Whatever the user selects is recorded in the issue
-      metadata and then ignored. Fixing it means declaring `model` and `effort`
-      as workflow inputs, which `CLAUDE.md` forbids an automated run from doing.
+- [x] **The model picker now reaches the runner.** `opencode-dispatch.yml`
+      declares a `model` input and the bot forwards the selection from both
+      dispatch paths. Effort was dropped rather than wired: every OpenCode
+      level was `execution_budget`, which nothing consumed and which does not
+      map onto the action's `variant:` axis. The picker is now agent → model →
+      confirm.
 - [ ] **Retired CI still present.** `.github/workflows/claude-dispatch.yml` and
       the `run-codex.sh` / `run-claude.sh` adapters outlived the backends they
       served. Nothing in Rust can reach them. Same reason they were left.

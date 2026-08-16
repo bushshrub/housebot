@@ -50,7 +50,6 @@ fn defaults() -> PartialAgentSelection {
     PartialAgentSelection {
         agent: Some(CodingAgent::OpenCode),
         model: Some("model".into()),
-        effort: Some("high".into()),
     }
 }
 

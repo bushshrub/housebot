@@ -52,12 +52,9 @@ impl HouseBot {
                 j.requester.channel_id,
                 j.selection.agent,
                 j.selection.model.clone(),
-                j.selection.effort.clone(),
             )
         });
-        let Some((title, objective, req_name, req_id, req_channel, agent, model, effort)) =
-            job_info
-        else {
+        let Some((title, objective, req_name, req_id, req_channel, agent, model)) = job_info else {
             tracing::warn!(target: "housebot::develop", %job_id, "Job not found when notifying owner");
             return;
         };
@@ -66,14 +63,13 @@ impl HouseBot {
             .map(|a| a.display_name().to_string())
             .unwrap_or_else(|| "default".into());
         let model_str = model.as_deref().unwrap_or("default");
-        let effort_str = effort.as_deref().unwrap_or("default");
 
         let dm_content = format!(
             "**Feature-development request from <@{req_id}>** (`{req_name}`)\n\
              **Feature:** {title}\n\
              **Objective:**\n> {obj}\n\
              **Proposed configuration:**\n\
-             Agent: {agent_str} | Model: `{model_str}` | Effort: `{effort_str}`\n\
+             Agent: {agent_str} | Model: `{model_str}`\n\
              **Origin:** <#{req_channel}>",
             obj = objective.lines().collect::<Vec<_>>().join("\n> "),
         );
@@ -354,49 +350,13 @@ pub(crate) fn develop_model_components(
     ]
 }
 
-pub(crate) fn develop_effort_components(
-    job_id: &str,
-    agent: CodingAgent,
-    model: &str,
-    catalog: &AgentCatalog,
-) -> Vec<CreateActionRow> {
-    let efforts = catalog.efforts_for(agent, model).unwrap_or(&[]);
-    let options: Vec<CreateSelectMenuOption> = efforts
-        .iter()
-        .map(|e| {
-            let mut opt = CreateSelectMenuOption::new(&e.display_name, &e.id);
-            if let Some(desc) = &e.description {
-                opt = opt.description(desc.chars().take(100).collect::<String>());
-            }
-            opt
-        })
-        .collect();
-    vec![
-        CreateActionRow::SelectMenu(
-            CreateSelectMenu::new(
-                format!("{DEVELOP_PREFIX}{job_id}:effort"),
-                CreateSelectMenuKind::String { options },
-            )
-            .placeholder("Select effort level"),
-        ),
-        CreateActionRow::Buttons(vec![
-            CreateButton::new(format!("{DEVELOP_PREFIX}{job_id}:back"))
-                .label("← Back")
-                .style(ButtonStyle::Secondary),
-            CreateButton::new(format!("{DEVELOP_PREFIX}{job_id}:cancel"))
-                .label("Cancel")
-                .style(ButtonStyle::Danger),
-        ]),
-    ]
-}
-
 pub(crate) fn develop_confirm_components(job_id: &str) -> Vec<CreateActionRow> {
     vec![CreateActionRow::Buttons(vec![
         CreateButton::new(format!("{DEVELOP_PREFIX}{job_id}:confirm"))
             .label("Dispatch")
             .style(ButtonStyle::Success),
         CreateButton::new(format!("{DEVELOP_PREFIX}{job_id}:back"))
-            .label("← Change Effort")
+            .label("← Change Model")
             .style(ButtonStyle::Secondary),
         CreateButton::new(format!("{DEVELOP_PREFIX}{job_id}:cancel"))
             .label("Cancel")

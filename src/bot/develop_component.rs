@@ -42,7 +42,7 @@ impl HouseBot {
 
         // Approval decisions on someone else's request (approve/reject/configure,
         // shown only on AwaitingOwnerApproval cards) are owner-only. The
-        // requester's own interactive selection (agent/model/effort/confirm/
+        // requester's own interactive selection (agent/model/confirm/
         // back/cancel) may be driven by either the owner or the requester.
         let caller = component.user.id.get();
         let owner_only_action = matches!(action, "approve" | "reject" | "configure");
@@ -91,10 +91,6 @@ impl HouseBot {
         match action {
             "agent" => self.develop_on_agent(ctx, component, job_id, &id_str).await,
             "model" => self.develop_on_model(ctx, component, job_id, &id_str).await,
-            "effort" => {
-                self.develop_on_effort(ctx, component, job_id, &id_str)
-                    .await
-            }
             "confirm" => {
                 self.develop_on_confirm(ctx, component, job_id, &id_str)
                     .await
@@ -151,7 +147,6 @@ impl HouseBot {
         self.pending_jobs.with_job_mut(job_id, |j| {
             j.selection.agent = Some(agent);
             j.selection.model = None;
-            j.selection.effort = None;
             j.stage = DispatchStage::ChoosingModel;
         });
         let (title, models_text) = self
@@ -203,8 +198,7 @@ impl HouseBot {
         let Some(agent) = agent else {
             return;
         };
-        // Validate model against catalog.
-        if self.catalog.efforts_for(agent, &model_id).is_none() {
+        if self.catalog.validate_selection(agent, &model_id).is_err() {
             let _ = component
                 .create_response(
                     &ctx.http,
@@ -219,78 +213,6 @@ impl HouseBot {
         }
         self.pending_jobs.with_job_mut(job_id, |j| {
             j.selection.model = Some(model_id.clone());
-            j.selection.effort = None;
-            j.stage = DispatchStage::ChoosingEffort;
-        });
-        let content = self
-            .pending_jobs
-            .with_job(job_id, |j| {
-                format!(
-                    "**Feature development: {}**\n\n\
-                             Agent: **{}**\nModel: **{}**\nChoose effort level:",
-                    j.specification.title,
-                    agent.display_name(),
-                    model_id
-                )
-            })
-            .unwrap_or_default();
-        let components = develop_effort_components(id_str, agent, &model_id, &self.catalog);
-        let _ = component
-            .create_response(
-                &ctx.http,
-                CreateInteractionResponse::UpdateMessage(
-                    CreateInteractionResponseMessage::new()
-                        .content(content)
-                        .components(components),
-                ),
-            )
-            .await;
-    }
-
-    pub(crate) async fn develop_on_effort(
-        &self,
-        ctx: &Context,
-        component: &serenity::all::ComponentInteraction,
-        job_id: Uuid,
-        id_str: &str,
-    ) {
-        let selected = match &component.data.kind {
-            ComponentInteractionDataKind::StringSelect { values } => values.first().cloned(),
-            _ => None,
-        };
-        let Some(effort_id) = selected else {
-            return;
-        };
-        let (agent, model) = self
-            .pending_jobs
-            .with_job(job_id, |j| (j.selection.agent, j.selection.model.clone()))
-            .unwrap_or_default();
-        let (Some(agent), Some(model)) = (agent, model) else {
-            return;
-        };
-        // Validate effort.
-        if self
-            .catalog
-            .efforts_for(agent, &model)
-            .and_then(|efs| efs.iter().find(|e| e.id == effort_id))
-            .is_none()
-        {
-            let _ = component
-                .create_response(
-                    &ctx.http,
-                    CreateInteractionResponse::Message(
-                        CreateInteractionResponseMessage::new()
-                            .content(format!(
-                                "Effort `{effort_id}` is not valid for model `{model}`."
-                            ))
-                            .ephemeral(true),
-                    ),
-                )
-                .await;
-            return;
-        }
-        self.pending_jobs.with_job_mut(job_id, |j| {
-            j.selection.effort = Some(effort_id.clone());
             j.stage = DispatchStage::Confirming;
         });
         let content = self
@@ -299,14 +221,12 @@ impl HouseBot {
                 format!(
                     "**Feature development: {}**\n\n\
                              **Agent:** {}\n\
-                             **Model:** {}\n\
-                             **Effort:** {}\n\n\
+                             **Model:** {}\n\n\
                              **Objective:**\n{}\n\n\
                              Confirm dispatch to create a GitHub issue and queue the coding job.",
                     j.specification.title,
                     agent.display_name(),
-                    model,
-                    effort_id,
+                    model_id,
                     j.specification.objective
                 )
             })
@@ -350,59 +270,27 @@ impl HouseBot {
                             develop_agent_components(id_str),
                         )
             }
-            Some(DispatchStage::ChoosingEffort) => {
+            Some(DispatchStage::Confirming) => {
                 let agent = self
                     .pending_jobs
                     .with_job(job_id, |j| j.selection.agent)
-                    .flatten();
+                    .flatten()
+                    .unwrap_or(CodingAgent::OpenCode);
                 self.pending_jobs.with_job_mut(job_id, |j| {
                     j.selection.model = None;
                     j.stage = DispatchStage::ChoosingModel;
-                });
-                let (title, agent_name) = self
-                    .pending_jobs
-                    .with_job(job_id, |j| {
-                        (
-                            j.specification.title.clone(),
-                            j.selection.agent.map(|a| a.display_name().to_string()),
-                        )
-                    })
-                    .unwrap_or_default();
-                let agent = agent.unwrap_or(CodingAgent::OpenCode);
-                (
-                    format!(
-                        "**Feature development: {title}**\n\nAgent: **{}**\nChoose a model:",
-                        agent_name.unwrap_or_default()
-                    ),
-                    develop_model_components(id_str, agent, &self.catalog),
-                )
-            }
-            Some(DispatchStage::Confirming) => {
-                let agent_opt = self
-                    .pending_jobs
-                    .with_job(job_id, |j| j.selection.agent)
-                    .flatten();
-                let model_opt = self
-                    .pending_jobs
-                    .with_job(job_id, |j| j.selection.model.clone())
-                    .flatten();
-                self.pending_jobs.with_job_mut(job_id, |j| {
-                    j.selection.effort = None;
-                    j.stage = DispatchStage::ChoosingEffort;
                 });
                 let title = self
                     .pending_jobs
                     .with_job(job_id, |j| j.specification.title.clone())
                     .unwrap_or_default();
-                let agent = agent_opt.unwrap_or(CodingAgent::OpenCode);
-                let model = model_opt.unwrap_or_default();
                 (
-                            format!(
-                                "**Feature development: {title}**\n\nAgent: **{}**\nModel: `{model}`\nChoose effort level:",
-                                agent.display_name()
-                            ),
-                            develop_effort_components(id_str, agent, &model, &self.catalog),
-                        )
+                    format!(
+                        "**Feature development: {title}**\n\nAgent: **{}**\nChoose a model:",
+                        agent.display_name()
+                    ),
+                    develop_model_components(id_str, agent, &self.catalog),
+                )
             }
             _ => return,
         };
