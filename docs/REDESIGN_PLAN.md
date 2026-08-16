@@ -6,7 +6,8 @@ source of truth for what is in scope and what is done; update the checkboxes as
 work lands.
 
 Resuming in a new session? Start with [`HANDOFF.md`](../HANDOFF.md) — it covers
-current state and gotchas. Phases 1–5 are done; Phase 6 is next.
+current state and gotchas. All seven phases have landed; what remains is the
+first live startup and the items under "Left open".
 
 ## Decisions
 
@@ -57,10 +58,10 @@ from the old SQL:
 | `user_memories` | `crates/memory` | Phase 2 ✅ |
 | `bot_config` | `crates/bot-config` | Phase 5 ✅ |
 | `conversations`, `token_usage_events` | `crates/token-monitor` | Phase 5 ✅ |
-| `deployment_permissions` | `crates/deployment-bot` | Phase 6 |
+| `deployment_permissions` | `crates/deployment-bot` | Phase 6 ✅ |
 
-Until each lands, the bot cannot run against a migrated database. That is
-expected during the rebuild.
+Every surviving store now has a post-purge migration, asserted by
+`every_store_the_bot_needs_has_a_migration` in `crates/database`.
 
 ## Scope
 
@@ -243,16 +244,30 @@ Build the scheduler first: sub-agents (Phase 3) and the config commands
       together make the bot bootable again after the purge
 
 ### Phase 6 — subsystems
-- [ ] Deployment bot verified against the new core; `deployment_permissions`
-      migration
-- [ ] OpenCode feature-development flow; drop the `Codex` and `ClaudeCode`
-      variants from `crates/coding-agent/src/catalog.rs` (all three still exist)
+- [x] Deployment bot verified against the new core; `deployment_permissions`
+      migration. Its env allowlist had rotted in both directions and is now
+      test-guarded against the bot's actual env surface
+- [x] OpenCode feature-development flow; dropped the `Codex` and `ClaudeCode`
+      variants from `crates/coding-agent/src/catalog.rs`
 
 ### Phase 7 — finish
-- [ ] Every surviving store has a post-purge migration (see the table above)
-- [ ] `HANDOFF.md` deleted or rewritten for whatever remains
-- [ ] `cargo test`, `cargo clippy --all-targets -- -D warnings`, `cargo fmt --check`
-- [ ] README and `.env.example` updated
+- [x] Every surviving store has a post-purge migration (see the table above)
+- [x] `HANDOFF.md` rewritten for what remains
+- [x] `cargo test`, `cargo clippy --all-targets -- -D warnings`, `cargo fmt --check`
+- [x] README and `.env.example` updated
+
+### Left open
+- [ ] **The model and effort picker does not reach the runner.**
+      `opencode-dispatch.yml` hardcodes `model: opencode/deepseek-v4-flash-free`
+      and `variant: high`; the bot passes only `issue_number`, `prompt`, and
+      `requester_id`. Whatever the user selects is recorded in the issue
+      metadata and then ignored. Fixing it means declaring `model` and `effort`
+      as workflow inputs, which `CLAUDE.md` forbids an automated run from doing.
+- [ ] **Retired CI still present.** `.github/workflows/claude-dispatch.yml` and
+      the `run-codex.sh` / `run-claude.sh` adapters outlived the backends they
+      served. Nothing in Rust can reach them. Same reason they were left.
+- [ ] **First live startup.** Nothing in this rebuild has run against real
+      Postgres, Discord, an LLM server, or Docker.
 
 ## Future work
 
