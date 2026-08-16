@@ -8,9 +8,29 @@ All seven phases have landed. The per-phase narrative that used to live here is
 in the commit history; what is kept below is the part that is still load-bearing
 for whoever touches this next.
 
-Before starting, confirm the tree is green: `cargo test --workspace`,
-`cargo clippy --all-targets -- -D warnings`, `cargo fmt --check`. All three
-pass as of the last commit, so a later failure is yours.
+## Where the work is
+
+**Branch: `claude/phase-6-continuation-pg9rzq`.** It carries the entire rebuild —
+phases 1 through 7, 22 commits — and is the only place any of it exists.
+
+- **Nothing is merged.** `master` has none of the rebuild. Do not branch new work
+  from `master` expecting to find it.
+- The branch was rebased onto the phase 5 tip
+  (`claude/bot-redesign-phase-five-jz9cc2`), so its history is continuous with
+  the earlier phase branches rather than a parallel line. The older branches —
+  `claude/bot-redesign-audit-7gecv3`, `-audit-remaining-9aj83g` (PR #320,
+  "Phase 1–4 complete"), `-audit-continue-cinqt6`, `-phase-five-jz9cc2` — are
+  all ancestors or subsets of it. Ignore them; they are stale by definition now.
+- **No PR is open for this branch.** PR #320 covers phases 1–4 only and is
+  behind. Opening one is a human decision — `CLAUDE.md` forbids automated runs
+  from doing it.
+
+Continue on this branch rather than cutting a new one. If you must, branch from
+its tip, never from `master`.
+
+Before starting, confirm the tree is green: `cargo test --workspace`
+(618 passing), `cargo clippy --all-targets -- -D warnings`, `cargo fmt --check`.
+All three pass as of the last commit, so a later failure is yours.
 
 ## Start here
 
@@ -26,15 +46,31 @@ to prove out at all) and the directory-based skills store.
 
 ### Three things are knowingly unfinished
 
-1. **The model/effort picker does not reach the runner.** The interactive flow
-   offers six OpenCode models and several effort levels; the user's choice is
-   written into the issue metadata and then ignored.
-   `.github/workflows/opencode-dispatch.yml` hardcodes
-   `model: opencode/deepseek-v4-flash-free` and `variant: high`, and the bot
-   dispatches only `issue_number`, `prompt`, and `requester_id`. Closing this
-   means declaring `model` and `effort` as workflow inputs and forwarding them
-   from `develop_actions.rs`, where the inputs map is built twice — the
-   owner-direct path and the approval path both need it.
+1. **The model/effort picker does not reach the runner.** This is the one with
+   user-visible impact, and the best first task. The interactive flow offers six
+   OpenCode models and several effort levels; the user's choice is written into
+   the issue metadata and then ignored.
+   `.github/workflows/opencode-dispatch.yml:51` hardcodes
+   `model: opencode/deepseek-v4-flash-free` and `variant: high`, while the bot
+   dispatches only `issue_number`, `prompt`, and `requester_id`.
+
+   Closing it means declaring `model` and `effort` as `workflow_dispatch` inputs
+   and forwarding them from the two places the inputs map is built —
+   `develop_on_confirm` (`src/bot/develop_actions.rs:88`) and `develop_on_approve`
+   (`:218`). Both already hold a `ValidatedAgentSelection`, so the values are to
+   hand; note that `trigger_workflow_dispatch` sends every input as a **string**
+   because the API returns 422 for non-string values even on `type: number`
+   inputs.
+
+   Model is the easy half. **Effort is not**: all three OpenCode effort levels
+   declare `mechanism: execution_budget`, meaning the CLI has no native control
+   and effort is supposed to be expressed as timeout/turn/prompt bounds. It does
+   not map onto the action's `variant:` key, which is a different axis — decide
+   what `execution_budget` should actually do here before wiring it, or forward
+   model only and drop the effort step from the picker.
+
+   `CLAUDE.md` forbids an automated run from editing the workflow, so the YAML
+   half needs a human or an explicit exemption.
 2. **Retired CI outlived its backends.** `claude-dispatch.yml`, `run-codex.sh`,
    and `run-claude.sh` are unreachable from Rust now that `CodingAgent` has one
    variant. They were left because `CLAUDE.md` forbids an automated run from
