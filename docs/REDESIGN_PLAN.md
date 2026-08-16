@@ -6,7 +6,7 @@ source of truth for what is in scope and what is done; update the checkboxes as
 work lands.
 
 Resuming in a new session? Start with [`HANDOFF.md`](../HANDOFF.md) — it covers
-current state and gotchas. Phases 1–4 are done; Phase 5 is next.
+current state and gotchas. Phases 1–5 are done; Phase 6 is next.
 
 ## Decisions
 
@@ -54,9 +54,9 @@ from the old SQL:
 
 | Table | Queried by | Recreated in |
 |---|---|---|
-| `user_memories` | `crates/memory` | Phase 2 |
-| `bot_config` | `crates/bot-config` | Phase 5 |
-| `conversations`, `token_usage_events` | `crates/token-monitor` | Phase 5 |
+| `user_memories` | `crates/memory` | Phase 2 ✅ |
+| `bot_config` | `crates/bot-config` | Phase 5 ✅ |
+| `conversations`, `token_usage_events` | `crates/token-monitor` | Phase 5 ✅ |
 | `deployment_permissions` | `crates/deployment-bot` | Phase 6 |
 
 Until each lands, the bot cannot run against a migrated database. That is
@@ -229,10 +229,18 @@ Build the scheduler first: sub-agents (Phase 3) and the config commands
 - [x] Make the workspace usable for coding: `noexec` dropped from the
       `/workspace` tmpfs, plus a `write_file` method
 
-### Phase 5 — Discord surface
-- [ ] Message handler, streaming render, cancel reaction, progress
-- [ ] Runtime config commands, including scheduler limits
-- [ ] `/stats` + token leaderboards
+### Phase 5 — Discord surface ✅
+- [x] Message handler, streaming render, cancel reaction, progress — all four
+      survived Phase 1 intact; the audit found the stale surface *around* them
+      (three cut commands still registered, a `/help` reference advertising a
+      dozen removed features) rather than gaps
+- [x] Runtime config commands, including scheduler limits — `/config scheduler
+      show|max_inflight|max_subagent`, persisted in `bot_config` so a ceiling
+      set during an incident survives a redeploy
+- [x] `/stats` + token leaderboards — the leaderboard already existed; `/stats`
+      now reports the caller's token totals
+- [x] Migrations `003_create_bot_config` and `004_create_token_monitor`, which
+      together make the bot bootable again after the purge
 
 ### Phase 6 — subsystems
 - [ ] Deployment bot verified against the new core; `deployment_permissions`

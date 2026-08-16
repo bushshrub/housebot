@@ -4,7 +4,8 @@ Read this together with [`docs/REDESIGN_PLAN.md`](docs/REDESIGN_PLAN.md), which
 is the authoritative scope document — this file covers state and gotchas, the
 plan covers what to build.
 
-**Branch:** `claude/bot-redesign-audit-remaining-9aj83g`. No PR opened.
+**Branch:** `claude/bot-redesign-phase-five-jz9cc2`, which continues
+`claude/bot-redesign-audit-remaining-9aj83g` (PR #320).
 
 ## Where things stand
 
@@ -16,37 +17,114 @@ plan covers what to build.
 | Phase 2 — core | done |
 | Phase 3 — tools | done |
 | Phase 4 — skills + sandbox | done |
-| Phases 5–7 | not started |
+| Phase 5 — Discord surface | done |
+| Phases 6–7 | not started |
 
 Before starting, confirm the tree is green: `cargo test --workspace`,
 `cargo clippy --all-targets -- -D warnings`, `cargo fmt --check`. All three
 pass as of the last commit, so a later failure is yours.
 
-## Start here — Phase 5
+## Start here — Phase 6
 
-**Expect an audit, not a build.** Phases 2, 3, and 4 each found work already
-done, and Phase 5's Discord surface looks like more of the same: `handler.rs`,
-`message_flow.rs`, `render.rs`, `progress.rs`, and `config_cmd.rs` all exist and
-compile (~1,650 lines between them). Read them before writing anything. The
-likely real work is the migrations, not the surface.
+Two items, and the second is bigger than it reads:
 
-Suggested order:
+1. **Deployment bot.** `crates/deployment-bot` is a separate binary with its own
+   container (`Dockerfile.deployment-bot`) and is not linked into `housebot` at
+   all, so nothing in Phases 1–5 touched it. It needs the
+   `deployment_permissions` migration (number it `005`, new shape, do not
+   restore the old SQL) and a read-through against the new core.
+2. **OpenCode flow**, plus the Phase 1 work deferred into this phase: drop the
+   `Codex` and `ClaudeCode` variants from `crates/coding-agent/src/catalog.rs`.
+   All three backends are still there.
 
-1. **Read the code first.** Streaming render, cancel reaction, and progress are
-   probably present — `AgentHooks` and the reminder loop already run through
-   this layer.
-2. **Write migrations `003` and `004`** — `bot_config`, then `conversations` +
-   `token_usage_events`. New shapes; do not restore old SQL from git history.
-   `conversation_messages` is **deliberately gone** — see the decisions table.
-3. **Wire the scheduler config commands.** `set_max_inflight` and
-   `set_max_subagent` exist on `LlmScheduler` and nothing calls them yet; that
-   is the one piece Phase 2 explicitly left for Phase 5.
-4. `/stats` and token leaderboards — `leaderboard_fmt.rs` and the token-monitor
-   queries already exist.
+The bot is **bootable** as of Phase 5 — `bot_config`, `conversations`, and
+`token_usage_events` all exist now, and those were the three tables
+`Agent::from_env` refused to start without. It has still never actually been
+started; see "Things that will surprise you".
 
-Those two migrations are also what makes the bot **bootable** for the first time
-since the purge. Nothing before Phase 5 can be exercised against a running bot,
-so expect the first real startup to surface things unit tests could not.
+## What Phase 5 actually changed
+
+A fourth consecutive audit. The Discord surface itself — streaming render,
+cancel reaction, progress hooks, message flow — was intact from Phase 1 and
+needed nothing. What was rotten was everything *describing* that surface.
+
+### Three cut commands were still being registered
+
+`/lua`, `/tool_ban`, and `/tool_restore` were deleted in Phase 1 but their
+`CreateCommand` definitions survived in `command_defs.rs`, so the bot kept
+publishing them to Discord with no handler behind them: a user clicking one got
+silence. `/lua` was global (now in `RETIRED_SLASH_COMMANDS`, which the startup
+sweep deletes); the other two were guild-scoped, and the guild registration is a
+bulk `set_commands` overwrite, so dropping them from the list is enough.
+
+**Registration is the same blind spot as the system prompt.** A `CreateCommand`
+is data, not a call — deleting a handler leaves the registration compiling
+happily. When you cut a command, grep `command_defs.rs` for it too.
+
+### `/help` was lying, at length
+
+`features_text()` in `crates/tools/src/features.rs` backs both `/help` **and**
+the `get_bot_features` tool result, so its 60 lines of prose were being read by
+users and by the model. It still advertised `!grocery`, `/lua`, `/data profile`,
+`/storage notes`, Jellyfin, deep research, translation, downloads, and proactive
+assistance — all cut in Phase 1. Rewritten to the surviving surface, and
+`reference_does_not_advertise_removed_features` now guards it the way
+`system_prompt_does_not_advertise_removed_tools` guards the prompt. **Add to
+both when you cut something.**
+
+`tool_status` in `crates/bot-formatting` had the same rot in icon form
+(`jellyfin__`, `run_lua`, `deep_research`); it now covers the surviving tools
+and gives `sandbox_*` its own icon.
+
+### `/help` was also being truncated
+
+It is ~3 KB and message content caps at 2000 characters, so the tail was cut off
+in Discord and nothing said so. Slash-command replies longer than
+`MAX_MESSAGE_LENGTH` are now sent as an embed description (4096), via
+`truncate_reply`, which is `truncate_memory_reply` with the limit as a
+parameter. A test asserts the reference still fits.
+
+### Scheduler limits are configurable and persistent
+
+`/config scheduler show|max_inflight|max_subagent` drives `set_max_inflight` /
+`set_max_subagent`, the two methods Phase 2 left with no callers.
+
+- The limits are stored in `bot_config` under `scheduler_limits`
+  (`SchedulerLimitsStore`), and `Agent::from_env` seeds the scheduler from them,
+  falling back to `MAX_INFLIGHT_LLM` / `MAX_SUBAGENT_CONCURRENCY`. **The env
+  vars are startup defaults only** — once a configurer sets a ceiling, the
+  stored value wins on every later boot.
+- `LlmScheduler` **panics** on a zero ceiling. The bound is enforced three
+  times over: Discord's `min_int_value`, the command handler, and a `.max(1)`
+  when loading a stored record. Keep all three; only the last one covers a
+  corrupt row.
+- `Agent::from_env` now opens **one** bot-config Postgres client and shares it
+  between `AccessControlStore` and `SchedulerLimitsStore`, so
+  `AccessControlStore::from_env` was removed. The fail-closed behaviour is
+  unchanged: no client, no start.
+
+### `/stats` reports tokens
+
+`TokenMonitor::get_user_stats` existed with no callers; `/stats` now shows the
+caller's all-time totals through `Agent::user_token_summary`.
+`get_global_stats` and `GlobalTokenStats` had no caller either and no place in
+the plan, so they were deleted. That makes three phases in a row where a `pub
+fn` in a library crate sat dead without a single warning — assume there is more.
+
+### The two migrations
+
+`003_create_bot_config` and `004_create_token_monitor`, written to match what
+the code actually queries rather than the pre-purge schemas:
+
+- `token_usage_events.conversation_id` is a foreign key **`ON DELETE
+  CASCADE`**. `clear_user` only deletes from `conversations`; without the
+  cascade, `/data erase` would leave a user's usage events behind and the
+  windowed leaderboards would keep billing them.
+- `conversations` has a partial index on `(user_id, started_at DESC) WHERE
+  ended_at IS NULL`, which is exactly the resume-on-restart lookup.
+- `every_store_the_bot_needs_has_a_migration` in `crates/database` asserts each
+  required table is created by some migration. Add `deployment_permissions` to
+  it when Phase 6 lands.
 
 ## What Phase 2 actually changed
 
@@ -214,29 +292,24 @@ all the fuzzy/levenshtein matching had **no callers outside their own tests**
 were dropped rather than ported. Its operations are in-memory and therefore no
 longer `async`.
 
-## The database is still nearly empty
+## The database
 
-`001_purge_all_data` drops the entire `public` schema. Only `user_memories` has
-been recreated (`002`). **The bot will not start against a migrated database
-yet** — `Agent::from_env` refuses to fall back for token monitoring and access
-control, so those tables are load-bearing.
+`001_purge_all_data` drops the entire `public` schema; everything since is
+recreated with a new shape.
 
 | Table | Used by | Migration |
 |---|---|---|
 | `user_memories` | `crates/memory` | `002` ✅ |
-| `bot_config` | `crates/bot-config` | missing |
-| `conversations`, `token_usage_events` | `crates/token-monitor` | missing |
-| `deployment_permissions` | `crates/deployment-bot` | missing |
+| `bot_config` | `crates/bot-config` | `003` ✅ |
+| `conversations`, `token_usage_events` | `crates/token-monitor` | `004` ✅ |
+| `deployment_permissions` | `crates/deployment-bot` | missing (Phase 6) |
 
-Recreate the rest with their **new** shapes, numbered from `003`. Do not
-restore the deleted SQL from git history — the schemas are meant to change.
+Recreate the last one with its **new** shape, numbered `005`. Do not restore
+the deleted SQL from git history — the schemas are meant to change.
 
-**Only three of those tables block the bot.** `bot_config` plus the two
-token-monitor tables are what `Agent::from_env` refuses to start without.
-`deployment_permissions` belongs to `crates/deployment-bot`, which is **not
-linked into the `housebot` binary at all** — it is a separate crate with its own
-container (`Dockerfile.deployment-bot`), so its migration can land with Phase 6
-without holding up a bootable bot.
+`deployment_permissions` does not block the bot: `crates/deployment-bot` is
+**not linked into the `housebot` binary at all** — separate crate, separate
+container (`Dockerfile.deployment-bot`).
 
 No store creates its own tables; they all assume migrations have run.
 
@@ -347,6 +420,8 @@ Do not re-ask these; they are in the plan's decisions table.
 far was verified by `cargo test`, clippy, and reading code — no session has
 started the bot, reached a real Postgres, a Discord gateway, an LLM server, or a
 Docker daemon. "Done" in the table above means compiled, wired, and unit-tested.
+Phase 5 removed the last thing *blocking* a first startup; it did not perform
+one. The migrations in particular have never touched a real Postgres.
 Two areas are most exposed, because they are new code rather than surviving
 code: `write_file` / `run_skill_script` (which need a live `sandboxd` and gVisor
 to prove out at all) and the directory-based skills store. Treat first startup
@@ -379,6 +454,11 @@ now only checks that both calls in a batch are dispatched and recorded.
 **Phase 6 is still owed Phase 1 work.** `crates/coding-agent/src/catalog.rs`
 still has all three backends; dropping `Codex` and `ClaudeCode` was deferred by
 design, not overlooked.
+
+**`/personalize` survives**, despite the plan's cut list pairing it with
+`message-log`. What was cut was the profile-learning behind it; the command
+itself still carries personality, follow-up, and progress toggles that have no
+other home. Left alone deliberately in Phase 5 — raise it before removing it.
 
 **`tokio::fs::File` does not flush on drop.** A merge-audit record was being
 lost this way, which made two tests flaky under load. The codebase's correct

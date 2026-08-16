@@ -75,7 +75,7 @@ pub(crate) async fn handle_effort_interaction(
     }
 }
 
-/// Handle guild-scoped `/tool_ban` proposals, votes, and status requests.
+/// Handle `/status`: the caller's own effort, follow-up, and personality settings.
 pub(crate) async fn handle_status_interaction(
     user_cfg: &UserConfigStore,
     author_id: u64,
@@ -325,6 +325,8 @@ pub(crate) async fn handle_stats_interaction(
     skills: &Skills,
     author_id: u64,
     display_name: &str,
+    token_summary: &str,
 ) -> String {
-    stats_command(history, memory, skills, author_id, display_name).await
+    let stats = stats_command(history, memory, skills, author_id, display_name).await;
+    format!("{stats}\n• Token usage: {token_summary}")
 }

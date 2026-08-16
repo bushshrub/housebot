@@ -11,6 +11,8 @@ const NOT_SERVER_ADMIN: &str =
 /// The /config handler: deployment-wide bot configuration, configurers only.
 pub(crate) async fn handle_config_interaction(
     access_store: &AccessControlStore,
+    scheduler: &Arc<LlmScheduler>,
+    limits_store: &SchedulerLimitsStore,
     options: &[serenity::all::CommandDataOption],
     author_id: u64,
 ) -> String {
@@ -116,6 +118,55 @@ pub(crate) async fn handle_config_interaction(
                 }
                 other => format!("Unknown access subcommand `{other}`."),
             }
+        }
+
+        "scheduler" => {
+            let sub_opts = match &top.value {
+                CommandDataOptionValue::SubCommandGroup(opts) => opts,
+                _ => return "Unexpected option structure.".into(),
+            };
+            let Some(sub) = sub_opts.first() else {
+                return "No scheduler subcommand provided.".into();
+            };
+            if sub.name == "show" {
+                let info = scheduler.info();
+                return format!(
+                    "LLM scheduler: {} of {} slots busy, {} queued.\nSub-agents: {} of {} slots busy.",
+                    info.active, info.max_inflight, info.pending, info.subagent_active, info.max_subagent
+                );
+            }
+            let options = match &sub.value {
+                CommandDataOptionValue::SubCommand(opts) => opts,
+                _ => return "Unexpected option structure.".into(),
+            };
+            let value = options.iter().find_map(|option| match option.value {
+                CommandDataOptionValue::Integer(value) if option.name == "value" => Some(value),
+                _ => None,
+            });
+            // The scheduler panics on a non-positive ceiling, so the bound is
+            // enforced here as well as by Discord's own option validation.
+            let value = match value.and_then(|value| usize::try_from(value).ok()) {
+                Some(value) if value > 0 => value,
+                _ => return "The limit must be a positive whole number.".into(),
+            };
+            match sub.name.as_str() {
+                "max_inflight" => scheduler.set_max_inflight(value),
+                "max_subagent" => scheduler.set_max_subagent(value),
+                other => return format!("Unknown scheduler subcommand `{other}`."),
+            }
+            let info = scheduler.info();
+            let limits = SchedulerLimits {
+                max_inflight: info.max_inflight,
+                max_subagent: info.max_subagent,
+            };
+            if limits_store.save(limits).await.is_err() {
+                return format!(
+                    "⚠️ Applied {} = {value} to the running scheduler, but saving it failed — \
+                     it will revert on the next restart.",
+                    sub.name
+                );
+            }
+            format!("✅ Scheduler {} set to {value}.", sub.name)
         }
 
         "user" => {

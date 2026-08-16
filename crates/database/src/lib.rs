@@ -20,6 +20,14 @@ const MIGRATIONS: &[(&str, &str)] = &[
         "002_create_user_memories",
         include_str!("../../../db/migrations/002_create_user_memories.sql"),
     ),
+    (
+        "003_create_bot_config",
+        include_str!("../../../db/migrations/003_create_bot_config.sql"),
+    ),
+    (
+        "004_create_token_monitor",
+        include_str!("../../../db/migrations/004_create_token_monitor.sql"),
+    ),
 ];
 const MIGRATION_LOCK_ID: i64 = 1_593_778_914;
 const DEFAULT_DATABASE_URL: &str = "postgres://housebot:housebot@postgres/housebot";
@@ -210,6 +218,22 @@ mod tests {
             purge, 1,
             "a migration applied before the purge would be dropped with its ledger row and re-run"
         );
+    }
+
+    #[test]
+    fn every_store_the_bot_needs_has_a_migration() {
+        let sql: String = MIGRATIONS.iter().map(|(_, sql)| *sql).collect();
+        for table in [
+            "user_memories",
+            "bot_config",
+            "conversations",
+            "token_usage_events",
+        ] {
+            assert!(
+                sql.contains(&format!("CREATE TABLE IF NOT EXISTS {table}")),
+                "no migration creates {table}, so the bot cannot start"
+            );
+        }
     }
 
     #[test]

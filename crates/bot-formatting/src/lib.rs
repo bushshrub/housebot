@@ -121,21 +121,16 @@ fn display_tool_name(name: &str) -> String {
 /// User-facing status shown while an agent tool is executing.
 pub fn tool_status(tool_name: &str) -> String {
     let icon = match tool_name {
-        "web_search" | "deep_research" => "🔎",
-        "fetch_webpage" | "summarize_url" => "🌐",
-        "common_crawl__search" => "🗂️",
-        "download_file" => "📥",
-        "run_lua" => "⚙️",
-        "get_lua_docs" => "📖",
+        "web_search" => "🔎",
+        "fetch_webpage" => "🌐",
         "use_skill" => "🧩",
-        "translate" => "🌐",
+        "spawn_subagent" => "🧠",
         "set_reminder" => "⏰",
         "get_messages" => "💬",
-        "find_discord_users" | "get_discord_user" => "👤",
         "get_bot_features" => "🤖",
         "create_feature_request" | "edit_feature_request" => "📝",
         "prepare_feature_development" => "🛠️",
-        _ if tool_name.starts_with("jellyfin__") => "🎬",
+        _ if tool_name.starts_with("sandbox_") => "📦",
         _ => "🔧",
     };
     format!("{icon} **Running `{}`...**", display_tool_name(tool_name))

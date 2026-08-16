@@ -82,7 +82,16 @@ impl EventHandler for HouseBot {
             return;
         }
         let reply = match cmd.data.name.as_str() {
-            "config" => handle_config_interaction(&self.access, &cmd.data.options, user_id).await,
+            "config" => {
+                handle_config_interaction(
+                    &self.access,
+                    self.agent.llm_scheduler(),
+                    &self.agent.scheduler_limits(),
+                    &cmd.data.options,
+                    user_id,
+                )
+                .await
+            }
             "server-config" => {
                 let is_server_admin = cmd
                     .member
@@ -241,6 +250,7 @@ impl EventHandler for HouseBot {
                     &self.skills,
                     user_id,
                     cmd.user.display_name(),
+                    &self.agent.user_token_summary(&user_id.to_string()).await,
                 )
                 .await
             }
@@ -248,12 +258,20 @@ impl EventHandler for HouseBot {
         };
 
         let reply = self.redactor.redact(&reply);
-        let reply = truncate_memory_reply("", &reply);
-        let response = CreateInteractionResponse::Message(
-            CreateInteractionResponseMessage::new()
-                .content(reply)
-                .ephemeral(command_response_is_ephemeral(&cmd.data.name)),
-        );
+        let message = CreateInteractionResponseMessage::new()
+            .ephemeral(command_response_is_ephemeral(&cmd.data.name));
+        // An embed description holds twice what message content does, so a
+        // long reply (/help is the one that reaches this) survives intact.
+        let message = if reply.chars().count() > MAX_MESSAGE_LENGTH {
+            message.embed(CreateEmbed::new().description(truncate_reply(
+                "",
+                &reply,
+                EMBED_DESCRIPTION_LIMIT,
+            )))
+        } else {
+            message.content(reply)
+        };
+        let response = CreateInteractionResponse::Message(message);
         if let Err(e) = cmd.create_response(&ctx.http, response).await {
             tracing::warn!("Failed to send /config response: {e}");
         }

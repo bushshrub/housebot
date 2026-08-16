@@ -267,6 +267,51 @@ pub(crate) async fn register_slash_commands(ctx: &Context, guild_ids: &[GuildId]
                         .required(true),
                 ),
             ),
+        )
+        // ── scheduler subcommand group ───────────────────────────────────
+        .add_option(
+            CreateCommandOption::new(
+                CommandOptionType::SubCommandGroup,
+                "scheduler",
+                "LLM scheduler concurrency ceilings (configurers only)",
+            )
+            .add_sub_option(CreateCommandOption::new(
+                CommandOptionType::SubCommand,
+                "show",
+                "Show current scheduler utilization and ceilings",
+            ))
+            .add_sub_option(
+                CreateCommandOption::new(
+                    CommandOptionType::SubCommand,
+                    "max_inflight",
+                    "Set the total concurrent LLM request ceiling",
+                )
+                .add_sub_option(
+                    CreateCommandOption::new(
+                        CommandOptionType::Integer,
+                        "value",
+                        "Maximum concurrent LLM requests",
+                    )
+                    .min_int_value(1)
+                    .required(true),
+                ),
+            )
+            .add_sub_option(
+                CreateCommandOption::new(
+                    CommandOptionType::SubCommand,
+                    "max_subagent",
+                    "Set how many of those slots sub-agents may occupy",
+                )
+                .add_sub_option(
+                    CreateCommandOption::new(
+                        CommandOptionType::Integer,
+                        "value",
+                        "Maximum concurrent sub-agent requests",
+                    )
+                    .min_int_value(1)
+                    .required(true),
+                ),
+            ),
         );
 
     global_commands.push(config_cmd);
@@ -489,154 +534,6 @@ pub(crate) async fn register_slash_commands(ctx: &Context, guild_ids: &[GuildId]
             ),
         );
     global_commands.push(effort_command_definition());
-    let tool_ban_cmd = CreateCommand::new("tool_ban")
-        .description("Propose and vote on user-specific tool restrictions")
-        .add_option(
-            CreateCommandOption::new(
-                CommandOptionType::SubCommand,
-                "propose",
-                "Propose restricting a user from one tool",
-            )
-            .add_sub_option(
-                CreateCommandOption::new(CommandOptionType::User, "user", "User to restrict")
-                    .required(true),
-            )
-            .add_sub_option(
-                CreateCommandOption::new(
-                    CommandOptionType::String,
-                    "tool",
-                    "Tool name — start typing for suggestions",
-                )
-                .required(true)
-                .set_autocomplete(true),
-            ),
-        )
-        .add_option(
-            CreateCommandOption::new(
-                CommandOptionType::SubCommand,
-                "vote",
-                "Vote on an open tool-ban proposal",
-            )
-            .add_sub_option(
-                CreateCommandOption::new(
-                    CommandOptionType::String,
-                    "proposal",
-                    "Proposal ID shown by propose or status",
-                )
-                .required(true),
-            )
-            .add_sub_option(
-                CreateCommandOption::new(
-                    CommandOptionType::Boolean,
-                    "approve",
-                    "True to approve the ban; false to reject it",
-                )
-                .required(true),
-            ),
-        )
-        .add_option(CreateCommandOption::new(
-            CommandOptionType::SubCommand,
-            "status",
-            "Show active bans and open proposals",
-        ));
-    guild_only_commands.push(tool_ban_cmd);
-    let tool_restore_cmd = CreateCommand::new("tool_restore")
-        .description("Propose and vote on restoring tool access for a restricted user")
-        .add_option(
-            CreateCommandOption::new(
-                CommandOptionType::SubCommand,
-                "propose",
-                "Propose restoring a user's access to one tool",
-            )
-            .add_sub_option(
-                CreateCommandOption::new(CommandOptionType::User, "user", "User to restore")
-                    .required(true),
-            )
-            .add_sub_option(
-                CreateCommandOption::new(
-                    CommandOptionType::String,
-                    "tool",
-                    "Tool name — start typing for suggestions",
-                )
-                .required(true)
-                .set_autocomplete(true),
-            ),
-        )
-        .add_option(
-            CreateCommandOption::new(
-                CommandOptionType::SubCommand,
-                "vote",
-                "Vote on an open tool-restore proposal",
-            )
-            .add_sub_option(
-                CreateCommandOption::new(
-                    CommandOptionType::String,
-                    "proposal",
-                    "Proposal ID shown by propose or status",
-                )
-                .required(true),
-            )
-            .add_sub_option(
-                CreateCommandOption::new(
-                    CommandOptionType::Boolean,
-                    "approve",
-                    "True to approve the restoration; false to reject it",
-                )
-                .required(true),
-            ),
-        )
-        .add_option(CreateCommandOption::new(
-            CommandOptionType::SubCommand,
-            "status",
-            "Show active bans and open restore proposals",
-        ));
-    guild_only_commands.push(tool_restore_cmd);
-    let lua_cmd = CreateCommand::new("lua")
-            .description(
-                "Run a sandboxed Lua script; use graph.node/edge to render a diagram (requires the Scripting role)",
-            )
-            .add_option(
-                CreateCommandOption::new(
-                    CommandOptionType::String,
-                    "script",
-                    "Lua code to run (a ```lua code block``` is accepted)",
-                )
-                .required(true),
-            );
-    global_commands.push(lua_cmd.clone());
-    let guild_id = match std::env::var("DEPLOYMENT_GUILD_ID") {
-        Ok(value) => match value.parse::<u64>() {
-            Ok(id) if id != 0 => Some(id),
-            Ok(_) => {
-                tracing::warn!("DEPLOYMENT_GUILD_ID is set to 0, ignoring");
-                None
-            }
-            Err(_) => {
-                tracing::warn!(
-                    "DEPLOYMENT_GUILD_ID is set but invalid (must be a valid u64): {}",
-                    value
-                );
-                None
-            }
-        },
-        Err(_) => None,
-    };
-    // Only needed when the bot is not a member of the deployment guild;
-    // member guilds get the full command set (including /lua) below.
-    if let Some(guild_id) = guild_id.filter(|id| !guild_ids.contains(&GuildId::new(*id))) {
-        if let Err(e) = GuildId::new(guild_id)
-            .create_command(&ctx.http, lua_cmd)
-            .await
-        {
-            tracing::error!(
-                guild_id,
-                "Failed to register /lua slash command to guild: {e}"
-            );
-        } else {
-            tracing::info!(guild_id, "Registered /lua slash command to guild");
-        }
-    }
-
     global_commands.extend([
         CreateCommand::new("help").description("Show all available commands"),
         CreateCommand::new("commit").description("Show the bot's running commit hash"),

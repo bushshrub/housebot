@@ -352,6 +352,68 @@ impl UserConfigStore {
     }
 }
 
+// ── scheduler limits ──────────────────────────────────────────────────────────
+
+/// LLM scheduler ceilings set at runtime by a configurer. Persisted so a limit
+/// applied during an incident is not lost on the next restart.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+pub struct SchedulerLimits {
+    pub max_inflight: usize,
+    pub max_subagent: usize,
+}
+
+const SCHEDULER_LIMITS_KEY: &str = "scheduler_limits";
+
+#[derive(Clone)]
+pub struct SchedulerLimitsStore {
+    backend: Backend,
+}
+
+impl Default for SchedulerLimitsStore {
+    fn default() -> Self {
+        Self::new(data_dir().join("bot_config"))
+    }
+}
+
+impl SchedulerLimitsStore {
+    pub fn new(dir: PathBuf) -> Self {
+        Self {
+            backend: Backend::Files(dir),
+        }
+    }
+
+    pub fn postgres(client: Arc<tokio_postgres::Client>) -> Self {
+        Self {
+            backend: Backend::Postgres(client),
+        }
+    }
+
+    /// `None` when no configurer has overridden the deployment's environment
+    /// defaults, or when the stored record cannot be read.
+    pub async fn load(&self) -> Option<SchedulerLimits> {
+        let bytes = self
+            .backend
+            .load(SCHEDULER_LIMITS_KEY, SCHEDULER_LIMITS_KEY)
+            .await
+            .ok()
+            .flatten()?;
+        let limits: SchedulerLimits = serde_json::from_slice(&bytes).ok()?;
+        // The scheduler panics on a zero ceiling, so a corrupt record must not
+        // reach it.
+        Some(SchedulerLimits {
+            max_inflight: limits.max_inflight.max(1),
+            max_subagent: limits.max_subagent.max(1),
+        })
+    }
+
+    pub async fn save(&self, limits: SchedulerLimits) -> anyhow::Result<()> {
+        let data = serde_json::to_string_pretty(&limits)?;
+        self.backend
+            .save(SCHEDULER_LIMITS_KEY, SCHEDULER_LIMITS_KEY, data)
+            .await
+    }
+}
+
 // ── access control ────────────────────────────────────────────────────────────
 
 /// Per-user policy set by the bot's configurers.
@@ -452,11 +514,6 @@ impl AccessControlStore {
             cache: Arc::new(tokio::sync::RwLock::new(None)),
             write_lock: Arc::new(tokio::sync::Mutex::new(())),
         }
-    }
-
-    /// Connect to the deployment's PostgreSQL bot-config storage.
-    pub async fn from_env() -> anyhow::Result<Self> {
-        Ok(Self::postgres(postgres_client_from_env().await?))
     }
 
     pub async fn load(&self) -> AccessControl {
@@ -680,6 +737,39 @@ mod tests {
         access.configurer_ids.insert(5);
         store.save(&access).await.unwrap();
         assert!(store.load().await.configurer_ids.contains(&5));
+    }
+
+    #[tokio::test]
+    async fn scheduler_limits_round_trip_and_default_to_unset() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let store = SchedulerLimitsStore::new(tmp.path().join("bot_config"));
+        assert!(store.load().await.is_none());
+        store
+            .save(SchedulerLimits {
+                max_inflight: 8,
+                max_subagent: 3,
+            })
+            .await
+            .unwrap();
+        let limits = store.load().await.unwrap();
+        assert_eq!(limits.max_inflight, 8);
+        assert_eq!(limits.max_subagent, 3);
+    }
+
+    #[tokio::test]
+    async fn zero_scheduler_limits_never_reach_the_scheduler() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let store = SchedulerLimitsStore::new(tmp.path().join("bot_config"));
+        store
+            .save(SchedulerLimits {
+                max_inflight: 0,
+                max_subagent: 0,
+            })
+            .await
+            .unwrap();
+        let limits = store.load().await.unwrap();
+        assert_eq!(limits.max_inflight, 1);
+        assert_eq!(limits.max_subagent, 1);
     }
 
     #[tokio::test]

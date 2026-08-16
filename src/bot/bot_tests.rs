@@ -40,6 +40,7 @@ fn consolidated_slash_commands_replace_retired_top_level_commands() {
     assert_eq!(option_names(&values[2]), ["history", "erase"]);
     assert!(RETIRED_SLASH_COMMANDS.contains(&"reset"));
     assert!(RETIRED_SLASH_COMMANDS.contains(&"erase_my_data"));
+    assert!(RETIRED_SLASH_COMMANDS.contains(&"lua"));
     assert!(!RETIRED_SLASH_COMMANDS.contains(&"session"));
 }
 
@@ -99,6 +100,61 @@ async fn effort_target_requires_admin_and_saves_target_config() {
 }
 
 #[tokio::test]
+async fn scheduler_limits_apply_to_the_running_scheduler_and_persist() {
+    let temp = TempDir::new().unwrap();
+    let access = AccessControlStore::new(temp.path().join("bot_config"));
+    access
+        .update(|access| access.configurer_ids.insert(42))
+        .await
+        .unwrap();
+    let limits = SchedulerLimitsStore::new(temp.path().join("bot_config"));
+    let scheduler = Arc::new(LlmScheduler::new(4, 2));
+    let options: Vec<serenity::all::CommandDataOption> = serde_json::from_value(json!([{
+        "name": "scheduler",
+        "type": 2,
+        "options": [{
+            "name": "max_inflight",
+            "type": 1,
+            "options": [{"name": "value", "type": 4, "value": 9}]
+        }]
+    }]))
+    .unwrap();
+
+    let denied = handle_config_interaction(&access, &scheduler, &limits, &options, 7).await;
+    assert!(denied.contains("authorized to configure"));
+    assert_eq!(scheduler.info().max_inflight, 4);
+
+    let applied = handle_config_interaction(&access, &scheduler, &limits, &options, 42).await;
+    assert!(applied.contains("max_inflight set to 9"));
+    assert_eq!(scheduler.info().max_inflight, 9);
+    let stored = limits.load().await.unwrap();
+    assert_eq!(stored.max_inflight, 9);
+    assert_eq!(stored.max_subagent, 2);
+}
+
+#[tokio::test]
+async fn scheduler_show_reports_both_ceilings() {
+    let temp = TempDir::new().unwrap();
+    let access = AccessControlStore::new(temp.path().join("bot_config"));
+    access
+        .update(|access| access.configurer_ids.insert(42))
+        .await
+        .unwrap();
+    let limits = SchedulerLimitsStore::new(temp.path().join("bot_config"));
+    let scheduler = Arc::new(LlmScheduler::new(4, 2));
+    let options: Vec<serenity::all::CommandDataOption> = serde_json::from_value(json!([{
+        "name": "scheduler",
+        "type": 2,
+        "options": [{"name": "show", "type": 1, "options": []}]
+    }]))
+    .unwrap();
+
+    let shown = handle_config_interaction(&access, &scheduler, &limits, &options, 42).await;
+    assert!(shown.contains("0 of 4 slots busy"));
+    assert!(shown.contains("0 of 2 slots busy"));
+}
+
+#[tokio::test]
 async fn progress_target_requires_admin_and_enables_final_only_mode() {
     let temp = TempDir::new().unwrap();
     let user_config = UserConfigStore::new(temp.path().join("user_config"));
@@ -120,6 +176,16 @@ async fn progress_target_requires_admin_and_enables_final_only_mode() {
     assert!(saved.contains("only final responses"));
     assert!(!user_config.load(99).await.progress_updates_enabled);
     assert!(user_config.load(42).await.progress_updates_enabled);
+}
+
+#[test]
+fn the_feature_reference_is_sent_whole_as_an_embed() {
+    let reply = help_response();
+    assert!(
+        reply.chars().count() > MAX_MESSAGE_LENGTH,
+        "/help now fits in message content; the embed branch is untested"
+    );
+    assert_eq!(truncate_reply("", &reply, EMBED_DESCRIPTION_LIMIT), reply);
 }
 
 #[test]
@@ -289,10 +355,13 @@ fn hint_unknown_tool_no_known_key() {
 fn status_includes_tool_name() {
     assert_eq!(tool_status("web_search"), "🔎 **Running `web_search`...**");
     assert_eq!(
-        tool_status("jellyfin__search"),
-        "🎬 **Running `jellyfin__search`...**"
+        tool_status("sandbox_run"),
+        "📦 **Running `sandbox_run`...**"
     );
-    assert_eq!(tool_status("run_lua"), "⚙️ **Running `run_lua`...**");
+    assert_eq!(
+        tool_status("spawn_subagent"),
+        "🧠 **Running `spawn_subagent`...**"
+    );
 }
 
 #[test]

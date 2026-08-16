@@ -10,7 +10,9 @@ use chrono::{Local, Utc};
 use serde_json::{json, Value};
 use tokio::sync::Notify;
 
-use crate::bot_config::{AccessControl, AccessControlStore, UserConfigStore};
+use crate::bot_config::{
+    AccessControl, AccessControlStore, SchedulerLimits, SchedulerLimitsStore, UserConfigStore,
+};
 use crate::channel_context::ChannelContext;
 use crate::coding_agent::pending::PendingJobStore;
 use crate::config;
@@ -222,6 +224,7 @@ pub struct Agent {
     token_monitor: TokenMonitor,
     active_conversations: tokio::sync::Mutex<HashMap<String, String>>,
     access_control: AccessControlStore,
+    scheduler_limits: SchedulerLimitsStore,
     /// Per-user configuration, including each user's enabled marketplace skills.
     user_config: UserConfigStore,
     discord: Arc<DiscordBridge>,
@@ -279,18 +282,6 @@ impl Agent {
             );
             config::env_parse("MAX_CONTEXT_TOKENS", 200_000)
         });
-        let scheduler = Arc::new(LlmScheduler::new(
-            config::env_parse(
-                "MAX_INFLIGHT_LLM",
-                housebot_llm_scheduler::DEFAULT_MAX_INFLIGHT,
-            ),
-            config::env_parse(
-                "MAX_SUBAGENT_CONCURRENCY",
-                housebot_llm_scheduler::DEFAULT_MAX_SUBAGENT,
-            ),
-        ));
-        let scheduled_client = Arc::new(ScheduledChatClient::new(raw_client, scheduler));
-        let client: Arc<dyn ChatClient> = scheduled_client.clone();
         let memory = match Memory::from_env().await {
             Ok(memory) => memory,
             Err(error) => {
@@ -301,11 +292,28 @@ impl Agent {
         // Unlike memory, access control must not silently fall back to an
         // empty volatile store — that would forget configurers and per-user
         // policies (fail-open), so refuse to start instead.
-        let access_control = AccessControlStore::from_env().await.map_err(|error| {
-            anyhow::anyhow!(
+        let bot_config_client = crate::bot_config::postgres_client_from_env()
+            .await
+            .map_err(|error| {
+                anyhow::anyhow!(
                 "persistent access control initialization failed; refusing volatile fallback: {error}"
             )
-        })?;
+            })?;
+        let access_control = AccessControlStore::postgres(Arc::clone(&bot_config_client));
+        let scheduler_limits = SchedulerLimitsStore::postgres(bot_config_client);
+        let limits = scheduler_limits.load().await.unwrap_or(SchedulerLimits {
+            max_inflight: config::env_parse(
+                "MAX_INFLIGHT_LLM",
+                housebot_llm_scheduler::DEFAULT_MAX_INFLIGHT,
+            ),
+            max_subagent: config::env_parse(
+                "MAX_SUBAGENT_CONCURRENCY",
+                housebot_llm_scheduler::DEFAULT_MAX_SUBAGENT,
+            ),
+        });
+        let scheduler = Arc::new(LlmScheduler::new(limits.max_inflight, limits.max_subagent));
+        let scheduled_client = Arc::new(ScheduledChatClient::new(raw_client, scheduler));
+        let client: Arc<dyn ChatClient> = scheduled_client.clone();
         let token_monitor = TokenMonitor::from_env().await.map_err(|error| {
             anyhow::anyhow!(
                 "persistent token monitor initialization failed; refusing volatile fallback: {error}"
@@ -332,6 +340,7 @@ impl Agent {
             token_monitor,
             active_conversations: tokio::sync::Mutex::new(HashMap::new()),
             access_control,
+            scheduler_limits,
             user_config: UserConfigStore::default(),
             discord,
             channel_context: ChannelContext::default(),
@@ -364,6 +373,11 @@ impl Agent {
     /// Shared bot-configuration access-control store (configurers + user policies).
     pub fn access_control(&self) -> AccessControlStore {
         self.access_control.clone()
+    }
+
+    /// Shared store persisting the scheduler ceilings across restarts.
+    pub fn scheduler_limits(&self) -> SchedulerLimitsStore {
+        self.scheduler_limits.clone()
     }
 
     /// Shared pending-job store; also held by `HouseBot` to drive the Discord component UI.
@@ -527,6 +541,7 @@ impl Agent {
             token_monitor: TokenMonitor::default(),
             active_conversations: tokio::sync::Mutex::new(HashMap::new()),
             access_control: AccessControlStore::default(),
+            scheduler_limits: SchedulerLimitsStore::default(),
             user_config: UserConfigStore::default(),
             discord: Arc::new(DiscordBridge::default()),
             channel_context: ChannelContext::default(),

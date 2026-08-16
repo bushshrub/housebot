@@ -92,16 +92,6 @@ pub struct LeaderboardRank {
     pub entry: LeaderboardEntry,
 }
 
-#[derive(Debug, Clone, Default)]
-pub struct GlobalTokenStats {
-    pub total_users: u64,
-    pub total_conversations: u64,
-    pub total_input_tokens: u64,
-    pub total_output_tokens: u64,
-    pub total_cached_tokens: u64,
-    pub period: LeaderboardPeriod,
-}
-
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct TokenLeaderboard {
     pub users: Vec<LeaderboardEntry>,

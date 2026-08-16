@@ -3,13 +3,16 @@
 use super::*;
 
 pub(crate) fn truncate_memory_reply(header: &str, body: &str) -> String {
-    const LIMIT: usize = MAX_MESSAGE_LENGTH;
+    truncate_reply(header, body, MAX_MESSAGE_LENGTH)
+}
+
+pub(crate) fn truncate_reply(header: &str, body: &str, limit: usize) -> String {
     const ELLIPSIS: &str = "\n…(truncated)";
     let full = format!("{header}{body}");
-    if full.chars().count() <= LIMIT {
+    if full.chars().count() <= limit {
         return full;
     }
-    let keep = LIMIT.saturating_sub(ELLIPSIS.chars().count());
+    let keep = limit.saturating_sub(ELLIPSIS.chars().count());
     format!("{}{ELLIPSIS}", full.chars().take(keep).collect::<String>())
 }
 
@@ -220,4 +223,5 @@ pub(crate) const RETIRED_SLASH_COMMANDS: &[&str] = &[
     "history",
     "profile",
     "erase_my_data",
+    "lua",
 ];

@@ -25,7 +25,8 @@ use crate::agent::{
     NoHooks,
 };
 use crate::bot_config::{
-    AccessControlStore, LeaderboardVisibility, ServerConfig, ServerConfigStore, UserConfigStore,
+    AccessControlStore, LeaderboardVisibility, SchedulerLimits, SchedulerLimitsStore, ServerConfig,
+    ServerConfigStore, UserConfigStore,
 };
 pub use crate::bot_response::SecretRedactor;
 use crate::channel_context::ChannelContext;
@@ -36,6 +37,7 @@ use crate::config;
 use crate::discord_bridge::DiscordBridge;
 use crate::history::History;
 use crate::llm::ThinkingMode;
+use crate::llm_scheduler::LlmScheduler;
 use crate::memory::Memory;
 use crate::rate_limit::RateLimiter;
 use crate::skills::Skills;

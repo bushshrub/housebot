@@ -157,6 +157,27 @@ impl Agent {
         }
     }
 
+    /// All-time token totals for one user, as a `/stats` line.
+    pub async fn user_token_summary(&self, user_id: &str) -> String {
+        match self
+            .token_monitor
+            .get_user_stats(user_id, LeaderboardPeriod::AllTime)
+            .await
+        {
+            Ok(Some(stats)) => format!(
+                "{} tokens across {} conversations ({} cached)",
+                stats.total_tokens(),
+                stats.conversations,
+                stats.cached_tokens
+            ),
+            Ok(None) => "no recorded usage yet".into(),
+            Err(error) => {
+                tracing::error!(%error, "failed to load user token statistics");
+                "temporarily unavailable".into()
+            }
+        }
+    }
+
     /// Remove a user's archived conversations and token statistics.
     pub async fn clear_token_data(&self, user_id: &str) {
         if let Err(error) = self.token_monitor.clear_user(user_id).await {
