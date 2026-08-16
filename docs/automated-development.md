@@ -8,7 +8,7 @@ Housebot can dispatch automated coding jobs to Claude Code or OpenCode for an ex
 Discord message (owner only)
   └─ LLM calls prepare_feature_development
        └─ Bot intercepts DISPATCH_FLOW:<uuid>
-            └─ Discord component UI (agent → model → effort → confirm)
+            └─ Discord component UI (model → confirm)
                  └─ Existing issue validated
                       └─ Selected workflow dispatched through GitHub App
                            └─ Agent runs against the issue
@@ -22,7 +22,7 @@ Only the configured bot owner can initiate a dispatch. The LLM cannot start a jo
 ## Triggering a job
 
 1. In Discord, ask the bot to develop a feature. It will call `prepare_feature_development` to draft the spec.
-2. The bot shows a component UI with four steps: choose an agent, choose a model, choose an effort level, then confirm.
+2. The bot shows a component UI with two steps: choose a model, then confirm. OpenCode is the only agent, so there is no agent step.
 3. On confirmation, the bot validates the existing issue and dispatches the selected agent workflow through the GitHub App.
 4. The selected workflow runs the agent against that issue.
 5. If the agent produces changes, a pull request is opened. Review and merge it manually.
@@ -33,10 +33,9 @@ The entire dispatch can be cancelled at any point in the Discord UI before confi
 
 ## Agents
 
-| Agent | CLI | Authentication | Effort |
-|---|---|---|---|
-| **Claude Code** | `claude` | OAuth session on runner | low / medium / high (via `--max-turns`) |
-| **OpenCode** | `opencode` | `NVIDIA_API_KEY` secret | low / medium / high (execution timeout) |
+| Agent | CLI | Authentication |
+|---|---|---|
+| **OpenCode** | `opencode` | `NVIDIA_API_KEY` secret |
 
 Agent and model combinations are defined in `.github/agents/catalog.json`. That file is the single source of truth; the Discord UI is generated from it at runtime.
 
@@ -44,7 +43,7 @@ Agent and model combinations are defined in `.github/agents/catalog.json`. That 
 
 ## Catalog
 
-`.github/agents/catalog.json` contains a versioned list of agents, models, and effort levels.
+`.github/agents/catalog.json` contains a versioned list of agents and models.
 
 ```jsonc
 {
@@ -57,11 +56,8 @@ Agent and model combinations are defined in `.github/agents/catalog.json`. That 
       "models": [
         {
           "id": "default",
-          "efforts": [
-            { "id": "low",    "mechanism": "native" },
-            { "id": "medium", "mechanism": "native" },
-            { "id": "high",   "mechanism": "native" }
-          ]
+          "display_name": "Default",
+          "description": "..."
         }
       ]
     }
@@ -76,7 +72,7 @@ Agent and model combinations are defined in `.github/agents/catalog.json`. That 
 
 ## Workflow
 
-`.github/workflows/claude-dispatch.yml` and `.github/workflows/opencode-dispatch.yml` are manually triggered through `workflow_dispatch` by the Housebot GitHub App. Codex dispatch is temporarily disabled until a trusted self-hosted runner is available.
+`.github/workflows/opencode-dispatch.yml` is manually triggered through `workflow_dispatch` by the Housebot GitHub App. It is the only dispatch workflow; OpenCode is the only backend.
 
 ### Steps
 
@@ -126,7 +122,7 @@ Legacy label definitions may still exist for older jobs; new dispatches do not d
 
 - **Owner-only dispatch:** the Rust bot enforces that only the configured `OWNER_DISCORD_ID` can use `prepare_feature_development`. This check is in `src/tools/feature_development.rs` — it does not rely on the system prompt or Discord channel permissions.
 - **No LLM-initiated dispatch:** the LLM can only _prepare_ a specification. Actual dispatch requires the owner to complete the Discord component UI and explicitly confirm.
-- **Catalog validation:** the workflow validates agent/model/effort against the embedded catalog before running, preventing dispatch of unknown combinations.
+- **Catalog validation:** the bot validates agent/model against the embedded catalog before running, preventing dispatch of unknown combinations.
 - **No shell injection:** issue content is written to a temp file by the `actions/github-script` step and passed to adapters via file path — it is never interpolated into shell commands.
 - **No production secrets on runner:** the runner account is isolated from production infrastructure. See runner requirements above.
 - **No force-push, no auto-merge, no auto-deploy:** the workflow only opens a PR. All merging and deployment remains a manual, human-approved step.
@@ -134,22 +130,4 @@ Legacy label definitions may still exist for older jobs; new dispatches do not d
 
 ---
 
-## Self-hosted runner health check
 
-`.github/workflows/check-agent-runner.yml` is a separate diagnostic for the
-optional `housebot-agent` self-hosted runner. It is not used by the Claude Code
-or OpenCode dispatch workflows and only verifies tools installed on that
-runner.
-
----
-
-## Adapter scripts
-
-| Script | Agent |
-|---|---|
-| `.github/agents/run-codex.sh` | Codex |
-| `.github/agents/run-claude.sh` | Claude Code |
-| `.github/agents/run-opencode.sh` | OpenCode + NVIDIA NIM |
-| `.github/agents/common.sh` | Shared utilities (sourced by all adapters) |
-
-Each adapter accepts `<prompt_file> <model> <effort>` and is responsible only for running the agent. Label transitions and PR creation are handled by the workflow.

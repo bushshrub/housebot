@@ -79,7 +79,10 @@ impl MergeAuditLog {
             .append(true)
             .open(&self.path)
             .await?;
-        file.write_all(line.as_bytes()).await
+        file.write_all(line.as_bytes()).await?;
+        // Dropping a tokio File does not flush it, so an unflushed audit record
+        // is silently lost.
+        file.flush().await
     }
 }
 

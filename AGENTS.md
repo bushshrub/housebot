@@ -77,19 +77,14 @@ src/
     feature_development.rs # prepare_feature_development + owner auth + rate limit
     sandbox.rs         # LazySandbox + five tool definitions
   coding_agent/
-    catalog.rs       # versioned agent/model/effort catalog (loaded from .github/agents/catalog.json)
+    catalog.rs       # versioned agent/model catalog (loaded from .github/agents/catalog.json)
     pending.rs       # PendingDevelopmentJob state machine (15-min expiry, atomic dispatch guard)
     issue.rs         # GitHub issue body builder + hidden metadata comment
 .github/
   agents/
-    catalog.json     # single source of truth for selectable agent/model/effort combos
-    common.sh        # shared shell utilities for adapter scripts
-    run-codex.sh     # Codex adapter
-    run-claude.sh    # Claude Code adapter
-    run-opencode.sh  # OpenCode + NVIDIA NIM adapter
+    catalog.json     # single source of truth for selectable agent/model combos
   workflows/
-    develop-feature.yml    # triggered by agent:queued label; runs the selected agent
-    check-agent-runner.yml # daily runner health check
+    opencode-dispatch.yml  # workflow_dispatch entry point for development jobs
 CLAUDE.md            # instructions for Claude Code when running as the automated agent
 docs/
   automated-development.md # full dispatch flow documentation
@@ -110,9 +105,13 @@ data/                # runtime — gitignored
 | `DATABASE_CONNECT_RETRY_SECS` | no | `2` | Delay between token-monitor connection attempts |
 | `DATABASE_CONNECT_TIMEOUT_SECS` | no | `10` | Deadline for each token-monitor connection attempt |
 | `LLM_BASE_URL` | yes | `http://server-slop:8080/v1` | OpenAI-compatible LLM endpoint |
-| `LLM_MODEL` | yes | `gemma-4-12b-qat-q4kxl` | Model name |
+| `LLM_MODEL` | yes | `gemma-4-26b-a4b-qat` | Model name |
 | `LLM_API_KEY` | no | `not-required` | API key (llama.cpp ignores it) |
+| `MAX_INFLIGHT_LLM` | no | `4` | Total concurrent LLM requests |
+| `MAX_SUBAGENT_CONCURRENCY` | no | `2` | Ceiling on concurrent sub-agent requests |
 | `MAX_HISTORY_TURNS` | no | `30` | Conversation turn pairs kept |
+| `CHANNEL_CONTEXT_CAPACITY` | no | `2000` | Messages buffered in RAM per channel |
+| `CHANNEL_CONTEXT_RETENTION_SECS` | no | `2592000` | Age at which a buffered message is dropped (30 days) |
 | `MAX_CONTEXT_TOKENS` | no | `10000` | Fallback context window (tokens) when the LLM server's `/props` probe fails |
 | `CONVERSATION_IDLE_TIMEOUT` | no | `300` | Seconds a channel conversation stays "active" |
 | `CHAT_RATE_LIMIT_MAX` | no | `20` | Max chat messages per user per window |
@@ -125,6 +124,7 @@ data/                # runtime — gitignored
 | `OWNER_DISCORD_ID` | no | `0` | Discord user ID allowed to dispatch coding jobs; `0` disables dispatch |
 | `SANDBOX_SOCKET_PATH` | no | `/run/housebot-sandbox/sandbox.sock` | Unix socket path for sandboxd |
 | `HOUSEBOT_SANDBOX_RUNTIME` | no | `runsc` | Container runtime for sandboxd (gVisor); set to `runc` in dev/CI |
+| `SANDBOX_IDLE_TIMEOUT_SECS` | no | `300` | Idle time before sandboxd destroys a session's sandbox |
 
 (`DOCKER_NETWORK` is read only by the independent `deployment-bot` crate, not the chatbot.)
 
@@ -213,7 +213,9 @@ Housebot  →  Unix socket  →  sandboxd  →  docker run --runtime=runsc  → 
 - Container is `--read-only`, `--cap-drop=ALL`, `--no-new-privileges`,
   `--user=sandbox`, with tmpfs mounts only on `/workspace`, `/tmp`,
   `/home/sandbox`.
-- One sandbox per `Agent::run`; destroyed unconditionally when the response ends.
+- One sandbox per user session, shared across turns; `sandboxd` destroys it after
+  `SANDBOX_IDLE_TIMEOUT_SECS` of inactivity. Everything in it is tmpfs, so reaping
+  discards the workspace.
 
 ### sandboxd
 
@@ -262,9 +264,9 @@ specification, runner requirements, and security model.
 - **Owner-only.** Only the configured `OWNER_DISCORD_ID` can dispatch.  
   This is enforced in Rust (`src/tools/feature_development.rs`) — not in the system prompt.
 - **Two-step flow.** The LLM calls `prepare_feature_development` to draft a spec, then the
-  Discord owner selects agent/model/effort and explicitly confirms.  The LLM cannot dispatch
+  Discord owner selects a model and explicitly confirms.  The LLM cannot dispatch
   unilaterally.
-- **Catalog.** Agent, model, and effort combinations are defined in
+- **Catalog.** Agent and model combinations are defined in
   `.github/agents/catalog.json`.  Update `catalog_revision` whenever you add or remove entries.
 - **Labels.** `agent:queued` → `agent:running` → `agent:completed` / `agent:no-changes` /
   `agent:failed`.  Do not add or remove these labels manually outside the workflow.
@@ -367,3 +369,15 @@ Its tools appear as `prefix__tool_name` automatically.
 - Any necessary schema change must include a clear, ordered, backward-compatible migration path
   that preserves all existing user memories across upgrades and rollbacks.
 - Never silently reset, truncate, or invalidate stored memory as part of application startup or deployment.
+
+**One deliberate exception: `001_purge_all_data`.** The rearchitecture starts on
+an empty database, so that migration drops the whole `public` schema — every
+memory, config row, and usage event with it. It is a one-time reset agreed as
+part of the redesign (see the "Database reset" section of
+[`docs/REDESIGN_PLAN.md`](docs/REDESIGN_PLAN.md)), not a precedent. The rules
+above govern every migration numbered `002` and later, and the purge must stay
+at index 1 in the `MIGRATIONS` array — a test asserts it.
+
+Because the purge is unrecoverable, **take a database backup before the first
+deploy that includes it.** Nothing in `scripts/deploy.sh` or the compose files
+does this for you.

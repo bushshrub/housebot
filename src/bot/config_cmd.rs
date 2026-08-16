@@ -11,6 +11,8 @@ const NOT_SERVER_ADMIN: &str =
 /// The /config handler: deployment-wide bot configuration, configurers only.
 pub(crate) async fn handle_config_interaction(
     access_store: &AccessControlStore,
+    scheduler: &Arc<LlmScheduler>,
+    limits_store: &SchedulerLimitsStore,
     options: &[serenity::all::CommandDataOption],
     author_id: u64,
 ) -> String {
@@ -23,37 +25,6 @@ pub(crate) async fn handle_config_interaction(
     }
 
     match top.name.as_str() {
-        "proactive" => {
-            let sub_opts = match &top.value {
-                CommandDataOptionValue::SubCommand(opts) => opts,
-                _ => return "Unexpected option structure.".into(),
-            };
-            let enabled =
-                sub_opts
-                    .iter()
-                    .find(|o| o.name == "enabled")
-                    .and_then(|o| match &o.value {
-                        CommandDataOptionValue::Boolean(b) => Some(*b),
-                        _ => None,
-                    });
-            let Some(enabled) = enabled else {
-                return "Please specify `enabled`.".into();
-            };
-            if access_store
-                .update(|access| access.proactive_enabled = enabled)
-                .await
-                .is_err()
-            {
-                return "Error: failed to save config.".into();
-            }
-            if enabled {
-                "✅ Proactive assistance is enabled again; server and personal settings apply."
-                    .into()
-            } else {
-                "✅ Proactive assistance is now disabled for everyone, regardless of server or personal settings.".into()
-            }
-        }
-
         "dev_notify_channel" => {
             let sub_opts = match &top.value {
                 CommandDataOptionValue::SubCommand(opts) => opts,
@@ -147,6 +118,55 @@ pub(crate) async fn handle_config_interaction(
                 }
                 other => format!("Unknown access subcommand `{other}`."),
             }
+        }
+
+        "scheduler" => {
+            let sub_opts = match &top.value {
+                CommandDataOptionValue::SubCommandGroup(opts) => opts,
+                _ => return "Unexpected option structure.".into(),
+            };
+            let Some(sub) = sub_opts.first() else {
+                return "No scheduler subcommand provided.".into();
+            };
+            if sub.name == "show" {
+                let info = scheduler.info();
+                return format!(
+                    "LLM scheduler: {} of {} slots busy, {} queued.\nSub-agents: {} of {} slots busy.",
+                    info.active, info.max_inflight, info.pending, info.subagent_active, info.max_subagent
+                );
+            }
+            let options = match &sub.value {
+                CommandDataOptionValue::SubCommand(opts) => opts,
+                _ => return "Unexpected option structure.".into(),
+            };
+            let value = options.iter().find_map(|option| match option.value {
+                CommandDataOptionValue::Integer(value) if option.name == "value" => Some(value),
+                _ => None,
+            });
+            // The scheduler panics on a non-positive ceiling, so the bound is
+            // enforced here as well as by Discord's own option validation.
+            let value = match value.and_then(|value| usize::try_from(value).ok()) {
+                Some(value) if value > 0 => value,
+                _ => return "The limit must be a positive whole number.".into(),
+            };
+            match sub.name.as_str() {
+                "max_inflight" => scheduler.set_max_inflight(value),
+                "max_subagent" => scheduler.set_max_subagent(value),
+                other => return format!("Unknown scheduler subcommand `{other}`."),
+            }
+            let info = scheduler.info();
+            let limits = SchedulerLimits {
+                max_inflight: info.max_inflight,
+                max_subagent: info.max_subagent,
+            };
+            if limits_store.save(limits).await.is_err() {
+                return format!(
+                    "⚠️ Applied {} = {value} to the running scheduler, but saving it failed — \
+                     it will revert on the next restart.",
+                    sub.name
+                );
+            }
+            format!("✅ Scheduler {} set to {value}.", sub.name)
         }
 
         "user" => {
@@ -456,34 +476,6 @@ pub(crate) async fn handle_server_config_interaction(
             )
         }
 
-        "proactive" => {
-            let sub_opts = match &top.value {
-                CommandDataOptionValue::SubCommand(opts) => opts,
-                _ => return "Unexpected option structure.".into(),
-            };
-            let enabled =
-                sub_opts
-                    .iter()
-                    .find(|o| o.name == "enabled")
-                    .and_then(|o| match &o.value {
-                        CommandDataOptionValue::Boolean(b) => Some(*b),
-                        _ => None,
-                    });
-            let Some(enabled) = enabled else {
-                return "Please specify `enabled`.".into();
-            };
-            let mut cfg = server_cfg.load(gid).await;
-            cfg.proactive_allowed = enabled;
-            if server_cfg.save(gid, &cfg).await.is_err() {
-                return "Error: failed to save config.".into();
-            }
-            if enabled {
-                "✅ Proactive assistance is allowed in this server; users still opt in via `/personalize proactive`.".into()
-            } else {
-                "✅ Proactive assistance is disabled in this server for everyone.".into()
-            }
-        }
-
         other => format!("Unknown server-config option `{other}`."),
     }
 }
@@ -569,29 +561,6 @@ pub(crate) async fn handle_personalize_interaction(
                 "✅ Follow-up replies {status} (timeout: {}s).",
                 cfg.followup_timeout_secs
             )
-        }
-
-        "proactive" => {
-            let enabled =
-                sub_opts
-                    .iter()
-                    .find(|o| o.name == "enabled")
-                    .and_then(|o| match &o.value {
-                        CommandDataOptionValue::Boolean(b) => Some(*b),
-                        _ => None,
-                    });
-            let Some(enabled) = enabled else {
-                return "Please specify `enabled`.".into();
-            };
-            cfg.proactive_assistance_enabled = enabled;
-            if user_cfg.save(target_id, &cfg).await.is_err() {
-                return "Error: failed to save config.".into();
-            }
-            if enabled {
-                "✅ Proactive assistance enabled — I may chime in on obvious reminder requests and help questions. Server admins and bot configurers can disable this server-wide or globally.".into()
-            } else {
-                "✅ Proactive assistance disabled — I'll only respond when addressed.".into()
-            }
         }
 
         "progress" => {

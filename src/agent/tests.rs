@@ -92,16 +92,8 @@ fn system_prompt_lists_skills() {
             name: "greet".into(),
             description: Some("Say hello".into()),
             instructions: "..".into(),
-            triggers: Vec::new(),
-            enabled_tools: Vec::new(),
-            examples: Vec::new(),
-            version: 1,
-            version_history: Vec::new(),
             created_by: None,
-            editors: Vec::new(),
-            created_at: 0,
-            updated_at: 0,
-            prompt: None,
+            ..Skill::default()
         },
     );
     let p = build_system_prompt("Alice", "123", "Alice", "", "", &skills, None, true);
@@ -128,34 +120,37 @@ fn system_prompt_has_tldr_and_500() {
 }
 
 #[test]
-fn system_prompt_explains_guarded_file_delivery() {
-    let prompt = build_system_prompt("Alice", "123", "", "", "", &empty_skills(), None, true);
-    assert!(prompt.contains("download_file"));
-    assert!(prompt.contains("specific file"));
-    assert!(prompt.contains("private-network URLs"));
+fn system_prompt_does_not_advertise_removed_tools() {
+    let p = build_system_prompt("Alice", "123", "", "", "", &empty_skills(), None, true);
+    for removed in [
+        "deep_research",
+        "summarize_url",
+        "download_file",
+        "common_crawl",
+        "run_lua",
+        "get_lua_docs",
+        "translate",
+        "get_token_metrics",
+        "find_discord_users",
+        "get_discord_user",
+        "jellyfin",
+    ] {
+        assert!(!p.contains(removed), "system prompt still offers {removed}");
+    }
 }
 
 #[test]
-fn system_prompt_routes_complex_questions_to_deep_research() {
+fn system_prompt_describes_the_search_and_delegation_tools() {
     let p = build_system_prompt("Alice", "123", "", "", "", &empty_skills(), None, true);
-    assert!(p.contains("deep_research"));
-    assert!(p.contains("multiple perspectives"));
-    assert!(p.contains("source links"));
+    assert!(p.contains("web_search"));
+    assert!(p.contains("fetch_webpage"));
+    assert!(p.contains("spawn_subagent"));
 }
 
 #[test]
 fn system_prompt_excludes_code_execution() {
     let p = build_system_prompt("Alice", "123", "Alice", "", "", &empty_skills(), None, true);
     assert!(!p.contains("code execution"));
-}
-
-#[test]
-fn system_prompt_lists_discord_user_tools_once_and_in_order() {
-    let p = build_system_prompt("Alice", "123", "Alice", "", "", &empty_skills(), None, true);
-    let find = p.find("- find_discord_users —").unwrap();
-    let get = p.find("- get_discord_user —").unwrap();
-    assert!(find < get);
-    assert_eq!(p.matches("- get_discord_user —").count(), 1);
 }
 
 #[test]
@@ -185,22 +180,18 @@ fn system_prompt_includes_usage_profile() {
     let p = build_system_prompt_with_profile(
         "Alice",
         "123",
-        "Alice",
-        "",
-        "",
+        "Ali",
+        "Al",
+        "https://ex/av.png",
         "",
         &empty_skills(),
         None,
         true,
-        "media, reminders",
-        "media (4), reminders (2)",
         "2026-07-17 12:00",
-        "",
     );
-    assert!(p.contains("Relevant usage tags: media, reminders"));
-    assert!(p.contains("Frequently used actions: media (4), reminders (2)"));
+    assert!(p.contains("Display name: Ali, Nickname: Al"));
+    assert!(p.contains("Avatar URL: https://ex/av.png"));
     assert!(p.contains("naturally address them by their nickname or display name"));
-    assert!(p.contains("suggest at most one relevant quick action"));
     assert!(p.contains("Never infer sensitive traits"));
 }
 
@@ -216,10 +207,7 @@ fn system_prompt_includes_profile_avatar_with_safety_guidance() {
         &empty_skills(),
         None,
         true,
-        "",
-        "",
         "2026-07-17 12:00",
-        "",
     );
     assert!(p.contains("Avatar URL: https://cdn.discordapp.com/avatars/123/avatar.png"));
     assert!(p.contains("Never infer sensitive traits, identity, or intent from a user's avatar."));
@@ -321,12 +309,6 @@ fn build_user_message_with_audio_and_video() {
     assert_eq!(message["content"][1]["type"], "input_video");
     assert_eq!(message["content"][1]["input_video"]["data"], "video-bytes");
 }
-#[test]
-fn system_prompt_mentions_run_lua() {
-    let p = build_system_prompt("Alice", "123", "Alice", "", "", &empty_skills(), None, true);
-    assert!(p.contains("run_lua"));
-    assert!(p.contains("get_lua_docs"));
-}
 
 // ── stable-prefix / ordering tests ─────────────────────────────────────────
 
@@ -364,10 +346,7 @@ fn prompt_stable_prefix_unchanged_by_dynamic_content() {
                 &skills,
                 None,
                 true,
-                "",
-                "",
                 "2026-07-17 12:00",
-                "",
             ),
         ),
         (
@@ -382,10 +361,7 @@ fn prompt_stable_prefix_unchanged_by_dynamic_content() {
                 &skills,
                 None,
                 true,
-                "",
-                "",
                 "2026-07-18 08:30",
-                "",
             ),
         ),
         (
@@ -400,10 +376,7 @@ fn prompt_stable_prefix_unchanged_by_dynamic_content() {
                 &skills,
                 None,
                 true,
-                "",
-                "",
                 "2026-07-17 12:00",
-                "",
             ),
         ),
         (
@@ -418,10 +391,7 @@ fn prompt_stable_prefix_unchanged_by_dynamic_content() {
                 &skills,
                 None,
                 true,
-                "tags",
-                "actions",
                 "2026-07-17 12:00",
-                "",
             ),
         ),
         (
@@ -436,10 +406,7 @@ fn prompt_stable_prefix_unchanged_by_dynamic_content() {
                 &skills,
                 None,
                 true,
-                "",
-                "",
                 "2026-07-17 12:00",
-                "",
             ),
         ),
         (
@@ -454,10 +421,7 @@ fn prompt_stable_prefix_unchanged_by_dynamic_content() {
                 &skills,
                 Some("Friendly"),
                 true,
-                "",
-                "",
                 "2026-07-17 12:00",
-                "",
             ),
         ),
         (
@@ -472,10 +436,7 @@ fn prompt_stable_prefix_unchanged_by_dynamic_content() {
                 &skills,
                 None,
                 true,
-                "media",
-                "search",
                 "2026-07-17 12:00",
-                "",
             ),
         ),
     ];
@@ -502,16 +463,8 @@ fn prompt_static_base_present_regardless_of_deep_memory_or_skills() {
             name: "greet".into(),
             description: Some("Say hello".into()),
             instructions: "..".into(),
-            triggers: Vec::new(),
-            enabled_tools: Vec::new(),
-            examples: Vec::new(),
-            version: 1,
-            version_history: Vec::new(),
             created_by: None,
-            editors: Vec::new(),
-            created_at: 0,
-            updated_at: 0,
-            prompt: None,
+            ..Skill::default()
         },
     );
 
@@ -527,10 +480,7 @@ fn prompt_static_base_present_regardless_of_deep_memory_or_skills() {
             &skills,
             None,
             true,
-            "",
-            "",
             "2026-07-17 12:00",
-            "",
         ),
         // deep_memory disabled, no skills
         build_system_prompt_with_profile(
@@ -543,10 +493,7 @@ fn prompt_static_base_present_regardless_of_deep_memory_or_skills() {
             &skills,
             None,
             false,
-            "",
-            "",
             "2026-07-17 12:00",
-            "",
         ),
         // deep_memory enabled, with skills
         build_system_prompt_with_profile(
@@ -559,10 +506,7 @@ fn prompt_static_base_present_regardless_of_deep_memory_or_skills() {
             &skill_map,
             None,
             true,
-            "",
-            "",
             "2026-07-17 12:00",
-            "",
         ),
         // deep_memory disabled, with skills
         build_system_prompt_with_profile(
@@ -575,10 +519,7 @@ fn prompt_static_base_present_regardless_of_deep_memory_or_skills() {
             &skill_map,
             None,
             false,
-            "",
-            "",
             "2026-07-17 12:00",
-            "",
         ),
     ];
 
@@ -620,10 +561,7 @@ fn prompt_regression_dynamic_markers_after_guidelines_minimal() {
         &empty_skills(),
         None,
         false,
-        "",
-        "",
         "2026-07-17 12:00",
-        "",
     );
     let guidelines_pos = p
         .find("## Guidelines")
@@ -648,16 +586,8 @@ fn prompt_regression_dynamic_markers_after_guidelines_maximal() {
             name: "greet".into(),
             description: Some("Say hello".into()),
             instructions: "..".into(),
-            triggers: Vec::new(),
-            enabled_tools: Vec::new(),
-            examples: Vec::new(),
-            version: 1,
-            version_history: Vec::new(),
             created_by: None,
-            editors: Vec::new(),
-            created_at: 0,
-            updated_at: 0,
-            prompt: None,
+            ..Skill::default()
         },
     );
     let p = build_system_prompt_with_profile(
@@ -670,10 +600,7 @@ fn prompt_regression_dynamic_markers_after_guidelines_maximal() {
         &skills,
         Some("Friendly"),
         true,
-        "tags",
-        "actions",
         "2026-07-17 12:00",
-        "",
     );
     let guidelines_pos = p
         .find("## Guidelines")
@@ -708,10 +635,7 @@ fn prompt_memory_tools_separated_from_preceding_guidelines_bullet() {
         &empty_skills(),
         None,
         true,
-        "",
-        "",
         "2026-07-17 12:00",
-        "",
     );
     assert!(
         p.contains("summarizing what they asked.\n- When a user asks what was discussed"),
@@ -732,16 +656,8 @@ fn prompt_config_content_ordered_between_guidelines_and_dynamic() {
             name: "greet".into(),
             description: Some("Say hello".into()),
             instructions: "..".into(),
-            triggers: Vec::new(),
-            enabled_tools: Vec::new(),
-            examples: Vec::new(),
-            version: 1,
-            version_history: Vec::new(),
             created_by: None,
-            editors: Vec::new(),
-            created_at: 0,
-            updated_at: 0,
-            prompt: None,
+            ..Skill::default()
         },
     );
     let p = build_system_prompt_with_profile(
@@ -754,10 +670,7 @@ fn prompt_config_content_ordered_between_guidelines_and_dynamic() {
         &skills,
         Some("Friendly"),
         true,
-        "tags",
-        "actions",
         "2026-07-17 12:00",
-        "",
     );
     let last_stable_pos = p
         .find("summarizing what they asked.")
@@ -822,10 +735,7 @@ fn all_tool_names_matches_built_in_definitions() {
     // excluding conditionally-included sandbox and memory tools).
     let defined: BTreeSet<String> = [
         crate::tools::searxng::definition(),
-        crate::tools::searxng::deep_research_definition(),
         crate::tools::web_fetch::definition(),
-        crate::tools::file_download::definition(),
-        crate::tools::common_crawl::definition(),
         use_skill_tool(),
         create_skill_tool(),
         crate::tools::manage_skills::list_definition(),
@@ -834,20 +744,16 @@ fn all_tool_names_matches_built_in_definitions() {
         crate::tools::manage_skills::edit_definition(),
         crate::tools::manage_skills::enable_definition(),
         crate::tools::manage_skills::disable_definition(),
+        crate::tools::manage_skills::read_file_definition(),
+        crate::tools::manage_skills::run_script_definition(),
         crate::tools::feature_request::definition(),
         crate::tools::edit_feature_request::definition(),
         crate::tools::feature_development::definition(),
         crate::tools::github_api::definition(),
         crate::tools::remind::definition(),
-        crate::tools::summarize_url::definition(),
-        crate::tools::token_metrics::definition(),
-        crate::tools::translate::definition(),
+        crate::tools::subagent::definition(),
         crate::tools::features::definition(),
         get_messages_tool(),
-        find_discord_users_tool(),
-        get_discord_user_tool(),
-        run_lua_tool(),
-        get_lua_docs_tool(),
     ]
     .into_iter()
     .map(|def| {

@@ -1,7 +1,7 @@
 //! Tool for preparing an automated coding-agent development job.
 //!
 //! The LLM calls this to build a structured spec. Owner and configurer requests
-//! enter the interactive agent/model/effort selection flow (OwnerConfigurationRequired).
+//! enter the interactive agent/model selection flow (OwnerConfigurationRequired).
 //! For all other requesters the owner must approve first (OwnerApprovalRequired).
 
 use std::sync::Arc;
@@ -10,6 +10,7 @@ use std::time::Duration;
 use serde_json::{json, Value};
 use uuid::Uuid;
 
+use housebot_coding_agent::catalog::CodingAgent;
 use housebot_coding_agent::pending::{
     DevelopmentRequester, DevelopmentSpecification, DiscordMessageRef, DispatchStage,
     PartialAgentSelection, PendingDevelopmentJob, PendingJobStore,
@@ -48,7 +49,7 @@ pub fn owner_dispatch_limiter() -> RateLimiter {
 /// take the appropriate action without parsing magic strings.
 #[derive(Debug)]
 pub enum FeatureDevelopmentOutcome {
-    /// Owner/configurer requested interactive agent/model/effort selection.
+    /// Owner/configurer requested interactive agent/model selection.
     OwnerConfigurationRequired { job_id: Uuid },
     /// Non-owner request; owner must approve before execution.
     OwnerApprovalRequired { job_id: Uuid },
@@ -77,7 +78,7 @@ impl FeatureDevelopmentOutcome {
 /// How the caller expects dispatch to proceed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DispatchMode {
-    /// Owner/configurer wants to interactively choose agent/model/effort.
+    /// Owner/configurer wants to interactively choose agent/model.
     Interactive,
     /// Non-owner: must await owner approval.
     RequireOwnerApproval,
@@ -90,7 +91,7 @@ pub fn definition() -> Value {
         "description": "Prepare an automated feature-development request.\n\
             When the configured owner explicitly says to start, implement, build, or begin work, \
             call this; the owner will be presented with a Discord selector to choose the coding \
-            agent, model, and effort level before dispatch.\n\
+            agent and model before dispatch.\n\
             When another user requests implementation, call this so the owner can approve it.\n\
             Do not claim that work has started until the dispatch succeeds.\n\
             Use create_feature_request for suggestions that do not ask to begin implementation.",
@@ -222,8 +223,11 @@ pub fn prepare_feature_development(
             requester,
             source_message,
             spec,
-            DispatchStage::ChoosingAgent,
-            PartialAgentSelection::default(),
+            DispatchStage::ChoosingModel,
+            PartialAgentSelection {
+                agent: Some(CodingAgent::OpenCode),
+                ..Default::default()
+            },
         );
         let job_id = store.insert(job);
         FeatureDevelopmentOutcome::OwnerConfigurationRequired { job_id }

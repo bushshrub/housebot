@@ -81,23 +81,12 @@ async fn aggregates_users_and_conversations() {
 }
 
 #[tokio::test]
-async fn archives_every_message_and_erases_user_data() {
+async fn erases_user_data() {
     let monitor = TokenMonitor::default();
     monitor
         .start_conversation("c1", "u1", "Alice", 10)
         .await
         .unwrap();
-    monitor
-        .record_turn(
-            "c1",
-            &json!({"role":"user","content":"hello"}),
-            &[json!({"role":"assistant","content":"hi"})],
-        )
-        .await
-        .unwrap();
-    if let Backend::Memory(data) = &monitor.backend {
-        assert_eq!(data.lock().await.messages.len(), 2);
-    }
     monitor.clear_user("u1").await.unwrap();
     assert!(monitor.leaderboard(10).await.unwrap().users.is_empty());
 }
@@ -190,36 +179,6 @@ async fn get_active_conversation_id_returns_none_for_memory_backend() {
         .unwrap();
     assert_eq!(monitor.get_active_conversation_id("u1").await, None);
     assert_eq!(monitor.get_active_conversation_id("unknown").await, None);
-}
-
-#[tokio::test]
-async fn global_stats_returns_zeros_for_empty_data() {
-    let monitor = TokenMonitor::default();
-    let stats = monitor
-        .get_global_stats(LeaderboardPeriod::AllTime)
-        .await
-        .unwrap();
-    assert_eq!(stats.total_users, 0);
-    assert_eq!(stats.total_conversations, 0);
-    assert_eq!(stats.total_input_tokens, 0);
-    assert_eq!(stats.total_output_tokens, 0);
-    assert_eq!(stats.total_cached_tokens, 0);
-    assert_eq!(stats.period, LeaderboardPeriod::AllTime);
-}
-
-#[tokio::test]
-async fn global_stats_returns_zeros_for_empty_daily_period() {
-    let monitor = TokenMonitor::default();
-    let stats = monitor
-        .get_global_stats(LeaderboardPeriod::Daily)
-        .await
-        .unwrap();
-    assert_eq!(stats.total_users, 0);
-    assert_eq!(stats.total_conversations, 0);
-    assert_eq!(stats.total_input_tokens, 0);
-    assert_eq!(stats.total_output_tokens, 0);
-    assert_eq!(stats.total_cached_tokens, 0);
-    assert_eq!(stats.period, LeaderboardPeriod::Daily);
 }
 
 #[tokio::test]

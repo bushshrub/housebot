@@ -12,48 +12,44 @@ use tokio::sync::Mutex;
 
 use housebot_sandbox::{NetworkAccess, Sandbox, SandboxClient};
 
-/// A sandbox that is lazily created on first tool use within a single
-/// `Agent::run` invocation, and destroyed when the agent finishes.
+/// A per-turn handle to the session's sandbox, attached on first tool use.
+///
+/// The container itself belongs to the session, not to this handle: sandboxd
+/// keeps it alive between turns so the workspace survives, and reaps it once
+/// the session falls idle.
 pub struct LazySandbox {
     client: SandboxClient,
+    session_key: String,
     inner: Arc<Mutex<Option<Sandbox>>>,
-    network: Arc<Mutex<NetworkAccess>>,
     /// Track whether any sandbox tool has been called (to provide better errors).
     started: Arc<Mutex<bool>>,
 }
 
 impl LazySandbox {
-    pub fn new(client: SandboxClient) -> Self {
+    pub fn new(client: SandboxClient, session_key: impl Into<String>) -> Self {
         Self {
             client,
+            session_key: session_key.into(),
             inner: Arc::new(Mutex::new(None)),
-            network: Arc::new(Mutex::new(NetworkAccess::None)),
             started: Arc::new(Mutex::new(false)),
         }
     }
 
-    /// Get or create the sandbox container.
+    /// Attach to the session's sandbox, starting one if the session has none.
     async fn get_or_start(&self, network: NetworkAccess) -> Result<Sandbox, String> {
         let mut guard = self.inner.lock().await;
         if let Some(ref sandbox) = *guard {
-            let current = *self.network.lock().await;
-            if network == NetworkAccess::PublicInternet && current == NetworkAccess::None {
-                return Err("Sandbox is already running without network access. \
-                     Clone the repository before using other sandbox tools."
-                    .to_string());
-            }
             return Ok(sandbox.clone());
         }
 
-        let sandbox = self.client.start(network).await?;
-        *self.network.lock().await = network;
+        let sandbox = self.client.start(&self.session_key, network).await?;
         *self.started.lock().await = true;
         let result = sandbox.clone();
         *guard = Some(sandbox);
         Ok(result)
     }
 
-    /// Destroy the sandbox container if it was started.
+    /// Discard the session's workspace before the idle timeout would.
     pub async fn close(&self) {
         let mut guard = self.inner.lock().await;
         if let Some(sandbox) = guard.take() {
@@ -158,6 +154,52 @@ impl LazySandbox {
         }
         Ok(text)
     }
+
+    /// Copy a skill script into the workspace and execute it.
+    ///
+    /// Requests `NetworkAccess::None`, so a skill script never *causes* a
+    /// session's sandbox to gain network it would not otherwise have.
+    ///
+    /// It does not guarantee the script runs without network. `get_or_start` is
+    /// first-wins: if the session already started networked — say a
+    /// `sandbox_clone_repository` ran first — the script executes in that
+    /// container. The containment that matters is the sandbox itself (gVisor,
+    /// tmpfs, no host mounts, no secrets), not the network mode.
+    pub async fn run_skill_script(
+        &self,
+        skill: &str,
+        file: &str,
+        source: &str,
+        args: &[String],
+        timeout_secs: Option<u64>,
+    ) -> Result<String, String> {
+        let interpreter = script_interpreter(file)?;
+
+        let sandbox = self.get_or_start(NetworkAccess::None).await?;
+        let path = format!("skills/{skill}/{file}");
+        sandbox.write_file(&path, source, true).await?;
+
+        let quoted: Vec<String> = args.iter().map(|a| shell_quote(a)).collect();
+        let command = format!("{interpreter} /workspace/{path} {}", quoted.join(" "));
+        self.run(&command, None, timeout_secs).await
+    }
+}
+
+/// Map a script's extension to its interpreter, rejecting anything else.
+fn script_interpreter(file: &str) -> Result<&'static str, String> {
+    match file.rsplit_once('.').map(|(_, ext)| ext) {
+        Some("py") => Ok("python3"),
+        Some("sh") => Ok("bash"),
+        Some("js") => Ok("node"),
+        _ => Err(format!(
+            "Error: cannot run '{file}' — supported script types are .py, .sh, and .js."
+        )),
+    }
+}
+
+/// Single-quote an argument for the shell, escaping embedded quotes.
+fn shell_quote(arg: &str) -> String {
+    format!("'{}'", arg.replace('\'', "'\\''"))
 }
 
 fn truncate_output(s: &str) -> String {
@@ -311,4 +353,33 @@ pub fn sandbox_run_definition() -> Value {
             "required": ["command"]
         }
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn known_script_types_map_to_interpreters() {
+        assert_eq!(script_interpreter("run.py").unwrap(), "python3");
+        assert_eq!(script_interpreter("run.sh").unwrap(), "bash");
+        assert_eq!(script_interpreter("run.js").unwrap(), "node");
+    }
+
+    #[test]
+    fn unknown_script_types_are_refused_before_any_sandbox_work() {
+        for file in ["run", "run.rb", "run.exe", "a.out", ""] {
+            assert!(
+                script_interpreter(file).is_err(),
+                "{file} should be refused"
+            );
+        }
+    }
+
+    #[test]
+    fn script_arguments_cannot_break_out_of_their_quoting() {
+        let quoted = shell_quote("; rm -rf /");
+        assert_eq!(quoted, "'; rm -rf /'");
+        assert_eq!(shell_quote("it's"), r"'it'\''s'");
+    }
 }

@@ -2,19 +2,18 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde_json::{json, Value};
 
-use housebot_skills::{Skill, SkillExample, SkillTrigger, Skills};
+use housebot_skills::{Skill, Skills};
 
 /// OpenAI-style tool definition (internal `input_schema` form).
 pub fn definition() -> Value {
     json!({
         "name": "create_skill",
-        "description": "Create or update a custom skill — a packaged set of instructions with \
-            trigger conditions, recommended tools, and few-shot examples. The skill is loaded \
-            into your context on demand via `use_skill`; you then follow its instructions using \
-            your normal tools. Gather requirements from the user through conversation, then \
-            present the final draft to the user and obtain their explicit approval before calling \
-            this tool. When updating an existing skill, provide the correct version number to \
-            trigger automatic version archiving.",
+        "description": "Create or update a custom skill — a packaged set of instructions stored \
+            as a directory on disk. The instructions are loaded into your context on demand via \
+            `use_skill`; you then follow them using your normal tools. Keep the instructions \
+            focused: bulk material belongs in the skill's references/ directory, which is read \
+            only when needed. Gather requirements from the user through conversation, then \
+            present the final draft and obtain their explicit approval before calling this tool.",
         "input_schema": {
             "type": "object",
             "properties": {
@@ -28,54 +27,20 @@ pub fn definition() -> Value {
                 },
                 "description": {
                     "type": "string",
-                    "description": "Optional human-readable description of what this skill does."
-                },
-                "triggers": {
-                    "type": "array",
-                    "description": "Optional conditions that determine when the skill activates. \
-                        Each trigger has a type ('keyword', 'intent', 'always', 'context') and a value.",
-                    "items": {
-                        "type": "object",
-                        "properties": {
-                            "trigger_type": {
-                                "type": "string",
-                                "enum": ["keyword", "intent", "always", "context"],
-                                "description": "'keyword' — activate when specific terms are mentioned; \
-                                    'intent' — activate when user intent matches description; \
-                                    'always' — always available as a fallback; \
-                                    'context' — activate based on conversation context."
-                            },
-                            "value": {
-                                "type": "string",
-                                "description": "The keyword phrase, intent description, or context that triggers this skill."
-                            }
-                        },
-                        "required": ["trigger_type", "value"]
-                    }
+                    "description": "Optional human-readable description of what this skill does, shown in list_skills."
                 },
                 "enabled_tools": {
                     "type": "array",
                     "description": "Tool names this skill is expected to use (e.g. 'web_search', \
                         'fetch_webpage'), surfaced as recommendations when the skill is loaded. \
-                        Leave empty for a text-only skill.",
+                        Advisory only — it does not restrict which tools you may call. Leave \
+                        empty for a text-only skill.",
                     "items": {"type": "string"}
                 },
-                "examples": {
-                    "type": "array",
-                    "description": "Optional few-shot input/output examples for consistent behavior.",
-                    "items": {
-                        "type": "object",
-                        "properties": {
-                            "input": {"type": "string", "description": "Example user input."},
-                            "output": {"type": "string", "description": "Expected skill output."}
-                        },
-                        "required": ["input", "output"]
-                    }
-                },
-                "version": {
-                    "type": "integer",
-                    "description": "Current version number. Omit (or set to 0) for new skills. \
-                        When updating, provide the existing version to archive it automatically."
+                "update": {
+                    "type": "boolean",
+                    "description": "Set true to overwrite an existing skill. Creating over an \
+                        existing name fails without it, so an accidental clobber is not silent."
                 }
             },
             "required": ["name", "instructions"]
@@ -97,17 +62,14 @@ fn valid_name(name: &str) -> bool {
             .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_')
 }
 
-#[allow(clippy::too_many_arguments)]
 pub(crate) async fn create_skill(
     skills: &Skills,
     author_id: &str,
     name: &str,
     instructions: &str,
     description: Option<&str>,
-    triggers: Option<Vec<SkillTrigger>>,
     enabled_tools: Option<Vec<String>>,
-    examples: Option<Vec<SkillExample>>,
-    version: u64,
+    update: bool,
 ) -> String {
     if !valid_name(name) {
         return "Error: Skill name must be lowercase letters, numbers, and underscores only."
@@ -117,130 +79,44 @@ pub(crate) async fn create_skill(
         return "Error: Skill instructions cannot be empty.".into();
     }
 
-    let now = now_secs();
-
     match skills.get(name).await {
         Some(mut existing) => {
-            // Update path: require version to match the existing record exactly
-            if version != existing.version as u64 {
+            if !update {
                 return format!(
-                    "Error: Skill '{name}' exists at version {} but version {} was supplied. \
-                     Provide the exact current version to update.",
-                    existing.version, version
+                    "Error: Skill '{name}' already exists. Pass update=true to overwrite it."
                 );
             }
             if !existing.can_edit(author_id) {
                 return format!("⛔ Only the author or a delegated editor can update **{name}**.");
             }
-            existing.bump_version();
-            let new_version = existing.version;
             existing.instructions = instructions.to_string();
             if let Some(desc) = description {
                 existing.description = Some(desc.to_string());
             }
-            if let Some(ref t) = triggers {
-                existing.triggers = t.clone();
-            }
             if let Some(ref t) = enabled_tools {
                 existing.enabled_tools = t.clone();
-            }
-            if let Some(ref e) = examples {
-                existing.examples = e.clone();
             }
             if skills.save(existing).await.is_err() {
                 return "Error: failed to save skill.".into();
             }
-            format!("✅ Skill **{name}** updated to version {new_version}.")
+            format!("✅ Skill **{name}** updated.")
         }
         None => {
-            // Create path: require version 0
-            if version != 0 {
-                return format!(
-                    "Error: Skill '{name}' does not exist — use version 0 to create a new skill."
-                );
-            }
+            let now = now_secs();
             let skill = Skill {
                 name: name.to_string(),
                 description: description.map(String::from),
                 instructions: instructions.to_string(),
-                triggers: triggers.unwrap_or_default(),
                 enabled_tools: enabled_tools.unwrap_or_default(),
-                examples: examples.unwrap_or_default(),
-                version: 1,
-                version_history: Vec::new(),
                 created_by: Some(author_id.to_string()),
-                editors: Vec::new(),
                 created_at: now,
                 updated_at: now,
-                prompt: None,
+                ..Skill::default()
             };
             if skills.save(skill).await.is_err() {
                 return "Error: failed to save skill.".into();
             }
-            format!("✅ Skill **{name}** (v1) created successfully.")
-        }
-    }
-}
-
-pub(crate) fn parse_triggers(val: Option<&Value>) -> Result<Option<Vec<SkillTrigger>>, String> {
-    match val {
-        None => Ok(None),
-        Some(v) => {
-            let arr = v
-                .as_array()
-                .ok_or_else(|| "'triggers' must be an array".to_string())?;
-            let triggers: Result<Vec<_>, String> = arr
-                .iter()
-                .map(|item| {
-                    let trigger_type = item
-                        .get("trigger_type")
-                        .and_then(Value::as_str)
-                        .ok_or_else(|| {
-                            "Each trigger must have a string field 'trigger_type'".to_string()
-                        })?
-                        .to_string();
-                    let value = item
-                        .get("value")
-                        .and_then(Value::as_str)
-                        .ok_or_else(|| "Each trigger must have a string field 'value'".to_string())?
-                        .to_string();
-                    Result::<_, String>::Ok(SkillTrigger {
-                        trigger_type,
-                        value,
-                    })
-                })
-                .collect();
-            Ok(Some(triggers?))
-        }
-    }
-}
-
-pub(crate) fn parse_examples(val: Option<&Value>) -> Result<Option<Vec<SkillExample>>, String> {
-    match val {
-        None => Ok(None),
-        Some(v) => {
-            let arr = v
-                .as_array()
-                .ok_or_else(|| "'examples' must be an array".to_string())?;
-            let examples: Result<Vec<_>, String> = arr
-                .iter()
-                .map(|item| {
-                    let input = item
-                        .get("input")
-                        .and_then(Value::as_str)
-                        .ok_or_else(|| "Each example must have a string field 'input'".to_string())?
-                        .to_string();
-                    let output = item
-                        .get("output")
-                        .and_then(Value::as_str)
-                        .ok_or_else(|| {
-                            "Each example must have a string field 'output'".to_string()
-                        })?
-                        .to_string();
-                    Result::<_, String>::Ok(SkillExample { input, output })
-                })
-                .collect();
-            Ok(Some(examples?))
+            format!("✅ Skill **{name}** created successfully.")
         }
     }
 }
@@ -277,19 +153,11 @@ pub async fn dispatch_create_skill(skills: &Skills, author_id: &str, args: &Valu
         .and_then(Value::as_str)
         .unwrap_or("");
     let description = args.get("description").and_then(Value::as_str);
-    let triggers = match parse_triggers(args.get("triggers")) {
-        Ok(t) => t,
-        Err(e) => return format!("Error: {e}"),
-    };
     let enabled_tools = match parse_strings(args.get("enabled_tools")) {
         Ok(t) => t,
         Err(e) => return format!("Error: {e}"),
     };
-    let examples = match parse_examples(args.get("examples")) {
-        Ok(e) => e,
-        Err(e) => return format!("Error: {e}"),
-    };
-    let version = args.get("version").and_then(Value::as_u64).unwrap_or(0);
+    let update = args.get("update").and_then(Value::as_bool).unwrap_or(false);
 
     create_skill(
         skills,
@@ -297,10 +165,8 @@ pub async fn dispatch_create_skill(skills: &Skills, author_id: &str, args: &Valu
         &name,
         instructions,
         description,
-        triggers,
         enabled_tools,
-        examples,
-        version,
+        update,
     )
     .await
 }
@@ -314,7 +180,7 @@ mod tests {
 
     fn test_skills() -> (TempDir, Skills) {
         let tmp = TempDir::new().unwrap();
-        let skills = Skills::new(tmp.path().join("skills.json"));
+        let skills = Skills::new(tmp.path());
         (tmp, skills)
     }
 
@@ -328,22 +194,19 @@ mod tests {
                 "name": "summarizer",
                 "instructions": "Summarize the user's input concisely.",
                 "description": "A summarization skill",
-                "triggers": [{"trigger_type": "keyword", "value": "summarize"}],
-                "enabled_tools": ["web_search"],
-                "examples": [{"input": "summarize this article", "output": "Here is the summary..."}]
+                "enabled_tools": ["web_search"]
             }),
         )
         .await;
         assert!(result.contains("created"), "result: {result}");
         let skill = skills.get("summarizer").await.unwrap();
-        assert_eq!(skill.version, 1);
-        assert_eq!(skill.triggers.len(), 1);
-        assert_eq!(skill.enabled_tools.len(), 1);
-        assert_eq!(skill.examples.len(), 1);
+        assert_eq!(skill.description.as_deref(), Some("A summarization skill"));
+        assert_eq!(skill.enabled_tools, vec!["web_search"]);
+        assert_eq!(skill.created_by.as_deref(), Some("user123"));
     }
 
     #[tokio::test]
-    async fn update_existing_skill_archives_old_version() {
+    async fn update_requires_the_update_flag() {
         let (_t, skills) = test_skills();
         dispatch_create_skill(
             &skills,
@@ -355,23 +218,36 @@ mod tests {
         )
         .await;
 
+        let clobber = dispatch_create_skill(
+            &skills,
+            "user123",
+            &json!({
+                "name": "greeter",
+                "instructions": "Say hello warmly",
+            }),
+        )
+        .await;
+        assert!(clobber.starts_with("Error:"), "result: {clobber}");
+        assert_eq!(
+            skills.get("greeter").await.unwrap().instructions.trim(),
+            "Say hello"
+        );
+
         let result = dispatch_create_skill(
             &skills,
             "user123",
             &json!({
                 "name": "greeter",
                 "instructions": "Say hello warmly",
-                "version": 1,
+                "update": true,
             }),
         )
         .await;
         assert!(result.contains("updated"), "result: {result}");
-
-        let skill = skills.get("greeter").await.unwrap();
-        assert_eq!(skill.version, 2);
-        assert_eq!(skill.version_history.len(), 1);
-        assert_eq!(skill.version_history[0].version, 1);
-        assert_eq!(skill.instructions, "Say hello warmly");
+        assert_eq!(
+            skills.get("greeter").await.unwrap().instructions.trim(),
+            "Say hello warmly"
+        );
     }
 
     #[tokio::test]
@@ -393,7 +269,7 @@ mod tests {
             &json!({
                 "name": "locked",
                 "instructions": "Hacked instructions",
-                "version": 1,
+                "update": true,
             }),
         )
         .await;
@@ -401,14 +277,14 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn update_rejects_wrong_version() {
+    async fn creating_over_an_existing_skill_is_refused() {
         let (_t, skills) = test_skills();
         dispatch_create_skill(
             &skills,
             "user1",
             &json!({
                 "name": "s",
-                "instructions": "v1 instructions",
+                "instructions": "original instructions",
             }),
         )
         .await;
@@ -418,12 +294,15 @@ mod tests {
             "user1",
             &json!({
                 "name": "s",
-                "instructions": "v2 instructions",
-                "version": 999,
+                "instructions": "replacement instructions",
             }),
         )
         .await;
-        assert!(result.contains("exists at version 1 but version 999 was supplied"));
+        assert!(result.contains("already exists"), "result: {result}");
+        assert_eq!(
+            skills.get("s").await.unwrap().instructions.trim(),
+            "original instructions"
+        );
     }
 
     #[tokio::test]
@@ -435,9 +314,7 @@ mod tests {
             &json!({
                 "name": "s",
                 "instructions": "original",
-                "triggers": [{"trigger_type": "keyword", "value": "hello"}],
                 "enabled_tools": ["web_search"],
-                "examples": [{"input": "hi", "output": "hello back"}],
             }),
         )
         .await;
@@ -449,22 +326,20 @@ mod tests {
             &json!({
                 "name": "s",
                 "instructions": "updated",
-                "version": 1,
+                "update": true,
             }),
         )
         .await;
         assert!(result.contains("updated"), "result: {result}");
 
         let skill = skills.get("s").await.unwrap();
-        assert_eq!(skill.instructions, "updated");
-        // Arrays should be preserved since they were omitted
-        assert_eq!(skill.triggers.len(), 1, "triggers should be preserved");
+        assert_eq!(skill.instructions.trim(), "updated");
+        // Omitted fields keep their previous values.
         assert_eq!(
             skill.enabled_tools.len(),
             1,
             "enabled_tools should be preserved"
         );
-        assert_eq!(skill.examples.len(), 1, "examples should be preserved");
     }
 
     #[test]
@@ -475,54 +350,6 @@ mod tests {
             d["input_schema"]["required"],
             json!(["name", "instructions"])
         );
-    }
-
-    #[test]
-    fn parse_triggers_from_value() {
-        let v = json!([
-            {"trigger_type": "keyword", "value": "hello"},
-            {"trigger_type": "intent", "value": "greeting"},
-        ]);
-        let triggers = parse_triggers(Some(&v)).unwrap().unwrap();
-        assert_eq!(triggers.len(), 2);
-        assert_eq!(triggers[0].trigger_type, "keyword");
-        assert_eq!(triggers[1].value, "greeting");
-    }
-
-    #[test]
-    fn parse_triggers_none_when_absent() {
-        assert!(parse_triggers(None).unwrap().is_none());
-    }
-
-    #[test]
-    fn parse_triggers_rejects_non_array() {
-        assert!(parse_triggers(Some(&json!("not_an_array"))).is_err());
-    }
-
-    #[test]
-    fn parse_triggers_rejects_malformed_element() {
-        let v = json!([{"trigger_type": "keyword"}]); // missing "value"
-        assert!(parse_triggers(Some(&v)).is_err());
-    }
-
-    #[test]
-    fn parse_examples_from_value() {
-        let v = json!([
-            {"input": "hi", "output": "hello back"},
-        ]);
-        let examples = parse_examples(Some(&v)).unwrap().unwrap();
-        assert_eq!(examples.len(), 1);
-        assert_eq!(examples[0].input, "hi");
-    }
-
-    #[test]
-    fn parse_examples_none_when_absent() {
-        assert!(parse_examples(None).unwrap().is_none());
-    }
-
-    #[test]
-    fn parse_examples_rejects_non_array() {
-        assert!(parse_examples(Some(&json!(42))).is_err());
     }
 
     #[test]

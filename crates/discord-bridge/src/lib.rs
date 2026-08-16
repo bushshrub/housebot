@@ -3,11 +3,7 @@
 
 use std::sync::Arc;
 
-use housebot_bot_response::SecretRedactor;
-use serenity::all::{
-    ChannelId, CreateAllowedMentions, CreateMessage, GetMessages, Message, MessageId, Timestamp,
-    UserId,
-};
+use serenity::all::{ChannelId, GetMessages, GuildId, Message, MessageId, Timestamp, UserId};
 use tokio::sync::RwLock;
 
 pub struct UserInfo {
@@ -62,51 +58,14 @@ const RECENT_MAX_PAGES: u32 = 5;
 /// The HTTP handle is injected after the bot connects (see `set_http`), so
 /// tool calls that arrive before `ready` fires return an error rather than
 /// panicking.
-#[derive(Clone)]
+#[derive(Clone, Default)]
 pub struct DiscordBridge {
     http: Arc<RwLock<Option<Arc<serenity::http::Http>>>>,
-    redactor: Arc<SecretRedactor>,
-}
-
-impl Default for DiscordBridge {
-    fn default() -> Self {
-        Self::with_redactor(SecretRedactor::from_env())
-    }
 }
 
 impl DiscordBridge {
-    pub fn with_redactor(redactor: SecretRedactor) -> Self {
-        Self {
-            http: Arc::new(RwLock::new(None)),
-            redactor: Arc::new(redactor),
-        }
-    }
-
     pub async fn set_http(&self, http: Arc<serenity::http::Http>) {
         *self.http.write().await = Some(http);
-    }
-
-    /// Content as it will leave the bridge: known secret values scrubbed.
-    fn outbound_content(&self, content: &str) -> String {
-        self.redactor.redact(content)
-    }
-
-    /// Send a message on behalf of a Lua script. Mentions are suppressed so a
-    /// Scripting-role member without Discord's own mention permissions cannot
-    /// use the bridge to ping `@everyone`, roles, or arbitrary users.
-    pub async fn send_message(&self, channel_id: u64, content: &str) -> Result<(), String> {
-        let guard = self.http.read().await;
-        let Some(http) = guard.as_ref() else {
-            return Err("Discord bridge not available.".to_string());
-        };
-        let builder = CreateMessage::new()
-            .content(self.outbound_content(content))
-            .allowed_mentions(CreateAllowedMentions::new());
-        ChannelId::new(channel_id)
-            .send_message(http.as_ref(), builder)
-            .await
-            .map(|_| ())
-            .map_err(|e| format!("Failed to send message: {e}"))
     }
 
     pub async fn fetch_user(&self, user_id: u64) -> Result<UserInfo, String> {
@@ -196,22 +155,50 @@ impl DiscordBridge {
         collected.sort_by_key(|m| m.timestamp.unix_timestamp());
         Ok(collected.iter().map(FetchedMessage::from).collect())
     }
+
+    /// Whether `user_id` can read `channel_id`, resolved against Discord live.
+    ///
+    /// Answered from the user's current roles and the channel's overwrites, not
+    /// from anything recorded when a message arrived: a user who has since lost
+    /// a role must lose the history that came with it.
+    pub async fn can_view_channel(
+        &self,
+        guild_id: u64,
+        user_id: u64,
+        channel_id: u64,
+    ) -> Result<bool, String> {
+        let guard = self.http.read().await;
+        let Some(http) = guard.as_ref() else {
+            return Err("Discord bridge not available.".to_string());
+        };
+        let guild_id = GuildId::new(guild_id);
+        let channel = http
+            .get_channel(ChannelId::new(channel_id))
+            .await
+            .map_err(|error| format!("could not resolve channel: {error}"))?
+            .guild()
+            .ok_or_else(|| "channel is not a guild channel".to_string())?;
+        // Resolving permissions against the wrong guild's roles would answer a
+        // question nobody asked, so refuse a channel from another guild.
+        if channel.guild_id != guild_id {
+            return Ok(false);
+        }
+        let guild = http
+            .get_guild(guild_id)
+            .await
+            .map_err(|error| format!("could not resolve guild: {error}"))?;
+        let member = match http.get_member(guild_id, UserId::new(user_id)).await {
+            Ok(member) => member,
+            // Not a member of the guild at all.
+            Err(_) => return Ok(false),
+        };
+        Ok(guild.user_permissions_in(&channel, &member).view_channel())
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn outbound_content_is_redacted() {
-        let redactor = SecretRedactor::from_vars([(
-            "DISCORD_TOKEN".to_string(),
-            "super-secret-token".to_string(),
-        )]);
-        let bridge = DiscordBridge::with_redactor(redactor);
-        let out = bridge.outbound_content("leak: super-secret-token!");
-        assert_eq!(out, "leak: [REDACTED]!");
-    }
 
     fn message(author: serde_json::Value, member: serde_json::Value) -> Message {
         serde_json::from_value(serde_json::json!({

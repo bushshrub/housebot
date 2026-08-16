@@ -2,7 +2,7 @@ use serde_json::{json, Value};
 
 use housebot_skills::Skills;
 
-use crate::create_skill::{parse_examples, parse_strings, parse_triggers};
+use crate::create_skill::parse_strings;
 
 fn truncate_chars(value: &str, limit: usize) -> String {
     value.chars().take(limit).collect()
@@ -15,6 +15,46 @@ pub fn list_definition() -> Value {
             author, marked with whether the current user has enabled it. Use this to find a skill \
             to enable (enable_skill) before loading it with use_skill.",
         "input_schema": {"type": "object", "properties": {}}
+    })
+}
+
+pub fn read_file_definition() -> Value {
+    json!({
+        "name": "read_skill_file",
+        "description": "Read one file from a skill's references/ directory. Skill instructions \
+            list their reference files; load one only when the instructions call for it, so bulk \
+            material stays out of your context until it is needed.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "skill": {"type": "string", "description": "The skill that owns the file."},
+                "file": {"type": "string", "description": "File name within references/, exactly as listed."}
+            },
+            "required": ["skill", "file"]
+        }
+    })
+}
+
+pub fn run_script_definition() -> Value {
+    json!({
+        "name": "run_skill_script",
+        "description": "Run one script from a skill's scripts/ directory inside the sandbox and \
+            return its output. Supported types are .py, .sh, and .js. The script has NO network \
+            access — gather any data you need with web_search or fetch_webpage first and pass it \
+            in through args. Run a script only when the skill's instructions call for it.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "skill": {"type": "string", "description": "The skill that owns the script."},
+                "file": {"type": "string", "description": "Script name within scripts/, exactly as listed."},
+                "args": {
+                    "type": "array",
+                    "description": "Command-line arguments passed to the script.",
+                    "items": {"type": "string"}
+                }
+            },
+            "required": ["skill", "file"]
+        }
     })
 }
 
@@ -192,31 +232,19 @@ pub async fn dispatch_skill_info(skills: &Skills, args: &Value) -> String {
                 let list: Vec<String> = skill.editors.iter().map(|id| format!("<@{id}>")).collect();
                 format!("\nEditors: {}", list.join(", "))
             };
-            let triggers = if skill.has_triggers() {
-                let list: Vec<String> = skill
-                    .triggers
-                    .iter()
-                    .map(|t| format!("{}: {}", t.trigger_type, t.value))
-                    .collect();
-                format!("\nTriggers: {}", list.join("; "))
-            } else {
-                String::new()
-            };
             let tools = if skill.enabled_tools.is_empty() {
                 String::new()
             } else {
                 format!("\nRecommended tools: {}", skill.enabled_tools.join(", "))
             };
             format!(
-                "Skill: {}\nDescription: {}{}{}\nVersion: v{}{}{}\nExamples: {}\n\nInstructions:\n{}",
+                "Skill: {}\nDescription: {}{}{}{}{}\n\nInstructions:\n{}",
                 skill.name,
                 skill.description.as_deref().unwrap_or("(none)"),
                 author,
                 editors,
-                skill.version,
-                triggers,
                 tools,
-                skill.examples.len(),
+                skill.bundled_summary(),
                 preview,
             )
         }
@@ -265,48 +293,27 @@ pub async fn dispatch_edit_skill(skills: &Skills, author_id: &str, args: &Value)
         }
     }
     let description = args.get("description").and_then(Value::as_str);
-    let triggers = match parse_triggers(args.get("triggers")) {
-        Ok(t) => t,
-        Err(e) => return format!("Error: {e}"),
-    };
     let enabled_tools = match parse_strings(args.get("enabled_tools")) {
         Ok(t) => t,
         Err(e) => return format!("Error: {e}"),
     };
-    let examples = match parse_examples(args.get("examples")) {
-        Ok(e) => e,
-        Err(e) => return format!("Error: {e}"),
-    };
-    if instructions.is_none()
-        && description.is_none()
-        && triggers.is_none()
-        && enabled_tools.is_none()
-        && examples.is_none()
-    {
+    if instructions.is_none() && description.is_none() && enabled_tools.is_none() {
         return "Error: provide at least one field to change.".into();
     }
 
-    skill.bump_version();
-    let new_version = skill.version;
     if let Some(instructions) = instructions {
         skill.instructions = instructions.to_string();
     }
     if let Some(description) = description {
         skill.description = Some(description.to_string());
     }
-    if let Some(triggers) = triggers {
-        skill.triggers = triggers;
-    }
     if let Some(enabled_tools) = enabled_tools {
         skill.enabled_tools = enabled_tools;
-    }
-    if let Some(examples) = examples {
-        skill.examples = examples;
     }
     if skills.save(skill).await.is_err() {
         return "Error: failed to save skill.".into();
     }
-    format!("✅ Skill **{name}** updated to version {new_version}.")
+    format!("✅ Skill **{name}** updated.")
 }
 
 #[cfg(test)]
@@ -317,7 +324,7 @@ mod tests {
 
     fn test_skills() -> (TempDir, Skills) {
         let tmp = TempDir::new().unwrap();
-        let skills = Skills::new(tmp.path().join("skills.json"));
+        let skills = Skills::new(tmp.path());
         (tmp, skills)
     }
 
@@ -326,16 +333,8 @@ mod tests {
             name: name.to_string(),
             description: Some(format!("desc of {name}")),
             instructions: "do the thing".into(),
-            triggers: Vec::new(),
-            enabled_tools: Vec::new(),
-            examples: Vec::new(),
-            version: 1,
-            version_history: Vec::new(),
             created_by: Some(author.to_string()),
-            editors: Vec::new(),
-            created_at: 0,
-            updated_at: 0,
-            prompt: None,
+            ..Skill::default()
         }
     }
 
@@ -375,7 +374,6 @@ mod tests {
         skills.save(skill("greet", "1")).await.unwrap();
         let out = dispatch_skill_info(&skills, &json!({"name": "greet"})).await;
         assert!(out.contains("Skill: greet"));
-        assert!(out.contains("v1"));
         assert!(out.contains("do the thing"));
     }
 
@@ -415,18 +413,13 @@ mod tests {
         .await;
         assert!(denied.contains("⛔"), "denied: {denied}");
         let unchanged = skills.get("greet").await.unwrap();
-        assert_eq!(unchanged.instructions, "do the thing");
-        assert_eq!(unchanged.version, 1);
+        assert_eq!(unchanged.instructions.trim(), "do the thing");
     }
 
     #[tokio::test]
-    async fn edit_updates_only_provided_fields_and_bumps_version() {
+    async fn edit_updates_only_provided_fields() {
         let (_t, skills) = test_skills();
         let mut base = skill("greet", "author1");
-        base.triggers = vec![housebot_skills::SkillTrigger {
-            trigger_type: "keyword".into(),
-            value: "hi".into(),
-        }];
         base.enabled_tools = vec!["web_search".into()];
         skills.save(base).await.unwrap();
 
@@ -436,16 +429,27 @@ mod tests {
             &json!({"name": "greet", "instructions": "do the new thing"}),
         )
         .await;
-        assert!(out.contains("updated to version 2"), "out: {out}");
+        assert!(out.contains("updated"), "out: {out}");
 
         let updated = skills.get("greet").await.unwrap();
-        assert_eq!(updated.instructions, "do the new thing");
-        assert_eq!(updated.version, 2);
-        assert_eq!(updated.version_history.len(), 1);
+        assert_eq!(updated.instructions.trim(), "do the new thing");
         // Fields not passed to edit_skill are preserved.
-        assert_eq!(updated.triggers.len(), 1);
         assert_eq!(updated.enabled_tools, vec!["web_search".to_string()]);
         assert_eq!(updated.description.as_deref(), Some("desc of greet"));
+    }
+
+    #[test]
+    fn bundled_tool_definitions_are_well_formed() {
+        let read = read_file_definition();
+        assert_eq!(read["name"], "read_skill_file");
+        assert_eq!(read["input_schema"]["required"], json!(["skill", "file"]));
+
+        let run = run_script_definition();
+        assert_eq!(run["name"], "run_skill_script");
+        assert_eq!(run["input_schema"]["required"], json!(["skill", "file"]));
+        // The no-network constraint must reach the model, not just the runtime.
+        let description = run["description"].as_str().unwrap();
+        assert!(description.contains("NO network"));
     }
 
     #[tokio::test]
@@ -454,6 +458,9 @@ mod tests {
         skills.save(skill("greet", "author1")).await.unwrap();
         let out = dispatch_edit_skill(&skills, "author1", &json!({"name": "greet"})).await;
         assert!(out.starts_with("Error:"), "out: {out}");
-        assert_eq!(skills.get("greet").await.unwrap().version, 1);
+        assert_eq!(
+            skills.get("greet").await.unwrap().instructions.trim(),
+            "do the thing"
+        );
     }
 }

@@ -109,87 +109,6 @@ pub(crate) fn get_messages_tool() -> Value {
     })
 }
 
-pub(crate) fn get_discord_user_tool() -> Value {
-    json!({
-        "name": "get_discord_user",
-        "description": "Fetch public profile information for a Discord user by their user ID. \
-            Returns the username, display name, account creation date, and whether the account \
-            is a bot.",
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "user_id": {
-                    "type": "string",
-                    "description": "The Discord user ID (snowflake) to look up."
-                }
-            },
-            "required": ["user_id"]
-        }
-    })
-}
-
-pub(crate) fn find_discord_users_tool() -> Value {
-    json!({
-        "name": "find_discord_users",
-        "description": "Fuzzy-find Discord users previously seen in the current channel by username, nickname, or user ID. Supports multi-word queries — each word is matched independently, so searching for \"rice farmer\" will match users whose username or nickname contains \"rice\" OR \"farmer\". The search is fully case-insensitive, ignores punctuation, and tolerates minor typos via Levenshtein distance (1 edit for 4-5 char words, 2 for 6-7, 3 for 8+). Use this before get_discord_user when a person is named but their numeric ID is unknown. Results are limited to the selected channel's message history.",
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "query": {
-                    "type": "string",
-                    "description": "Case-insensitive fuzzy search — matches if any whitespace-separated word is a substring of username, nickname, or user ID. Punctuation is ignored and minor typos are tolerated."
-                },
-                "max_results": {
-                    "type": "integer",
-                    "description": "Maximum number of users to return (1–20, default 10)."
-                },
-                "channel_id": {
-                    "type": "string",
-                    "description": "Discord channel ID to search. Omit to use the current channel."
-                }
-            },
-            "required": ["query"]
-        }
-    })
-}
-
-pub(crate) fn run_lua_tool() -> Value {
-    json!({
-        "name": "run_lua",
-        "description": "Write and execute a sandboxed Lua 5.4 script for calculations, data \
-            processing, algorithmic tasks, or generating directed-graph diagrams. `print(...)` \
-            output and return values are captured and returned as the tool result. The `graph.*` \
-            API (`graph.node`, `graph.edge`, `graph.title`) builds directed graphs that are \
-            rendered as PNG images and automatically attached to the Discord response. \
-            `discord.web_search` and `discord.jellyfin_search` are available as bridge functions. \
-            Call `get_lua_docs` first if you need the full API reference for the sandbox.",
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "script": {
-                    "type": "string",
-                    "description": "Lua 5.4 source code to execute. May be wrapped in a ```lua … ``` fence."
-                }
-            },
-            "required": ["script"]
-        }
-    })
-}
-
-pub(crate) fn get_lua_docs_tool() -> Value {
-    json!({
-        "name": "get_lua_docs",
-        "description": "Return the full API reference for the bot's Lua scripting sandbox: \
-            which standard libraries and built-in globals are available, the discord.* bridge API \
-            (web_search, jellyfin_search), execution limits (timeout, memory, call caps), and \
-            usage examples. Call this before writing a Lua script to understand the environment.",
-        "input_schema": {
-            "type": "object",
-            "properties": {}
-        }
-    })
-}
-
 pub(crate) fn configure_bot_tool() -> Value {
     json!({
         "name": "configure_bot",
@@ -205,8 +124,6 @@ pub(crate) fn configure_bot_tool() -> Value {
               Requires user_id. Omit max_output_tokens to remove the cap.\n\
             - 'set_user_respond' — control whether the bot responds to a user. \
               Requires user_id and respond (boolean).\n\
-            - 'set_proactive' — globally enable or disable proactive assistance. \
-              Requires enabled (boolean).\n\
             - 'set_dev_notify_channel' — set the Discord channel for development \
               completion webhooks. Requires channel_id. Omit channel_id to disable.\n\
             - 'set_user_limit_all' — cap max_output_tokens for every user who already \
@@ -224,7 +141,6 @@ pub(crate) fn configure_bot_tool() -> Value {
                         "revoke_configurer",
                         "set_user_limit",
                         "set_user_respond",
-                        "set_proactive",
                         "set_dev_notify_channel",
                         "set_user_limit_all",
                         "set_user_respond_all"
@@ -242,10 +158,6 @@ pub(crate) fn configure_bot_tool() -> Value {
                 "respond": {
                     "type": "boolean",
                     "description": "Whether the bot responds to the user, for set_user_respond / set_user_respond_all."
-                },
-                "enabled": {
-                    "type": "boolean",
-                    "description": "Whether proactive assistance is globally enabled, for set_proactive."
                 },
                 "channel_id": {
                     "type": "string",

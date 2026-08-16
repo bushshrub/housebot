@@ -14,7 +14,6 @@ fn test_agent(client: Arc<dyn ChatClient>) -> (TempDir, Agent) {
         client,
         History::new(tmp.path().join("history"), 30),
         Memory::new(tmp.path().join("memories")),
-        ProfileStore::new(tmp.path().join("profiles")),
         Skills::new(tmp.path().join("skills.json")),
         Reminders::new(tmp.path().join("reminders.json")),
     );
@@ -22,7 +21,7 @@ fn test_agent(client: Arc<dyn ChatClient>) -> (TempDir, Agent) {
 }
 
 fn noop_sandbox() -> LazySandbox {
-    LazySandbox::new(SandboxClient::new("/dev/null"))
+    LazySandbox::new(SandboxClient::new("/dev/null"), "test-session")
 }
 
 #[derive(Default)]
@@ -117,7 +116,7 @@ async fn cancellation_drops_the_active_llm_stream() {
         stream_dropped.load(Ordering::Acquire),
         "the in-flight chat_stream future kept running"
     );
-    assert_eq!(agent.llm_queue_info().active, 0);
+    assert_eq!(agent.llm_scheduler_info().active, 0);
 }
 
 #[tokio::test]
@@ -166,86 +165,6 @@ async fn run_emits_text_stream_event_for_tool_only_completions() {
     // Round 2 (text completion → sink pushes "text"):
     //   proactive "text", sink "text", then "end"
     assert_eq!(events, ["text", "end", "text", "text", "end"]);
-}
-
-#[tokio::test]
-async fn lua_analysis_allows_safe_tool_call() {
-    let client = Arc::new(MockChatClient::new());
-    client.push_tool_call(
-        "call_1",
-        "submit_lua_verdict",
-        r#"{"safe":true,"reason":"uses only the documented APIs"}"#,
-    );
-    let (_t, agent) = test_agent(client);
-    let result = agent.analyze_lua_script("return 1").await;
-    assert_eq!(
-        result,
-        LuaAnalysis {
-            allowed: true,
-            reason: "uses only the documented APIs".into()
-        }
-    );
-}
-
-#[tokio::test]
-async fn lua_analysis_blocks_unsafe_tool_call() {
-    let client = Arc::new(MockChatClient::new());
-    client.push_tool_call(
-        "call_1",
-        "submit_lua_verdict",
-        r#"{"safe":false,"reason":"attempts to access the filesystem"}"#,
-    );
-    let (_t, agent) = test_agent(client);
-    let result = agent
-        .analyze_lua_script("return io.open('/etc/passwd')")
-        .await;
-    assert!(!result.allowed);
-    assert!(result.reason.contains("filesystem"));
-}
-
-#[tokio::test]
-async fn lua_analysis_fails_closed_when_no_tool_call_returned() {
-    // Model responds with text only (no tool call) → blocked as invalid verdict.
-    let client = Arc::new(MockChatClient::new());
-    client.push_text("I think it is safe");
-    let (_t, agent) = test_agent(client);
-    let result = agent.analyze_lua_script("return 1").await;
-    assert!(!result.allowed);
-    assert!(result.reason.contains("invalid verdict"));
-}
-
-#[tokio::test]
-async fn lua_analysis_fails_closed_when_tool_call_args_malformed() {
-    let client = Arc::new(MockChatClient::new());
-    client.push_tool_call("call_1", "submit_lua_verdict", "not json at all");
-    let (_t, agent) = test_agent(client);
-    let result = agent.analyze_lua_script("return 1").await;
-    assert!(!result.allowed);
-    assert!(result.reason.contains("incomplete verdict"));
-}
-
-#[tokio::test]
-async fn lua_analysis_fails_closed_when_safe_field_missing() {
-    let client = Arc::new(MockChatClient::new());
-    client.push_tool_call("call_1", "submit_lua_verdict", r#"{"reason":"looks fine"}"#);
-    let (_t, agent) = test_agent(client);
-    let result = agent.analyze_lua_script("return 1").await;
-    assert!(!result.allowed);
-    assert!(result.reason.contains("incomplete verdict"));
-}
-
-#[tokio::test]
-async fn lua_analysis_uses_default_reason_when_reason_empty() {
-    let client = Arc::new(MockChatClient::new());
-    client.push_tool_call(
-        "call_1",
-        "submit_lua_verdict",
-        r#"{"safe":true,"reason":""}"#,
-    );
-    let (_t, agent) = test_agent(client);
-    let result = agent.analyze_lua_script("return 1").await;
-    assert!(result.allowed);
-    assert_eq!(result.reason, "script passed review");
 }
 
 #[tokio::test]
@@ -349,28 +268,19 @@ async fn token_leaderboard_accumulates_across_simulated_restart() {
 }
 
 #[tokio::test]
-async fn run_dispatches_translate_tool_then_answers() {
-    let client = Arc::new(MockChatClient::new().with_once_reply("Bonjour"));
-    // First completion asks for a translate tool call; second finishes with text.
-    client.push_tool_call(
-        "call_1",
-        "translate",
-        r#"{"text":"Hello","target_language":"French"}"#,
-    );
-    client.push_text("It means Bonjour.");
+async fn run_dispatches_a_tool_then_answers() {
+    let client = Arc::new(MockChatClient::new());
+    // First completion asks for a tool call; second finishes with text.
+    client.push_tool_call("call_1", "get_bot_features", "{}");
+    client.push_text("Here is what I can do.");
     let (_t, agent) = test_agent(client);
     let result = agent
-        .run(
-            AgentRequest::text("u3", "Cy", "translate Hello to French"),
-            &NoHooks,
-        )
+        .run(AgentRequest::text("u3", "Cy", "what can you do?"), &NoHooks)
         .await;
-    assert_eq!(result.text, "It means Bonjour.");
+    assert_eq!(result.text, "Here is what I can do.");
     // History should contain the assistant tool-call turn and the tool result.
     let hist = agent.history.load("u3").await;
-    assert!(hist
-        .iter()
-        .any(|m| m["role"] == "tool" && m["content"] == "Bonjour"));
+    assert!(hist.iter().any(|m| m["role"] == "tool"));
 }
 
 #[tokio::test]
@@ -419,7 +329,7 @@ async fn tool_calls_are_dispatched_when_finish_reason_is_not_tool_calls() {
         content: None,
         tool_calls: vec![crate::llm::ToolCall {
             id: "call_a".into(),
-            name: "get_lua_docs".into(),
+            name: "get_bot_features".into(),
             arguments: "{}".into(),
         }],
         finish_reason: Some("stop".into()),
@@ -428,10 +338,10 @@ async fn tool_calls_are_dispatched_when_finish_reason_is_not_tool_calls() {
     client.push_text("Here is what the docs say.");
     let (_t, agent) = test_agent(client);
     let result = agent
-        .run(AgentRequest::text("u_finish", "Al", "lua docs"), &NoHooks)
+        .run(AgentRequest::text("u_finish", "Al", "features"), &NoHooks)
         .await;
     assert_eq!(result.text, "Here is what the docs say.");
-    assert_eq!(result.tools_called, vec!["get_lua_docs".to_string()]);
+    assert_eq!(result.tools_called, vec!["get_bot_features".to_string()]);
     let hist = agent.history.load("u_finish").await;
     let assistant_tool_calls: usize = hist
         .iter()
@@ -444,22 +354,21 @@ async fn tool_calls_are_dispatched_when_finish_reason_is_not_tool_calls() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn rate_limited_search_still_answers_every_tool_call_in_the_batch() {
+async fn every_tool_call_in_a_batch_is_answered() {
     let client = Arc::new(MockChatClient::new());
-    // One completion with two tool calls where the first result reads as a
-    // rate limit (run_lua is in the rate-limit tool set). The run must end
-    // early AND still record a tool result for the second call.
+    // One completion carrying two tool calls: both must be dispatched and
+    // recorded, not just the first.
     client.push_completion(crate::llm::ChatCompletion {
         content: None,
         tool_calls: vec![
             crate::llm::ToolCall {
                 id: "call_a".into(),
-                name: "run_lua".into(),
-                arguments: r#"{"script":"print(\"Error: too many requests\")"}"#.into(),
+                name: "get_bot_features".into(),
+                arguments: "{}".into(),
             },
             crate::llm::ToolCall {
                 id: "call_b".into(),
-                name: "get_lua_docs".into(),
+                name: "get_bot_features".into(),
                 arguments: "{}".into(),
             },
         ],
@@ -469,15 +378,11 @@ async fn rate_limited_search_still_answers_every_tool_call_in_the_batch() {
     let (_t, agent) = test_agent(client);
     let result = agent
         .run(
-            AgentRequest::text("u_batch", "Al", "search twice"),
+            AgentRequest::text("u_batch", "Al", "list features twice"),
             &NoHooks,
         )
         .await;
-    assert!(
-        result.text.contains("rate-limited"),
-        "unexpected: {}",
-        result.text
-    );
+    assert!(!result.text.is_empty());
     let hist = agent.history.load("u_batch").await;
     let assistant_tool_calls: usize = hist
         .iter()
@@ -509,16 +414,8 @@ fn fixture_skill(name: &str, author: &str) -> Skill {
         name: name.to_string(),
         description: Some("desc".to_string()),
         instructions: "original instructions".to_string(),
-        triggers: Vec::new(),
-        enabled_tools: Vec::new(),
-        examples: Vec::new(),
-        version: 1,
-        version_history: Vec::new(),
         created_by: Some(author.to_string()),
-        editors: Vec::new(),
-        created_at: 0,
-        updated_at: 0,
-        prompt: None,
+        ..Skill::default()
     }
 }
 
@@ -550,9 +447,7 @@ async fn run_creates_and_edits_skill_via_conversation() {
     assert_eq!(result.text, "Done — created and refined the greeter skill.");
 
     let skill = agent.skills.get("greeter").await.expect("skill saved");
-    assert_eq!(skill.instructions, "Say hello warmly.");
-    assert_eq!(skill.version, 2, "edit_skill must bump the version");
-    assert_eq!(skill.version_history.len(), 1);
+    assert_eq!(skill.instructions.trim(), "Say hello warmly.");
     assert_eq!(skill.created_by.as_deref(), Some("555"));
 
     // create_skill auto-enables the new skill for its creator.
@@ -567,11 +462,9 @@ async fn run_creates_and_edits_skill_via_conversation() {
     );
 
     let hist = agent.history.load("555").await;
-    assert!(hist.iter().any(|m| m["role"] == "tool"
-        && m["content"]
-            .as_str()
-            .unwrap_or("")
-            .contains("updated to version 2")));
+    assert!(hist
+        .iter()
+        .any(|m| m["role"] == "tool" && m["content"].as_str().unwrap_or("").contains("updated")));
 }
 
 /// Regression test for the vulnerability this change fixes: the removed
@@ -607,9 +500,7 @@ async fn dispatch_edit_skill_denies_non_owner_and_leaves_skill_unchanged() {
     }
 
     let unchanged = agent.skills.get("locked").await.unwrap();
-    assert_eq!(unchanged.instructions, "original instructions");
-    assert_eq!(unchanged.version, 1);
-    assert!(unchanged.version_history.is_empty());
+    assert_eq!(unchanged.instructions.trim(), "original instructions");
 }
 
 /// Integration test stitching create → edit → use together through the
@@ -639,7 +530,7 @@ async fn dispatch_edit_skill_then_use_skill_reflects_update() {
         )
         .await;
     match edit_out {
-        ToolOutcome::Text(t) => assert!(t.contains("updated to version 2"), "unexpected: {t}"),
+        ToolOutcome::Text(t) => assert!(t.contains("updated"), "unexpected: {t}"),
         other => panic!("unexpected outcome: {other:?}"),
     }
 
@@ -684,41 +575,6 @@ async fn dispatch_unknown_tool_returns_error() {
         ToolOutcome::DevelopmentAction { text, .. } => {
             panic!("unexpected development action: {text}")
         }
-        ToolOutcome::Attachment { text, .. } => panic!("unexpected attachment: {text}"),
-    }
-}
-
-#[tokio::test]
-async fn dispatch_blocks_tool_banned_by_guild_vote() {
-    let client = Arc::new(MockChatClient::new());
-    let (temp, mut agent) = test_agent(client);
-    agent.tool_permissions = ToolPermissions::new(temp.path().join("tool_permissions.json"), 2);
-    let proposal = agent
-        .tool_permissions
-        .propose(77, 200, "translate", 100)
-        .await
-        .unwrap();
-    agent
-        .tool_permissions
-        .vote(77, &proposal.id, 101, true)
-        .await
-        .unwrap();
-
-    let sb = noop_sandbox();
-    let outcome = agent
-        .dispatch_tool(
-            "translate",
-            &json!({"text":"hello","target_language":"French"}),
-            "200",
-            "restricted-user",
-            10,
-            Some(77),
-            &sb,
-        )
-        .await;
-    match outcome {
-        ToolOutcome::Text(text) => assert!(text.contains("permission denied")),
-        _ => panic!("banned tool should return a text denial"),
     }
 }
 
@@ -739,7 +595,6 @@ async fn context_overflow_triggers_new_session() {
         client,
         History::new(tmp.path().join("history"), 30),
         Memory::new(tmp.path().join("memories")),
-        ProfileStore::new(tmp.path().join("profiles")),
         Skills::new(tmp.path().join("skills.json")),
         Reminders::new(tmp.path().join("reminders.json")),
     );
@@ -943,6 +798,90 @@ async fn history_turn_contains_discord_context_metadata() {
     assert!(history[0]["discord_context"]["timestamp"].is_string());
 }
 
+/// The channel buffer holds every channel the bot can see, so reading one the
+/// requesting user cannot open themselves must be refused.
+#[tokio::test]
+async fn get_messages_refuses_a_channel_the_user_cannot_be_shown_to_have_access_to() {
+    let client = Arc::new(MockChatClient::new());
+    let (_temp, agent) = test_agent(client);
+    let sb = noop_sandbox();
+
+    // No Discord HTTP handle in tests, so the access check cannot succeed —
+    // which is the point: an unverifiable read is refused, not allowed.
+    let out = agent
+        .dispatch_tool(
+            "get_messages",
+            &json!({"mode": "search", "pattern": ".*", "channel_id": "999"}),
+            "u1",
+            "alice",
+            42,
+            Some(7),
+            &sb,
+        )
+        .await;
+
+    match out {
+        ToolOutcome::Text(text) => assert!(
+            text.contains("could not verify your access"),
+            "unexpected: {text}"
+        ),
+        other => panic!("unexpected outcome: {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn get_messages_refuses_a_server_channel_asked_for_from_a_dm() {
+    let client = Arc::new(MockChatClient::new());
+    let (_temp, agent) = test_agent(client);
+    let sb = noop_sandbox();
+
+    let out = agent
+        .dispatch_tool(
+            "get_messages",
+            &json!({"mode": "search", "pattern": ".*", "channel_id": "999"}),
+            "u1",
+            "alice",
+            42,
+            None,
+            &sb,
+        )
+        .await;
+
+    match out {
+        ToolOutcome::Text(text) => assert!(text.contains("from a DM"), "unexpected: {text}"),
+        other => panic!("unexpected outcome: {other:?}"),
+    }
+}
+
+/// The user is demonstrably in the channel the conversation is happening in, so
+/// reading it must not depend on a Discord round trip that tests cannot make.
+#[tokio::test]
+async fn get_messages_reads_the_current_channel_without_an_access_check() {
+    let client = Arc::new(MockChatClient::new());
+    let (_temp, agent) = test_agent(client);
+    let sb = noop_sandbox();
+
+    let out = agent
+        .dispatch_tool(
+            "get_messages",
+            &json!({"mode": "search", "pattern": ".*", "channel_id": "42"}),
+            "u1",
+            "alice",
+            42,
+            Some(7),
+            &sb,
+        )
+        .await;
+
+    match out {
+        ToolOutcome::Text(text) => assert!(
+            !text.contains("could not verify") && !text.contains("do not have access"),
+            "the current channel must not be gated: {text}"
+        ),
+        other => panic!("unexpected outcome: {other:?}"),
+    }
+}
+
 /// Regression test for issue #301: merging a pull request must be refused for
 /// anyone outside the administrator list, and the attempt must be audited.
 #[tokio::test]
@@ -1041,15 +980,8 @@ async fn build_tools_excludes_code_execution() {
         .collect();
     assert!(!names.contains(&"code_tool"));
     assert!(!names.contains(&"configure_bot"));
-    assert!(names.contains(&"translate"));
     assert!(names.contains(&"update_memory"));
-    assert!(names.contains(&"common_crawl__search"));
-    assert!(names.contains(&"find_discord_users"));
     assert!(names.contains(&"edit_feature_request"));
-    assert!(names.contains(&"download_file"));
-    assert!(names.contains(&"deep_research"));
-    assert!(names.contains(&"run_lua"));
-    assert!(names.contains(&"get_lua_docs"));
 }
 
 #[tokio::test]
@@ -1066,7 +998,6 @@ async fn build_tools_includes_sandbox_tools() {
     assert!(names.contains(&"sandbox_search_code"));
     assert!(names.contains(&"sandbox_read_file"));
     assert!(names.contains(&"sandbox_run"));
-    assert!(names.contains(&"translate"));
 }
 
 #[tokio::test]
@@ -1081,106 +1012,98 @@ async fn build_tools_includes_configure_bot_only_for_configurers() {
     assert!(names.contains(&"configure_bot"));
 }
 
-#[test]
-fn get_lua_docs_tool_definition_is_valid() {
-    let def = get_lua_docs_tool();
-    let (name, desc, _params) = flatten_tool(&def);
-    assert_eq!(name, "get_lua_docs");
-    assert!(!desc.is_empty());
+/// Records the scheduler's sub-agent occupancy at the moment the model is
+/// called, which is the only externally visible proof of the request's
+/// priority.
+struct PriorityProbeClient {
+    scheduler: Arc<std::sync::OnceLock<Arc<crate::llm_scheduler::LlmScheduler>>>,
+    subagent_active: Arc<AtomicBool>,
 }
 
-#[test]
-fn run_lua_tool_definition_requires_script() {
-    let def = run_lua_tool();
-    let (name, _desc, params) = flatten_tool(&def);
-    assert_eq!(name, "run_lua");
-    let required = params["required"].as_array().unwrap();
-    assert!(required.iter().any(|v| v.as_str() == Some("script")));
-}
+#[async_trait]
+impl ChatClient for PriorityProbeClient {
+    async fn context_window_tokens(&self) -> anyhow::Result<Option<u64>> {
+        Ok(Some(10_000))
+    }
 
-#[test]
-fn lua_docs_constant_covers_key_apis() {
-    assert!(LUA_DOCS.contains("discord.web_search"));
-    assert!(LUA_DOCS.contains("discord.jellyfin_search"));
-    assert!(LUA_DOCS.contains("print("));
-    assert!(LUA_DOCS.contains("math"));
-    assert!(LUA_DOCS.contains("table"));
-    assert!(LUA_DOCS.contains("string"));
+    async fn chat_stream(
+        &self,
+        _model: &str,
+        _messages: &[Value],
+        _tools: &[Value],
+        _tool_choice: Option<Value>,
+        _thinking: ThinkingMode,
+        _max_completion_tokens: Option<u32>,
+        _sink: Option<&dyn TextSink>,
+    ) -> anyhow::Result<ChatCompletion> {
+        if let Some(scheduler) = self.scheduler.get() {
+            if scheduler.info().subagent_active > 0 {
+                self.subagent_active.store(true, Ordering::Release);
+            }
+        }
+        Ok(ChatCompletion {
+            content: Some("report body".into()),
+            ..Default::default()
+        })
+    }
+
+    async fn chat_once(
+        &self,
+        _model: &str,
+        _messages: &[Value],
+        _max_tokens: u32,
+    ) -> anyhow::Result<ChatCompletion> {
+        Ok(ChatCompletion::default())
+    }
 }
 
 #[tokio::test]
-async fn dispatch_get_lua_docs_returns_docs() {
-    let client = Arc::new(MockChatClient::new());
-    let (_t, agent) = test_agent(client);
-    let sb = noop_sandbox();
-    let out = agent
-        .dispatch_tool("get_lua_docs", &json!({}), "u", "testuser", 0, None, &sb)
-        .await;
-    let ToolOutcome::Text(t) = out else {
-        panic!("expected Text outcome")
-    };
-    assert!(t.contains("discord.web_search"));
-    assert!(t.contains("math"));
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn dispatch_run_lua_executes_script() {
-    let client = Arc::new(MockChatClient::new());
-    let (_t, agent) = test_agent(client);
-    let sb = noop_sandbox();
-    let out = agent
-        .dispatch_tool(
-            "run_lua",
-            &json!({"script": "return 6 * 7"}),
-            "u",
-            "testuser",
-            0,
-            None,
-            &sb,
-        )
-        .await;
-    let ToolOutcome::Text(t) = out else {
-        panic!("expected Text outcome")
-    };
-    assert_eq!(t, "42");
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn dispatch_run_lua_strips_code_fence() {
-    let client = Arc::new(MockChatClient::new());
-    let (_t, agent) = test_agent(client);
-    let sb = noop_sandbox();
-    let out = agent
-        .dispatch_tool(
-            "run_lua",
-            &json!({"script": "```lua\nreturn 1 + 1\n```"}),
-            "u",
-            "testuser",
-            0,
-            None,
-            &sb,
-        )
-        .await;
-    let ToolOutcome::Text(t) = out else {
-        panic!("expected Text outcome")
-    };
-    assert_eq!(t, "2");
-}
-
-/// Regression test for the `BotScriptHost` seam introduced when the Lua engine
-/// moved to its own crate: the adapter must satisfy the engine's `ScriptHost`
-/// trait and surface a bridge-not-connected error instead of panicking.
-#[tokio::test]
-async fn bot_script_host_is_a_script_host_and_reports_missing_bridge() {
-    let (_tmp, agent) = test_agent(Arc::new(MockChatClient::new()));
-    let host: Arc<dyn ScriptHost> = Arc::new(BotScriptHost {
-        agent: Arc::new(agent),
-        discord: Arc::new(DiscordBridge::default()),
-        channel_id: 1,
+async fn subagent_runs_at_subagent_priority() {
+    let scheduler = Arc::new(std::sync::OnceLock::new());
+    let subagent_active = Arc::new(AtomicBool::new(false));
+    let client = Arc::new(PriorityProbeClient {
+        scheduler: scheduler.clone(),
+        subagent_active: subagent_active.clone(),
     });
-    let err = host
-        .send_message("hi")
-        .await
-        .expect_err("no Discord HTTP client is connected");
-    assert!(err.contains("not available"), "unexpected error: {err}");
+    let (_t, agent) = test_agent(client);
+    let _ = scheduler.set(agent.llm_scheduler().clone());
+
+    let out = agent.run_subagent("find X", "", "42", "conv-1").await;
+    assert_eq!(out, "report body");
+    assert!(
+        subagent_active.load(Ordering::Acquire),
+        "sub-agent request did not occupy a SubAgent scheduler slot"
+    );
+}
+
+#[tokio::test]
+async fn subagent_rejects_an_empty_task() {
+    let client = Arc::new(MockChatClient::new());
+    let (_t, agent) = test_agent(client);
+    let out = agent.run_subagent("   ", "", "42", "conv-1").await;
+    assert!(out.starts_with("Error:"));
+}
+
+#[tokio::test]
+async fn subagent_cannot_spawn_or_reach_stateful_tools() {
+    let client = Arc::new(MockChatClient::new());
+    let (_t, agent) = test_agent(client);
+    let names: Vec<String> = agent
+        .subagent_tools()
+        .iter()
+        .filter_map(|t| t["function"]["name"].as_str().map(str::to_string))
+        .collect();
+    assert_eq!(names, vec!["web_search", "fetch_webpage"]);
+}
+
+#[tokio::test]
+async fn build_tools_includes_spawn_subagent() {
+    let client = Arc::new(MockChatClient::new());
+    let (_t, agent) = test_agent(client);
+    let tools = agent.build_tools(true, false).await;
+    let names: Vec<&str> = tools
+        .iter()
+        .filter_map(|t| t["function"]["name"].as_str())
+        .collect();
+    assert!(names.contains(&"spawn_subagent"));
 }

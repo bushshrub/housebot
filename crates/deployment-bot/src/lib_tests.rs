@@ -124,6 +124,113 @@ fn deployment_forwards_persistent_token_monitor_settings() {
     assert!(HOUSEBOT_ENV_VARS.contains(&"DATABASE_CONNECT_TIMEOUT_SECS"));
 }
 
+/// Variables the chatbot reads that must not be forwarded from the deployment
+/// bot's own environment, with the reason each is excluded.
+const NOT_FORWARDED: &[&str] = &[
+    // Fixed to the container's own path by the run command.
+    "DATA_DIR",
+    // Read inside the sandboxd container, which gets its own env.
+    "HOUSEBOT_SANDBOX_IMAGE",
+    "HOUSEBOT_SANDBOX_RUNTIME",
+];
+
+fn env_vars_read_by(relative_path: &str) -> std::collections::BTreeSet<String> {
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../..")
+        .join(relative_path);
+    let mut found = std::collections::BTreeSet::new();
+    let mut stack = vec![root];
+    while let Some(path) = stack.pop() {
+        let Ok(entries) = std::fs::read_dir(&path) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                if path
+                    .file_name()
+                    .is_some_and(|name| name == "deployment-bot")
+                {
+                    continue;
+                }
+                stack.push(path);
+                continue;
+            }
+            if path.extension().is_none_or(|ext| ext != "rs") {
+                continue;
+            }
+            let Ok(source) = std::fs::read_to_string(&path) else {
+                continue;
+            };
+            for (index, _) in source.match_indices('"') {
+                let rest = &source[index + 1..];
+                let Some(end) = rest.find('"') else { continue };
+                let name = &rest[..end];
+                if name.len() > 3
+                    && name
+                        .bytes()
+                        .all(|b| b.is_ascii_uppercase() || b.is_ascii_digit() || b == b'_')
+                    && name.starts_with(|c: char| c.is_ascii_uppercase())
+                    && source[..index].ends_with(|c: char| c == '(' || c == ' ' || c == '\n')
+                {
+                    found.insert(name.to_string());
+                }
+            }
+        }
+    }
+    found
+}
+
+/// The allowlist is a hand-maintained copy of the chatbot's env surface, so a
+/// variable added to the bot and forgotten here is dropped at deploy time with
+/// no error anywhere. Jellyfin and llama.cpp entries survived their features
+/// this way.
+#[test]
+fn housebot_env_vars_cover_every_variable_the_bot_reads() {
+    let mut source = env_vars_read_by("src");
+    source.extend(env_vars_read_by("crates"));
+
+    let missing: Vec<&String> = source
+        .iter()
+        .filter(|name| {
+            name.starts_with("LLM_")
+                || name.starts_with("SEARXNG_")
+                || name.starts_with("SENTRY_")
+                || name.starts_with("SKILLS_")
+                || name.starts_with("SANDBOX_")
+                || name.starts_with("CHANNEL_CONTEXT_")
+                || name.starts_with("CHAT_RATE_LIMIT_")
+                || name.starts_with("DEVELOPMENT_")
+                || name.starts_with("MAX_")
+        })
+        .filter(|name| !HOUSEBOT_ENV_VARS.contains(&name.as_str()))
+        .filter(|name| !NOT_FORWARDED.contains(&name.as_str()))
+        .collect();
+
+    assert!(
+        missing.is_empty(),
+        "these variables are read by the bot but never forwarded to its container: {missing:?}"
+    );
+}
+
+/// The mirror of the test above: a variable forwarded for a feature that no
+/// longer exists is dead configuration nobody will notice.
+#[test]
+fn housebot_env_vars_are_all_still_read_somewhere() {
+    let mut source = env_vars_read_by("src");
+    source.extend(env_vars_read_by("crates"));
+
+    let unread: Vec<&&str> = HOUSEBOT_ENV_VARS
+        .iter()
+        .filter(|name| !source.contains(**name))
+        .collect();
+
+    assert!(
+        unread.is_empty(),
+        "these variables are forwarded but nothing reads them: {unread:?}"
+    );
+}
+
 #[test]
 fn deployment_passes_database_url_to_migration_and_bot_containers() {
     let url = "postgres://housebot:secret@postgres/housebot";
@@ -254,4 +361,45 @@ fn deployment_changelog_lists_commits_since_previous_deployment() {
     assert!(changelog.contains("1 commit"));
     assert!(changelog.contains("Add deployment visibility"));
     assert!(changelog.contains("https://github.com/example/repo/commit/2222222"));
+}
+
+/// The Dockerfile lists every workspace manifest by hand so the dependency
+/// layer caches. Nothing checks that list against reality: a crate deleted from
+/// the workspace leaves a `COPY` of a path that no longer exists, and the image
+/// build fails with "not found" long after the crate was removed.
+#[test]
+fn deployment_dockerfile_copies_exactly_the_workspace_crates() {
+    let workspace = include_str!("../../../Cargo.toml");
+    let members: Vec<&str> = workspace
+        .split("members = [")
+        .nth(1)
+        .and_then(|s| s.split(']').next())
+        .expect("workspace manifest must declare members")
+        .lines()
+        .filter_map(|l| {
+            l.trim()
+                .trim_matches(|c| c == '"' || c == ',')
+                .strip_prefix("crates/")
+        })
+        .collect();
+
+    let dockerfile = include_str!("../../../Dockerfile.deployment-bot");
+    let copied: Vec<&str> = dockerfile
+        .lines()
+        .filter_map(|l| l.strip_prefix("COPY crates/"))
+        .filter_map(|l| l.split('/').next())
+        .collect();
+
+    for member in &members {
+        assert!(
+            copied.contains(member),
+            "workspace crate '{member}' is missing from Dockerfile.deployment-bot"
+        );
+    }
+    for crate_name in &copied {
+        assert!(
+            members.contains(crate_name),
+            "Dockerfile.deployment-bot copies '{crate_name}', which is not a workspace crate"
+        );
+    }
 }

@@ -62,17 +62,16 @@ impl DevelopmentSpecification {
     }
 }
 
-/// Partially-filled agent/model/effort selection built during the Discord component flow.
+/// Partially-filled agent/model selection built during the Discord component flow.
 #[derive(Debug, Clone, Default)]
 pub struct PartialAgentSelection {
     pub agent: Option<CodingAgent>,
     pub model: Option<String>,
-    pub effort: Option<String>,
 }
 
 impl PartialAgentSelection {
     pub fn is_complete(&self) -> bool {
-        self.agent.is_some() && self.model.is_some() && self.effort.is_some()
+        self.agent.is_some() && self.model.is_some()
     }
 }
 
@@ -81,9 +80,7 @@ impl PartialAgentSelection {
 pub enum DispatchStage {
     /// Non-owner request: waiting for owner to approve, configure, or reject.
     AwaitingOwnerApproval,
-    ChoosingAgent,
     ChoosingModel,
-    ChoosingEffort,
     Confirming,
     /// Atomic transition: issue is being created.
     Dispatching,
@@ -226,12 +223,12 @@ impl PendingJobStore {
         false
     }
 
-    /// Atomically transition `AwaitingOwnerApproval` → `ChoosingAgent` for interactive config.
+    /// Atomically transition `AwaitingOwnerApproval` → `ChoosingModel` for interactive config.
     pub fn try_begin_configuration(&self, id: Uuid) -> bool {
         let mut jobs = self.jobs.lock().unwrap();
         if let Some(job) = jobs.get_mut(&id) {
             if job.stage == DispatchStage::AwaitingOwnerApproval && !job.is_expired() {
-                job.stage = DispatchStage::ChoosingAgent;
+                job.stage = DispatchStage::ChoosingModel;
                 return true;
             }
         }

@@ -1,7 +1,6 @@
 //! Unit tests for `bot` (split out to keep the module under 600 lines).
 
 use super::*;
-use crate::profile::{ProfileTag, UserProfile};
 use serde_json::json;
 use tempfile::TempDir;
 
@@ -37,10 +36,11 @@ fn consolidated_slash_commands_replace_retired_top_level_commands() {
             .collect::<Vec<_>>()
     };
     assert_eq!(option_names(&values[0]), ["status", "new", "compact"]);
-    assert_eq!(option_names(&values[1]), ["memory", "notes"]);
-    assert_eq!(option_names(&values[2]), ["profile", "history", "erase"]);
+    assert_eq!(option_names(&values[1]), ["memory"]);
+    assert_eq!(option_names(&values[2]), ["history", "erase"]);
     assert!(RETIRED_SLASH_COMMANDS.contains(&"reset"));
     assert!(RETIRED_SLASH_COMMANDS.contains(&"erase_my_data"));
+    assert!(RETIRED_SLASH_COMMANDS.contains(&"lua"));
     assert!(!RETIRED_SLASH_COMMANDS.contains(&"session"));
 }
 
@@ -100,6 +100,61 @@ async fn effort_target_requires_admin_and_saves_target_config() {
 }
 
 #[tokio::test]
+async fn scheduler_limits_apply_to_the_running_scheduler_and_persist() {
+    let temp = TempDir::new().unwrap();
+    let access = AccessControlStore::new(temp.path().join("bot_config"));
+    access
+        .update(|access| access.configurer_ids.insert(42))
+        .await
+        .unwrap();
+    let limits = SchedulerLimitsStore::new(temp.path().join("bot_config"));
+    let scheduler = Arc::new(LlmScheduler::new(4, 2));
+    let options: Vec<serenity::all::CommandDataOption> = serde_json::from_value(json!([{
+        "name": "scheduler",
+        "type": 2,
+        "options": [{
+            "name": "max_inflight",
+            "type": 1,
+            "options": [{"name": "value", "type": 4, "value": 9}]
+        }]
+    }]))
+    .unwrap();
+
+    let denied = handle_config_interaction(&access, &scheduler, &limits, &options, 7).await;
+    assert!(denied.contains("authorized to configure"));
+    assert_eq!(scheduler.info().max_inflight, 4);
+
+    let applied = handle_config_interaction(&access, &scheduler, &limits, &options, 42).await;
+    assert!(applied.contains("max_inflight set to 9"));
+    assert_eq!(scheduler.info().max_inflight, 9);
+    let stored = limits.load().await.unwrap();
+    assert_eq!(stored.max_inflight, 9);
+    assert_eq!(stored.max_subagent, 2);
+}
+
+#[tokio::test]
+async fn scheduler_show_reports_both_ceilings() {
+    let temp = TempDir::new().unwrap();
+    let access = AccessControlStore::new(temp.path().join("bot_config"));
+    access
+        .update(|access| access.configurer_ids.insert(42))
+        .await
+        .unwrap();
+    let limits = SchedulerLimitsStore::new(temp.path().join("bot_config"));
+    let scheduler = Arc::new(LlmScheduler::new(4, 2));
+    let options: Vec<serenity::all::CommandDataOption> = serde_json::from_value(json!([{
+        "name": "scheduler",
+        "type": 2,
+        "options": [{"name": "show", "type": 1, "options": []}]
+    }]))
+    .unwrap();
+
+    let shown = handle_config_interaction(&access, &scheduler, &limits, &options, 42).await;
+    assert!(shown.contains("0 of 4 slots busy"));
+    assert!(shown.contains("0 of 2 slots busy"));
+}
+
+#[tokio::test]
 async fn progress_target_requires_admin_and_enables_final_only_mode() {
     let temp = TempDir::new().unwrap();
     let user_config = UserConfigStore::new(temp.path().join("user_config"));
@@ -123,29 +178,14 @@ async fn progress_target_requires_admin_and_enables_final_only_mode() {
     assert!(user_config.load(42).await.progress_updates_enabled);
 }
 
-#[tokio::test]
-async fn storage_slash_notes_use_the_prefix_store_handler() {
-    let (_temp, _skills, notes, memory, _history) = stores();
-    let options: Vec<serenity::all::CommandDataOption> = serde_json::from_value(json!([{
-        "name": "notes",
-        "type": 2,
-        "options": [{
-            "name": "save",
-            "type": 1,
-            "options": [
-                {"name": "name", "type": 3, "value": "shopping"},
-                {"name": "content", "type": 3, "value": "milk and eggs"}
-            ]
-        }]
-    }]))
-    .unwrap();
-
-    let reply = handle_storage_interaction(&memory, &notes, &options, 42).await;
-    assert!(reply.contains("saved"));
-    assert_eq!(
-        notes.get(42, "shopping").await.as_deref(),
-        Some("milk and eggs")
+#[test]
+fn the_feature_reference_is_sent_whole_as_an_embed() {
+    let reply = help_response();
+    assert!(
+        reply.chars().count() > MAX_MESSAGE_LENGTH,
+        "/help now fits in message content; the embed branch is untested"
     );
+    assert_eq!(truncate_reply("", &reply, EMBED_DESCRIPTION_LIMIT), reply);
 }
 
 #[test]
@@ -184,26 +224,6 @@ fn leaderboard_visibility_controls_access_and_response_scope() {
 
 // ── format_lua_reply ──
 #[test]
-fn lua_reply_is_fenced() {
-    assert_eq!(format_lua_reply("hello"), "```\nhello\n```");
-}
-
-#[test]
-fn lua_reply_escapes_nested_fences() {
-    let reply = format_lua_reply("a ``` b");
-    assert_eq!(reply.matches("```").count(), 2);
-}
-
-#[test]
-fn lua_reply_fits_discord_limit() {
-    let reply = format_lua_reply(&"x".repeat(5000));
-    assert!(reply.chars().count() <= MAX_MESSAGE_LENGTH);
-    assert!(reply.starts_with("```\n"));
-    assert!(reply.ends_with("\n```"));
-    assert!(reply.contains('…'));
-}
-
-#[test]
 fn detects_raw_discord_user_mentions_from_connector_messages() {
     assert!(content_mentions_user("hello <@123456>", 123456));
     assert!(content_mentions_user("hello <@!123456>", 123456));
@@ -214,11 +234,6 @@ fn detects_raw_discord_user_mentions_from_connector_messages() {
 
 #[test]
 fn global_history_combines_profile_and_channel_context() {
-    let profile = UserProfile {
-        nickname: "Ali".to_string(),
-        tags: vec![ProfileTag::WebResearch],
-        ..Default::default()
-    };
     let history = vec![
         json!({
             "role": "user",
@@ -231,10 +246,9 @@ fn global_history_combines_profile_and_channel_context() {
         json!({"role": "assistant", "content": "Here they are"}),
     ];
 
-    let rendered = render_history(&profile, &history);
+    let rendered = render_history("Ali", &history);
     assert!(rendered.contains("History for Ali"));
     assert!(rendered.contains("all servers and channels"));
-    assert!(rendered.contains("Profile interests: web research"));
     assert!(rendered.contains("[user in <#42> on 2026-07-14]"));
     assert!(
         rendered.find("Find the release notes").unwrap() < rendered.find("Here they are").unwrap()
@@ -243,11 +257,7 @@ fn global_history_combines_profile_and_channel_context() {
 
 #[test]
 fn global_history_empty_state_keeps_profile_identity() {
-    let profile = UserProfile {
-        display_name: "Alice".to_string(),
-        ..Default::default()
-    };
-    let rendered = render_history(&profile, &[]);
+    let rendered = render_history("Alice", &[]);
     assert!(rendered.contains("History for Alice"));
     assert!(rendered.contains("No conversation history yet."));
 }
@@ -345,10 +355,13 @@ fn hint_unknown_tool_no_known_key() {
 fn status_includes_tool_name() {
     assert_eq!(tool_status("web_search"), "🔎 **Running `web_search`...**");
     assert_eq!(
-        tool_status("jellyfin__search"),
-        "🎬 **Running `jellyfin__search`...**"
+        tool_status("sandbox_run"),
+        "📦 **Running `sandbox_run`...**"
     );
-    assert_eq!(tool_status("run_lua"), "⚙️ **Running `run_lua`...**");
+    assert_eq!(
+        tool_status("spawn_subagent"),
+        "🧠 **Running `spawn_subagent`...**"
+    );
 }
 
 #[test]
@@ -539,19 +552,11 @@ fn commit_hash_response_reports_build_sha() {
     );
 }
 
-#[test]
-fn proactive_candidate_is_narrow() {
-    assert!(is_proactive_candidate("How do I use reminders?"));
-    assert!(is_proactive_candidate("Remind me tomorrow"));
-    assert!(!is_proactive_candidate("hello everyone"));
-}
-
-fn stores() -> (TempDir, Skills, Notes, Memory, History) {
+fn stores() -> (TempDir, Skills, Memory, History) {
     let tmp = TempDir::new().unwrap();
     (
         TempDir::new().unwrap(),
         Skills::new(tmp.path().join("skills.json")),
-        Notes::new(tmp.path().join("notes")),
         Memory::new(tmp.path().join("memories")),
         History::new(tmp.path().join("history"), 30),
     )
@@ -562,22 +567,14 @@ fn test_skill(name: &str, author: &str) -> crate::skills::Skill {
         name: name.to_string(),
         description: Some("You greet people".to_string()),
         instructions: "You greet people".to_string(),
-        triggers: Vec::new(),
-        enabled_tools: Vec::new(),
-        examples: Vec::new(),
-        version: 1,
-        version_history: Vec::new(),
         created_by: Some(author.to_string()),
-        editors: Vec::new(),
-        created_at: 0,
-        updated_at: 0,
-        prompt: None,
+        ..housebot_skills::Skill::default()
     }
 }
 
 #[tokio::test]
 async fn skill_list_shows_saved_skill() {
-    let (t, skills, _n, _m, _h) = stores();
+    let (t, skills, _m, _h) = stores();
     let user_config = UserConfigStore::new(t.path().join("user_config"));
     skills.save(test_skill("greeter", "7")).await.unwrap();
     let list = skill_command(&skills, &user_config, "!skill list", 7).await;
@@ -586,7 +583,7 @@ async fn skill_list_shows_saved_skill() {
 
 #[tokio::test]
 async fn skill_add_and_edit_redirect_to_conversation() {
-    let (t, skills, _n, _m, _h) = stores();
+    let (t, skills, _m, _h) = stores();
     let user_config = UserConfigStore::new(t.path().join("user_config"));
     let add = skill_command(&skills, &user_config, "!skill add greeter", 1).await;
     assert!(add.contains("create_skill"), "add: {add}");
@@ -600,15 +597,14 @@ async fn skill_add_and_edit_redirect_to_conversation() {
 /// redirect, an attempted overwrite must leave the existing skill untouched.
 #[tokio::test]
 async fn skill_add_cannot_overwrite_an_existing_skill_owned_by_someone_else() {
-    let (t, skills, _n, _m, _h) = stores();
+    let (t, skills, _m, _h) = stores();
     let user_config = UserConfigStore::new(t.path().join("user_config"));
     skills.save(test_skill("greeter", "7")).await.unwrap();
     let out = skill_command(&skills, &user_config, "!skill add greeter", 999).await;
     assert!(out.contains("create_skill"), "out: {out}");
     let unchanged = skills.get("greeter").await.unwrap();
-    assert_eq!(unchanged.instructions, "You greet people");
+    assert_eq!(unchanged.instructions.trim(), "You greet people");
     assert_eq!(unchanged.created_by.as_deref(), Some("7"));
-    assert_eq!(unchanged.version, 1);
 }
 
 /// Regression test: the `/skill add` Discord slash subcommand was removed
@@ -616,7 +612,7 @@ async fn skill_add_cannot_overwrite_an_existing_skill_owned_by_someone_else() {
 /// subcommand shape must no longer be recognized or create anything.
 #[tokio::test]
 async fn skill_interaction_add_subcommand_no_longer_recognized() {
-    let (t, skills, _n, _m, _h) = stores();
+    let (t, skills, _m, _h) = stores();
     let user_config = UserConfigStore::new(t.path().join("user_config"));
     let options: Vec<serenity::all::CommandDataOption> = serde_json::from_value(json!([{
         "name": "add",
@@ -649,7 +645,7 @@ fn skill_slash_command_definition_has_no_add_option() {
 
 #[tokio::test]
 async fn skill_enable_then_disable() {
-    let (t, skills, _n, _m, _h) = stores();
+    let (t, skills, _m, _h) = stores();
     let user_config = UserConfigStore::new(t.path().join("user_config"));
     skills.save(test_skill("greeter", "7")).await.unwrap();
     let enable = skill_command(&skills, &user_config, "!skill enable greeter", 7).await;
@@ -668,7 +664,7 @@ async fn skill_enable_then_disable() {
 
 #[tokio::test]
 async fn skill_enable_missing_rejected() {
-    let (t, skills, _n, _m, _h) = stores();
+    let (t, skills, _m, _h) = stores();
     let user_config = UserConfigStore::new(t.path().join("user_config"));
     let out = skill_command(&skills, &user_config, "!skill enable nope", 7).await;
     assert!(out.contains("not found"));
@@ -676,7 +672,7 @@ async fn skill_enable_missing_rejected() {
 
 #[tokio::test]
 async fn skill_delete_missing() {
-    let (t, skills, _n, _m, _h) = stores();
+    let (t, skills, _m, _h) = stores();
     let user_config = UserConfigStore::new(t.path().join("user_config"));
     assert!(
         skill_command(&skills, &user_config, "!skill delete nope", 1)
@@ -686,40 +682,12 @@ async fn skill_delete_missing() {
 }
 
 #[tokio::test]
-async fn note_save_get_delete() {
-    let (_t, _s, notes, _m, _h) = stores();
-    assert!(
-        note_command(&notes, "!note save shopping", "milk, eggs", 42)
-            .await
-            .contains("saved")
-    );
-    assert!(note_command(&notes, "!note get shopping", "", 42)
-        .await
-        .contains("milk, eggs"));
-    assert!(note_command(&notes, "!note delete shopping", "", 42)
-        .await
-        .contains("deleted"));
-    assert!(note_command(&notes, "!note get shopping", "", 42)
-        .await
-        .contains("not found"));
-}
-
-#[tokio::test]
-async fn note_list_empty() {
-    let (_t, _s, notes, _m, _h) = stores();
-    assert!(note_command(&notes, "!note list", "", 1)
-        .await
-        .contains("no saved notes"));
-}
-
-#[tokio::test]
 async fn stats_reports_counts() {
-    let (_t, skills, notes, memory, history) = stores();
+    let (_t, skills, memory, history) = stores();
     memory.save(5.to_string(), "some memory").await.unwrap();
-    notes.save(5, "a", "x").await.unwrap();
-    let out = stats_command(&history, &memory, &notes, &skills, 5, "Alice").await;
+    let out = stats_command(&history, &memory, &skills, 5, "Alice").await;
     assert!(out.contains("Stats for Alice"));
-    assert!(out.contains("Saved notes: 1"));
+    assert!(out.contains("Memory size:"));
 }
 
 #[test]

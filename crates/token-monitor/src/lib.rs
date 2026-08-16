@@ -1,10 +1,9 @@
-//! Persistent conversation archive and global token-usage leaderboard.
+//! Per-conversation token accounting and the usage leaderboards built on it.
 
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 
-use serde_json::Value;
 use tokio::sync::Mutex;
 use tokio_postgres::NoTls;
 
@@ -17,10 +16,9 @@ const DEFAULT_CONNECT_RETRY_SECS: u64 = 2;
 const DEFAULT_CONNECT_TIMEOUT_SECS: u64 = 10;
 
 mod leaderboard;
-use leaderboard::{finish_leaderboard, from_i64, memory_leaderboard, message_role, to_i64};
+use leaderboard::{finish_leaderboard, from_i64, memory_leaderboard, to_i64};
 pub use leaderboard::{
-    GlobalTokenStats, LeaderboardEntry, LeaderboardMetric, LeaderboardPeriod, LeaderboardRank,
-    TokenLeaderboard,
+    LeaderboardEntry, LeaderboardMetric, LeaderboardPeriod, LeaderboardRank, TokenLeaderboard,
 };
 
 #[derive(Clone)]
@@ -32,7 +30,6 @@ enum Backend {
 #[derive(Default)]
 struct MemoryData {
     conversations: HashMap<String, MemoryConversation>,
-    messages: Vec<MemoryMessage>,
     usage_events: Vec<MemoryUsageEvent>,
 }
 
@@ -55,14 +52,6 @@ struct MemoryUsageEvent {
     output_tokens: u64,
     cached_tokens: u64,
     created_at: SystemTime,
-}
-
-struct MemoryMessage {
-    conversation_id: String,
-    #[allow(dead_code)]
-    role: String,
-    #[allow(dead_code)]
-    content: String,
 }
 
 /// Shared handle for conversation and token persistence.
@@ -203,47 +192,6 @@ impl TokenMonitor {
         Ok(())
     }
 
-    pub async fn record_turn(
-        &self,
-        conversation_id: &str,
-        user_message: &Value,
-        assistant_messages: &[Value],
-    ) -> anyhow::Result<()> {
-        let turn_id = uuid::Uuid::new_v4().to_string();
-        let messages = std::iter::once(user_message).chain(assistant_messages.iter());
-        match &self.backend {
-            Backend::Memory(data) => {
-                let mut data = data.lock().await;
-                for message in messages {
-                    data.messages.push(MemoryMessage {
-                        conversation_id: conversation_id.into(),
-                        role: message_role(message).into(),
-                        content: serde_json::to_string(message)?,
-                    });
-                }
-            }
-            Backend::Postgres(client) => {
-                for (index, message) in messages.enumerate() {
-                    client
-                        .execute(
-                            "INSERT INTO conversation_messages \
-                             (conversation_id, turn_id, message_index, role, content) \
-                             VALUES ($1, $2, $3, $4, $5)",
-                            &[
-                                &conversation_id,
-                                &turn_id,
-                                &(index as i32),
-                                &message_role(message),
-                                &serde_json::to_string(message)?,
-                            ],
-                        )
-                        .await?;
-                }
-            }
-        }
-        Ok(())
-    }
-
     pub async fn finish_conversation(&self, conversation_id: &str) -> anyhow::Result<()> {
         match &self.backend {
             Backend::Memory(data) => {
@@ -273,8 +221,6 @@ impl TokenMonitor {
                     .retain(|_, conversation| conversation.user_id != user_id);
                 let retained: std::collections::HashSet<_> =
                     data.conversations.keys().cloned().collect();
-                data.messages
-                    .retain(|message| retained.contains(&message.conversation_id));
                 data.usage_events
                     .retain(|event| retained.contains(&event.conversation_id));
             }
@@ -423,110 +369,6 @@ impl TokenMonitor {
             }
         }
     }
-    pub async fn get_global_stats(
-        &self,
-        period: LeaderboardPeriod,
-    ) -> anyhow::Result<GlobalTokenStats> {
-        match &self.backend {
-            Backend::Memory(data) => {
-                let data = data.lock().await;
-                let now = SystemTime::now();
-                let cutoff = period.cutoff(now);
-
-                if period == LeaderboardPeriod::AllTime {
-                    let user_ids: std::collections::HashSet<_> = data
-                        .conversations
-                        .values()
-                        .map(|c| c.user_id.clone())
-                        .collect();
-                    let total_conversations = data.conversations.len() as u64;
-
-                    let mut total_input = 0u64;
-                    let mut total_output = 0u64;
-                    let mut total_cached = 0u64;
-                    for event in &data.usage_events {
-                        total_input = total_input.saturating_add(event.input_tokens);
-                        total_output = total_output.saturating_add(event.output_tokens);
-                        total_cached = total_cached.saturating_add(event.cached_tokens);
-                    }
-
-                    Ok(GlobalTokenStats {
-                        total_users: user_ids.len() as u64,
-                        total_conversations,
-                        total_input_tokens: total_input,
-                        total_output_tokens: total_output,
-                        total_cached_tokens: total_cached,
-                        period,
-                    })
-                } else {
-                    let cutoff = cutoff.expect("non-all-time periods have a cutoff");
-                    let user_ids: std::collections::HashSet<_> = data
-                        .usage_events
-                        .iter()
-                        .filter(|e| e.created_at >= cutoff)
-                        .map(|e| e.user_id.clone())
-                        .collect();
-                    let total_conversations = data
-                        .usage_events
-                        .iter()
-                        .filter(|e| e.created_at >= cutoff)
-                        .map(|e| &e.conversation_id[..])
-                        .collect::<std::collections::HashSet<_>>()
-                        .len() as u64;
-
-                    let mut total_input = 0u64;
-                    let mut total_output = 0u64;
-                    let mut total_cached = 0u64;
-                    for event in &data.usage_events {
-                        if event.created_at < cutoff {
-                            continue;
-                        }
-                        total_input = total_input.saturating_add(event.input_tokens);
-                        total_output = total_output.saturating_add(event.output_tokens);
-                        total_cached = total_cached.saturating_add(event.cached_tokens);
-                    }
-
-                    Ok(GlobalTokenStats {
-                        total_users: user_ids.len() as u64,
-                        total_conversations,
-                        total_input_tokens: total_input,
-                        total_output_tokens: total_output,
-                        total_cached_tokens: total_cached,
-                        period,
-                    })
-                }
-            }
-            Backend::Postgres(client) => {
-                let filter = period.sql_filter();
-                let (source, count_query) = match period {
-                    LeaderboardPeriod::AllTime => ("conversations", "COUNT(*)"),
-                    _ => ("token_usage_events", "COUNT(DISTINCT conversation_id)"),
-                };
-                let row = client
-                    .query_one(
-                        &format!(
-                            "SELECT COUNT(DISTINCT user_id), {count_query}, \
-                             COALESCE(SUM(input_tokens), 0)::BIGINT, \
-                             COALESCE(SUM(output_tokens), 0)::BIGINT, \
-                             COALESCE(SUM(cached_tokens), 0)::BIGINT \
-                             FROM {source}{filter}"
-                        ),
-                        &[],
-                    )
-                    .await?;
-                let total_users: i64 = row.get(0);
-                Ok(GlobalTokenStats {
-                    total_users: total_users.max(0) as u64,
-                    total_conversations: from_i64(row.get(1)),
-                    total_input_tokens: from_i64(row.get(2)),
-                    total_output_tokens: from_i64(row.get(3)),
-                    total_cached_tokens: from_i64(row.get(4)),
-                    period,
-                })
-            }
-        }
-    }
-
     pub async fn get_user_stats(
         &self,
         user_id: &str,

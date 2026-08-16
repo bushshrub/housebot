@@ -55,10 +55,7 @@ pub fn build_system_prompt(
         all_skills,
         personality,
         deep_memory_enabled,
-        "",
-        "",
         &Local::now().format("%Y-%m-%d %H:%M").to_string(),
-        "",
     )
 }
 
@@ -76,14 +73,9 @@ can understand the animation, context, action, or sentiment.
 
 ## Tools\n\
 - web_search — Search the web (SearXNG) for current information.\n\
-- deep_research — Run an overview plus 2-5 focused searches and return a deduplicated, cross-referenced source dossier.\n\
 - fetch_webpage — Fetch and read the text of a public webpage.\n\
-- download_file — Download a public HTTP(S) file up to 8 MiB and attach it to the Discord response.\n\
 - github_api — Query the GitHub API for issues, workflow runs, and repository metadata in the \
 configured repository (GITHUB_REPO) instead of scraping the web UI.\n\
-- common_crawl__search — Search historical URL captures in the Common Crawl index.\n\
-- jellyfin__* — Query the household Jellyfin media server for movies, shows, music. \
-READ ONLY — only call get_* / search_* / list_* methods; never call mutating actions.\n\
 - create_feature_request — File a GitHub feature request or bug report, including the current user's Discord username and ID.\n\
 - edit_feature_request — Edit a feature request or bug report filed by the current user; ownership is verified by the tool.\n\
 - prepare_feature_development — Prepare an automated coding-agent development job for an existing \
@@ -92,14 +84,13 @@ feature (not just suggest it); always include the existing issue number. Owner r
 immediately; non-owner requests are queued for owner approval. \
 For ordinary feature suggestions use create_feature_request instead.\n\
 - set_reminder — Set a timed reminder; the bot will DM the user when the delay elapses.\n\
-- summarize_url — Fetch a public web URL and return a concise summary.\n\
-- translate — Translate text to any language using the LLM.\n\
+- spawn_subagent — Delegate a self-contained research task to a sub-agent that searches and \
+reads on its own and returns a written summary, keeping intermediate results out of your \
+context. Use it for side questions you would otherwise research inline — especially several \
+independent topics you need to compare. The sub-agent shares no context with you, so give it a \
+complete standalone instruction. For a single simple lookup, just search yourself.\n\
 - get_bot_features — Return the full list of this bot's commands and capabilities. \
 Call this when a user asks what you can do, what commands exist, or how to use any feature.\n\
-- get_token_metrics — Fetch token usage metrics. Use this for structured token-usage \
-data: global totals (all users, conversations, token breakdown) or per-user details. \
-Supports period filtering (daily, weekly, monthly, all-time). More versatile than the \
-/token_leaderboard command.\n\
 - get_messages — Flexibly retrieve Discord channel messages. mode=recent (default) returns \
 everything from the last N minutes (default 30) in chronological order — use it to catch up on a \
 recent conversation or answer vague questions like 'what happened recently' or 'what were we \
@@ -107,15 +98,6 @@ talking about'. mode=search finds messages by regex pattern — use it when a us
 specific topic, keyword, or person, e.g. 'what did hexagone say about X'. mode=before/after/around \
 return messages positioned relative to a specific message_id — use these when the user replies to \
 a message and you need the conversation near it.\n\
-- find_discord_users — Fuzzy-resolve a username, nickname, or user ID to users seen in the current channel. Matching is case-insensitive, ignores punctuation, and tolerates minor typos via Levenshtein distance. Each whitespace-separated word is matched independently (e.g. \"rice farmer\" finds users with \"rice\" OR \"farmer\" in their name/nick).\n\
-- get_discord_user — Look up a Discord user's profile by their user ID (username, display name, \
-account creation date, bot status).\n\
-- get_lua_docs — Return the full API reference for the Lua scripting sandbox (libraries, \
-discord.* bridge, limits). Call this before writing a Lua script if you are unsure of the API.\n\
-- run_lua — Write and execute a sandboxed Lua 5.4 script for calculations, data processing, \
-algorithmic tasks, or generating directed-graph diagrams. The `graph.*` API builds directed \
-graphs that are rendered as PNG images and automatically attached. \
-Call get_lua_docs first if you need the full API reference.\n\
 - configure_bot — View or change the bot's core settings: manage configurers, set per-user \
 output token caps, toggle per-user responses, control global proactive assistance, and configure \
 the development-completion notification channel. Collective batch operations (set_user_limit_all, \
@@ -220,11 +202,7 @@ struct ConfigSuffix {
 }
 
 impl ConfigSuffix {
-    fn new(
-        deep_memory_enabled: bool,
-        all_skills: &BTreeMap<String, Skill>,
-        current_message: &str,
-    ) -> Self {
+    fn new(deep_memory_enabled: bool, all_skills: &BTreeMap<String, Skill>) -> Self {
         let memory_tool_line = if deep_memory_enabled {
             "- update_memory — Persist important facts about the current user for future conversations. Write the full memory each time.\n- search_memory — Search stored memory for a keyword or phrase. Use when the user refers to something you may have remembered.\n"
         } else {
@@ -243,25 +221,12 @@ impl ConfigSuffix {
                 .values()
                 .map(|s| format!("  - **{}**", s.name))
                 .collect();
-            let mut section = format!(
+            format!(
                 "\n- use_skill — Load a custom skill's full instructions into your context by name, \
                  then follow them yourself using your normal tools. Use list_skills or skill_info \
                  to see what a skill does. Available skills:\n{}",
                 lines.join("\n")
-            );
-            let matched: Vec<String> = all_skills
-                .values()
-                .filter(|s| s.matches_message(current_message))
-                .map(|s| format!("**{}**", s.name))
-                .collect();
-            if !matched.is_empty() {
-                section.push_str(&format!(
-                    "\n\nThe current message matches the triggers of these skills — strongly \
-                     consider loading them with use_skill: {}.",
-                    matched.join(", ")
-                ));
-            }
-            section
+            )
         };
         Self {
             memory_tool_line,
@@ -291,8 +256,6 @@ impl<'a> DynamicSuffix<'a> {
         avatar_url: &'a str,
         user_memory: &'a str,
         personality: Option<&'a str>,
-        profile_tags: &'a str,
-        quick_actions: &'a str,
         now: &'a str,
     ) -> Self {
         let memory_section = if user_memory.trim().is_empty() {
@@ -309,36 +272,22 @@ impl<'a> DynamicSuffix<'a> {
         let profile_section = if display_name != username
             || !nickname.is_empty()
             || !avatar_url.is_empty()
-            || !profile_tags.is_empty()
-            || !quick_actions.is_empty()
         {
             let name_line = if !nickname.is_empty() {
                 format!("Display name: {display_name}, Nickname: {nickname}")
             } else {
                 format!("Display name: {display_name}")
             };
-            let tags_line = if profile_tags.is_empty() {
-                String::new()
-            } else {
-                format!("\nRelevant usage tags: {profile_tags}")
-            };
             let avatar_line = if avatar_url.is_empty() {
                 String::new()
             } else {
                 format!("\nAvatar URL: {avatar_url}")
             };
-            let actions_line = if quick_actions.is_empty() {
-                String::new()
-            } else {
-                format!("\nFrequently used actions: {quick_actions}")
-            };
             format!(
-                "\n\n## User profile\n{name_line}{avatar_line}{tags_line}{actions_line}\n\
+                "\n\n## User profile\n{name_line}{avatar_line}\n\
                  Personalization guidance:\n\
                  - If the user greets you, naturally address them by their nickname or display name.\n\
-                 - If they ask what to do or how you can help, suggest at most one relevant quick action.\n\
-                 - Use profile tags only to prioritize relevant help; do not announce, expose, or speculate about the profile.\n\
-                 - Never infer sensitive traits or make unsolicited personal claims from usage patterns."
+                 - Never infer sensitive traits or make unsolicited personal claims about the user."
             )
         } else {
             String::new()
@@ -365,10 +314,7 @@ pub(crate) fn build_system_prompt_with_profile(
     all_skills: &BTreeMap<String, Skill>,
     personality: Option<&str>,
     deep_memory_enabled: bool,
-    profile_tags: &str,
-    quick_actions: &str,
     now: &str,
-    current_message: &str,
 ) -> String {
     let memory_guidance = if deep_memory_enabled {
         "Actively use memory: when the user says 'remember', 'don't forget', 'keep in mind', \
@@ -382,7 +328,7 @@ pub(crate) fn build_system_prompt_with_profile(
          still works normally."
     };
 
-    let config = ConfigSuffix::new(deep_memory_enabled, all_skills, current_message);
+    let config = ConfigSuffix::new(deep_memory_enabled, all_skills);
     let dynamic = DynamicSuffix::new(
         username,
         user_id,
@@ -391,8 +337,6 @@ pub(crate) fn build_system_prompt_with_profile(
         avatar_url,
         user_memory,
         personality,
-        profile_tags,
-        quick_actions,
         now,
     );
 
@@ -400,12 +344,15 @@ pub(crate) fn build_system_prompt_with_profile(
         "{STATIC_BASE}\n\n\
 ## Guidelines\n- Be direct and straightforward. Do not pander, flatter, apologize unnecessarily, or \
 validate the user's emotional state — respond to what they say, not how they say it.\n\
-- Use Jellyfin tools for any media questions before guessing.\n- Never infer sensitive traits, identity, or intent from a user's avatar.\n- Use download_file only when the user asks to view, receive, or download a specific file; never fetch private-network URLs.\n- Use github_api for queries about the configured GITHUB_REPO (issues, workflow runs, repo info) instead of fetch_webpage, since the API provides accurate structured data. For other repositories, use web_search or fetch_webpage.\n- Use web_search for simple factual or current-events questions. For complex questions requiring multiple perspectives, comparisons, or a comprehensive report, use deep_research and synthesize its dossier with source links. If either search tool returns a rate-limit \
-error, stop using search tools for this request and do not retry repeatedly; use \
-common_crawl__search for historical URL evidence when appropriate, or explain that the search \
-service is temporarily unavailable.\n- For calculations, data processing, or algorithmic tasks \
-use run_lua to write and execute a Lua script; call get_lua_docs first if you are unsure of the \
-sandbox API.\n- Keep responses concise unless asked for detail.\n- If a user \
+- Never infer sensitive traits, identity, or intent from a user's avatar.\n\
+- Use github_api for queries about the configured GITHUB_REPO (issues, workflow runs, repo info) instead of fetch_webpage, since the API provides accurate structured data. For other repositories, use web_search or fetch_webpage.\n\
+- Use web_search for factual or current-events questions, then fetch_webpage to read a promising \
+result in full. If a search tool returns a rate-limit error, stop using search tools for this \
+request and do not retry repeatedly; explain that the search service is temporarily \
+unavailable.\n\
+- Delegate to spawn_subagent when a question breaks into independent research tasks whose \
+intermediate results you do not need — investigate a single topic yourself instead of spawning \
+for it.\n- Keep responses concise unless asked for detail.\n- If a user \
 suggests or requests a feature or improvement (but does not ask for it to be coded/built right \
 now), call create_feature_request with type `feature`, a clear title, and description, then tell \
 them the issue URL. If a user reports broken or incorrect bot behavior, call create_feature_request \
@@ -459,19 +406,20 @@ pub(crate) fn build_loaded_skill_content(skill: &Skill, instructions: &str) -> S
         ));
     }
 
-    if !skill.examples.is_empty() {
-        let examples: Vec<String> = skill
-            .examples
-            .iter()
-            .map(|ex| {
-                format!(
-                    "User: {}\nAssistant: {}",
-                    ex.input.replace('\n', "\n  "),
-                    ex.output.replace('\n', "\n  ")
-                )
-            })
-            .collect();
-        parts.push(format!("## Examples\n{}", examples.join("\n\n")));
+    if !skill.references.is_empty() {
+        parts.push(format!(
+            "## Reference files\nRead these with read_skill_file only when the instructions above \
+             call for them: {}.",
+            skill.references.join(", ")
+        ));
+    }
+
+    if !skill.scripts.is_empty() {
+        parts.push(format!(
+            "## Scripts\nRun these in the sandbox with run_skill_script when the instructions \
+             call for them: {}. They have no network access.",
+            skill.scripts.join(", ")
+        ));
     }
 
     parts.join("\n\n")

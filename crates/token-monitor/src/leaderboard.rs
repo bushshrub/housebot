@@ -4,8 +4,6 @@
 use std::collections::HashMap;
 use std::time::{Duration, SystemTime};
 
-use serde_json::Value;
-
 use super::MemoryData;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -92,16 +90,6 @@ impl LeaderboardMetric {
 pub struct LeaderboardRank {
     pub position: usize,
     pub entry: LeaderboardEntry,
-}
-
-#[derive(Debug, Clone, Default)]
-pub struct GlobalTokenStats {
-    pub total_users: u64,
-    pub total_conversations: u64,
-    pub total_input_tokens: u64,
-    pub total_output_tokens: u64,
-    pub total_cached_tokens: u64,
-    pub period: LeaderboardPeriod,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -240,13 +228,6 @@ fn sort_entries(entries: &mut [LeaderboardEntry], metric: LeaderboardMetric) {
             .total_cmp(&left.cache_efficiency())
             .then_with(|| right.total_tokens().cmp(&left.total_tokens())),
     });
-}
-
-pub(super) fn message_role(message: &Value) -> &str {
-    message
-        .get("role")
-        .and_then(Value::as_str)
-        .unwrap_or("unknown")
 }
 
 pub(super) fn to_i64(value: u64) -> i64 {

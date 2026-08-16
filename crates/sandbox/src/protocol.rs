@@ -115,6 +115,9 @@ impl SandboxResponse {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StartParams {
+    /// Identifies the owning session. Two `start` calls with the same key share
+    /// one container, so work survives across turns.
+    pub session_key: String,
     pub network: NetworkAccess,
 }
 
@@ -154,6 +157,23 @@ pub struct RunParams {
     pub command: String,
     pub working_dir: Option<String>,
     pub timeout_secs: Option<u64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WriteFileParams {
+    pub sandbox_id: String,
+    pub path: String,
+    pub content: String,
+    /// Mark the file executable after writing. `/workspace` allows execution,
+    /// so skill scripts need this.
+    #[serde(default)]
+    pub executable: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WriteFileResult {
+    pub path: String,
+    pub bytes_written: usize,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

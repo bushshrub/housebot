@@ -135,7 +135,7 @@ async fn import_legacy_files(client: &tokio_postgres::Client, dir: &Path, key_pr
 // ── server config ─────────────────────────────────────────────────────────────
 
 /// Configuration scoped to a Discord guild (server).
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ServerConfig {
     /// Channel IDs the bot is allowed to respond in. Empty means all channels.
     #[serde(default)]
@@ -150,22 +150,6 @@ pub struct ServerConfig {
     /// The bot always ignores its own pings regardless.
     #[serde(default)]
     pub respond_to_bot_pings: bool,
-    /// Whether proactive assistance is allowed in this server at all.
-    /// Users still opt in individually via `/personalize proactive`.
-    #[serde(default = "default_respond")]
-    pub proactive_allowed: bool,
-}
-
-impl Default for ServerConfig {
-    fn default() -> Self {
-        Self {
-            allowed_channel_ids: HashSet::new(),
-            leaderboard_visibility: LeaderboardVisibility::default(),
-            leaderboard_role_ids: HashSet::new(),
-            respond_to_bot_pings: false,
-            proactive_allowed: true,
-        }
-    }
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -284,10 +268,6 @@ pub struct UserConfig {
     /// When disabled, short-term conversation history still works normally.
     #[serde(default = "default_deep_memory_enabled")]
     pub deep_memory_enabled: bool,
-    /// Whether the bot may respond proactively to messages it wasn't mentioned in.
-    /// Only narrow cases are handled (obvious reminder requests, help questions).
-    #[serde(default)]
-    pub proactive_assistance_enabled: bool,
     /// Names of global marketplace skills this user has enabled. Only enabled
     /// skills are listed in the user's prompt and executable via `use_skill`.
     #[serde(default)]
@@ -316,7 +296,6 @@ impl Default for UserConfig {
             thinking_mode: ThinkingMode::default(),
             progress_updates_enabled: true,
             deep_memory_enabled: true,
-            proactive_assistance_enabled: false,
             enabled_skills: Vec::new(),
         }
     }
@@ -373,6 +352,68 @@ impl UserConfigStore {
     }
 }
 
+// ── scheduler limits ──────────────────────────────────────────────────────────
+
+/// LLM scheduler ceilings set at runtime by a configurer. Persisted so a limit
+/// applied during an incident is not lost on the next restart.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+pub struct SchedulerLimits {
+    pub max_inflight: usize,
+    pub max_subagent: usize,
+}
+
+const SCHEDULER_LIMITS_KEY: &str = "scheduler_limits";
+
+#[derive(Clone)]
+pub struct SchedulerLimitsStore {
+    backend: Backend,
+}
+
+impl Default for SchedulerLimitsStore {
+    fn default() -> Self {
+        Self::new(data_dir().join("bot_config"))
+    }
+}
+
+impl SchedulerLimitsStore {
+    pub fn new(dir: PathBuf) -> Self {
+        Self {
+            backend: Backend::Files(dir),
+        }
+    }
+
+    pub fn postgres(client: Arc<tokio_postgres::Client>) -> Self {
+        Self {
+            backend: Backend::Postgres(client),
+        }
+    }
+
+    /// `None` when no configurer has overridden the deployment's environment
+    /// defaults, or when the stored record cannot be read.
+    pub async fn load(&self) -> Option<SchedulerLimits> {
+        let bytes = self
+            .backend
+            .load(SCHEDULER_LIMITS_KEY, SCHEDULER_LIMITS_KEY)
+            .await
+            .ok()
+            .flatten()?;
+        let limits: SchedulerLimits = serde_json::from_slice(&bytes).ok()?;
+        // The scheduler panics on a zero ceiling, so a corrupt record must not
+        // reach it.
+        Some(SchedulerLimits {
+            max_inflight: limits.max_inflight.max(1),
+            max_subagent: limits.max_subagent.max(1),
+        })
+    }
+
+    pub async fn save(&self, limits: SchedulerLimits) -> anyhow::Result<()> {
+        let data = serde_json::to_string_pretty(&limits)?;
+        self.backend
+            .save(SCHEDULER_LIMITS_KEY, SCHEDULER_LIMITS_KEY, data)
+            .await
+    }
+}
+
 // ── access control ────────────────────────────────────────────────────────────
 
 /// Per-user policy set by the bot's configurers.
@@ -403,7 +444,7 @@ impl Default for UserPolicy {
 /// The Discord owner (`OWNER_DISCORD_ID`) is always allowed to configure
 /// the bot and is never subject to the respond policy. Server administrators
 /// get no implicit access.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct AccessControl {
     /// Discord user IDs allowed to configure the bot (in addition to the owner).
     #[serde(default)]
@@ -411,25 +452,10 @@ pub struct AccessControl {
     /// Per-user output-token caps and respond flags, keyed by Discord user ID.
     #[serde(default)]
     pub user_policies: HashMap<u64, UserPolicy>,
-    /// Global switch for proactive assistance. When false, per-user
-    /// `/personalize proactive` settings are ignored for everyone.
-    #[serde(default = "default_respond")]
-    pub proactive_enabled: bool,
     /// Channel the bot watches for the feature-development completion webhook
     /// (`/config dev_notify_channel`). `None` disables the watch.
     #[serde(default)]
     pub dev_notify_channel_id: Option<u64>,
-}
-
-impl Default for AccessControl {
-    fn default() -> Self {
-        Self {
-            configurer_ids: HashSet::new(),
-            user_policies: HashMap::new(),
-            proactive_enabled: true,
-            dev_notify_channel_id: None,
-        }
-    }
 }
 
 impl AccessControl {
@@ -488,11 +514,6 @@ impl AccessControlStore {
             cache: Arc::new(tokio::sync::RwLock::new(None)),
             write_lock: Arc::new(tokio::sync::Mutex::new(())),
         }
-    }
-
-    /// Connect to the deployment's PostgreSQL bot-config storage.
-    pub async fn from_env() -> anyhow::Result<Self> {
-        Ok(Self::postgres(postgres_client_from_env().await?))
     }
 
     pub async fn load(&self) -> AccessControl {
@@ -567,7 +588,6 @@ mod tests {
         assert_eq!(config.leaderboard_visibility, LeaderboardVisibility::Public);
         assert!(config.leaderboard_role_ids.is_empty());
         assert!(!config.respond_to_bot_pings);
-        assert!(config.proactive_allowed);
     }
 
     #[test]
@@ -625,29 +645,21 @@ mod tests {
     }
 
     #[test]
-    fn proactive_assistance_is_off_by_default() {
-        assert!(!UserConfig::default().proactive_assistance_enabled);
-    }
-
-    #[test]
-    fn old_user_config_enables_memory_but_keeps_proactive_assistance_off() {
+    fn old_user_config_enables_memory() {
         let config: UserConfig =
             serde_json::from_str(r#"{"personality":null,"followup_timeout_secs":300}"#).unwrap();
         assert!(config.deep_memory_enabled);
-        assert!(!config.proactive_assistance_enabled);
     }
 
     #[test]
     fn privacy_fields_persist_through_serde() {
         let config = UserConfig {
             deep_memory_enabled: true,
-            proactive_assistance_enabled: true,
             ..UserConfig::default()
         };
         let json = serde_json::to_string(&config).unwrap();
         let restored: UserConfig = serde_json::from_str(&json).unwrap();
         assert!(restored.deep_memory_enabled);
-        assert!(restored.proactive_assistance_enabled);
     }
 
     #[test]
@@ -716,13 +728,6 @@ mod tests {
         assert!(!policy.respond);
     }
 
-    #[test]
-    fn proactive_is_globally_enabled_by_default_and_for_old_configs() {
-        assert!(AccessControl::default().proactive_enabled);
-        let access: AccessControl = serde_json::from_str(r#"{"configurer_ids":[1]}"#).unwrap();
-        assert!(access.proactive_enabled);
-    }
-
     #[tokio::test]
     async fn access_store_round_trips_on_files() {
         let tmp = tempfile::TempDir::new().unwrap();
@@ -732,6 +737,39 @@ mod tests {
         access.configurer_ids.insert(5);
         store.save(&access).await.unwrap();
         assert!(store.load().await.configurer_ids.contains(&5));
+    }
+
+    #[tokio::test]
+    async fn scheduler_limits_round_trip_and_default_to_unset() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let store = SchedulerLimitsStore::new(tmp.path().join("bot_config"));
+        assert!(store.load().await.is_none());
+        store
+            .save(SchedulerLimits {
+                max_inflight: 8,
+                max_subagent: 3,
+            })
+            .await
+            .unwrap();
+        let limits = store.load().await.unwrap();
+        assert_eq!(limits.max_inflight, 8);
+        assert_eq!(limits.max_subagent, 3);
+    }
+
+    #[tokio::test]
+    async fn zero_scheduler_limits_never_reach_the_scheduler() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let store = SchedulerLimitsStore::new(tmp.path().join("bot_config"));
+        store
+            .save(SchedulerLimits {
+                max_inflight: 0,
+                max_subagent: 0,
+            })
+            .await
+            .unwrap();
+        let limits = store.load().await.unwrap();
+        assert_eq!(limits.max_inflight, 1);
+        assert_eq!(limits.max_subagent, 1);
     }
 
     #[tokio::test]

@@ -3,7 +3,7 @@
 use super::*;
 
 pub(crate) enum ResponseMode {
-    Full { proactive: bool },
+    Full,
     EmojiOrFull,
 }
 
@@ -71,7 +71,6 @@ impl HouseBot {
         followup_timeout: Duration,
         response_mode: ResponseMode,
     ) {
-        let proactive = matches!(response_mode, ResponseMode::Full { proactive: true });
         let emoji_only_allowed = matches!(response_mode, ResponseMode::EmojiOrFull);
         let mut text = msg.content.clone();
         for token in [format!("<@{bot_id}>"), format!("<@!{bot_id}>")] {
@@ -102,36 +101,6 @@ impl HouseBot {
         }
 
         let user_config = self.user_cfg.load(msg.author.id.get()).await;
-
-        // Check for a full bot ban (`housebot` tool name) in guild channels.
-        if let Some(guild_id) = msg.guild_id.map(|g| g.get()) {
-            match self
-                .agent
-                .tool_permissions()
-                .is_banned(guild_id, msg.author.id.get(), "housebot")
-                .await
-            {
-                Ok(true) => {
-                    tracing::info!(
-                        target: "housebot::commands",
-                        user_id = msg.author.id.get(),
-                        guild_id,
-                        "Blocked message from user banned from bot",
-                    );
-                    self.respond(
-                        ctx,
-                        msg,
-                        "⛔ You are banned from using this bot in this server.",
-                    )
-                    .await;
-                    return;
-                }
-                Err(error) => {
-                    tracing::error!(%error, %guild_id, "housebot ban check failed");
-                }
-                _ => {}
-            }
-        }
 
         let referenced_text = {
             if let Some(referenced) = msg.referenced_message.as_deref() {
@@ -209,58 +178,35 @@ impl HouseBot {
             .policy(msg.author.id.get())
             .max_output_tokens;
 
-        // Refresh user profile from Discord and persist learned data.
-        let mut profile = self.profile_store.load(msg.author.id.get()).await;
-        let guild_id = msg.guild_id.map(|g| g.get()).unwrap_or(0);
-        if profile.username.is_empty() || profile.guild_id != guild_id {
-            // First time seeing this user in this guild — fetch profile from Discord.
-            if let Ok(user_info) = self.discord.fetch_user(msg.author.id.get()).await {
-                profile.username = user_info.username;
-                profile.display_name = user_info.display_name;
-                profile.avatar_url = user_info.avatar_url.unwrap_or_default();
-                profile.guild_id = guild_id;
-                profile.nickname.clear();
-                if let Some(guild) = msg.guild(&ctx.cache) {
-                    if let Some(member) = guild.members.get(&msg.author.id) {
-                        if let Some(nick) = &member.nick {
-                            profile.nickname = nick.clone();
-                        }
-                    }
-                }
-                let _ = self.profile_store.save(msg.author.id.get(), &profile).await;
-            }
-        } else {
-            // Update display name and nickname if they've changed.
-            if let Ok(user_info) = self.discord.fetch_user(msg.author.id.get()).await {
-                if profile.display_name != user_info.display_name {
-                    profile.display_name = user_info.display_name;
-                }
-                let avatar = user_info.avatar_url.clone().unwrap_or_default();
-                if profile.avatar_url != avatar {
-                    profile.avatar_url = avatar;
-                }
-                if let Some(guild) = msg.guild(&ctx.cache) {
-                    if let Some(member) = guild.members.get(&msg.author.id) {
-                        let current_nick = member.nick.as_deref().unwrap_or("");
-                        if profile.nickname != current_nick {
-                            profile.nickname = current_nick.to_string();
-                        }
-                    }
-                }
-                let _ = self.profile_store.save(msg.author.id.get(), &profile).await;
-            }
-        }
+        // Sourced live from Discord each turn rather than persisted: the bot no
+        // longer keeps a profile store, and these only feed the system prompt.
+        let (display_name, avatar_url) = match self.discord.fetch_user(msg.author.id.get()).await {
+            Ok(user_info) => (
+                user_info.display_name,
+                user_info.avatar_url.unwrap_or_default(),
+            ),
+            Err(_) => (msg.author.name.clone(), String::new()),
+        };
+        let nickname = msg
+            .guild(&ctx.cache)
+            .and_then(|guild| {
+                guild
+                    .members
+                    .get(&msg.author.id)
+                    .and_then(|m| m.nick.clone())
+            })
+            .unwrap_or_default();
 
         // Held until the reply is posted, so the channel shows the bot typing
         // for every part of the turn regardless of the progress-update setting.
         let _typing = TypingIndicator::start(ctx, msg.channel_id);
 
         let progress = if user_config.progress_updates_enabled {
-            // Check LLM queue utilization so we can show the user their position
-            // when the system is saturated (all 4 LLM slots occupied).
-            let queue_info = self.agent.llm_queue_info();
-            let progress_msg = if queue_info.is_saturated() {
-                let position = queue_info.pending + 1;
+            // Check LLM scheduler utilization so we can show the user their
+            // position when every slot is occupied.
+            let scheduler_info = self.agent.llm_scheduler_info();
+            let progress_msg = if scheduler_info.is_saturated() {
+                let position = scheduler_info.pending + 1;
                 format!("⏳ **You are #{position} in line. Waiting for an LLM slot to open up...**")
             } else {
                 "🧠 **Thinking...**".to_string()
@@ -287,22 +233,7 @@ impl HouseBot {
         } else {
             text
         };
-        self.message_log
-            .append(msg.author.id.get().to_string(), &user_text)
-            .await;
         let user_id_string = msg.author.id.get().to_string();
-        let profile_tags = profile
-            .tags
-            .iter()
-            .map(|tag| tag.as_str())
-            .collect::<Vec<_>>()
-            .join(", ");
-        let quick_actions = profile
-            .quick_actions()
-            .into_iter()
-            .map(|(name, count)| format!("{name} ({count})"))
-            .collect::<Vec<_>>()
-            .join(", ");
         let result: AgentResult = self
             .agent
             .run(
@@ -314,15 +245,11 @@ impl HouseBot {
                     personality: personality.as_deref(),
                     thinking,
                     channel_id: msg.channel_id.get(),
-                    deep_memory_enabled: user_config.deep_memory_enabled && !proactive,
-                    display_name: &profile.display_name,
-                    nickname: &profile.nickname,
-                    avatar_url: &profile.avatar_url,
-                    profile_tags: &profile_tags,
-                    quick_actions: &quick_actions,
+                    deep_memory_enabled: user_config.deep_memory_enabled,
+                    display_name: &display_name,
+                    nickname: &nickname,
+                    avatar_url: &avatar_url,
                     guild_id: msg.guild_id.map(|guild| guild.get()),
-                    proactive,
-                    record_profile_usage: !proactive,
                     max_output_tokens,
                     cancel: Some(cancel_token),
                 },
@@ -410,27 +337,6 @@ impl HouseBot {
             &allowed_pings,
         )
         .await;
-        // Upload files returned by guarded agent tools.
-        for attachment in result.attachments {
-            if let Err(error) = msg
-                .channel_id
-                .send_message(
-                    &ctx.http,
-                    CreateMessage::new().add_file(CreateAttachment::bytes(
-                        attachment.bytes,
-                        attachment.filename.clone(),
-                    )),
-                )
-                .await
-            {
-                tracing::warn!(
-                    target: "housebot::files",
-                    filename = %attachment.filename,
-                    %error,
-                    "Failed to send downloaded attachment"
-                );
-            }
-        }
         // Upload extracted code blocks.
         for (filename, content) in code_files {
             let safe = self.redactor.redact(&String::from_utf8_lossy(&content));

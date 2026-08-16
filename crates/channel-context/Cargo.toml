@@ -1,0 +1,15 @@
+[package]
+name = "housebot-channel-context"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.80"
+description = "In-memory per-channel message ring buffer with regex search"
+license = "AGPL-3.0-or-later"
+
+[dependencies]
+chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
+housebot-config = { path = "../config" }
+regex = "1"
+
+[dev-dependencies]
+tokio = { version = "1", features = ["full", "test-util"] }

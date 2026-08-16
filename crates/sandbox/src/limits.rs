@@ -11,15 +11,25 @@ pub const MAX_FILE_READ_BYTES: usize = 64 * 1024;
 pub const MAX_SEARCH_MATCHES: usize = 100;
 pub const MAX_FILE_LIST_ENTRIES: usize = 500;
 
-pub const MAX_FILE_LINES: usize = 2000;
 pub const MAX_FILE_READ_LINES: usize = 2000;
 
 pub const MAX_CLONE_BRANCH_LENGTH: usize = 256;
 pub const MAX_URL_LENGTH: usize = 2048;
 pub const MAX_COMMAND_LENGTH: usize = 4096;
+/// Ceiling on a single `write_file` payload. Generous enough for a skill
+/// script, far below the 1 MiB request frame so the framing limit is never the
+/// thing that rejects a write.
+pub const MAX_WRITE_FILE_BYTES: usize = 256 * 1024;
 pub const MAX_PATH_DEPTH: usize = 64;
 pub const MAX_GLOB_LENGTH: usize = 256;
 pub const MAX_QUERY_LENGTH: usize = 512;
 
 pub const MAX_REQUEST_FRAME_BYTES: usize = 1024 * 1024; // 1 MiB
 pub const SOCKET_TIMEOUT_SECS: u64 = 30;
+
+pub const MAX_SESSION_KEY_LENGTH: usize = 128;
+
+/// How long a sandbox may sit unused before `sandboxd` destroys it. Unlike the
+/// constants above this is a default, not a ceiling: admins override it with
+/// `SANDBOX_IDLE_TIMEOUT_SECS`.
+pub const DEFAULT_SANDBOX_IDLE_TIMEOUT_SECS: u64 = 300;

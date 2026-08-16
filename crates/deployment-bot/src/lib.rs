@@ -395,10 +395,13 @@ pub fn deployment_changelog(
     text
 }
 
+/// Every variable the `house-chatbot` container reads. A name missing here is
+/// silently dropped at deploy time, so it must track the variables the bot
+/// actually reads — see the `housebot_env_vars_cover_*` tests. `DATA_DIR` is
+/// deliberately absent: the run command fixes it to the container's own path.
 const HOUSEBOT_ENV_VARS: &[&str] = &[
     "DISCORD_BOT_TOKEN",
     "OWNER_DISCORD_ID",
-    "DEPLOYMENT_GUILD_ID",
     "DATABASE_URL",
     "DATABASE_CONNECT_MAX_ATTEMPTS",
     "DATABASE_CONNECT_RETRY_SECS",
@@ -409,14 +412,33 @@ const HOUSEBOT_ENV_VARS: &[&str] = &[
     "MAX_HISTORY_TURNS",
     "MAX_CONTEXT_TOKENS",
     "CONVERSATION_IDLE_TIMEOUT",
-    "JELLYFIN_URL",
-    "JELLYFIN_API_KEY",
-    "LLAMA_CPP_URL",
-    "LLAMA_CPP_MODEL",
+    "MAX_INFLIGHT_LLM",
+    "MAX_SUBAGENT_CONCURRENCY",
+    "CHANNEL_CONTEXT_CAPACITY",
+    "CHANNEL_CONTEXT_RETENTION_SECS",
+    "CHAT_RATE_LIMIT_MAX",
+    "CHAT_RATE_LIMIT_WINDOW_SECS",
+    "SKILLS_DIR",
+    "SANDBOX_SOCKET_PATH",
+    "SANDBOX_IDLE_TIMEOUT_SECS",
+    "SEARXNG_URL",
+    "SEARXNG_LANGUAGE",
+    "SEARXNG_SAFE_SEARCH",
+    "SENTRY_DSN",
+    "SENTRY_ENVIRONMENT",
     "GITHUB_APP_ID",
     "GITHUB_APP_PRIVATE_KEY",
     "GITHUB_INSTALLATION_ID",
     "GITHUB_REPO",
+    "GITHUB_TOKEN",
+    "DEVELOPMENT_DEFAULT_AGENT",
+    "DEVELOPMENT_DEFAULT_MODEL",
+    "DEVELOPMENT_APPROVAL_CHANNEL_ID",
+    "DEVELOPMENT_APPROVAL_EXPIRY_SECS",
+    "DEVELOPMENT_PENDING_GLOBAL_MAX",
+    "DEVELOPMENT_REQUEST_RATE_LIMIT_MAX",
+    "DEVELOPMENT_REQUEST_RATE_LIMIT_WINDOW_SECS",
+    "DEV_NOTIFY_SIGNING_KEY",
 ];
 
 fn housebot_env() -> Vec<(String, String)> {

@@ -1,25 +1,14 @@
 //! Store-backed command handlers, independent of Discord transport.
 
 use housebot_bot_config::UserConfigStore;
-use housebot_channel_log::ChannelLog;
-use housebot_grocery::GroceryList;
+use housebot_channel_context::ChannelContext;
 use housebot_history::History;
 use housebot_memory::Memory;
-use housebot_message_log::MessageLog;
-use housebot_notes::Notes;
-use housebot_profile::ProfileStore;
 use housebot_reminders::Reminders;
 use housebot_skills::Skills;
 
 fn truncate_chars(value: &str, limit: usize) -> String {
     value.chars().take(limit).collect()
-}
-
-fn valid_name(name: &str) -> bool {
-    !name.is_empty()
-        && name
-            .chars()
-            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_')
 }
 
 /// Parse a Discord user mention (`<@123>` or `<@!123>`) into a user ID string,
@@ -126,38 +115,20 @@ pub async fn skill_info(skills: &Skills, name: &str) -> String {
                 let list: Vec<String> = skill.editors.iter().map(|id| format!("<@{id}>")).collect();
                 format!("\n**Editors:** {}", list.join(", "))
             };
-            let version = format!("\n**Version:** v{}", skill.version);
-            let trigger_info = if skill.has_triggers() {
-                let triggers: Vec<String> = skill
-                    .triggers
-                    .iter()
-                    .map(|t| format!("{}: {}", t.trigger_type, t.value))
-                    .collect();
-                format!("\n**Triggers:** {}", triggers.join("; "))
-            } else {
-                String::new()
-            };
             let tools_info = if skill.enabled_tools.is_empty() {
                 String::new()
             } else {
                 format!("\n**Tools:** {}", skill.enabled_tools.join(", "))
             };
-            let example_count = skill.examples.len();
-            let examples_info = if example_count > 0 {
-                format!("\n**Examples:** {example_count}")
-            } else {
-                String::new()
-            };
+            let bundled = skill.bundled_summary();
             format!(
-                "**Skill: {}**\nDescription: {}{}{}{}{}{}{}\n```\n{}\n```",
+                "**Skill: {}**\nDescription: {}{}{}{}{}\n```\n{}\n```",
                 skill.name,
                 skill.description.as_deref().unwrap_or("(none)"),
                 author,
                 editors,
-                version,
-                trigger_info,
                 tools_info,
-                examples_info,
+                bundled,
                 preview,
             )
         }
@@ -309,138 +280,19 @@ pub async fn skill_command(
     }
 }
 
-pub async fn note_command(notes: &Notes, first_line: &str, rest: &str, author_id: u64) -> String {
-    let parts: Vec<&str> = first_line
-        .splitn(3, char::is_whitespace)
-        .filter(|s| !s.is_empty())
-        .collect();
-    if parts.len() < 2 {
-        return "Usage: `/storage notes list` | `/storage notes save name:<name> content:<text>` | `/storage notes get name:<name>` | `/storage notes delete name:<name>`".into();
-    }
-    match parts[1].to_lowercase().as_str() {
-        "list" => {
-            let all = notes.load_all(author_id).await;
-            if all.is_empty() {
-                return "You have no saved notes. Use `/storage notes save name:<name> content:<text>` to create one.".into();
-            }
-            let mut lines = vec!["**Your notes:**".to_string()];
-            for (name, body) in &all {
-                let mut preview = truncate_chars(&body.replace('\n', " "), 60);
-                if body.chars().count() > 60 {
-                    preview.push('…');
-                }
-                lines.push(format!("• **{name}** — {preview}"));
-            }
-            lines.join("\n")
-        }
-        "get" => {
-            let Some(name) = parts.get(2).map(|s| s.to_lowercase()) else {
-                return "Usage: `/storage notes get name:<name>`".into();
-            };
-            match notes.get(author_id, &name).await {
-                None => format!("Note `{name}` not found."),
-                Some(body) => format!("**{name}:**\n{body}"),
-            }
-        }
-        "save" => {
-            let Some(name) = parts.get(2).map(|s| s.trim().to_lowercase()) else {
-                return "Usage: `/storage notes save name:<name> content:<text>`".into();
-            };
-            if !valid_name(&name) {
-                return "Note name must be lowercase letters, numbers, and underscores only."
-                    .into();
-            }
-            if rest.is_empty() {
-                return "Please include the note content on a new line after the command.".into();
-            }
-            if notes.save(author_id, &name, rest).await.is_err() {
-                return "Error: failed to save note.".into();
-            }
-            format!("✅ Note **{name}** saved.")
-        }
-        "delete" => {
-            let Some(name) = parts.get(2).map(|s| s.to_lowercase()) else {
-                return "Usage: `/storage notes delete name:<name>`".into();
-            };
-            match notes.delete(author_id, &name).await {
-                Ok(true) => format!("✅ Note **{name}** deleted."),
-                _ => format!("Note `{name}` not found."),
-            }
-        }
-        other => {
-            format!("Unknown subcommand `{other}`. Use `/storage notes list|save|get|delete`.")
-        }
-    }
-}
-
-pub async fn grocery_command(
-    grocery: &GroceryList,
-    first_line: &str,
-    rest: &str,
-    user_id: u64,
-) -> String {
-    let parts: Vec<&str> = first_line
-        .splitn(3, char::is_whitespace)
-        .filter(|s| !s.is_empty())
-        .collect();
-    match parts.get(1).copied() {
-        Some("add") => {
-            let item = if rest.is_empty() {
-                parts.get(2).map(|s| s.trim()).unwrap_or("")
-            } else {
-                rest.trim()
-            };
-            if item.is_empty() {
-                return "Usage: `!grocery add <item>`".into();
-            }
-            grocery
-                .add(user_id, item)
-                .await
-                .unwrap_or_else(|e| format!("⚠️ Failed to add item: {e}"))
-        }
-        Some("remove") | Some("rm") => {
-            let item = if rest.is_empty() {
-                parts.get(2).map(|s| s.trim()).unwrap_or("")
-            } else {
-                rest.trim()
-            };
-            if item.is_empty() {
-                return "Usage: `!grocery remove <item>`".into();
-            }
-            grocery
-                .remove(user_id, item)
-                .await
-                .unwrap_or_else(|e| format!("⚠️ Failed to remove item: {e}"))
-        }
-        Some("flush") => grocery
-            .flush(user_id)
-            .await
-            .unwrap_or_else(|e| format!("⚠️ Failed to flush list: {e}")),
-        _ => grocery.display(user_id).await,
-    }
-}
-
-/// Erase all stored data for the requesting user: message log, history, memory, notes, profile, reminders, and channel log entries.
+/// Erase all stored data for the requesting user: history, memory, per-user config, reminders, and buffered channel messages.
 #[allow(clippy::too_many_arguments)]
 pub async fn erase_data_command(
-    message_log: &MessageLog,
     history: &History,
     memory: &Memory,
-    notes: &Notes,
-    profile_store: &ProfileStore,
     user_config: &UserConfigStore,
     reminders: &Reminders,
-    channel_log: &ChannelLog,
-    grocery: &GroceryList,
+    channel_context: &ChannelContext,
     user_id: u64,
 ) -> String {
-    let log_result = message_log.clear(user_id.to_string()).await;
     let history_result = history.clear(user_id.to_string()).await;
     let memory_result = memory.clear(user_id.to_string()).await;
-    let notes_result = notes.clear(user_id.to_string()).await;
-    let profile_result = profile_store.clear(user_id.to_string()).await;
     let config_result = user_config.clear(user_id).await;
-    let _ = grocery.flush(user_id).await;
 
     // Remove user's reminders
     let mut all_reminders = reminders.load().await;
@@ -449,26 +301,15 @@ pub async fn erase_data_command(
     let removed_reminders = before.saturating_sub(all_reminders.len());
     let _ = reminders.store(&all_reminders).await;
 
-    // Remove user's entries from channel logs (per-channel files)
-    let channel_log_result = channel_log.remove_user_entries(user_id.to_string()).await;
+    channel_context.remove_user_entries(&user_id.to_string());
 
-    if log_result.is_err()
-        || history_result.is_err()
-        || memory_result.is_err()
-        || notes_result.is_err()
-        || profile_result.is_err()
-        || config_result.is_err()
-        || channel_log_result.is_err()
-    {
+    if history_result.is_err() || memory_result.is_err() || config_result.is_err() {
         return "⚠️ Some data could not be erased. Please try again or contact an admin.".into();
     }
 
     let mut erased = vec![
-        "message log",
         "conversation history",
         "memory",
-        "notes",
-        "profile",
         "configuration",
         "channel log entries",
     ];
@@ -540,14 +381,12 @@ fn truncate_discord(header: &str, body: &str) -> String {
 pub async fn stats_command(
     history: &History,
     memory: &Memory,
-    notes: &Notes,
     skills: &Skills,
     user_id: u64,
     display_name: &str,
 ) -> String {
     let hist = history.load(user_id.to_string()).await;
     let mem = memory.load(user_id.to_string()).await;
-    let user_notes = notes.load_all(user_id).await;
     let all_skills = skills.load_all().await;
     let turn_count = hist
         .iter()
@@ -555,9 +394,8 @@ pub async fn stats_command(
         .count();
     let mem_kb = mem.len() as f64 / 1024.0;
     format!(
-        "**Stats for {display_name}:**\n• Conversation history: {} messages ({turn_count} turns)\n• Memory size: {mem_kb:.1} KB\n• Saved notes: {}\n• Skills available: {}",
+        "**Stats for {display_name}:**\n• Conversation history: {} messages ({turn_count} turns)\n• Memory size: {mem_kb:.1} KB\n• Skills available: {}",
         hist.len(),
-        user_notes.len(),
         all_skills.len()
     )
 }
@@ -566,63 +404,38 @@ pub async fn stats_command(
 mod tests {
     use super::*;
     use housebot_bot_config::UserConfigStore;
-    use housebot_profile::ProfileStore;
     use tempfile::TempDir;
 
     fn stores() -> (
         TempDir,
-        MessageLog,
         History,
         Memory,
-        Notes,
-        ProfileStore,
         UserConfigStore,
         Reminders,
-        ChannelLog,
-        GroceryList,
+        ChannelContext,
     ) {
         let tmp = TempDir::new().unwrap();
-        let msg_log = MessageLog::new(tmp.path().join("message_log"));
         let history = History::new(tmp.path().join("history"), 30);
         let memory = Memory::new(tmp.path().join("memories"));
-        let notes = Notes::new(tmp.path().join("notes"));
-        let profile = ProfileStore::new(tmp.path().join("profiles"));
         let user_config = UserConfigStore::new(tmp.path().join("user_config"));
         let reminders = Reminders::new(tmp.path().join("reminders.json"));
-        let channel_log = ChannelLog::new(tmp.path().join("channel_log"));
-        let grocery = GroceryList::new(tmp.path().join("grocery"));
+        let channel_context = ChannelContext::default();
         (
             tmp,
-            msg_log,
             history,
             memory,
-            notes,
-            profile,
             user_config,
             reminders,
-            channel_log,
-            grocery,
+            channel_context,
         )
     }
 
     #[tokio::test]
     async fn erase_data_clears_all_stores() {
-        let (
-            _tmp,
-            msg_log,
-            history,
-            memory,
-            notes,
-            profile,
-            user_config,
-            reminders,
-            channel_log,
-            grocery,
-        ) = stores();
+        let (_tmp, history, memory, user_config, reminders, channel_context) = stores();
         let user_id = 123u64;
 
         // Populate all stores
-        msg_log.append(user_id.to_string(), "test").await;
         history
             .save(
                 user_id.to_string(),
@@ -632,17 +445,6 @@ mod tests {
             .unwrap();
         memory
             .save(user_id.to_string(), "some memory")
-            .await
-            .unwrap();
-        notes.save(user_id, "test", "content").await.unwrap();
-        profile
-            .save(
-                user_id.to_string(),
-                &housebot_profile::UserProfile {
-                    username: "alice".into(),
-                    ..Default::default()
-                },
-            )
             .await
             .unwrap();
         user_config
@@ -667,63 +469,36 @@ mod tests {
             )
             .await
             .unwrap();
-        channel_log
-            .append(1, user_id, "Alice", None, "channel msg")
-            .await;
-        grocery.add(user_id, "milk").await.unwrap();
-
+        channel_context.append(1, user_id, "Alice", None, "channel msg");
         let reply = erase_data_command(
-            &msg_log,
             &history,
             &memory,
-            &notes,
-            &profile,
             &user_config,
             &reminders,
-            &channel_log,
-            &grocery,
+            &channel_context,
             user_id,
         )
         .await;
 
         assert!(reply.contains("erased"));
-        assert!(reply.contains("message log"));
         assert!(reply.contains("conversation history"));
         assert!(reply.contains("memory"));
-        assert!(reply.contains("notes"));
-        assert!(reply.contains("profile"));
         assert!(reply.contains("reminders"));
 
         // Verify stores are cleared
         assert!(history.load(user_id.to_string()).await.is_empty());
         assert_eq!(memory.load(user_id.to_string()).await, "");
-        assert!(notes.load_all(user_id).await.is_empty());
-        assert_eq!(profile.load(user_id.to_string()).await.username, "");
         assert!(user_config.load(user_id).await.deep_memory_enabled);
         assert!(reminders.load().await.is_empty());
-        assert!(grocery.load(user_id).await.is_empty());
     }
 
     #[tokio::test]
     async fn erase_data_preserves_other_users() {
-        let (
-            _tmp,
-            msg_log,
-            history,
-            memory,
-            notes,
-            profile,
-            user_config,
-            reminders,
-            channel_log,
-            grocery,
-        ) = stores();
+        let (_tmp, history, memory, user_config, reminders, channel_context) = stores();
         let user_a = 100u64;
         let user_b = 200u64;
 
         // Populate stores with both users
-        msg_log.append(user_a.to_string(), "a").await;
-        msg_log.append(user_b.to_string(), "b").await;
         history
             .save(
                 user_a.to_string(),
@@ -762,20 +537,16 @@ mod tests {
             )
             .await
             .unwrap();
-        channel_log.append(1, user_a, "Alice", None, "msg a").await;
-        channel_log.append(1, user_b, "Bob", None, "msg b").await;
+        channel_context.append(1, user_a, "Alice", None, "msg a");
+        channel_context.append(1, user_b, "Bob", None, "msg b");
 
         // Erase user A
         erase_data_command(
-            &msg_log,
             &history,
             &memory,
-            &notes,
-            &profile,
             &user_config,
             &reminders,
-            &channel_log,
-            &grocery,
+            &channel_context,
             user_a,
         )
         .await;

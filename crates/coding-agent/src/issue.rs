@@ -2,7 +2,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use super::catalog::{CodingAgent, EffortMechanism, ValidatedAgentSelection};
+use super::catalog::{CodingAgent, ValidatedAgentSelection};
 use super::pending::DevelopmentSpecification;
 
 const MAX_ISSUE_BODY: usize = 25_000;
@@ -14,8 +14,6 @@ pub struct JobMetadata {
     pub schema_version: u32,
     pub agent: CodingAgent,
     pub model: String,
-    pub effort: String,
-    pub effort_mechanism: EffortMechanism,
     pub catalog_revision: String,
 }
 
@@ -25,8 +23,6 @@ impl JobMetadata {
             schema_version: 1,
             agent: selection.agent,
             model: selection.model.clone(),
-            effort: selection.effort.clone(),
-            effort_mechanism: selection.effort_mechanism,
             catalog_revision: selection.catalog_revision.clone(),
         }
     }
@@ -82,8 +78,6 @@ pub fn build_issue_body(
          ## Agent Configuration\n\
          - Agent: {agent_display}\n\
          - Model: `{model}`\n\
-         - Effort: `{effort}`\n\
-         - Effort mechanism: `{mechanism}`\n\
          - Catalog revision: `{revision}`\n\n\
          ## Request Metadata\n\
          - Requested by: `{requester_display}`\n\
@@ -96,8 +90,6 @@ pub fn build_issue_body(
         objective = spec.objective.trim(),
         agent_display = selection.agent.display_name(),
         model = selection.model,
-        effort = selection.effort,
-        mechanism = selection.effort_mechanism,
         revision = selection.catalog_revision,
     );
 
@@ -112,14 +104,9 @@ pub fn build_issue_body(
     Ok(body)
 }
 
-/// Legacy comment retained for compatibility with older issue-driven dispatches.
-pub const DISPATCH_TRIGGER_COMMENT: &str = "/oc Implement the feature described in this issue. \
-     Follow the repository conventions, commit your changes, and open a pull request that \
-     closes this issue.";
-
 /// Build the prompt passed as a `workflow_dispatch` input to the
 /// `opencode-dispatch` workflow.
-pub fn build_dispatch_prompt(issue_number: u64) -> String {
+fn build_dispatch_prompt(issue_number: u64) -> String {
     format!(
         "Implement the feature described in issue #{issue_number}. \
          Follow the repository conventions, commit your changes, and open a pull request that \
@@ -127,11 +114,35 @@ pub fn build_dispatch_prompt(issue_number: u64) -> String {
     )
 }
 
+/// Build the `workflow_dispatch` inputs for a development job.
+///
+/// Every value is a string: the API returns 422 for non-string values even on
+/// inputs the workflow declares as `type: number`.
+pub fn dispatch_inputs(
+    issue_number: u64,
+    model: &str,
+    requester_id: u64,
+) -> serde_json::Map<String, serde_json::Value> {
+    let mut inputs = serde_json::Map::new();
+    inputs.insert(
+        "issue_number".into(),
+        serde_json::Value::String(issue_number.to_string()),
+    );
+    inputs.insert(
+        "prompt".into(),
+        serde_json::Value::String(build_dispatch_prompt(issue_number)),
+    );
+    inputs.insert("model".into(), serde_json::Value::String(model.to_string()));
+    inputs.insert(
+        "requester_id".into(),
+        serde_json::Value::String(requester_id.to_string()),
+    );
+    inputs
+}
+
 /// Return the manually-dispatched workflow for the selected coding agent.
 pub fn dispatch_workflow_file(agent: CodingAgent) -> &'static str {
     match agent {
-        CodingAgent::Codex => "codex-dispatch.yml",
-        CodingAgent::Claude => "claude-dispatch.yml",
         CodingAgent::OpenCode => "opencode-dispatch.yml",
     }
 }
@@ -143,11 +154,9 @@ mod tests {
 
     fn make_selection() -> ValidatedAgentSelection {
         let catalog = AgentCatalog::load_embedded();
-        let models = catalog.models_for(CodingAgent::Claude);
-        let model = &models[0];
-        let effort = &model.efforts[0];
+        let models = catalog.models_for(CodingAgent::OpenCode);
         catalog
-            .validate_selection(CodingAgent::Claude, &model.id, &effort.id)
+            .validate_selection(CodingAgent::OpenCode, &models[0].id)
             .unwrap()
     }
 
@@ -160,6 +169,32 @@ mod tests {
             requirements: vec!["Implement X".into()],
             acceptance_criteria: vec!["X works".into()],
         }
+    }
+
+    /// The dispatch API rejects any input the workflow does not declare, so a
+    /// key added here without a matching `inputs:` entry fails only at runtime.
+    #[test]
+    fn every_dispatch_input_is_declared_by_the_workflow() {
+        let workflow = include_str!("../../../.github/workflows/opencode-dispatch.yml");
+        let declared: Vec<&str> = workflow
+            .lines()
+            .filter(|l| l.starts_with("      ") && l.trim_end().ends_with(':'))
+            .map(|l| l.trim().trim_end_matches(':'))
+            .collect();
+        for key in dispatch_inputs(1, "opencode/deepseek-v4-flash-free", 2).keys() {
+            assert!(
+                declared.contains(&key.as_str()),
+                "input '{key}' is not declared in opencode-dispatch.yml"
+            );
+        }
+    }
+
+    #[test]
+    fn dispatch_inputs_are_all_strings() {
+        let inputs = dispatch_inputs(7, "opencode/big-pickle", 9);
+        assert!(inputs.values().all(serde_json::Value::is_string));
+        assert_eq!(inputs["model"], "opencode/big-pickle");
+        assert_eq!(inputs["issue_number"], "7");
     }
 
     #[test]
@@ -196,14 +231,6 @@ mod tests {
 
     #[test]
     fn dispatch_workflow_matches_agent() {
-        assert_eq!(
-            dispatch_workflow_file(CodingAgent::Codex),
-            "codex-dispatch.yml"
-        );
-        assert_eq!(
-            dispatch_workflow_file(CodingAgent::Claude),
-            "claude-dispatch.yml"
-        );
         assert_eq!(
             dispatch_workflow_file(CodingAgent::OpenCode),
             "opencode-dispatch.yml"

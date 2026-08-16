@@ -12,9 +12,11 @@ impl HouseBot {
             return;
         };
         let content = format!(
-            "**Feature development: {title}**\n\nChoose a coding agent to implement this feature:"
+            "**Feature development: {title}**\n\nAgent: **{}**\nChoose a model:",
+            CodingAgent::OpenCode.display_name()
         );
-        let components = develop_agent_components(&job_id.to_string());
+        let components =
+            develop_model_components(&job_id.to_string(), CodingAgent::OpenCode, &self.catalog);
         let builder = CreateMessage::new()
             .content(content)
             .components(components)
@@ -52,12 +54,9 @@ impl HouseBot {
                 j.requester.channel_id,
                 j.selection.agent,
                 j.selection.model.clone(),
-                j.selection.effort.clone(),
             )
         });
-        let Some((title, objective, req_name, req_id, req_channel, agent, model, effort)) =
-            job_info
-        else {
+        let Some((title, objective, req_name, req_id, req_channel, agent, model)) = job_info else {
             tracing::warn!(target: "housebot::develop", %job_id, "Job not found when notifying owner");
             return;
         };
@@ -66,14 +65,13 @@ impl HouseBot {
             .map(|a| a.display_name().to_string())
             .unwrap_or_else(|| "default".into());
         let model_str = model.as_deref().unwrap_or("default");
-        let effort_str = effort.as_deref().unwrap_or("default");
 
         let dm_content = format!(
             "**Feature-development request from <@{req_id}>** (`{req_name}`)\n\
              **Feature:** {title}\n\
              **Objective:**\n> {obj}\n\
              **Proposed configuration:**\n\
-             Agent: {agent_str} | Model: `{model_str}` | Effort: `{effort_str}`\n\
+             Agent: {agent_str} | Model: `{model_str}`\n\
              **Origin:** <#{req_channel}>",
             obj = objective.lines().collect::<Vec<_>>().join("\n> "),
         );
@@ -148,7 +146,7 @@ impl HouseBot {
     }
 
     /// Watch the configured dev-notify channel (`/config dev_notify_channel`) for
-    /// the completion webhook posted by `claude-dispatch.yml`/`opencode-dispatch.yml`,
+    /// the completion webhook posted by `opencode-dispatch.yml`,
     /// and DM the requester encoded in the embed footer.
     ///
     /// Returns `true` if the message was in the configured channel (and so should
@@ -298,41 +296,6 @@ pub(crate) fn develop_approval_components(job_id: &str) -> Vec<CreateActionRow> 
     ])]
 }
 
-pub(crate) const AGENT_DISABLED_MESSAGE: &str =
-    "Codex dispatch is temporarily disabled. Please choose another agent.";
-
-/// Temporary Codex disable, checked on every dispatch path — not just the
-/// interactive picker — so configured defaults and stored selections cannot
-/// bypass it.
-pub(crate) fn agent_dispatch_disabled(agent: CodingAgent) -> bool {
-    agent == CodingAgent::Codex
-}
-
-pub(crate) fn develop_agent_components(job_id: &str) -> Vec<CreateActionRow> {
-    // Discord cannot grey out a single select option, so the disabled state is
-    // conveyed via the label/description and enforced in `develop_on_agent`.
-    let options = vec![
-        CreateSelectMenuOption::new("Claude Code", "claude"),
-        CreateSelectMenuOption::new("OpenCode (NVIDIA)", "opencode"),
-        CreateSelectMenuOption::new("🚫 Codex (disabled)", "codex")
-            .description("Temporarily disabled — cannot be selected"),
-    ];
-    vec![
-        CreateActionRow::SelectMenu(
-            CreateSelectMenu::new(
-                format!("{DEVELOP_PREFIX}{job_id}:agent"),
-                CreateSelectMenuKind::String { options },
-            )
-            .placeholder("Select coding agent"),
-        ),
-        CreateActionRow::Buttons(vec![CreateButton::new(format!(
-            "{DEVELOP_PREFIX}{job_id}:cancel"
-        ))
-        .label("Cancel")
-        .style(ButtonStyle::Danger)]),
-    ]
-}
-
 pub(crate) fn develop_model_components(
     job_id: &str,
     agent: CodingAgent,
@@ -357,50 +320,11 @@ pub(crate) fn develop_model_components(
             )
             .placeholder("Select model"),
         ),
-        CreateActionRow::Buttons(vec![
-            CreateButton::new(format!("{DEVELOP_PREFIX}{job_id}:back"))
-                .label("← Back")
-                .style(ButtonStyle::Secondary),
-            CreateButton::new(format!("{DEVELOP_PREFIX}{job_id}:cancel"))
-                .label("Cancel")
-                .style(ButtonStyle::Danger),
-        ]),
-    ]
-}
-
-pub(crate) fn develop_effort_components(
-    job_id: &str,
-    agent: CodingAgent,
-    model: &str,
-    catalog: &AgentCatalog,
-) -> Vec<CreateActionRow> {
-    let efforts = catalog.efforts_for(agent, model).unwrap_or(&[]);
-    let options: Vec<CreateSelectMenuOption> = efforts
-        .iter()
-        .map(|e| {
-            let mut opt = CreateSelectMenuOption::new(&e.display_name, &e.id);
-            if let Some(desc) = &e.description {
-                opt = opt.description(desc.chars().take(100).collect::<String>());
-            }
-            opt
-        })
-        .collect();
-    vec![
-        CreateActionRow::SelectMenu(
-            CreateSelectMenu::new(
-                format!("{DEVELOP_PREFIX}{job_id}:effort"),
-                CreateSelectMenuKind::String { options },
-            )
-            .placeholder("Select effort level"),
-        ),
-        CreateActionRow::Buttons(vec![
-            CreateButton::new(format!("{DEVELOP_PREFIX}{job_id}:back"))
-                .label("← Back")
-                .style(ButtonStyle::Secondary),
-            CreateButton::new(format!("{DEVELOP_PREFIX}{job_id}:cancel"))
-                .label("Cancel")
-                .style(ButtonStyle::Danger),
-        ]),
+        CreateActionRow::Buttons(vec![CreateButton::new(format!(
+            "{DEVELOP_PREFIX}{job_id}:cancel"
+        ))
+        .label("Cancel")
+        .style(ButtonStyle::Danger)]),
     ]
 }
 
@@ -410,7 +334,7 @@ pub(crate) fn develop_confirm_components(job_id: &str) -> Vec<CreateActionRow> {
             .label("Dispatch")
             .style(ButtonStyle::Success),
         CreateButton::new(format!("{DEVELOP_PREFIX}{job_id}:back"))
-            .label("← Change Effort")
+            .label("← Change Model")
             .style(ButtonStyle::Secondary),
         CreateButton::new(format!("{DEVELOP_PREFIX}{job_id}:cancel"))
             .label("Cancel")

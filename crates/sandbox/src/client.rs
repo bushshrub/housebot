@@ -95,12 +95,23 @@ impl SandboxClient {
         Ok(response)
     }
 
-    /// Request that sandboxd create a new sandbox container.
-    pub async fn start(&self, network: NetworkAccess) -> Result<Sandbox, String> {
+    /// Get the session's sandbox container, creating it if the session has none.
+    ///
+    /// The container outlives the request that created it and is destroyed by
+    /// sandboxd once the session has been idle past its timeout.
+    pub async fn start(
+        &self,
+        session_key: &str,
+        network: NetworkAccess,
+    ) -> Result<Sandbox, String> {
+        validation::validate_session_key(session_key)?;
         let req = SandboxRequest::new(
             "start",
-            serde_json::to_value(StartParams { network })
-                .map_err(|e| format!("serialisation error: {e}"))?,
+            serde_json::to_value(StartParams {
+                session_key: session_key.to_string(),
+                network,
+            })
+            .map_err(|e| format!("serialisation error: {e}"))?,
         );
         let resp = self.send_request(req).await?;
         let result = resp.into_result()?;
@@ -118,9 +129,9 @@ impl SandboxClient {
 
 /// A handle to a running sandbox container.
 ///
-/// Dropping this without calling `close()` will leak the container, but
-/// sandboxd also cleans stale containers at startup.  The preferred
-/// path is to call `close()` explicitly.
+/// The handle is cheap and does not own the container: sandboxd keeps the
+/// container alive for the session and destroys it once it falls idle.  Call
+/// `close()` to discard the workspace before then.
 #[derive(Debug, Clone)]
 pub struct Sandbox {
     id: String,
@@ -260,6 +271,37 @@ impl Sandbox {
 
         let result = self.send("run", params).await?;
         serde_json::from_value(result).map_err(|e| format!("failed to parse command result: {e}"))
+    }
+
+    /// Write a file into the workspace.
+    ///
+    /// The content travels as request data and is fed to the container on
+    /// stdin, so it is never interpreted as part of a command. Set
+    /// `executable` for scripts — `/workspace` permits execution.
+    pub async fn write_file(
+        &self,
+        path: &str,
+        content: &str,
+        executable: bool,
+    ) -> Result<WriteFileResult, String> {
+        validation::validate_workspace_path(path)?;
+        if content.len() > limits::MAX_WRITE_FILE_BYTES {
+            return Err(format!(
+                "content exceeds {} bytes",
+                limits::MAX_WRITE_FILE_BYTES
+            ));
+        }
+
+        let params = serde_json::to_value(WriteFileParams {
+            sandbox_id: self.id.clone(),
+            path: path.to_string(),
+            content: content.to_string(),
+            executable,
+        })
+        .map_err(|e| format!("serialisation error: {e}"))?;
+
+        let result = self.send("write_file", params).await?;
+        serde_json::from_value(result).map_err(|e| format!("failed to parse write result: {e}"))
     }
 
     /// Destroy the sandbox container.

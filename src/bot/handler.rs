@@ -32,23 +32,6 @@ impl EventHandler for HouseBot {
                 }
             }
         });
-
-        if self.graph_sweep_started.swap(true, Ordering::SeqCst) {
-            return;
-        }
-        tokio::spawn(async move {
-            loop {
-                tokio::time::sleep(GRAPH_SWEEP_INTERVAL).await;
-                let removed = tokio::task::spawn_blocking(|| {
-                    graph_render::sweep_stale_temp_files(&std::env::temp_dir(), GRAPH_SWEEP_MAX_AGE)
-                })
-                .await
-                .unwrap_or(0);
-                if removed > 0 {
-                    tracing::info!(removed, "Swept stale /lua graph scratch files");
-                }
-            }
-        });
     }
 
     async fn interaction_create(&self, ctx: Context, interaction: Interaction) {
@@ -60,10 +43,7 @@ impl EventHandler for HouseBot {
             }
             return;
         }
-        if let Interaction::Autocomplete(autocomplete) = &interaction {
-            if autocomplete.data.name == "tool_ban" || autocomplete.data.name == "tool_restore" {
-                Self::handle_tool_ban_autocomplete(&ctx, autocomplete).await;
-            }
+        if let Interaction::Autocomplete(_) = &interaction {
             return;
         }
         let Interaction::Command(cmd) = interaction else {
@@ -97,16 +77,21 @@ impl EventHandler for HouseBot {
                 .remove(cmd.channel_id.get(), user_id);
             return;
         }
-        if cmd.data.name == "lua" {
-            self.handle_lua_command(&ctx, &cmd).await;
-            return;
-        }
         if cmd.data.name == "token_leaderboard" {
             self.handle_token_leaderboard_command(&ctx, &cmd).await;
             return;
         }
         let reply = match cmd.data.name.as_str() {
-            "config" => handle_config_interaction(&self.access, &cmd.data.options, user_id).await,
+            "config" => {
+                handle_config_interaction(
+                    &self.access,
+                    self.agent.llm_scheduler(),
+                    &self.agent.scheduler_limits(),
+                    &cmd.data.options,
+                    user_id,
+                )
+                .await
+            }
             "server-config" => {
                 let is_server_admin = cmd
                     .member
@@ -166,74 +151,6 @@ impl EventHandler for HouseBot {
                 )
                 .await
             }
-            "tool_ban" => {
-                let sub_cmd = cmd.data.options.first().map(|o| o.name.as_str());
-                match sub_cmd {
-                    Some("propose") => {
-                        self.handle_tool_ban_propose(&ctx, &cmd, user_id, guild_id)
-                            .await;
-                        return;
-                    }
-                    Some("vote") => {
-                        let reply = self
-                            .handle_tool_ban_vote(&ctx, &cmd, user_id, guild_id)
-                            .await;
-                        let reply = self.redactor.redact(&reply);
-                        let response = CreateInteractionResponse::Message(
-                            CreateInteractionResponseMessage::new()
-                                .content(reply)
-                                .ephemeral(true),
-                        );
-                        if let Err(e) = cmd.create_response(&ctx.http, response).await {
-                            tracing::warn!("Failed to send /tool_ban vote response: {e}");
-                        }
-                        return;
-                    }
-                    _ => {}
-                }
-                handle_tool_ban_interaction(
-                    &self.agent.tool_permissions(),
-                    &cmd.data.options,
-                    user_id,
-                    guild_id,
-                )
-                .await
-            }
-            "tool_restore" => {
-                let sub_cmd = cmd.data.options.first().map(|o| o.name.as_str());
-                match sub_cmd {
-                    Some("propose") => {
-                        self.handle_tool_restore_propose(&ctx, &cmd, user_id, guild_id)
-                            .await;
-                        return;
-                    }
-                    Some("vote") => {
-                        let defer = CreateInteractionResponse::Defer(
-                            CreateInteractionResponseMessage::new().ephemeral(true),
-                        );
-                        if let Err(e) = cmd.create_response(&ctx.http, defer).await {
-                            tracing::warn!("Failed to defer /tool_restore vote response: {e}");
-                            return;
-                        }
-                        let reply = self
-                            .handle_tool_restore_vote(&ctx, &cmd, user_id, guild_id)
-                            .await;
-                        let reply = self.redactor.redact(&reply);
-                        let _ = cmd
-                            .edit_response(&ctx.http, EditInteractionResponse::new().content(reply))
-                            .await;
-                        return;
-                    }
-                    _ => {}
-                }
-                handle_tool_restore_interaction(
-                    &self.agent.tool_permissions(),
-                    &cmd.data.options,
-                    user_id,
-                    guild_id,
-                )
-                .await
-            }
             "status" => handle_status_interaction(&self.user_cfg, user_id).await,
             "help" => help_response(),
             "commit" => commit_hash_response(option_env!("HOUSEBOT_GIT_SHA")),
@@ -278,28 +195,15 @@ impl EventHandler for HouseBot {
                     return;
                 };
                 match section.name.as_str() {
-                    "profile" => {
-                        let Some(actions) = nested_options(section) else {
-                            return;
-                        };
-                        handle_profile_interaction(
-                            &self.profile_store,
-                            &self.memory,
-                            actions,
-                            user_id,
-                            guild_id,
-                        )
-                        .await
-                    }
                     "history" => {
                         let Some(actions) = nested_options(section) else {
                             return;
                         };
                         handle_history_interaction(
                             &self.history,
-                            &self.profile_store,
                             actions,
                             user_id,
+                            &cmd.user.name,
                             guild_id,
                         )
                         .await
@@ -310,15 +214,11 @@ impl EventHandler for HouseBot {
                             "Nothing was erased. Set `confirm:true` only when you want to permanently delete all stored data.".into()
                         } else {
                             let reply = erase_data_command(
-                                &self.message_log,
                                 &self.history,
                                 &self.memory,
-                                &self.notes,
-                                &self.profile_store,
                                 &self.user_cfg,
                                 &self.agent.reminders().clone(),
-                                &self.channel_log,
-                                &self.grocery,
+                                &self.channel_context,
                                 user_id,
                             )
                             .await;
@@ -338,10 +238,7 @@ impl EventHandler for HouseBot {
                 handle_privacy_interaction(&self.user_cfg, &self.memory, &cmd.data.options, user_id)
                     .await
             }
-            "storage" => {
-                handle_storage_interaction(&self.memory, &self.notes, &cmd.data.options, user_id)
-                    .await
-            }
+            "storage" => handle_storage_interaction(&self.memory, &cmd.data.options, user_id).await,
             "skill" => {
                 handle_skill_interaction(&self.skills, &self.user_cfg, &cmd.data.options, user_id)
                     .await
@@ -350,10 +247,10 @@ impl EventHandler for HouseBot {
                 handle_stats_interaction(
                     &self.history,
                     &self.memory,
-                    &self.notes,
                     &self.skills,
                     user_id,
                     cmd.user.display_name(),
+                    &self.agent.user_token_summary(&user_id.to_string()).await,
                 )
                 .await
             }
@@ -361,12 +258,20 @@ impl EventHandler for HouseBot {
         };
 
         let reply = self.redactor.redact(&reply);
-        let reply = truncate_memory_reply("", &reply);
-        let response = CreateInteractionResponse::Message(
-            CreateInteractionResponseMessage::new()
-                .content(reply)
-                .ephemeral(command_response_is_ephemeral(&cmd.data.name)),
-        );
+        let message = CreateInteractionResponseMessage::new()
+            .ephemeral(command_response_is_ephemeral(&cmd.data.name));
+        // An embed description holds twice what message content does, so a
+        // long reply (/help is the one that reaches this) survives intact.
+        let message = if reply.chars().count() > MAX_MESSAGE_LENGTH {
+            message.embed(CreateEmbed::new().description(truncate_reply(
+                "",
+                &reply,
+                EMBED_DESCRIPTION_LIMIT,
+            )))
+        } else {
+            message.content(reply)
+        };
+        let response = CreateInteractionResponse::Message(message);
         if let Err(e) = cmd.create_response(&ctx.http, response).await {
             tracing::warn!("Failed to send /config response: {e}");
         }
@@ -432,18 +337,10 @@ impl EventHandler for HouseBot {
             self.respond(&ctx, &msg, &reply).await;
             return;
         }
-        if content.starts_with("!grocery") {
-            tracing::info!(target: "housebot::commands", user_id, "!grocery command received");
-            let (first, rest) = split_command(&msg.content);
-            let reply = grocery_command(&self.grocery, &first, &rest, user_id).await;
-            self.respond(&ctx, &msg, &reply).await;
-            return;
-        }
         if content == "!stats" {
             let reply = stats_command(
                 &self.history,
                 &self.memory,
-                &self.notes,
                 &self.skills,
                 user_id,
                 &msg.author.name,
@@ -473,9 +370,8 @@ impl EventHandler for HouseBot {
                 .and_then(|m| m.nick.as_deref())
                 .or(msg.author.global_name.as_deref())
                 .filter(|n| *n != msg.author.name);
-            self.channel_log
-                .append(channel_id, user_id, &msg.author.name, nick, &content)
-                .await;
+            self.channel_context
+                .append(channel_id, user_id, &msg.author.name, nick, &content);
         }
 
         let is_reply_to_bot = msg
@@ -509,22 +405,7 @@ impl EventHandler for HouseBot {
             (active, expired)
         };
 
-        let proactive = !is_dm
-            && access.proactive_enabled
-            && user_config.proactive_assistance_enabled
-            && !is_mentioned
-            && !is_reply_to_bot
-            && !is_reply_to_attachment
-            && is_proactive_candidate(&content)
-            && self.server_proactive_allowed(guild_id).await
-            && self.proactive_cooldown_allows(channel_id, user_id).await;
-        if !(is_dm
-            || is_mentioned
-            || is_reply_to_bot
-            || is_reply_to_attachment
-            || is_active
-            || proactive)
-        {
+        if !(is_dm || is_mentioned || is_reply_to_bot || is_reply_to_attachment || is_active) {
             return;
         }
         if self.already_seen(msg.id.get()).await {
@@ -535,7 +416,7 @@ impl EventHandler for HouseBot {
         let response_mode = if is_mentioned && !is_reply_to_bot && !is_reply_to_attachment {
             ResponseMode::EmojiOrFull
         } else {
-            ResponseMode::Full { proactive }
+            ResponseMode::Full
         };
         self.handle_message(
             &ctx,
@@ -611,736 +492,5 @@ impl EventHandler for HouseBot {
                 }
             }
         }
-
-        // ── Tool-ban voting ──────────────────────────────────────────────
-        let Some(guild_id) = reaction.guild_id.map(|g| g.get()) else {
-            return;
-        };
-        let message_id = reaction.message_id.get();
-        let approve = match &reaction.emoji {
-            serenity::all::ReactionType::Unicode(e) if e == "\u{2705}" => true,
-            serenity::all::ReactionType::Unicode(e) if e == "\u{274C}" => false,
-            _ => return,
-        };
-
-        let permissions = self.agent.tool_permissions();
-
-        // Check for ban proposals first.
-        let found = match permissions.find_by_message(message_id).await {
-            Ok(found) => found,
-            Err(error) => {
-                tracing::error!(%error, %message_id, "Failed to load proposals for reaction vote");
-                return;
-            }
-        };
-        if let Some((_id, proposal)) = found {
-            if proposal.guild_id != guild_id {
-                return;
-            }
-            match permissions
-                .vote(guild_id, &proposal.id, user_id, approve)
-                .await
-            {
-                Ok(VoteResult::Pending {
-                    approvals,
-                    rejections,
-                    quorum,
-                }) => {
-                    let text = self.redactor.redact(&format_proposal_message(
-                        &proposal, approvals, rejections, quorum,
-                    ));
-                    let _ = ChannelId::new(proposal.channel_id)
-                        .edit_message(&ctx.http, message_id, EditMessage::new().content(text))
-                        .await;
-                }
-                Ok(VoteResult::Approved(ref ban)) => {
-                    let text = self.redactor.redact(&format_approved_message(ban));
-                    let _ = ChannelId::new(proposal.channel_id)
-                        .edit_message(&ctx.http, message_id, EditMessage::new().content(text))
-                        .await;
-                }
-                Ok(VoteResult::Rejected) => {
-                    let text = self.redactor.redact(&format_rejected_message(&proposal));
-                    let _ = ChannelId::new(proposal.channel_id)
-                        .edit_message(&ctx.http, message_id, EditMessage::new().content(text))
-                        .await;
-                }
-                Ok(VoteResult::RestoreVoted(_)) => {}
-                Err(error) => {
-                    tracing::debug!(%error, %user_id, %message_id, "Ban reaction vote failed");
-                }
-            }
-            return;
-        }
-
-        // Check for restore proposals.
-        let found_restore = match permissions.find_restore_by_message(message_id).await {
-            Ok(found) => found,
-            Err(error) => {
-                tracing::error!(%error, %message_id, "Failed to load restore proposals for reaction vote");
-                return;
-            }
-        };
-        let Some((_id, restore)) = found_restore else {
-            return;
-        };
-        if restore.guild_id != guild_id {
-            return;
-        }
-        match permissions
-            .vote_restore(guild_id, &restore.id, user_id, approve)
-            .await
-        {
-            Ok(VoteResult::Pending {
-                approvals,
-                rejections,
-                quorum,
-            }) => {
-                let text = self.redactor.redact(&format_restore_proposal_message(
-                    &restore, approvals, rejections, quorum,
-                ));
-                let _ = ChannelId::new(restore.channel_id)
-                    .edit_message(&ctx.http, message_id, EditMessage::new().content(text))
-                    .await;
-            }
-            Ok(VoteResult::RestoreVoted(ref ban)) => {
-                let text = self.redactor.redact(&format_restore_approved_message(ban));
-                let _ = ChannelId::new(restore.channel_id)
-                    .edit_message(&ctx.http, message_id, EditMessage::new().content(text))
-                    .await;
-            }
-            Ok(VoteResult::Rejected) => {
-                let text = self
-                    .redactor
-                    .redact(&format_restore_rejected_message(&restore));
-                let _ = ChannelId::new(restore.channel_id)
-                    .edit_message(&ctx.http, message_id, EditMessage::new().content(text))
-                    .await;
-            }
-            Ok(_) => {}
-            Err(error) => {
-                tracing::debug!(%error, %user_id, %message_id, "Restore reaction vote failed");
-            }
-        }
     }
-}
-
-// ── tool_ban autocomplete ────────────────────────────────────────────────────
-
-impl HouseBot {
-    /// Respond to autocomplete for `/tool_ban propose tool:`.
-    async fn handle_tool_ban_autocomplete(
-        ctx: &Context,
-        autocomplete: &serenity::all::CommandInteraction,
-    ) {
-        let Some(focused) = autocomplete.data.autocomplete() else {
-            return;
-        };
-        if focused.name != "tool" {
-            return;
-        }
-        let partial = focused.value;
-        let lower = partial.to_ascii_lowercase();
-        let mut names: Vec<&str> = crate::tools::all_tool_names()
-            .iter()
-            .filter(|name| name.contains(&lower))
-            .copied()
-            .take(25)
-            .collect();
-        names.sort_unstable();
-        let mut resp = CreateAutocompleteResponse::new();
-        for name in names {
-            resp = resp.add_string_choice(name, name);
-        }
-        let _ = autocomplete
-            .create_response(&ctx.http, CreateInteractionResponse::Autocomplete(resp))
-            .await;
-    }
-
-    /// Handle `/tool_ban vote`: record the vote and update the public proposal message.
-    async fn handle_tool_ban_vote(
-        &self,
-        ctx: &Context,
-        cmd: &serenity::all::CommandInteraction,
-        author_id: u64,
-        guild_id: Option<u64>,
-    ) -> String {
-        let Some(guild_id) = guild_id else {
-            return "Tool-ban voting is only available inside a server.".into();
-        };
-        let Some(option) = cmd.data.options.first() else {
-            return "Unexpected option structure.".into();
-        };
-        let CommandDataOptionValue::SubCommand(options) = &option.value else {
-            return "Unexpected option structure.".into();
-        };
-        let proposal_str = options
-            .iter()
-            .find(|option| option.name == "proposal")
-            .and_then(|option| match &option.value {
-                CommandDataOptionValue::String(id) => Some(id.as_str()),
-                _ => None,
-            });
-        let approve = options
-            .iter()
-            .find(|option| option.name == "approve")
-            .and_then(|option| match option.value {
-                CommandDataOptionValue::Boolean(approve) => Some(approve),
-                _ => None,
-            });
-        let (Some(proposal_str), Some(approve)) = (proposal_str, approve) else {
-            return "Please specify a proposal ID and vote.".into();
-        };
-
-        let permissions = self.agent.tool_permissions();
-
-        // Look up the proposal *before* voting so we have channel/message IDs
-        // even if the vote finalizes and removes the proposal.
-        let proposal_info = permissions
-            .find_proposal_by_prefix(guild_id, proposal_str)
-            .await
-            .unwrap_or(None);
-
-        match permissions
-            .vote(guild_id, proposal_str, author_id, approve)
-            .await
-        {
-            Ok(VoteResult::Pending {
-                approvals,
-                rejections,
-                quorum,
-            }) => {
-                // Update the public message if we have channel/message IDs.
-                if let Some(ref p) = proposal_info {
-                    if p.channel_id != 0 && p.message_id != 0 {
-                        let text = self
-                            .redactor
-                            .redact(&format_proposal_message(p, approvals, rejections, quorum));
-                        let _ = ChannelId::new(p.channel_id)
-                            .edit_message(&ctx.http, p.message_id, EditMessage::new().content(text))
-                            .await;
-                    }
-                }
-                format!(
-                    "✅ Vote recorded. Current result: **{approvals} approve / {rejections} reject** (minimum {quorum} votes)."
-                )
-            }
-            Ok(VoteResult::Approved(ref ban)) => {
-                // Update the public message if we have channel/message IDs.
-                if let Some(ref p) = proposal_info {
-                    if p.channel_id != 0 && p.message_id != 0 {
-                        let text = self.redactor.redact(&format_approved_message(ban));
-                        let _ = ChannelId::new(p.channel_id)
-                            .edit_message(&ctx.http, p.message_id, EditMessage::new().content(text))
-                            .await;
-                    }
-                }
-                format!(
-                    "🚫 Vote passed. <@{}> is now blocked from using `{}` in this server.",
-                    ban.user_id, ban.tool_name
-                )
-            }
-            Ok(VoteResult::Rejected) => {
-                // Update the public message if we have channel/message IDs.
-                if let Some(ref p) = proposal_info {
-                    if p.channel_id != 0 && p.message_id != 0 {
-                        let text = self.redactor.redact(&format_rejected_message(p));
-                        let _ = ChannelId::new(p.channel_id)
-                            .edit_message(&ctx.http, p.message_id, EditMessage::new().content(text))
-                            .await;
-                    }
-                }
-                "✅ The proposal was rejected by majority vote.".into()
-            }
-            Ok(VoteResult::RestoreVoted(_)) => "⚠️ Unexpected result from ban vote.".into(),
-            Err(error) => format!("⚠️ {error}"),
-        }
-    }
-
-    /// Handle `/tool_ban propose`: send a visible channel message and add emoji
-    /// voting reactions, then respond to the interaction ephemerally.
-    async fn handle_tool_ban_propose(
-        &self,
-        ctx: &Context,
-        cmd: &serenity::all::CommandInteraction,
-        author_id: u64,
-        guild_id: Option<u64>,
-    ) {
-        let Some(guild_id) = guild_id else {
-            respond_ephemeral(
-                ctx,
-                cmd,
-                "Tool-ban voting is only available inside a server.",
-            )
-            .await;
-            return;
-        };
-        let Some(option) = cmd.data.options.first() else {
-            respond_ephemeral(ctx, cmd, "Unexpected option structure.").await;
-            return;
-        };
-        let CommandDataOptionValue::SubCommand(options) = &option.value else {
-            respond_ephemeral(ctx, cmd, "Unexpected option structure.").await;
-            return;
-        };
-        let target = options
-            .iter()
-            .find(|option| option.name == "user")
-            .and_then(|option| match option.value {
-                CommandDataOptionValue::User(user) => Some(user.get()),
-                _ => None,
-            });
-        let tool = options
-            .iter()
-            .find(|option| option.name == "tool")
-            .and_then(|option| match &option.value {
-                CommandDataOptionValue::String(tool) => Some(tool.as_str()),
-                _ => None,
-            });
-        let (Some(target), Some(tool)) = (target, tool) else {
-            respond_ephemeral(ctx, cmd, "Please specify both a user and tool name.").await;
-            return;
-        };
-
-        // Defer the interaction so we have time to post the channel message.
-        let defer = CreateInteractionResponse::Defer(
-            CreateInteractionResponseMessage::new().ephemeral(true),
-        );
-        if let Err(e) = cmd.create_response(&ctx.http, defer).await {
-            tracing::warn!("Failed to defer /tool_ban propose response: {e}");
-            return;
-        }
-
-        let permissions = self.agent.tool_permissions();
-        let proposal = match permissions.propose(guild_id, target, tool, author_id).await {
-            Ok(p) => p,
-            Err(error) => {
-                let _ = cmd
-                    .edit_response(
-                        &ctx.http,
-                        EditInteractionResponse::new().content(format!("⚠️ {error}")),
-                    )
-                    .await;
-                return;
-            }
-        };
-
-        let (approvals, _) = proposal.vote_counts();
-        let text = self.redactor.redact(&format!(
-            "🗳️ **Ban proposal** by <@{}>\n\
-             Target: <@{}>\n\
-             Tool: `{}`\n\
-             Votes: **{approvals} approve** / **0 reject** (minimum {} votes)\n\
-             React with ✅ to approve, ❌ to reject (or use `/tool_ban vote`)",
-            proposal.proposed_by,
-            proposal.target_user_id,
-            proposal.tool_name,
-            permissions.min_votes(),
-        ));
-        let msg = match cmd
-            .channel_id
-            .send_message(&ctx.http, CreateMessage::new().content(text))
-            .await
-        {
-            Ok(msg) => msg,
-            Err(error) => {
-                tracing::warn!(%error, "Failed to send proposal channel message");
-                // Roll back the proposal so we don't orphan it.
-                if let Err(e) = permissions.remove_proposal(guild_id, &proposal.id).await {
-                    tracing::error!(%e, "Failed to roll back proposal after message send failure");
-                }
-                let _ = cmd
-                    .edit_response(
-                        &ctx.http,
-                        EditInteractionResponse::new()
-                            .content("⚠️ Failed to post proposal to channel."),
-                    )
-                    .await;
-                return;
-            }
-        };
-
-        // Store the message info in the proposal.
-        if let Err(error) = permissions
-            .set_proposal_message(guild_id, &proposal.id, cmd.channel_id.get(), msg.id.get())
-            .await
-        {
-            tracing::error!(%error, "Failed to store proposal message IDs — deleting posted message");
-            // Remove the orphaned message since we can't track it.
-            let _ = msg.delete(&ctx.http).await;
-            if let Err(e) = permissions.remove_proposal(guild_id, &proposal.id).await {
-                tracing::error!(%e, "Failed to roll back proposal after message mapping failure");
-            }
-            let _ = cmd
-                .edit_response(
-                    &ctx.http,
-                    EditInteractionResponse::new()
-                        .content("⚠️ Failed to save proposal metadata. Please try again."),
-                )
-                .await;
-            return;
-        }
-
-        // Add voting reactions.
-        let _ = msg
-            .react(
-                &ctx.http,
-                serenity::all::ReactionType::Unicode("\u{2705}".to_string()),
-            )
-            .await;
-        let _ = msg
-            .react(
-                &ctx.http,
-                serenity::all::ReactionType::Unicode("\u{274C}".to_string()),
-            )
-            .await;
-
-        // Edit the deferred response with a confirmation.
-        let confirmation = self.redactor.redact(&format!(
-            "✅ Proposal created! Everyone in the server can see it and vote with reactions. \
-             Proposal ID: `{}`. Vote also with `/tool_ban vote proposal:{} approve:true|false`.",
-            &proposal.id[..8],
-            &proposal.id[..8],
-        ));
-        let _ = cmd
-            .edit_response(
-                &ctx.http,
-                EditInteractionResponse::new().content(confirmation),
-            )
-            .await;
-    }
-
-    /// Handle `/tool_restore vote`: record the vote and update the public proposal message.
-    async fn handle_tool_restore_vote(
-        &self,
-        ctx: &Context,
-        cmd: &serenity::all::CommandInteraction,
-        author_id: u64,
-        guild_id: Option<u64>,
-    ) -> String {
-        let Some(guild_id) = guild_id else {
-            return "Tool-restore voting is only available inside a server.".into();
-        };
-        let Some(option) = cmd.data.options.first() else {
-            return "Unexpected option structure.".into();
-        };
-        let CommandDataOptionValue::SubCommand(options) = &option.value else {
-            return "Unexpected option structure.".into();
-        };
-        let proposal_str = options
-            .iter()
-            .find(|option| option.name == "proposal")
-            .and_then(|option| match &option.value {
-                CommandDataOptionValue::String(id) => Some(id.as_str()),
-                _ => None,
-            });
-        let approve = options
-            .iter()
-            .find(|option| option.name == "approve")
-            .and_then(|option| match option.value {
-                CommandDataOptionValue::Boolean(approve) => Some(approve),
-                _ => None,
-            });
-        let (Some(proposal_str), Some(approve)) = (proposal_str, approve) else {
-            return "Please specify a proposal ID and vote.".into();
-        };
-
-        let permissions = self.agent.tool_permissions();
-
-        let proposal_info = permissions
-            .find_restore_proposal_by_prefix(guild_id, proposal_str)
-            .await
-            .unwrap_or(None);
-
-        match permissions
-            .vote_restore(guild_id, proposal_str, author_id, approve)
-            .await
-        {
-            Ok(VoteResult::Pending {
-                approvals,
-                rejections,
-                quorum,
-            }) => {
-                if let Some(ref p) = proposal_info {
-                    if p.channel_id != 0 && p.message_id != 0 {
-                        let text = self.redactor.redact(&format_restore_proposal_message(
-                            p, approvals, rejections, quorum,
-                        ));
-                        let _ = ChannelId::new(p.channel_id)
-                            .edit_message(&ctx.http, p.message_id, EditMessage::new().content(text))
-                            .await;
-                    }
-                }
-                format!(
-                    "✅ Vote recorded. Current result: **{approvals} approve / {rejections} reject** (minimum {quorum} votes)."
-                )
-            }
-            Ok(VoteResult::RestoreVoted(ref ban)) => {
-                if let Some(ref p) = proposal_info {
-                    if p.channel_id != 0 && p.message_id != 0 {
-                        let text = self.redactor.redact(&format_restore_approved_message(ban));
-                        let _ = ChannelId::new(p.channel_id)
-                            .edit_message(&ctx.http, p.message_id, EditMessage::new().content(text))
-                            .await;
-                    }
-                }
-                format!(
-                    "✅ Vote passed. <@{}>'s access to `{}` has been restored.",
-                    ban.user_id, ban.tool_name
-                )
-            }
-            Ok(VoteResult::Rejected) => {
-                if let Some(ref p) = proposal_info {
-                    if p.channel_id != 0 && p.message_id != 0 {
-                        let text = self.redactor.redact(&format_restore_rejected_message(p));
-                        let _ = ChannelId::new(p.channel_id)
-                            .edit_message(&ctx.http, p.message_id, EditMessage::new().content(text))
-                            .await;
-                    }
-                }
-                "✅ The proposal was rejected by majority vote.".into()
-            }
-            Ok(VoteResult::Approved(_)) => "⚠️ Unexpected result from restore vote.".into(),
-            Err(error) => format!("⚠️ {error}"),
-        }
-    }
-
-    /// Handle `/tool_restore propose`: send a visible channel message with emoji
-    /// voting reactions, then respond to the interaction ephemerally.
-    async fn handle_tool_restore_propose(
-        &self,
-        ctx: &Context,
-        cmd: &serenity::all::CommandInteraction,
-        author_id: u64,
-        guild_id: Option<u64>,
-    ) {
-        let Some(guild_id) = guild_id else {
-            respond_ephemeral(
-                ctx,
-                cmd,
-                "Tool-restore voting is only available inside a server.",
-            )
-            .await;
-            return;
-        };
-        let Some(option) = cmd.data.options.first() else {
-            respond_ephemeral(ctx, cmd, "Unexpected option structure.").await;
-            return;
-        };
-        let CommandDataOptionValue::SubCommand(options) = &option.value else {
-            respond_ephemeral(ctx, cmd, "Unexpected option structure.").await;
-            return;
-        };
-        let target = options
-            .iter()
-            .find(|option| option.name == "user")
-            .and_then(|option| match option.value {
-                CommandDataOptionValue::User(user) => Some(user.get()),
-                _ => None,
-            });
-        let tool = options
-            .iter()
-            .find(|option| option.name == "tool")
-            .and_then(|option| match &option.value {
-                CommandDataOptionValue::String(tool) => Some(tool.as_str()),
-                _ => None,
-            });
-        let (Some(target), Some(tool)) = (target, tool) else {
-            respond_ephemeral(ctx, cmd, "Please specify both a user and tool name.").await;
-            return;
-        };
-
-        let defer = CreateInteractionResponse::Defer(
-            CreateInteractionResponseMessage::new().ephemeral(true),
-        );
-        if let Err(e) = cmd.create_response(&ctx.http, defer).await {
-            tracing::warn!("Failed to defer /tool_restore propose response: {e}");
-            return;
-        }
-
-        let permissions = self.agent.tool_permissions();
-        let proposal = match permissions
-            .propose_restore(guild_id, target, tool, author_id)
-            .await
-        {
-            Ok(p) => p,
-            Err(error) => {
-                let _ = cmd
-                    .edit_response(
-                        &ctx.http,
-                        EditInteractionResponse::new().content(format!("⚠️ {error}")),
-                    )
-                    .await;
-                return;
-            }
-        };
-
-        let (approvals, _) = proposal.vote_counts();
-        let text = self.redactor.redact(&format!(
-            "🔓 **Restore proposal** by <@{}>\n\
-             Target: <@{}>\n\
-             Tool: `{}`\n\
-             Votes: **{approvals} approve** / **0 reject** (minimum {} votes)\n\
-             React with ✅ to approve restore, ❌ to reject (or use `/tool_restore vote`)",
-            proposal.proposed_by,
-            proposal.target_user_id,
-            proposal.tool_name,
-            permissions.min_votes(),
-        ));
-        let msg = match cmd
-            .channel_id
-            .send_message(&ctx.http, CreateMessage::new().content(text))
-            .await
-        {
-            Ok(msg) => msg,
-            Err(error) => {
-                tracing::warn!(%error, "Failed to send restore proposal channel message");
-                if let Err(e) = permissions
-                    .remove_restore_proposal(guild_id, &proposal.id)
-                    .await
-                {
-                    tracing::error!(%e, "Failed to roll back restore proposal after message send failure");
-                }
-                let _ = cmd
-                    .edit_response(
-                        &ctx.http,
-                        EditInteractionResponse::new()
-                            .content("⚠️ Failed to post proposal to channel."),
-                    )
-                    .await;
-                return;
-            }
-        };
-
-        if let Err(error) = permissions
-            .set_restore_proposal_message(
-                guild_id,
-                &proposal.id,
-                cmd.channel_id.get(),
-                msg.id.get(),
-            )
-            .await
-        {
-            tracing::error!(%error, "Failed to store restore proposal message IDs — deleting posted message");
-            let _ = msg.delete(&ctx.http).await;
-            if let Err(e) = permissions
-                .remove_restore_proposal(guild_id, &proposal.id)
-                .await
-            {
-                tracing::error!(%e, "Failed to roll back restore proposal after message mapping failure");
-            }
-            let _ = cmd
-                .edit_response(
-                    &ctx.http,
-                    EditInteractionResponse::new()
-                        .content("⚠️ Failed to save proposal metadata. Please try again."),
-                )
-                .await;
-            return;
-        }
-
-        let _ = msg
-            .react(
-                &ctx.http,
-                serenity::all::ReactionType::Unicode("\u{2705}".to_string()),
-            )
-            .await;
-        let _ = msg
-            .react(
-                &ctx.http,
-                serenity::all::ReactionType::Unicode("\u{274C}".to_string()),
-            )
-            .await;
-
-        let confirmation = self.redactor.redact(&format!(
-            "✅ Restore proposal created! Everyone in the server can see it and vote with reactions. \
-             Proposal ID: `{}`. Vote also with `/tool_restore vote proposal:{} approve:true|false`.",
-            &proposal.id[..8],
-            &proposal.id[..8],
-        ));
-        let _ = cmd
-            .edit_response(
-                &ctx.http,
-                EditInteractionResponse::new().content(confirmation),
-            )
-            .await;
-    }
-}
-
-// ── Proposal message formatting helpers ──────────────────────────────────────
-
-fn format_proposal_message(
-    proposal: &crate::tool_permissions::BanProposal,
-    approvals: usize,
-    rejections: usize,
-    min_votes: usize,
-) -> String {
-    format!(
-        "🗳️ **Ban proposal** by <@{}>\n\
-         Target: <@{}>\n\
-         Tool: `{}`\n\
-         Votes: **{} approve** / **{} reject** (minimum {} votes)\n\
-         React with ✅ to approve, ❌ to reject (or use `/tool_ban vote`)\n\
-         Proposal ID: `{}`",
-        proposal.proposed_by,
-        proposal.target_user_id,
-        proposal.tool_name,
-        approvals,
-        rejections,
-        min_votes,
-        &proposal.id[..8],
-    )
-}
-
-fn format_approved_message(ban: &crate::tool_permissions::ToolBan) -> String {
-    format!(
-        "🚫 **Ban approved!** <@{}> is now blocked from using `{}`.",
-        ban.user_id, ban.tool_name
-    )
-}
-
-fn format_rejected_message(proposal: &crate::tool_permissions::BanProposal) -> String {
-    format!(
-        "❌ **Ban rejected.** The proposal to restrict <@{}> from `{}` did not pass.",
-        proposal.target_user_id, proposal.tool_name
-    )
-}
-
-// ── Restore proposal message formatting helpers ──────────────────────────────
-
-fn format_restore_proposal_message(
-    proposal: &crate::tool_permissions::UnbanProposal,
-    approvals: usize,
-    rejections: usize,
-    min_votes: usize,
-) -> String {
-    format!(
-        "🔓 **Restore proposal** by <@{}>\n\
-         Target: <@{}>\n\
-         Tool: `{}`\n\
-         Votes: **{} approve** / **{} reject** (minimum {} votes)\n\
-         React with ✅ to approve restore, ❌ to reject (or use `/tool_restore vote`)\n\
-         Proposal ID: `{}`",
-        proposal.proposed_by,
-        proposal.target_user_id,
-        proposal.tool_name,
-        approvals,
-        rejections,
-        min_votes,
-        &proposal.id[..8],
-    )
-}
-
-fn format_restore_approved_message(ban: &crate::tool_permissions::ToolBan) -> String {
-    format!(
-        "✅ **Restore approved!** <@{}>'s access to `{}` has been restored.",
-        ban.user_id, ban.tool_name
-    )
-}
-
-fn format_restore_rejected_message(proposal: &crate::tool_permissions::UnbanProposal) -> String {
-    format!(
-        "❌ **Restore rejected.** The proposal to restore <@{}>'s access to `{}` did not pass.",
-        proposal.target_user_id, proposal.tool_name
-    )
 }

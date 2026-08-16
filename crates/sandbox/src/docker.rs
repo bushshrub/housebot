@@ -44,8 +44,11 @@ impl ContainerConfig {
             memory_swap: "2g".to_string(),
             cpus: 1.0,
             ulimit: vec![("nofile".to_string(), "512:512".to_string())],
+            // `/workspace` deliberately omits `noexec`: skill scripts and
+            // compiled binaries have to run from it. `nosuid` stays, and the
+            // other mounts keep `noexec` so only the workspace is executable.
             tmpfs: vec![
-                "/workspace:size=256m,noexec,nosuid,uid=1000,gid=1000".to_string(),
+                "/workspace:size=256m,nosuid,uid=1000,gid=1000".to_string(),
                 "/tmp:size=64m,noexec,nosuid".to_string(),
                 "/home/sandbox:size=32m,noexec,nosuid".to_string(),
             ],
@@ -162,6 +165,21 @@ pub fn build_exec_args(
     args
 }
 
+/// Build a `docker exec` command that runs a program directly, with no shell.
+///
+/// Every element is passed as its own argv entry, so nothing in `argv` is ever
+/// interpreted — use this instead of `build_exec_args` whenever any part of the
+/// command derives from user input.
+pub fn build_exec_argv(container_name: &str, argv: &[String], interactive: bool) -> Vec<String> {
+    let mut args = vec!["exec".to_string()];
+    if interactive {
+        args.push("-i".to_string());
+    }
+    args.push(container_name.to_string());
+    args.extend(argv.iter().cloned());
+    args
+}
+
 /// Build a `docker exec git clone` command using separate argv elements.
 ///
 /// Every argument is passed individually to avoid shell interpretation of
@@ -186,16 +204,6 @@ pub fn build_git_clone_args(
     args.push(url.to_string());
     args.push(dest.to_string());
     args
-}
-
-/// Build a `docker inspect` command to verify a container exists and is managed by us.
-pub fn build_inspect_args(container_name: &str) -> Vec<String> {
-    vec![
-        "inspect".to_string(),
-        "--format".to_string(),
-        "{{.State.Status}}".to_string(),
-        container_name.to_string(),
-    ]
 }
 
 /// Build a `docker rm -f` command for cleanup.
@@ -343,6 +351,78 @@ mod tests {
         let args = build_run_args("test-1", NetworkAccess::None);
         let is_docker_socket = |a: &str| a.contains("/var/run/docker.sock");
         assert!(!args.iter().any(|a| is_docker_socket(a)));
+    }
+
+    /// Nothing from the host filesystem may ever reach a sandbox. Every
+    /// writable path is an in-memory tmpfs, so a bind mount of any kind is a
+    /// bug, not a configuration choice.
+    #[test]
+    fn exec_argv_passes_every_element_separately() {
+        let argv = vec![
+            "/usr/bin/tee".to_string(),
+            "/workspace/a b;rm -rf /".to_string(),
+        ];
+        let args = build_exec_argv("c1", &argv, true);
+        assert_eq!(
+            args,
+            vec![
+                "exec".to_string(),
+                "-i".to_string(),
+                "c1".to_string(),
+                "/usr/bin/tee".to_string(),
+                "/workspace/a b;rm -rf /".to_string(),
+            ]
+        );
+        // No shell is involved, so nothing can reinterpret the path.
+        assert!(!args.iter().any(|a| a == "/bin/bash" || a == "-c"));
+    }
+
+    #[test]
+    fn exec_argv_omits_interactive_when_not_requested() {
+        let args = build_exec_argv("c1", &["/bin/mkdir".to_string()], false);
+        assert!(!args.contains(&"-i".to_string()));
+    }
+
+    #[test]
+    fn run_args_never_bind_mount_a_host_path() {
+        for network in [NetworkAccess::None, NetworkAccess::PublicInternet] {
+            let args = build_run_args("test-1", network);
+            for flag in ["-v", "--volume", "--mount", "--volumes-from"] {
+                assert!(
+                    !args
+                        .iter()
+                        .any(|a| a == flag || a.starts_with(&format!("{flag}="))),
+                    "{flag} would expose a host path to the sandbox: {args:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn workspace_is_executable_but_never_setuid() {
+        let args = build_run_args("test-1", NetworkAccess::None);
+        let workspace = args
+            .iter()
+            .find(|a| a.starts_with("/workspace:"))
+            .expect("workspace tmpfs mount");
+        assert!(
+            !workspace.contains("noexec"),
+            "skill scripts must be executable from /workspace: {workspace}"
+        );
+        assert!(workspace.contains("nosuid"));
+    }
+
+    #[test]
+    fn only_the_workspace_is_executable() {
+        let args = build_run_args("test-1", NetworkAccess::None);
+        for mount in ["/tmp:", "/home/sandbox:"] {
+            let entry = args
+                .iter()
+                .find(|a| a.starts_with(mount))
+                .unwrap_or_else(|| panic!("{mount} tmpfs mount"));
+            assert!(entry.contains("noexec"), "{entry} must stay non-executable");
+            assert!(entry.contains("nosuid"));
+        }
     }
 
     #[test]
