@@ -11,7 +11,6 @@ pub const MAX_FILE_READ_BYTES: usize = 64 * 1024;
 pub const MAX_SEARCH_MATCHES: usize = 100;
 pub const MAX_FILE_LIST_ENTRIES: usize = 500;
 
-pub const MAX_FILE_LINES: usize = 2000;
 pub const MAX_FILE_READ_LINES: usize = 2000;
 
 pub const MAX_CLONE_BRANCH_LENGTH: usize = 256;

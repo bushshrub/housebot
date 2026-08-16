@@ -929,7 +929,6 @@ dependencies = [
 name = "housebot-discord-bridge"
 version = "0.1.0"
 dependencies = [
- "housebot-bot-response",
  "serde_json",
  "serenity",
  "tokio",

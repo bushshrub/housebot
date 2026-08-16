@@ -263,11 +263,11 @@ Build the scheduler first: sub-agents (Phase 3) and the config commands
       level was `execution_budget`, which nothing consumed and which does not
       map onto the action's `variant:` axis. The picker is now agent → model →
       confirm.
-- [x] **Retired CI removed.** `claude-dispatch.yml`, `run-codex.sh`, and
-      `run-claude.sh` are deleted, along with the `claude` CLI probe in
-      `check-agent-runner.yml` that would have failed daily. `run-opencode.sh`
-      and `common.sh` survive but no workflow calls them either — the dispatch
-      workflow uses the `anomalyco/opencode/github` action directly.
+- [x] **Retired CI removed.** All four adapter scripts, `claude-dispatch.yml`,
+      and `check-agent-runner.yml` are deleted. No workflow ever invoked the
+      adapters — `opencode-dispatch.yml` uses the `anomalyco/opencode/github`
+      action directly — and the health check only probed CLIs on a self-hosted
+      runner nothing runs on.
 - [x] **The agent-selection stage is collapsed.** OpenCode was its only option,
       so jobs now open on `ChoosingModel` with the agent preset. The flow is
       model → confirm.

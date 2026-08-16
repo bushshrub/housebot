@@ -3,11 +3,7 @@
 
 use std::sync::Arc;
 
-use housebot_bot_response::SecretRedactor;
-use serenity::all::{
-    ChannelId, CreateAllowedMentions, CreateMessage, GetMessages, GuildId, Message, MessageId,
-    Timestamp, UserId,
-};
+use serenity::all::{ChannelId, GetMessages, GuildId, Message, MessageId, Timestamp, UserId};
 use tokio::sync::RwLock;
 
 pub struct UserInfo {
@@ -62,51 +58,14 @@ const RECENT_MAX_PAGES: u32 = 5;
 /// The HTTP handle is injected after the bot connects (see `set_http`), so
 /// tool calls that arrive before `ready` fires return an error rather than
 /// panicking.
-#[derive(Clone)]
+#[derive(Clone, Default)]
 pub struct DiscordBridge {
     http: Arc<RwLock<Option<Arc<serenity::http::Http>>>>,
-    redactor: Arc<SecretRedactor>,
-}
-
-impl Default for DiscordBridge {
-    fn default() -> Self {
-        Self::with_redactor(SecretRedactor::from_env())
-    }
 }
 
 impl DiscordBridge {
-    pub fn with_redactor(redactor: SecretRedactor) -> Self {
-        Self {
-            http: Arc::new(RwLock::new(None)),
-            redactor: Arc::new(redactor),
-        }
-    }
-
     pub async fn set_http(&self, http: Arc<serenity::http::Http>) {
         *self.http.write().await = Some(http);
-    }
-
-    /// Content as it will leave the bridge: known secret values scrubbed.
-    fn outbound_content(&self, content: &str) -> String {
-        self.redactor.redact(content)
-    }
-
-    /// Send a message on behalf of a Lua script. Mentions are suppressed so a
-    /// Scripting-role member without Discord's own mention permissions cannot
-    /// use the bridge to ping `@everyone`, roles, or arbitrary users.
-    pub async fn send_message(&self, channel_id: u64, content: &str) -> Result<(), String> {
-        let guard = self.http.read().await;
-        let Some(http) = guard.as_ref() else {
-            return Err("Discord bridge not available.".to_string());
-        };
-        let builder = CreateMessage::new()
-            .content(self.outbound_content(content))
-            .allowed_mentions(CreateAllowedMentions::new());
-        ChannelId::new(channel_id)
-            .send_message(http.as_ref(), builder)
-            .await
-            .map(|_| ())
-            .map_err(|e| format!("Failed to send message: {e}"))
     }
 
     pub async fn fetch_user(&self, user_id: u64) -> Result<UserInfo, String> {
@@ -240,17 +199,6 @@ impl DiscordBridge {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn outbound_content_is_redacted() {
-        let redactor = SecretRedactor::from_vars([(
-            "DISCORD_TOKEN".to_string(),
-            "super-secret-token".to_string(),
-        )]);
-        let bridge = DiscordBridge::with_redactor(redactor);
-        let out = bridge.outbound_content("leak: super-secret-token!");
-        assert_eq!(out, "leak: [REDACTED]!");
-    }
 
     fn message(author: serde_json::Value, member: serde_json::Value) -> Message {
         serde_json::from_value(serde_json::json!({

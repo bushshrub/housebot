@@ -362,3 +362,44 @@ fn deployment_changelog_lists_commits_since_previous_deployment() {
     assert!(changelog.contains("Add deployment visibility"));
     assert!(changelog.contains("https://github.com/example/repo/commit/2222222"));
 }
+
+/// The Dockerfile lists every workspace manifest by hand so the dependency
+/// layer caches. Nothing checks that list against reality: a crate deleted from
+/// the workspace leaves a `COPY` of a path that no longer exists, and the image
+/// build fails with "not found" long after the crate was removed.
+#[test]
+fn deployment_dockerfile_copies_exactly_the_workspace_crates() {
+    let workspace = include_str!("../../../Cargo.toml");
+    let members: Vec<&str> = workspace
+        .split("members = [")
+        .nth(1)
+        .and_then(|s| s.split(']').next())
+        .expect("workspace manifest must declare members")
+        .lines()
+        .filter_map(|l| {
+            l.trim()
+                .trim_matches(|c| c == '"' || c == ',')
+                .strip_prefix("crates/")
+        })
+        .collect();
+
+    let dockerfile = include_str!("../../../Dockerfile.deployment-bot");
+    let copied: Vec<&str> = dockerfile
+        .lines()
+        .filter_map(|l| l.strip_prefix("COPY crates/"))
+        .filter_map(|l| l.split('/').next())
+        .collect();
+
+    for member in &members {
+        assert!(
+            copied.contains(member),
+            "workspace crate '{member}' is missing from Dockerfile.deployment-bot"
+        );
+    }
+    for crate_name in &copied {
+        assert!(
+            members.contains(crate_name),
+            "Dockerfile.deployment-bot copies '{crate_name}', which is not a workspace crate"
+        );
+    }
+}

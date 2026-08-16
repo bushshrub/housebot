@@ -144,13 +144,6 @@ pub struct AgentResult {
     pub cancelled: bool,
 }
 
-/// The result of the pre-execution Lua safety review.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct LuaAnalysis {
-    pub allowed: bool,
-    pub reason: String,
-}
-
 #[derive(Debug, Clone, Copy)]
 pub struct SessionInfo {
     pub context_tokens: usize,
@@ -388,14 +381,6 @@ impl Agent {
     /// Access to the GitHub issue reporter (used by `HouseBot` for development job dispatch).
     pub fn reporter(&self) -> &GitHubIssueReporter {
         &self.reporter
-    }
-
-    /// Web search for the Lua scripting engine — same SearXNG instance and
-    /// rate limits as the agent's `web_search` tool.
-    pub async fn web_search(&self, query: &str, max_results: usize) -> String {
-        self.searxng
-            .search(query, max_results.clamp(1, 20), "")
-            .await
     }
 
     /// Ask the model whether an incoming mention should receive a single emoji

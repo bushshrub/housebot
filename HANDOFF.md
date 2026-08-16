@@ -52,17 +52,22 @@ dispatch paths forward the selection), effort is gone entirely, the retired
 Claude/Codex CI is deleted, and the one-item agent stage is collapsed — jobs now
 open on `ChoosingModel` with the agent preset, so the flow is model → confirm.
 
-What remains is not code:
+Dead code is swept: the Lua-era leftovers (`LuaAnalysis`, `Agent::web_search`,
+the bridge's unreachable `send_message` and its redaction path), the unused
+sandbox constants and `build_inspect_args`, `DISPATCH_TRIGGER_COMMENT`, and all
+four adapter scripts with `check-agent-runner.yml`.
+
+What remains:
 
 1. **Nothing has run live.** No real Postgres, Discord gateway, LLM server, or
    Docker daemon, and no real workflow dispatch. The model input's round trip is
    unverified — the 422-on-undeclared-input behaviour is asserted by a test that
    reads the YAML, not by an observed API call.
-2. **`run-opencode.sh` and `common.sh` are unreachable.** No workflow invokes
-   them; `opencode-dispatch.yml` calls the `anomalyco/opencode/github` action
-   directly. They were kept rather than deleted because they are the only
-   sketch of a self-hosted runner path. Delete them if that path is dead —
-   `check-agent-runner.yml` goes with them.
+2. **The Dockerfile crate list is hand-maintained.** `Dockerfile.deployment-bot`
+   names every workspace manifest so the dependency layer caches. It had drifted
+   eleven crates out of date and broke the image build; a test now asserts it
+   matches `Cargo.toml` exactly. The main `Dockerfile` copies a prebuilt binary
+   and has no such list.
 
 ## The database
 
@@ -105,6 +110,8 @@ test needs updating when you cut something.
 | Slash commands registered with no handler | grep `command_defs.rs` when you cut a command |
 | Deployment env allowlist missing new vars, keeping dead ones | `housebot_env_vars_cover_every_variable_the_bot_reads` and `housebot_env_vars_are_all_still_read_somewhere` |
 | A retired agent left in `catalog.json` | `retired_agents_are_rejected_by_the_catalog` |
+| A deleted crate still `COPY`d by the deployment Dockerfile | `deployment_dockerfile_copies_exactly_the_workspace_crates` |
+| A dispatch input the workflow does not declare | `every_dispatch_input_is_declared_by_the_workflow` |
 
 The env-allowlist pair is worth understanding before you trust it: it scans the
 bot's own sources for env reads and compares against `HOUSEBOT_ENV_VARS`. The

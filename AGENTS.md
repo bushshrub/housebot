@@ -83,11 +83,8 @@ src/
 .github/
   agents/
     catalog.json     # single source of truth for selectable agent/model combos
-    common.sh        # shared shell utilities for adapter scripts
-    run-opencode.sh  # OpenCode + NVIDIA NIM adapter (no workflow calls it yet)
   workflows/
     opencode-dispatch.yml  # workflow_dispatch entry point for development jobs
-    check-agent-runner.yml # daily runner health check
 CLAUDE.md            # instructions for Claude Code when running as the automated agent
 docs/
   automated-development.md # full dispatch flow documentation

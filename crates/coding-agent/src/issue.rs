@@ -104,11 +104,6 @@ pub fn build_issue_body(
     Ok(body)
 }
 
-/// Legacy comment retained for compatibility with older issue-driven dispatches.
-pub const DISPATCH_TRIGGER_COMMENT: &str = "/oc Implement the feature described in this issue. \
-     Follow the repository conventions, commit your changes, and open a pull request that \
-     closes this issue.";
-
 /// Build the prompt passed as a `workflow_dispatch` input to the
 /// `opencode-dispatch` workflow.
 fn build_dispatch_prompt(issue_number: u64) -> String {

@@ -130,24 +130,4 @@ Legacy label definitions may still exist for older jobs; new dispatches do not d
 
 ---
 
-## Self-hosted runner health check
 
-`.github/workflows/check-agent-runner.yml` is a separate diagnostic for the
-optional `housebot-agent` self-hosted runner. It is not used by the dispatch
-workflow, which runs on `ubuntu-latest`, and only verifies tools installed on
-that runner.
-
----
-
-## Adapter scripts
-
-| Script | Agent |
-|---|---|
-| `.github/agents/run-opencode.sh` | OpenCode + NVIDIA NIM |
-| `.github/agents/common.sh` | Shared utilities (sourced by the adapter) |
-
-Each adapter accepts `<prompt_file> <model>` and is responsible only for running the agent.
-
-**No workflow currently invokes these.** `opencode-dispatch.yml` calls the
-`anomalyco/opencode/github` action directly. They are kept for a self-hosted
-runner path that does not exist yet; delete them if that path is abandoned.

@@ -206,16 +206,6 @@ pub fn build_git_clone_args(
     args
 }
 
-/// Build a `docker inspect` command to verify a container exists and is managed by us.
-pub fn build_inspect_args(container_name: &str) -> Vec<String> {
-    vec![
-        "inspect".to_string(),
-        "--format".to_string(),
-        "{{.State.Status}}".to_string(),
-        container_name.to_string(),
-    ]
-}
-
 /// Build a `docker rm -f` command for cleanup.
 pub fn build_remove_args(container_name: &str) -> Vec<String> {
     vec![
