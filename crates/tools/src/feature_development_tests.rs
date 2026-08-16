@@ -48,7 +48,7 @@ fn valid_ac() -> Vec<String> {
 
 fn defaults() -> PartialAgentSelection {
     PartialAgentSelection {
-        agent: Some(CodingAgent::Claude),
+        agent: Some(CodingAgent::OpenCode),
         model: Some("model".into()),
         effort: Some("high".into()),
     }

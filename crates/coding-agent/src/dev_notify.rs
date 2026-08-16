@@ -1,6 +1,6 @@
 //! HMAC authentication for the feature-development completion webhook.
 //!
-//! The dispatch workflows (`claude-dispatch.yml`, `opencode-dispatch.yml`) and the
+//! The dispatch workflow (`opencode-dispatch.yml`) and the
 //! bot process share a signing key (`DEV_NOTIFY_SIGNING_KEY`). The workflow signs
 //! the completion footer; the bot verifies the signature before trusting the
 //! embedded `requester_id` and DMing anyone — a channel match alone doesn't prove

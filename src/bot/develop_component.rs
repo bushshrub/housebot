@@ -148,19 +148,6 @@ impl HouseBot {
                 .await;
             return;
         };
-        if agent_dispatch_disabled(agent) {
-            let _ = component
-                .create_response(
-                    &ctx.http,
-                    CreateInteractionResponse::Message(
-                        CreateInteractionResponseMessage::new()
-                            .content(AGENT_DISABLED_MESSAGE)
-                            .ephemeral(true),
-                    ),
-                )
-                .await;
-            return;
-        }
         self.pending_jobs.with_job_mut(job_id, |j| {
             j.selection.agent = Some(agent);
             j.selection.model = None;
@@ -381,7 +368,7 @@ impl HouseBot {
                         )
                     })
                     .unwrap_or_default();
-                let agent = agent.unwrap_or(CodingAgent::Claude);
+                let agent = agent.unwrap_or(CodingAgent::OpenCode);
                 (
                     format!(
                         "**Feature development: {title}**\n\nAgent: **{}**\nChoose a model:",
@@ -407,7 +394,7 @@ impl HouseBot {
                     .pending_jobs
                     .with_job(job_id, |j| j.specification.title.clone())
                     .unwrap_or_default();
-                let agent = agent_opt.unwrap_or(CodingAgent::Claude);
+                let agent = agent_opt.unwrap_or(CodingAgent::OpenCode);
                 let model = model_opt.unwrap_or_default();
                 (
                             format!(

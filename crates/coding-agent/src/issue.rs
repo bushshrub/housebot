@@ -130,8 +130,6 @@ pub fn build_dispatch_prompt(issue_number: u64) -> String {
 /// Return the manually-dispatched workflow for the selected coding agent.
 pub fn dispatch_workflow_file(agent: CodingAgent) -> &'static str {
     match agent {
-        CodingAgent::Codex => "codex-dispatch.yml",
-        CodingAgent::Claude => "claude-dispatch.yml",
         CodingAgent::OpenCode => "opencode-dispatch.yml",
     }
 }
@@ -143,11 +141,11 @@ mod tests {
 
     fn make_selection() -> ValidatedAgentSelection {
         let catalog = AgentCatalog::load_embedded();
-        let models = catalog.models_for(CodingAgent::Claude);
+        let models = catalog.models_for(CodingAgent::OpenCode);
         let model = &models[0];
         let effort = &model.efforts[0];
         catalog
-            .validate_selection(CodingAgent::Claude, &model.id, &effort.id)
+            .validate_selection(CodingAgent::OpenCode, &model.id, &effort.id)
             .unwrap()
     }
 
@@ -196,14 +194,6 @@ mod tests {
 
     #[test]
     fn dispatch_workflow_matches_agent() {
-        assert_eq!(
-            dispatch_workflow_file(CodingAgent::Codex),
-            "codex-dispatch.yml"
-        );
-        assert_eq!(
-            dispatch_workflow_file(CodingAgent::Claude),
-            "claude-dispatch.yml"
-        );
         assert_eq!(
             dispatch_workflow_file(CodingAgent::OpenCode),
             "opencode-dispatch.yml"

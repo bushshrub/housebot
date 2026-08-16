@@ -102,7 +102,7 @@ fn try_approve_with_defaults_requires_complete_selection() {
     assert!(!store.try_approve_with_defaults(id));
     // Fill selection.
     store.with_job_mut(id, |j| {
-        j.selection.agent = Some(CodingAgent::Claude);
+        j.selection.agent = Some(CodingAgent::OpenCode);
         j.selection.model = Some("model".into());
         j.selection.effort = Some("high".into());
     });

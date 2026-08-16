@@ -148,7 +148,7 @@ impl HouseBot {
     }
 
     /// Watch the configured dev-notify channel (`/config dev_notify_channel`) for
-    /// the completion webhook posted by `claude-dispatch.yml`/`opencode-dispatch.yml`,
+    /// the completion webhook posted by `opencode-dispatch.yml`,
     /// and DM the requester encoded in the embed footer.
     ///
     /// Returns `true` if the message was in the configured channel (and so should
@@ -298,25 +298,11 @@ pub(crate) fn develop_approval_components(job_id: &str) -> Vec<CreateActionRow> 
     ])]
 }
 
-pub(crate) const AGENT_DISABLED_MESSAGE: &str =
-    "Codex dispatch is temporarily disabled. Please choose another agent.";
-
-/// Temporary Codex disable, checked on every dispatch path — not just the
-/// interactive picker — so configured defaults and stored selections cannot
-/// bypass it.
-pub(crate) fn agent_dispatch_disabled(agent: CodingAgent) -> bool {
-    agent == CodingAgent::Codex
-}
-
 pub(crate) fn develop_agent_components(job_id: &str) -> Vec<CreateActionRow> {
-    // Discord cannot grey out a single select option, so the disabled state is
-    // conveyed via the label/description and enforced in `develop_on_agent`.
-    let options = vec![
-        CreateSelectMenuOption::new("Claude Code", "claude"),
-        CreateSelectMenuOption::new("OpenCode (NVIDIA)", "opencode"),
-        CreateSelectMenuOption::new("🚫 Codex (disabled)", "codex")
-            .description("Temporarily disabled — cannot be selected"),
-    ];
+    let options = vec![CreateSelectMenuOption::new(
+        CodingAgent::OpenCode.display_name(),
+        CodingAgent::OpenCode.id_str(),
+    )];
     vec![
         CreateActionRow::SelectMenu(
             CreateSelectMenu::new(
