@@ -11,12 +11,32 @@ services:
     platform: linux/amd64
     restart: unless-stopped
     env_file: .env
+    depends_on:
+      - sandboxd
     volumes:
       - ./data:/app/data
-      - /var/run/docker.sock:/var/run/docker.sock
+      - sandbox-socket:/run/housebot-sandbox
     environment:
       - DATA_DIR=/app/data
-      - SANDBOX_IMAGE=house-chatbot-sandbox:latest
-      - DOCKER_NETWORK=house-chatbot_default
-      - SANDBOX_TIMEOUT=${SANDBOX_TIMEOUT:-300}
+      - SANDBOX_SOCKET_PATH=/run/housebot-sandbox/sandbox.sock
       - HOST_DATA_DIR=${HOST_DATA_DIR}
+
+  sandboxd:
+    build:
+      context: .
+      dockerfile: Dockerfile.sandboxd
+    platform: linux/amd64
+    restart: unless-stopped
+    env_file: .env
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - sandbox-socket:/run/housebot-sandbox
+    environment:
+      - SANDBOX_SOCKET_PATH=/run/housebot-sandbox/sandbox.sock
+      - HOUSEBOT_SANDBOX_IMAGE=house-chatbot-sandbox:latest
+      # Dev hosts rarely have gVisor installed; production defaults to runsc.
+      - HOUSEBOT_SANDBOX_RUNTIME=${HOUSEBOT_SANDBOX_RUNTIME:-runc}
+      - SANDBOX_IDLE_TIMEOUT_SECS=${SANDBOX_IDLE_TIMEOUT_SECS:-300}
+
+volumes:
+  sandbox-socket:

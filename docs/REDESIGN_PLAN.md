@@ -271,8 +271,13 @@ Build the scheduler first: sub-agents (Phase 3) and the config commands
 - [x] **The agent-selection stage is collapsed.** OpenCode was its only option,
       so jobs now open on `ChoosingModel` with the agent preset. The flow is
       model → confirm.
+- [x] **Deployment surface matches the architecture.** `docker-compose.yml`
+      now runs `housebot` and a `sandboxd` sidecar that owns Docker and shares
+      only its Unix socket; the bot no longer mounts `/var/run/docker.sock` in
+      either compose file. The legacy `sandbox/` image directory is deleted.
 - [ ] **First live startup.** Nothing in this rebuild has run against real
-      Postgres, Discord, an LLM server, or Docker.
+      Postgres, Discord, an LLM server, or Docker. The compose stack validates
+      but has never been brought up.
 
 ## Future work
 

@@ -72,7 +72,10 @@ Discord message → HouseBot::message() → Agent::run()
 
 The five `sandbox_*` tools let the bot clone a public repository,
 browse its files, and run short commands for diagnostic purposes. Skill scripts
-run here too, always without network access.
+run here too. They request a networkless container, but the session's network
+mode is fixed by whichever tool starts it first — a script invoked after a
+repository clone shares that networked container. The sandbox itself is the
+boundary: gVisor, tmpfs-only writable paths, no host mounts, no secrets.
 
 Containers are **session-scoped, keyed by user**: a follow-up message reuses the
 same workspace, and a reaper destroys it after `SANDBOX_IDLE_TIMEOUT_SECS` of

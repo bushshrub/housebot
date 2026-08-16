@@ -157,9 +157,14 @@ impl LazySandbox {
 
     /// Copy a skill script into the workspace and execute it.
     ///
-    /// Always attaches at `NetworkAccess::None`: a skill script never gets the
-    /// internet, and it must never cause a session's sandbox to be started with
-    /// network it would not otherwise have.
+    /// Requests `NetworkAccess::None`, so a skill script never *causes* a
+    /// session's sandbox to gain network it would not otherwise have.
+    ///
+    /// It does not guarantee the script runs without network. `get_or_start` is
+    /// first-wins: if the session already started networked — say a
+    /// `sandbox_clone_repository` ran first — the script executes in that
+    /// container. The containment that matters is the sandbox itself (gVisor,
+    /// tmpfs, no host mounts, no secrets), not the network mode.
     pub async fn run_skill_script(
         &self,
         skill: &str,

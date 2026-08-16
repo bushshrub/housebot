@@ -369,3 +369,15 @@ Its tools appear as `prefix__tool_name` automatically.
 - Any necessary schema change must include a clear, ordered, backward-compatible migration path
   that preserves all existing user memories across upgrades and rollbacks.
 - Never silently reset, truncate, or invalidate stored memory as part of application startup or deployment.
+
+**One deliberate exception: `001_purge_all_data`.** The rearchitecture starts on
+an empty database, so that migration drops the whole `public` schema — every
+memory, config row, and usage event with it. It is a one-time reset agreed as
+part of the redesign (see the "Database reset" section of
+[`docs/REDESIGN_PLAN.md`](docs/REDESIGN_PLAN.md)), not a precedent. The rules
+above govern every migration numbered `002` and later, and the purge must stay
+at index 1 in the `MIGRATIONS` array — a test asserts it.
+
+Because the purge is unrecoverable, **take a database backup before the first
+deploy that includes it.** Nothing in `scripts/deploy.sh` or the compose files
+does this for you.

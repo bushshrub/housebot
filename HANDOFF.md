@@ -62,8 +62,20 @@ What remains:
 1. **Nothing has run live.** No real Postgres, Discord gateway, LLM server, or
    Docker daemon, and no real workflow dispatch. The model input's round trip is
    unverified — the 422-on-undeclared-input behaviour is asserted by a test that
-   reads the YAML, not by an observed API call.
-2. **The Dockerfile crate list is hand-maintained.** `Dockerfile.deployment-bot`
+   reads the YAML, not by an observed API call. The compose files now declare a
+   `sandboxd` sidecar sharing a `sandbox-socket` volume with the bot, but that
+   stack has never been brought up; `docker compose config` validating is all
+   the assurance there is.
+
+   **Back the database up before the first deploy.** `001_purge_all_data` drops
+   the `public` schema and nothing in `scripts/deploy.sh` or the compose files
+   takes a backup.
+2. **Skill scripts are not guaranteed networkless.** `run_skill_script` asks for
+   `NetworkAccess::None`, but `get_or_start` is first-wins: a script invoked
+   after `sandbox_clone_repository` runs in that networked container. This is
+   accepted — the sandbox itself (gVisor, tmpfs, no host mounts, no secrets) is
+   the boundary — and the docs that claimed otherwise have been corrected.
+3. **The Dockerfile crate list is hand-maintained.** `Dockerfile.deployment-bot`
    names every workspace manifest so the dependency layer caches. It had drifted
    eleven crates out of date and broke the image build; a test now asserts it
    matches `Cargo.toml` exactly. The main `Dockerfile` copies a prebuilt binary
