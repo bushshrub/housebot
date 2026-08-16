@@ -11,7 +11,7 @@ for whoever touches this next.
 ## Where the work is
 
 **Branch: `claude/phase-6-continuation-pg9rzq`.** It carries the entire rebuild —
-phases 1 through 7, 22 commits — and is the only place any of it exists.
+phases 1 through 7, 25 commits — and is the only place any of it exists.
 
 - **Nothing is merged.** `master` has none of the rebuild. Do not branch new work
   from `master` expecting to find it.
@@ -21,9 +21,9 @@ phases 1 through 7, 22 commits — and is the only place any of it exists.
   `claude/bot-redesign-audit-7gecv3`, `-audit-remaining-9aj83g` (PR #320,
   "Phase 1–4 complete"), `-audit-continue-cinqt6`, `-phase-five-jz9cc2` — are
   all ancestors or subsets of it. Ignore them; they are stale by definition now.
-- **No PR is open for this branch.** PR #320 covers phases 1–4 only and is
-  behind. Opening one is a human decision — `CLAUDE.md` forbids automated runs
-  from doing it.
+- **PR #321 tracks this branch** (github.com/bushshrub/housebot/pull/321).
+  Pushing to the branch updates it. PR #320 covers phases 1–4 only and is
+  behind — ignore it.
 
 Continue on this branch rather than cutting a new one. If you must, branch from
 its tip, never from `master`.
