@@ -78,6 +78,38 @@ fn owner_interactive_returns_config_required() {
     ));
 }
 
+/// The flow opens on model selection with the only agent already chosen. If the
+/// agent were left unset the selection would never be complete and dispatch
+/// would fail with "incomplete selection" after the user had picked a model.
+#[test]
+fn interactive_jobs_open_on_model_selection_with_the_agent_set() {
+    let store = make_store();
+    let rl = make_limiter();
+    let outcome = prepare_feature_development(
+        &store,
+        &rl,
+        42,
+        owner_requester(42),
+        source(),
+        1,
+        "Title",
+        "Obj",
+        "",
+        valid_reqs(),
+        valid_ac(),
+        DispatchMode::Interactive,
+        &defaults(),
+    );
+    let FeatureDevelopmentOutcome::OwnerConfigurationRequired { job_id } = outcome else {
+        panic!("expected OwnerConfigurationRequired");
+    };
+    let (stage, agent) = store
+        .with_job(job_id, |j| (j.stage, j.selection.agent))
+        .unwrap();
+    assert_eq!(stage, DispatchStage::ChoosingModel);
+    assert_eq!(agent, Some(CodingAgent::OpenCode));
+}
+
 #[test]
 fn configurer_interactive_returns_config_required() {
     // A non-owner requester with DispatchMode::Interactive (as the caller

@@ -84,11 +84,9 @@ src/
   agents/
     catalog.json     # single source of truth for selectable agent/model combos
     common.sh        # shared shell utilities for adapter scripts
-    run-codex.sh     # Codex adapter
-    run-claude.sh    # Claude Code adapter
-    run-opencode.sh  # OpenCode + NVIDIA NIM adapter
+    run-opencode.sh  # OpenCode + NVIDIA NIM adapter (no workflow calls it yet)
   workflows/
-    develop-feature.yml    # triggered by agent:queued label; runs the selected agent
+    opencode-dispatch.yml  # workflow_dispatch entry point for development jobs
     check-agent-runner.yml # daily runner health check
 CLAUDE.md            # instructions for Claude Code when running as the automated agent
 docs/
@@ -269,7 +267,7 @@ specification, runner requirements, and security model.
 - **Owner-only.** Only the configured `OWNER_DISCORD_ID` can dispatch.  
   This is enforced in Rust (`src/tools/feature_development.rs`) — not in the system prompt.
 - **Two-step flow.** The LLM calls `prepare_feature_development` to draft a spec, then the
-  Discord owner selects agent/model and explicitly confirms.  The LLM cannot dispatch
+  Discord owner selects a model and explicitly confirms.  The LLM cannot dispatch
   unilaterally.
 - **Catalog.** Agent and model combinations are defined in
   `.github/agents/catalog.json`.  Update `catalog_revision` whenever you add or remove entries.

@@ -10,6 +10,7 @@ use std::time::Duration;
 use serde_json::{json, Value};
 use uuid::Uuid;
 
+use housebot_coding_agent::catalog::CodingAgent;
 use housebot_coding_agent::pending::{
     DevelopmentRequester, DevelopmentSpecification, DiscordMessageRef, DispatchStage,
     PartialAgentSelection, PendingDevelopmentJob, PendingJobStore,
@@ -222,8 +223,11 @@ pub fn prepare_feature_development(
             requester,
             source_message,
             spec,
-            DispatchStage::ChoosingAgent,
-            PartialAgentSelection::default(),
+            DispatchStage::ChoosingModel,
+            PartialAgentSelection {
+                agent: Some(CodingAgent::OpenCode),
+                ..Default::default()
+            },
         );
         let job_id = store.insert(job);
         FeatureDevelopmentOutcome::OwnerConfigurationRequired { job_id }

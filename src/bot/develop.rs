@@ -12,9 +12,11 @@ impl HouseBot {
             return;
         };
         let content = format!(
-            "**Feature development: {title}**\n\nChoose a coding agent to implement this feature:"
+            "**Feature development: {title}**\n\nAgent: **{}**\nChoose a model:",
+            CodingAgent::OpenCode.display_name()
         );
-        let components = develop_agent_components(&job_id.to_string());
+        let components =
+            develop_model_components(&job_id.to_string(), CodingAgent::OpenCode, &self.catalog);
         let builder = CreateMessage::new()
             .content(content)
             .components(components)
@@ -294,27 +296,6 @@ pub(crate) fn develop_approval_components(job_id: &str) -> Vec<CreateActionRow> 
     ])]
 }
 
-pub(crate) fn develop_agent_components(job_id: &str) -> Vec<CreateActionRow> {
-    let options = vec![CreateSelectMenuOption::new(
-        CodingAgent::OpenCode.display_name(),
-        CodingAgent::OpenCode.id_str(),
-    )];
-    vec![
-        CreateActionRow::SelectMenu(
-            CreateSelectMenu::new(
-                format!("{DEVELOP_PREFIX}{job_id}:agent"),
-                CreateSelectMenuKind::String { options },
-            )
-            .placeholder("Select coding agent"),
-        ),
-        CreateActionRow::Buttons(vec![CreateButton::new(format!(
-            "{DEVELOP_PREFIX}{job_id}:cancel"
-        ))
-        .label("Cancel")
-        .style(ButtonStyle::Danger)]),
-    ]
-}
-
 pub(crate) fn develop_model_components(
     job_id: &str,
     agent: CodingAgent,
@@ -339,14 +320,11 @@ pub(crate) fn develop_model_components(
             )
             .placeholder("Select model"),
         ),
-        CreateActionRow::Buttons(vec![
-            CreateButton::new(format!("{DEVELOP_PREFIX}{job_id}:back"))
-                .label("← Back")
-                .style(ButtonStyle::Secondary),
-            CreateButton::new(format!("{DEVELOP_PREFIX}{job_id}:cancel"))
-                .label("Cancel")
-                .style(ButtonStyle::Danger),
-        ]),
+        CreateActionRow::Buttons(vec![CreateButton::new(format!(
+            "{DEVELOP_PREFIX}{job_id}:cancel"
+        ))
+        .label("Cancel")
+        .style(ButtonStyle::Danger)]),
     ]
 }
 

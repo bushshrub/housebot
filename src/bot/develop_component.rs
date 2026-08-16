@@ -42,7 +42,7 @@ impl HouseBot {
 
         // Approval decisions on someone else's request (approve/reject/configure,
         // shown only on AwaitingOwnerApproval cards) are owner-only. The
-        // requester's own interactive selection (agent/model/confirm/
+        // requester's own interactive selection (model/confirm/
         // back/cancel) may be driven by either the owner or the requester.
         let caller = component.user.id.get();
         let owner_only_action = matches!(action, "approve" | "reject" | "configure");
@@ -89,7 +89,6 @@ impl HouseBot {
 
         let id_str = job_id.to_string();
         match action {
-            "agent" => self.develop_on_agent(ctx, component, job_id, &id_str).await,
             "model" => self.develop_on_model(ctx, component, job_id, &id_str).await,
             "confirm" => {
                 self.develop_on_confirm(ctx, component, job_id, &id_str)
@@ -114,67 +113,6 @@ impl HouseBot {
             }
             _ => {}
         }
-    }
-
-    pub(crate) async fn develop_on_agent(
-        &self,
-        ctx: &Context,
-        component: &serenity::all::ComponentInteraction,
-        job_id: Uuid,
-        id_str: &str,
-    ) {
-        // Value from the select menu.
-        let selected = match &component.data.kind {
-            ComponentInteractionDataKind::StringSelect { values } => values.first().cloned(),
-            _ => None,
-        };
-        let Some(agent_id) = selected else {
-            return;
-        };
-        let Ok(agent) = agent_id.parse::<CodingAgent>() else {
-            let _ = component
-                .create_response(
-                    &ctx.http,
-                    CreateInteractionResponse::Message(
-                        CreateInteractionResponseMessage::new()
-                            .content(format!("Unknown agent: {agent_id}"))
-                            .ephemeral(true),
-                    ),
-                )
-                .await;
-            return;
-        };
-        self.pending_jobs.with_job_mut(job_id, |j| {
-            j.selection.agent = Some(agent);
-            j.selection.model = None;
-            j.stage = DispatchStage::ChoosingModel;
-        });
-        let (title, models_text) = self
-            .pending_jobs
-            .with_job(job_id, |j| {
-                (
-                    j.specification.title.clone(),
-                    format!(
-                        "**Feature development: {}**\n\n\
-                                 Agent: **{}**\nChoose a model:",
-                        j.specification.title,
-                        agent.display_name()
-                    ),
-                )
-            })
-            .unwrap_or_default();
-        let _ = title;
-        let components = develop_model_components(id_str, agent, &self.catalog);
-        let _ = component
-            .create_response(
-                &ctx.http,
-                CreateInteractionResponse::UpdateMessage(
-                    CreateInteractionResponseMessage::new()
-                        .content(models_text)
-                        .components(components),
-                ),
-            )
-            .await;
     }
 
     pub(crate) async fn develop_on_model(
@@ -254,22 +192,6 @@ impl HouseBot {
         // Navigate back one stage.
         let stage = self.pending_jobs.with_job(job_id, |j| j.stage);
         let (content, components) = match stage {
-            Some(DispatchStage::ChoosingModel) => {
-                self.pending_jobs.with_job_mut(job_id, |j| {
-                    j.selection.agent = None;
-                    j.stage = DispatchStage::ChoosingAgent;
-                });
-                let title = self
-                    .pending_jobs
-                    .with_job(job_id, |j| j.specification.title.clone())
-                    .unwrap_or_default();
-                (
-                            format!(
-                                "**Feature development: {title}**\n\nChoose a coding agent to implement this feature:"
-                            ),
-                            develop_agent_components(id_str),
-                        )
-            }
             Some(DispatchStage::Confirming) => {
                 let agent = self
                     .pending_jobs

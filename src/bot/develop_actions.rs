@@ -255,7 +255,7 @@ impl HouseBot {
         job_id: Uuid,
         id_str: &str,
     ) {
-        // Owner wants to change agent/model before approving.
+        // Owner wants to change the model before approving.
         if !self.pending_jobs.try_begin_configuration(job_id) {
             let _ = component
                 .create_response(
@@ -274,9 +274,10 @@ impl HouseBot {
             .with_job(job_id, |j| j.specification.title.clone())
             .unwrap_or_default();
         let content = format!(
-            "**Feature development: {title}**\n\nChoose a coding agent to implement this feature:"
+            "**Feature development: {title}**\n\nAgent: **{}**\nChoose a model:",
+            CodingAgent::OpenCode.display_name()
         );
-        let components = develop_agent_components(id_str);
+        let components = develop_model_components(id_str, CodingAgent::OpenCode, &self.catalog);
         let _ = component
             .create_response(
                 &ctx.http,

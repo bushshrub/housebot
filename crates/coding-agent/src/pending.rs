@@ -80,7 +80,6 @@ impl PartialAgentSelection {
 pub enum DispatchStage {
     /// Non-owner request: waiting for owner to approve, configure, or reject.
     AwaitingOwnerApproval,
-    ChoosingAgent,
     ChoosingModel,
     Confirming,
     /// Atomic transition: issue is being created.
@@ -224,12 +223,12 @@ impl PendingJobStore {
         false
     }
 
-    /// Atomically transition `AwaitingOwnerApproval` → `ChoosingAgent` for interactive config.
+    /// Atomically transition `AwaitingOwnerApproval` → `ChoosingModel` for interactive config.
     pub fn try_begin_configuration(&self, id: Uuid) -> bool {
         let mut jobs = self.jobs.lock().unwrap();
         if let Some(job) = jobs.get_mut(&id) {
             if job.stage == DispatchStage::AwaitingOwnerApproval && !job.is_expired() {
-                job.stage = DispatchStage::ChoosingAgent;
+                job.stage = DispatchStage::ChoosingModel;
                 return true;
             }
         }

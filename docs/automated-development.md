@@ -8,7 +8,7 @@ Housebot can dispatch automated coding jobs to Claude Code or OpenCode for an ex
 Discord message (owner only)
   └─ LLM calls prepare_feature_development
        └─ Bot intercepts DISPATCH_FLOW:<uuid>
-            └─ Discord component UI (agent → model → confirm)
+            └─ Discord component UI (model → confirm)
                  └─ Existing issue validated
                       └─ Selected workflow dispatched through GitHub App
                            └─ Agent runs against the issue
@@ -22,7 +22,7 @@ Only the configured bot owner can initiate a dispatch. The LLM cannot start a jo
 ## Triggering a job
 
 1. In Discord, ask the bot to develop a feature. It will call `prepare_feature_development` to draft the spec.
-2. The bot shows a component UI with three steps: choose an agent, choose a model, then confirm.
+2. The bot shows a component UI with two steps: choose a model, then confirm. OpenCode is the only agent, so there is no agent step.
 3. On confirmation, the bot validates the existing issue and dispatches the selected agent workflow through the GitHub App.
 4. The selected workflow runs the agent against that issue.
 5. If the agent produces changes, a pull request is opened. Review and merge it manually.
@@ -35,7 +35,6 @@ The entire dispatch can be cancelled at any point in the Discord UI before confi
 
 | Agent | CLI | Authentication |
 |---|---|---|
-| **Claude Code** | `claude` | OAuth session on runner |
 | **OpenCode** | `opencode` | `NVIDIA_API_KEY` secret |
 
 Agent and model combinations are defined in `.github/agents/catalog.json`. That file is the single source of truth; the Discord UI is generated from it at runtime.
@@ -73,7 +72,7 @@ Agent and model combinations are defined in `.github/agents/catalog.json`. That 
 
 ## Workflow
 
-`.github/workflows/claude-dispatch.yml` and `.github/workflows/opencode-dispatch.yml` are manually triggered through `workflow_dispatch` by the Housebot GitHub App. Codex dispatch is temporarily disabled until a trusted self-hosted runner is available.
+`.github/workflows/opencode-dispatch.yml` is manually triggered through `workflow_dispatch` by the Housebot GitHub App. It is the only dispatch workflow; OpenCode is the only backend.
 
 ### Steps
 
@@ -134,9 +133,9 @@ Legacy label definitions may still exist for older jobs; new dispatches do not d
 ## Self-hosted runner health check
 
 `.github/workflows/check-agent-runner.yml` is a separate diagnostic for the
-optional `housebot-agent` self-hosted runner. It is not used by the Claude Code
-or OpenCode dispatch workflows and only verifies tools installed on that
-runner.
+optional `housebot-agent` self-hosted runner. It is not used by the dispatch
+workflow, which runs on `ubuntu-latest`, and only verifies tools installed on
+that runner.
 
 ---
 
@@ -144,9 +143,11 @@ runner.
 
 | Script | Agent |
 |---|---|
-| `.github/agents/run-codex.sh` | Codex |
-| `.github/agents/run-claude.sh` | Claude Code |
 | `.github/agents/run-opencode.sh` | OpenCode + NVIDIA NIM |
-| `.github/agents/common.sh` | Shared utilities (sourced by all adapters) |
+| `.github/agents/common.sh` | Shared utilities (sourced by the adapter) |
 
-Each adapter accepts `<prompt_file> <model>` and is responsible only for running the agent. Label transitions and PR creation are handled by the workflow.
+Each adapter accepts `<prompt_file> <model>` and is responsible only for running the agent.
+
+**No workflow currently invokes these.** `opencode-dispatch.yml` calls the
+`anomalyco/opencode/github` action directly. They are kept for a self-hosted
+runner path that does not exist yet; delete them if that path is abandoned.

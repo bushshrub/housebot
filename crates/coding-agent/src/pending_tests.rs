@@ -56,8 +56,8 @@ fn non_owner_job_starts_in_awaiting_approval() {
 
 #[test]
 fn owner_interactive_job_starts_in_choosing_agent() {
-    let job = make_job(1, 1, 2, 3, DispatchStage::ChoosingAgent);
-    assert_eq!(job.stage, DispatchStage::ChoosingAgent);
+    let job = make_job(1, 1, 2, 3, DispatchStage::ChoosingModel);
+    assert_eq!(job.stage, DispatchStage::ChoosingModel);
 }
 
 #[test]
@@ -82,7 +82,7 @@ fn with_job_mut_allows_stage_update() {
 #[test]
 fn try_start_dispatch_only_succeeds_once() {
     let store = PendingJobStore::default();
-    let job = make_job(1, 1, 2, 3, DispatchStage::ChoosingAgent);
+    let job = make_job(1, 1, 2, 3, DispatchStage::ChoosingModel);
     let id = store.insert(job);
     // Not in Confirming stage yet.
     assert!(!store.try_start_dispatch(id));
@@ -118,9 +118,9 @@ fn try_begin_configuration_from_awaiting() {
     assert!(store.try_begin_configuration(id));
     assert_eq!(
         store.with_job(id, |j| j.stage),
-        Some(DispatchStage::ChoosingAgent)
+        Some(DispatchStage::ChoosingModel)
     );
-    // Cannot begin configuration again from ChoosingAgent.
+    // Cannot begin configuration again from ChoosingModel.
     assert!(!store.try_begin_configuration(id));
 }
 
@@ -152,7 +152,7 @@ fn rejected_job_cannot_dispatch() {
 #[test]
 fn mark_dispatched_changes_stage() {
     let store = PendingJobStore::default();
-    let job = make_job(1, 1, 2, 3, DispatchStage::ChoosingAgent);
+    let job = make_job(1, 1, 2, 3, DispatchStage::ChoosingModel);
     let id = store.insert(job);
     store.with_job_mut(id, |j| j.stage = DispatchStage::Dispatching);
     store.mark_dispatched(id);
@@ -165,7 +165,7 @@ fn mark_dispatched_changes_stage() {
 #[test]
 fn mark_dispatch_failed_reverts_to_confirming() {
     let store = PendingJobStore::default();
-    let job = make_job(1, 1, 2, 3, DispatchStage::ChoosingAgent);
+    let job = make_job(1, 1, 2, 3, DispatchStage::ChoosingModel);
     let id = store.insert(job);
     store.with_job_mut(id, |j| j.stage = DispatchStage::Dispatching);
     store.mark_dispatch_failed(id);
@@ -178,7 +178,7 @@ fn mark_dispatch_failed_reverts_to_confirming() {
 #[test]
 fn cancel_sets_stage() {
     let store = PendingJobStore::default();
-    let job = make_job(1, 1, 2, 3, DispatchStage::ChoosingAgent);
+    let job = make_job(1, 1, 2, 3, DispatchStage::ChoosingModel);
     let id = store.insert(job);
     store.cancel(id);
     assert_eq!(
@@ -200,7 +200,7 @@ fn evict_expired_removes_non_dispatched_expired_jobs() {
 #[test]
 fn evict_expired_keeps_dispatched_jobs() {
     let store = PendingJobStore::default();
-    let mut job = make_job(1, 1, 2, 3, DispatchStage::ChoosingAgent);
+    let mut job = make_job(1, 1, 2, 3, DispatchStage::ChoosingModel);
     job.expires_at = Utc::now() - chrono::Duration::seconds(1);
     let id = store.insert(job);
     store.with_job_mut(id, |j| j.stage = DispatchStage::Dispatched);

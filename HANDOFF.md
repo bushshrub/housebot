@@ -29,7 +29,7 @@ Continue on this branch rather than cutting a new one. If you must, branch from
 its tip, never from `master`.
 
 Before starting, confirm the tree is green: `cargo test --workspace`
-(617 passing), `cargo clippy --all-targets -- -D warnings`, `cargo fmt --check`.
+(618 passing), `cargo clippy --all-targets -- -D warnings`, `cargo fmt --check`.
 All three pass as of the last commit, so a later failure is yours.
 
 ## Start here
@@ -44,27 +44,25 @@ Two areas are most exposed, because they are new code rather than surviving
 code: `write_file` / `run_skill_script` (which need a live `sandboxd` and gVisor
 to prove out at all) and the directory-based skills store.
 
-### Two things are knowingly unfinished
+### What is left
 
-The model picker reaching the runner is **done**: `opencode-dispatch.yml`
-declares a `model` input, and `develop_on_confirm` / `develop_on_approve` both
-forward the selection. Effort was dropped instead of wired — every OpenCode
-level declared `mechanism: execution_budget`, which nothing consumed and which
-is a different axis from the action's `variant:` key. `EffortDescriptor`,
-`EffortMechanism`, `DispatchStage::ChoosingEffort`, the `efforts` arrays in
-`catalog.json`, and `DEVELOPMENT_DEFAULT_EFFORT` are all gone; the picker is
-agent → model → confirm. The unrelated `/effort` slash command, which sets the
-chat model's thinking budget, is untouched.
+Both flow-level items from the previous handoff are closed. The model picker
+reaches the runner (`opencode-dispatch.yml` declares a `model` input; both
+dispatch paths forward the selection), effort is gone entirely, the retired
+Claude/Codex CI is deleted, and the one-item agent stage is collapsed — jobs now
+open on `ChoosingModel` with the agent preset, so the flow is model → confirm.
 
-1. **Retired CI outlived its backends.** `claude-dispatch.yml`, `run-codex.sh`,
-   and `run-claude.sh` are unreachable from Rust now that `CodingAgent` has one
-   variant. They were left because `CLAUDE.md` forbids an automated run from
-   modifying CI; delete them by hand.
-2. **The agent-selection stage is a one-item menu.** `DispatchStage::ChoosingAgent`
-   survives with OpenCode as its only option. Collapsing the stage means
-   changing the initial stage in `feature_development.rs`, the back-button
-   target in `develop_component.rs`, and `pending.rs`. Not done, because it is
-   a flow refactor rather than a backend cut.
+What remains is not code:
+
+1. **Nothing has run live.** No real Postgres, Discord gateway, LLM server, or
+   Docker daemon, and no real workflow dispatch. The model input's round trip is
+   unverified — the 422-on-undeclared-input behaviour is asserted by a test that
+   reads the YAML, not by an observed API call.
+2. **`run-opencode.sh` and `common.sh` are unreachable.** No workflow invokes
+   them; `opencode-dispatch.yml` calls the `anomalyco/opencode/github` action
+   directly. They were kept rather than deleted because they are the only
+   sketch of a self-hosted runner path. Delete them if that path is dead —
+   `check-agent-runner.yml` goes with them.
 
 ## The database
 

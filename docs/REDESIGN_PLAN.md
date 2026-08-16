@@ -263,9 +263,14 @@ Build the scheduler first: sub-agents (Phase 3) and the config commands
       level was `execution_budget`, which nothing consumed and which does not
       map onto the action's `variant:` axis. The picker is now agent → model →
       confirm.
-- [ ] **Retired CI still present.** `.github/workflows/claude-dispatch.yml` and
-      the `run-codex.sh` / `run-claude.sh` adapters outlived the backends they
-      served. Nothing in Rust can reach them. Same reason they were left.
+- [x] **Retired CI removed.** `claude-dispatch.yml`, `run-codex.sh`, and
+      `run-claude.sh` are deleted, along with the `claude` CLI probe in
+      `check-agent-runner.yml` that would have failed daily. `run-opencode.sh`
+      and `common.sh` survive but no workflow calls them either — the dispatch
+      workflow uses the `anomalyco/opencode/github` action directly.
+- [x] **The agent-selection stage is collapsed.** OpenCode was its only option,
+      so jobs now open on `ChoosingModel` with the agent preset. The flow is
+      model → confirm.
 - [ ] **First live startup.** Nothing in this rebuild has run against real
       Postgres, Discord, an LLM server, or Docker.
 
