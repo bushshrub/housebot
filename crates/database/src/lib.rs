@@ -28,6 +28,10 @@ const MIGRATIONS: &[(&str, &str)] = &[
         "004_create_token_monitor",
         include_str!("../../../db/migrations/004_create_token_monitor.sql"),
     ),
+    (
+        "005_create_deployment_permissions",
+        include_str!("../../../db/migrations/005_create_deployment_permissions.sql"),
+    ),
 ];
 const MIGRATION_LOCK_ID: i64 = 1_593_778_914;
 const DEFAULT_DATABASE_URL: &str = "postgres://housebot:housebot@postgres/housebot";
@@ -228,10 +232,11 @@ mod tests {
             "bot_config",
             "conversations",
             "token_usage_events",
+            "deployment_permissions",
         ] {
             assert!(
                 sql.contains(&format!("CREATE TABLE IF NOT EXISTS {table}")),
-                "no migration creates {table}, so the bot cannot start"
+                "no migration creates {table}, so the store that queries it is broken on a fresh database"
             );
         }
     }

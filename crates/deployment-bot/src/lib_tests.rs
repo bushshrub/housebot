@@ -124,6 +124,113 @@ fn deployment_forwards_persistent_token_monitor_settings() {
     assert!(HOUSEBOT_ENV_VARS.contains(&"DATABASE_CONNECT_TIMEOUT_SECS"));
 }
 
+/// Variables the chatbot reads that must not be forwarded from the deployment
+/// bot's own environment, with the reason each is excluded.
+const NOT_FORWARDED: &[&str] = &[
+    // Fixed to the container's own path by the run command.
+    "DATA_DIR",
+    // Read inside the sandboxd container, which gets its own env.
+    "HOUSEBOT_SANDBOX_IMAGE",
+    "HOUSEBOT_SANDBOX_RUNTIME",
+];
+
+fn env_vars_read_by(relative_path: &str) -> std::collections::BTreeSet<String> {
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../..")
+        .join(relative_path);
+    let mut found = std::collections::BTreeSet::new();
+    let mut stack = vec![root];
+    while let Some(path) = stack.pop() {
+        let Ok(entries) = std::fs::read_dir(&path) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                if path
+                    .file_name()
+                    .is_some_and(|name| name == "deployment-bot")
+                {
+                    continue;
+                }
+                stack.push(path);
+                continue;
+            }
+            if path.extension().is_none_or(|ext| ext != "rs") {
+                continue;
+            }
+            let Ok(source) = std::fs::read_to_string(&path) else {
+                continue;
+            };
+            for (index, _) in source.match_indices('"') {
+                let rest = &source[index + 1..];
+                let Some(end) = rest.find('"') else { continue };
+                let name = &rest[..end];
+                if name.len() > 3
+                    && name
+                        .bytes()
+                        .all(|b| b.is_ascii_uppercase() || b.is_ascii_digit() || b == b'_')
+                    && name.starts_with(|c: char| c.is_ascii_uppercase())
+                    && source[..index].ends_with(|c: char| c == '(' || c == ' ' || c == '\n')
+                {
+                    found.insert(name.to_string());
+                }
+            }
+        }
+    }
+    found
+}
+
+/// The allowlist is a hand-maintained copy of the chatbot's env surface, so a
+/// variable added to the bot and forgotten here is dropped at deploy time with
+/// no error anywhere. Jellyfin and llama.cpp entries survived their features
+/// this way.
+#[test]
+fn housebot_env_vars_cover_every_variable_the_bot_reads() {
+    let mut source = env_vars_read_by("src");
+    source.extend(env_vars_read_by("crates"));
+
+    let missing: Vec<&String> = source
+        .iter()
+        .filter(|name| {
+            name.starts_with("LLM_")
+                || name.starts_with("SEARXNG_")
+                || name.starts_with("SENTRY_")
+                || name.starts_with("SKILLS_")
+                || name.starts_with("SANDBOX_")
+                || name.starts_with("CHANNEL_CONTEXT_")
+                || name.starts_with("CHAT_RATE_LIMIT_")
+                || name.starts_with("DEVELOPMENT_")
+                || name.starts_with("MAX_")
+        })
+        .filter(|name| !HOUSEBOT_ENV_VARS.contains(&name.as_str()))
+        .filter(|name| !NOT_FORWARDED.contains(&name.as_str()))
+        .collect();
+
+    assert!(
+        missing.is_empty(),
+        "these variables are read by the bot but never forwarded to its container: {missing:?}"
+    );
+}
+
+/// The mirror of the test above: a variable forwarded for a feature that no
+/// longer exists is dead configuration nobody will notice.
+#[test]
+fn housebot_env_vars_are_all_still_read_somewhere() {
+    let mut source = env_vars_read_by("src");
+    source.extend(env_vars_read_by("crates"));
+
+    let unread: Vec<&&str> = HOUSEBOT_ENV_VARS
+        .iter()
+        .filter(|name| !source.contains(**name))
+        .collect();
+
+    assert!(
+        unread.is_empty(),
+        "these variables are forwarded but nothing reads them: {unread:?}"
+    );
+}
+
 #[test]
 fn deployment_passes_database_url_to_migration_and_bot_containers() {
     let url = "postgres://housebot:secret@postgres/housebot";
