@@ -14,6 +14,7 @@ impl Agent {
         channel_id: u64,
         guild_id: u64,
         sandbox: &LazySandbox,
+        hooks: &dyn AgentHooks,
     ) -> ToolOutcome {
         match name {
             "web_search" => ToolOutcome::Text(
@@ -248,6 +249,7 @@ impl Agent {
                         str_arg(args, "context"),
                         user_id,
                         &conversation_id,
+                        hooks,
                     )
                     .await,
                 )

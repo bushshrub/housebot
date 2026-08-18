@@ -492,6 +492,7 @@ async fn dispatch_edit_skill_denies_non_owner_and_leaves_skill_unchanged() {
             0,
             None,
             &sb,
+            &NoHooks,
         )
         .await;
     match out {
@@ -527,6 +528,7 @@ async fn dispatch_edit_skill_then_use_skill_reflects_update() {
             0,
             None,
             &sb,
+            &NoHooks,
         )
         .await;
     match edit_out {
@@ -543,6 +545,7 @@ async fn dispatch_edit_skill_then_use_skill_reflects_update() {
             0,
             None,
             &sb,
+            &NoHooks,
         )
         .await;
     match use_out {
@@ -568,6 +571,7 @@ async fn dispatch_unknown_tool_returns_error() {
             0,
             None,
             &sb,
+            &NoHooks,
         )
         .await;
     match out {
@@ -757,6 +761,7 @@ async fn explicit_memory_update_survives_compaction() {
             0,
             None,
             &sb,
+            &NoHooks,
         )
         .await;
     agent
@@ -817,6 +822,7 @@ async fn get_messages_refuses_a_channel_the_user_cannot_be_shown_to_have_access_
             42,
             Some(7),
             &sb,
+            &NoHooks,
         )
         .await;
 
@@ -844,6 +850,7 @@ async fn get_messages_refuses_a_server_channel_asked_for_from_a_dm() {
             42,
             None,
             &sb,
+            &NoHooks,
         )
         .await;
 
@@ -870,6 +877,7 @@ async fn get_messages_reads_the_current_channel_without_an_access_check() {
             42,
             Some(7),
             &sb,
+            &NoHooks,
         )
         .await;
 
@@ -902,6 +910,7 @@ async fn dispatch_github_api_merge_denies_non_administrators() {
             0,
             None,
             &sb,
+            &NoHooks,
         )
         .await;
 
@@ -948,6 +957,7 @@ async fn dispatch_github_api_merge_allows_configurers_and_audits_the_attempt() {
             0,
             None,
             &sb,
+            &NoHooks,
         )
         .await;
 
@@ -1068,7 +1078,9 @@ async fn subagent_runs_at_subagent_priority() {
     let (_t, agent) = test_agent(client);
     let _ = scheduler.set(agent.llm_scheduler().clone());
 
-    let out = agent.run_subagent("find X", "", "42", "conv-1").await;
+    let out = agent
+        .run_subagent("find X", "", "42", "conv-1", &NoHooks)
+        .await;
     assert_eq!(out, "report body");
     assert!(
         subagent_active.load(Ordering::Acquire),
@@ -1080,7 +1092,9 @@ async fn subagent_runs_at_subagent_priority() {
 async fn subagent_rejects_an_empty_task() {
     let client = Arc::new(MockChatClient::new());
     let (_t, agent) = test_agent(client);
-    let out = agent.run_subagent("   ", "", "42", "conv-1").await;
+    let out = agent
+        .run_subagent("   ", "", "42", "conv-1", &NoHooks)
+        .await;
     assert!(out.starts_with("Error:"));
 }
 
@@ -1106,4 +1120,38 @@ async fn build_tools_includes_spawn_subagent() {
         .filter_map(|t| t["function"]["name"].as_str())
         .collect();
     assert!(names.contains(&"spawn_subagent"));
+}
+
+struct SubagentToolRecorder(std::sync::Mutex<Vec<String>>);
+
+#[async_trait]
+impl AgentHooks for SubagentToolRecorder {
+    async fn on_subagent_tool_called(&self, tool: &str, _args: &Value) {
+        self.0.lock().unwrap().push(tool.to_string());
+    }
+}
+
+#[tokio::test]
+async fn subagent_tool_calls_are_reported_to_the_hooks() {
+    let client = Arc::new(MockChatClient::new());
+    client.push_completion(crate::llm::ChatCompletion {
+        content: None,
+        tool_calls: vec![crate::llm::ToolCall {
+            id: "call_a".into(),
+            name: "web_search".into(),
+            arguments: r#"{"query":"rust"}"#.into(),
+        }],
+        finish_reason: Some("tool_calls".into()),
+        usage: Default::default(),
+    });
+    client.push_text("report body");
+    let (_t, agent) = test_agent(client);
+    let hooks = SubagentToolRecorder(std::sync::Mutex::new(Vec::new()));
+
+    let out = agent
+        .run_subagent("find X", "", "42", "conv-1", &hooks)
+        .await;
+
+    assert_eq!(out, "report body");
+    assert_eq!(hooks.0.lock().unwrap().as_slice(), ["web_search"]);
 }

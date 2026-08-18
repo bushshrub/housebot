@@ -118,22 +118,49 @@ fn display_tool_name(name: &str) -> String {
     }
 }
 
+/// Human-readable icon and label for a tool, or `None` for tools without one.
+fn tool_label(tool_name: &str) -> Option<(&'static str, &'static str)> {
+    let pair = match tool_name {
+        "web_search" => ("🔎", "Searching the web"),
+        "fetch_webpage" => ("🌐", "Reading a webpage"),
+        "use_skill" => ("🧩", "Using a skill"),
+        "list_skills" | "skill_info" | "read_skill_file" => ("🧩", "Looking up skills"),
+        "create_skill" | "edit_skill" | "delete_skill" | "enable_skill" | "disable_skill" => {
+            ("🧩", "Updating skills")
+        }
+        "run_skill_script" => ("🧩", "Running a skill script"),
+        "spawn_subagent" => ("🧠", "Starting a subagent"),
+        "set_reminder" => ("⏰", "Setting a reminder"),
+        "get_messages" => ("💬", "Reading conversations"),
+        "get_bot_features" => ("🤖", "Checking my features"),
+        "configure_bot" => ("⚙️", "Changing bot settings"),
+        "update_memory" => ("📓", "Updating memory"),
+        "search_memory" => ("📓", "Searching memory"),
+        "github_api" => ("🐙", "Checking GitHub"),
+        "create_feature_request" => ("📝", "Filing a feature request"),
+        "edit_feature_request" => ("📝", "Updating a feature request"),
+        "prepare_feature_development" => ("🛠️", "Preparing feature development"),
+        "sandbox_clone_repository" => ("📦", "Cloning a repository"),
+        "sandbox_list_files" => ("📦", "Listing files"),
+        "sandbox_read_file" => ("📦", "Reading a file"),
+        "sandbox_search_code" => ("📦", "Searching code"),
+        "sandbox_run" => ("📦", "Running a command"),
+        _ => return None,
+    };
+    Some(pair)
+}
+
 /// User-facing status shown while an agent tool is executing.
 pub fn tool_status(tool_name: &str) -> String {
-    let icon = match tool_name {
-        "web_search" => "🔎",
-        "fetch_webpage" => "🌐",
-        "use_skill" => "🧩",
-        "spawn_subagent" => "🧠",
-        "set_reminder" => "⏰",
-        "get_messages" => "💬",
-        "get_bot_features" => "🤖",
-        "create_feature_request" | "edit_feature_request" => "📝",
-        "prepare_feature_development" => "🛠️",
-        _ if tool_name.starts_with("sandbox_") => "📦",
-        _ => "🔧",
-    };
-    format!("{icon} **Running `{}`...**", display_tool_name(tool_name))
+    match tool_label(tool_name) {
+        Some((icon, label)) => format!("{icon} **{label}...**"),
+        None => format!("🔧 **Running `{}`...**", display_tool_name(tool_name)),
+    }
+}
+
+/// Same as [`tool_status`], marked as running inside a sub-agent.
+pub fn subagent_tool_status(tool_name: &str) -> String {
+    format!("╰ {}", tool_status(tool_name))
 }
 
 pub fn extract_code_files(text: &str) -> (String, Vec<(String, Vec<u8>)>) {

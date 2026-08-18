@@ -28,6 +28,7 @@ impl Agent {
         context: &str,
         user_id: &str,
         conversation_id: &str,
+        hooks: &dyn AgentHooks,
     ) -> String {
         let task = task.trim();
         if task.is_empty() {
@@ -103,6 +104,7 @@ impl Agent {
             let mut rate_limited = false;
             for tc in &completion.tool_calls {
                 let args: Value = serde_json::from_str(&tc.arguments).unwrap_or(json!({}));
+                hooks.on_subagent_tool_called(&tc.name, &args).await;
                 let content = self.dispatch_subagent_tool(&tc.name, &args).await;
                 if tc.name == "web_search" && search_rate_limited(&content) {
                     rate_limited = true;
