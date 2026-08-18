@@ -49,6 +49,7 @@ pub fn all_tool_names() -> &'static [&'static str] {
         "sandbox_list_files",
         "sandbox_search_code",
         "sandbox_read_file",
+        "sandbox_write_file",
         "sandbox_run",
     ]
 }

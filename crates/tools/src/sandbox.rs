@@ -132,6 +132,31 @@ impl LazySandbox {
         Ok(text)
     }
 
+    /// Write a file into the sandbox workspace.
+    ///
+    /// Content travels as request data and is fed to the container on stdin,
+    /// never reinterpreted as a command. Requests `NetworkAccess::None`, so a
+    /// write never causes a session's sandbox to gain network access.
+    pub async fn write_file(
+        &self,
+        path: &str,
+        content: &str,
+        executable: bool,
+    ) -> Result<String, String> {
+        let sandbox = self.get_or_start(NetworkAccess::None).await?;
+        let result = sandbox.write_file(path, content, executable).await?;
+        let location = result
+            .path
+            .strip_prefix("/workspace")
+            .unwrap_or(&result.path);
+        Ok(format!(
+            "Wrote {} bytes to {}{}",
+            result.bytes_written,
+            location,
+            if executable { " (executable)" } else { "" },
+        ))
+    }
+
     pub async fn run(
         &self,
         command: &str,
@@ -223,6 +248,7 @@ pub fn all_definitions() -> Vec<Value> {
         sandbox_list_files_definition(),
         sandbox_search_code_definition(),
         sandbox_read_file_definition(),
+        sandbox_write_file_definition(),
         sandbox_run_definition(),
     ]
 }
@@ -322,6 +348,34 @@ pub fn sandbox_read_file_definition() -> Value {
                 }
             },
             "required": ["path"]
+        }
+    })
+}
+
+pub fn sandbox_write_file_definition() -> Value {
+    json!({
+        "name": "sandbox_write_file",
+        "description": "Write a file into the sandbox workspace. The sandbox has no network \
+            access, so use this to get content in before running it — e.g. a script fetched from \
+            a URL (via fetch_webpage) or provided by the user — then execute it with sandbox_run. \
+            Content is passed as data and never interpreted as a command.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "path": {
+                    "type": "string",
+                    "description": "Relative workspace path (e.g. 'scripts/run.py')."
+                },
+                "content": {
+                    "type": "string",
+                    "description": "File contents to write (max 256 KiB)."
+                },
+                "executable": {
+                    "type": "boolean",
+                    "description": "Mark the file executable after writing (for scripts)."
+                }
+            },
+            "required": ["path", "content"]
         }
     })
 }

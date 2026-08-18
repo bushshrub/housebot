@@ -997,6 +997,7 @@ async fn build_tools_includes_sandbox_tools() {
     assert!(names.contains(&"sandbox_list_files"));
     assert!(names.contains(&"sandbox_search_code"));
     assert!(names.contains(&"sandbox_read_file"));
+    assert!(names.contains(&"sandbox_write_file"));
     assert!(names.contains(&"sandbox_run"));
 }
 

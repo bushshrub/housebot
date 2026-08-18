@@ -779,6 +779,7 @@ fn all_tool_names_matches_built_in_definitions() {
         "sandbox_list_files",
         "sandbox_search_code",
         "sandbox_read_file",
+        "sandbox_write_file",
         "sandbox_run",
     ]
     .into_iter()
