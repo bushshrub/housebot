@@ -528,6 +528,18 @@ impl Agent {
                         .await
                         .unwrap_or_else(|e| format!("Error: {e}")),
                 ),
+                "sandbox_write_file" => ToolOutcome::Text(
+                    sandbox
+                        .write_file(
+                            str_arg(args, "path"),
+                            str_arg(args, "content"),
+                            args.get("executable")
+                                .and_then(Value::as_bool)
+                                .unwrap_or(false),
+                        )
+                        .await
+                        .unwrap_or_else(|e| format!("Error: {e}")),
+                ),
                 "sandbox_run" => ToolOutcome::Text(
                     sandbox
                         .run(

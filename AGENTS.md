@@ -75,7 +75,7 @@ src/
     translate.rs     # translate
     feature_request.rs # create_feature_request + per-user RateLimiter
     feature_development.rs # prepare_feature_development + owner auth + rate limit
-    sandbox.rs         # LazySandbox + five tool definitions
+    sandbox.rs         # LazySandbox + six tool definitions
   coding_agent/
     catalog.rs       # versioned agent/model catalog (loaded from .github/agents/catalog.json)
     pending.rs       # PendingDevelopmentJob state machine (15-min expiry, atomic dispatch guard)

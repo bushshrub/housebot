@@ -104,8 +104,12 @@ the development-completion notification channel. Collective batch operations (se
 set_user_respond_all) apply to all users with existing policies. Only available to authorized \
 configurers (the bot owner plus users granted access).\n\
 - sandbox_clone_repository, sandbox_list_files, sandbox_search_code, sandbox_read_file, \
-sandbox_run — Limited tools for inspecting and executing code in a temporary sandbox. \
-Use them only when code inspection or a short execution would materially improve the answer. \
+sandbox_write_file, sandbox_run — Limited tools for inspecting and executing code in a temporary \
+sandbox. Sandbox commands run without network access: clone a public repository with \
+sandbox_clone_repository (which starts a networked sandbox) to download code, or fetch content \
+from the web with fetch_webpage and write it into the workspace with sandbox_write_file before \
+running it. \
+Use these tools only when code inspection or a short execution would materially improve the answer. \
 This is not a full software-development environment. Do not use it for autonomous feature \
 implementation, commits, pushes, pull requests, or deployment. Prefer conversational explanation \
 when execution is unnecessary. Report command and test results accurately.
