@@ -122,13 +122,23 @@ impl AgentHooks for ResponseProgressHooks {
     }
 
     async fn on_tool_called(&self, tool: &str, args: &serde_json::Value) {
+        self.push_status(tool_status(tool), tool, args).await;
+    }
+
+    async fn on_subagent_tool_called(&self, tool: &str, args: &serde_json::Value) {
+        self.push_status(subagent_tool_status(tool), tool, args)
+            .await;
+    }
+}
+
+impl ResponseProgressHooks {
+    async fn push_status(&self, status: String, tool: &str, args: &serde_json::Value) {
         self.generating.store(false, Ordering::Release);
         let content = {
             let mut calls = self.tool_calls.lock().unwrap();
             if !calls.is_empty() {
                 calls.push('\n');
             }
-            let status = tool_status(tool);
             let hint = tool_hint(tool, args);
             if hint.is_empty() {
                 calls.push_str(&status);

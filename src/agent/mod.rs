@@ -164,6 +164,8 @@ pub trait AgentHooks: Send + Sync {
     async fn on_text_stream_end(&self) {}
     /// A tool is about to run.
     async fn on_tool_called(&self, _tool: &str, _args: &Value) {}
+    /// A tool is about to run inside a sub-agent spawned by this turn.
+    async fn on_subagent_tool_called(&self, _tool: &str, _args: &Value) {}
     /// A progress update from a long-running operation.
     async fn on_progress(&self, _line: &str) {}
 }

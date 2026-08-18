@@ -352,15 +352,28 @@ fn hint_unknown_tool_no_known_key() {
 
 // ── tool_status ──
 #[test]
-fn status_includes_tool_name() {
-    assert_eq!(tool_status("web_search"), "🔎 **Running `web_search`...**");
-    assert_eq!(
-        tool_status("sandbox_run"),
-        "📦 **Running `sandbox_run`...**"
-    );
+fn status_uses_a_human_readable_label() {
+    assert_eq!(tool_status("web_search"), "🔎 **Searching the web...**");
+    assert_eq!(tool_status("sandbox_run"), "📦 **Running a command...**");
     assert_eq!(
         tool_status("spawn_subagent"),
-        "🧠 **Running `spawn_subagent`...**"
+        "🧠 **Starting a subagent...**"
+    );
+    assert_eq!(
+        tool_status("get_messages"),
+        "💬 **Reading conversations...**"
+    );
+}
+
+#[test]
+fn subagent_status_is_marked_as_nested() {
+    assert_eq!(
+        subagent_tool_status("web_search"),
+        "╰ 🔎 **Searching the web...**"
+    );
+    assert_eq!(
+        subagent_tool_status("new_external_tool"),
+        "╰ 🔧 **Running `new_external_tool`...**"
     );
 }
 

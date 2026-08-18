@@ -215,7 +215,7 @@ impl Agent {
                 hooks.on_tool_called(&tc.name, &args).await;
                 let outcome = self
                     .dispatch_tool(
-                        &tc.name, &args, user_id, username, channel_id, guild_id, &sandbox,
+                        &tc.name, &args, user_id, username, channel_id, guild_id, &sandbox, hooks,
                     )
                     .await;
                 let content = match outcome {
@@ -335,6 +335,7 @@ impl Agent {
         channel_id: u64,
         guild_id: Option<u64>,
         sandbox: &LazySandbox,
+        hooks: &dyn AgentHooks,
     ) -> ToolOutcome {
         let started = std::time::Instant::now();
         let outcome = self
@@ -346,6 +347,7 @@ impl Agent {
                 channel_id,
                 guild_id.unwrap_or(0),
                 sandbox,
+                hooks,
             )
             .await;
         let content = match &outcome {
