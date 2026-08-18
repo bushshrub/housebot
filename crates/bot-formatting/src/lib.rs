@@ -125,7 +125,8 @@ fn tool_label(tool_name: &str) -> Option<(&'static str, &'static str)> {
         "fetch_webpage" => ("🌐", "Reading a webpage"),
         "use_skill" => ("🧩", "Using a skill"),
         "list_skills" | "skill_info" | "read_skill_file" => ("🧩", "Looking up skills"),
-        "create_skill" | "edit_skill" | "delete_skill" | "enable_skill" | "disable_skill" => {
+        "create_skill" => ("🧩", "Creating a skill"),
+        "edit_skill" | "delete_skill" | "enable_skill" | "disable_skill" => {
             ("🧩", "Updating skills")
         }
         "run_skill_script" => ("🧩", "Running a skill script"),

@@ -1138,8 +1138,10 @@ async fn subagent_tool_calls_are_reported_to_the_hooks() {
         content: None,
         tool_calls: vec![crate::llm::ToolCall {
             id: "call_a".into(),
-            name: "web_search".into(),
-            arguments: r#"{"query":"rust"}"#.into(),
+            // Not a real sub-agent tool: the hook fires before dispatch, so this
+            // keeps the test off the network.
+            name: "not_a_subagent_tool".into(),
+            arguments: "{}".into(),
         }],
         finish_reason: Some("tool_calls".into()),
         usage: Default::default(),
@@ -1153,5 +1155,5 @@ async fn subagent_tool_calls_are_reported_to_the_hooks() {
         .await;
 
     assert_eq!(out, "report body");
-    assert_eq!(hooks.0.lock().unwrap().as_slice(), ["web_search"]);
+    assert_eq!(hooks.0.lock().unwrap().as_slice(), ["not_a_subagent_tool"]);
 }
