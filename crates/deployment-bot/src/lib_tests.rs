@@ -334,6 +334,30 @@ fn deployment_forwards_the_sandbox_runtime_to_the_sidecar() {
     assert!(!bot.iter().any(|arg| arg.starts_with("HOUSEBOT_SANDBOX_")));
 }
 
+/// Compose keeps restarting a container it created even after the service is
+/// gone from the file, so the duplicate chatbot outlives the compose edit.
+#[test]
+fn compose_duplicates_are_matched_by_project_and_service_together() {
+    assert_eq!(COMPOSE_DUPLICATE_SERVICES, &["housebot", "sandboxd"]);
+
+    let args = compose_duplicate_query("housebot");
+    assert!(args.contains(&"label=com.docker.compose.project=house-chatbot".to_string()));
+    assert!(args.contains(&"label=com.docker.compose.service=housebot".to_string()));
+    assert!(args.contains(&"--all".to_string()));
+}
+
+/// Postgres and this bot are still compose's to manage; removing them would
+/// take the database and the deployment surface down with the duplicate.
+#[test]
+fn compose_duplicates_exclude_the_services_this_bot_does_not_own() {
+    for service in ["postgres", "deployment-bot"] {
+        assert!(
+            !COMPOSE_DUPLICATE_SERVICES.contains(&service),
+            "{service} must not be removed by the deployment bot"
+        );
+    }
+}
+
 #[test]
 fn completed_deployment_message_includes_container_name_and_id() {
     let summary = DeploymentRunSummary {

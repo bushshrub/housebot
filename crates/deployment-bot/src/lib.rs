@@ -78,6 +78,24 @@ struct DeploymentBot {
 
 const HOUSE_CHATBOT_CONTAINER: &str = "house-chatbot";
 const SANDBOXD_CONTAINER: &str = "housebot-sandboxd";
+/// Compose services this bot took over. Anything else in the project — postgres,
+/// the deployment bot itself — stays compose's to manage.
+const COMPOSE_DUPLICATE_SERVICES: &[&str] = &["housebot", "sandboxd"];
+
+/// Find a compose-created container for one service of the `house-chatbot`
+/// project, named by `name:` in `docker-compose.yml`. Both labels are required:
+/// the service label alone would match an unrelated stack on the same host.
+fn compose_duplicate_query(service: &str) -> Vec<String> {
+    vec![
+        "ps".into(),
+        "--all".into(),
+        "--quiet".into(),
+        "--filter".into(),
+        "label=com.docker.compose.project=house-chatbot".into(),
+        "--filter".into(),
+        format!("label=com.docker.compose.service={service}"),
+    ]
+}
 
 mod docker;
 mod handler;
@@ -174,6 +192,36 @@ impl DeploymentBot {
             }
         }
         Ok(())
+    }
+
+    /// Remove the chatbot and sidecar containers a previous `compose up` left
+    /// behind. Dropping those services from `docker-compose.yml` does not stop
+    /// containers compose already created — they carry `restart: unless-stopped`
+    /// and keep running a second chatbot on the same Discord token. This bot
+    /// holds the Docker socket, so it clears them itself instead of needing
+    /// someone on the host to run compose again.
+    async fn remove_compose_managed_duplicates(&self) {
+        for service in COMPOSE_DUPLICATE_SERVICES {
+            let args = compose_duplicate_query(service);
+            let containers = run_docker(&args.iter().map(String::as_str).collect::<Vec<_>>()).await;
+            let containers = match containers {
+                Ok(containers) => containers,
+                Err(error) => {
+                    tracing::error!(%error, service, "Could not look for compose-managed duplicates");
+                    continue;
+                }
+            };
+            for container in containers.lines().filter(|line| !line.is_empty()) {
+                tracing::warn!(
+                    service,
+                    container,
+                    "Removing a compose-managed container this bot now owns"
+                );
+                if let Err(error) = run_docker(&["rm", "--force", container]).await {
+                    tracing::error!(%error, container, "Could not remove the compose-managed duplicate");
+                }
+            }
+        }
     }
 
     /// Bring the chatbot back up when nothing is running it. Compose no longer
