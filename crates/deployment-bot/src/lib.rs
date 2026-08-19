@@ -347,6 +347,11 @@ impl DeploymentBot {
     }
 
     async fn update_to_latest(&self) -> anyhow::Result<String> {
+        // Taken before the state reads, not after: a deployment that lands
+        // between reading the running image and acquiring the lock would
+        // otherwise leave this caller acting on a stale SHA and redeploying on
+        // top of it. Re-reading under the lock turns that into a no-op.
+        let _deployment_guard = self.deployment_lock.lock().await;
         let current_sha = match self.current_running_sha().await {
             Ok(sha) => Some(sha),
             Err(error) if docker_object_missing(&error) => None,
@@ -361,7 +366,6 @@ impl DeploymentBot {
             ));
         }
 
-        let _deployment_guard = self.deployment_lock.lock().await;
         let changelog = match current_sha.as_deref() {
             Some(current_sha) => self.changelog(current_sha, &latest.sha).await?,
             None => "**Changelog**\nNo previous housebot container was found; deploying the latest commit."

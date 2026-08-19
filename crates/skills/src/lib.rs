@@ -209,7 +209,7 @@ fn builtin_skill_creator() -> Skill {
             exist. A skill is a directory: SKILL.md holds the instructions, references/ holds \
             material to read on demand, and scripts/ holds code run in the sandbox. Keep SKILL.md \
             short and move detail into references/ so it is loaded only when needed. Sandbox \
-            scripts have no network access — have the agent gather data and pass it in. Check \
+            scripts cannot count on network access — have the agent gather data and pass it in. Check \
             list_skills before choosing a name so you do not duplicate an existing skill. Present \
             a concise final draft of the name, description, instructions, and recommended tools, \
             and obtain explicit user approval before calling create_skill or edit_skill."

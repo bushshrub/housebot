@@ -181,6 +181,32 @@ fn env_vars_read_by(relative_path: &str) -> std::collections::BTreeSet<String> {
     found
 }
 
+/// Restores a variable to what it was, including being unset, when dropped — a
+/// bare `remove_var` would drop a value the environment came with, and a panic
+/// between set and remove would leak the test's value into the tests that
+/// follow.
+struct EnvVarGuard {
+    name: &'static str,
+    previous: Option<String>,
+}
+
+impl EnvVarGuard {
+    fn set(name: &'static str, value: &str) -> Self {
+        let previous = std::env::var(name).ok();
+        std::env::set_var(name, value);
+        Self { name, previous }
+    }
+}
+
+impl Drop for EnvVarGuard {
+    fn drop(&mut self) {
+        match &self.previous {
+            Some(previous) => std::env::set_var(self.name, previous),
+            None => std::env::remove_var(self.name),
+        }
+    }
+}
+
 /// The allowlist is a hand-maintained copy of the chatbot's env surface, so a
 /// variable added to the bot and forgotten here is dropped at deploy time with
 /// no error anywhere. Jellyfin and llama.cpp entries survived their features
@@ -234,9 +260,9 @@ fn housebot_env_vars_are_all_still_read_somewhere() {
 #[test]
 fn deployment_passes_database_url_to_migration_and_bot_containers() {
     let url = "postgres://housebot:secret@postgres/housebot";
-    std::env::set_var("DATABASE_URL", url);
+    let restore = EnvVarGuard::set("DATABASE_URL", url);
     let commands = deploy_commands(Some("abcdef123456"), "network").unwrap();
-    std::env::remove_var("DATABASE_URL");
+    drop(restore);
 
     let args_for = |stage| {
         &commands
@@ -315,9 +341,9 @@ fn deployment_starts_sandboxd_sidecar_and_shares_only_its_socket() {
 /// `runsc` installed cannot start a sandbox container at all.
 #[test]
 fn deployment_forwards_the_sandbox_runtime_to_the_sidecar() {
-    std::env::set_var("HOUSEBOT_SANDBOX_RUNTIME", "runc");
+    let restore = EnvVarGuard::set("HOUSEBOT_SANDBOX_RUNTIME", "runc");
     let commands = deploy_commands(Some("abcdef123456"), "network").unwrap();
-    std::env::remove_var("HOUSEBOT_SANDBOX_RUNTIME");
+    drop(restore);
 
     let daemon = &commands
         .iter()

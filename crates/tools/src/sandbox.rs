@@ -45,6 +45,7 @@ impl LazySandbox {
     /// throws away another tool's files.
     async fn get_or_start(&self, network: NetworkAccess) -> Result<Sandbox, String> {
         let mut guard = self.inner.lock().await;
+        let mut replaced = None;
         match guard.take() {
             Some((sandbox, existing))
                 if existing == NetworkAccess::PublicInternet || network == NetworkAccess::None =>
@@ -53,13 +54,27 @@ impl LazySandbox {
                 *guard = Some((sandbox, existing));
                 return Ok(result);
             }
-            Some((sandbox, _)) => {
-                let _ = sandbox.close().await;
+            Some((sandbox, existing)) => {
+                // A failed close does not mean the container is gone, so keep
+                // the entry until the replacement is running: sandboxd refuses
+                // to start a second sandbox for a session that still has one,
+                // and dropping the handle here would leave nothing able to
+                // close or reuse it.
+                if let Err(error) = sandbox.clone().close().await {
+                    tracing::warn!(%error, "Could not close the networkless sandbox being replaced");
+                }
+                replaced = Some((sandbox, existing));
             }
             None => {}
         }
 
-        let sandbox = self.client.start(&self.session_key, network).await?;
+        let sandbox = match self.client.start(&self.session_key, network).await {
+            Ok(sandbox) => sandbox,
+            Err(error) => {
+                *guard = replaced;
+                return Err(error);
+            }
+        };
         *self.started.lock().await = true;
         let result = sandbox.clone();
         *guard = Some((sandbox, network));
@@ -400,8 +415,14 @@ mod tests {
         assert_eq!(shell_quote("it's"), r"'it'\''s'");
     }
 
-    /// A stand-in sandboxd that records the methods it is asked for.
-    async fn fake_sandboxd(path: std::path::PathBuf, calls: Arc<Mutex<Vec<String>>>) {
+    /// A stand-in sandboxd that records the methods it is asked for. With
+    /// `refuse_replacement` it fails `close` and then refuses the replacement
+    /// `start`, the way a real sandboxd does while the old container is alive.
+    async fn fake_sandboxd(
+        path: std::path::PathBuf,
+        calls: Arc<Mutex<Vec<String>>>,
+        refuse_replacement: bool,
+    ) {
         let listener = tokio::net::UnixListener::bind(&path).expect("bind fake sandboxd");
         loop {
             let Ok((stream, _)) = listener.accept().await else {
@@ -415,12 +436,21 @@ mod tests {
                 while let Ok(Some(line)) = lines.next_line().await {
                     let request: Value = serde_json::from_str(&line).expect("request is JSON");
                     let method = request["method"].as_str().unwrap_or_default().to_string();
+                    let network = request["params"]["network"]
+                        .as_str()
+                        .unwrap_or_default()
+                        .to_string();
+                    if refuse_replacement && (method == "close" || network == "public") {
+                        calls.lock().await.push(format!("refused:{method}"));
+                        let response = json!({"id": request["id"], "error": "sandbox is busy"});
+                        let mut bytes = serde_json::to_vec(&response).expect("serialise response");
+                        bytes.push(b'\n');
+                        let _ = writer.write_all(&bytes).await;
+                        continue;
+                    }
                     let result = match method.as_str() {
                         "start" => {
-                            calls.lock().await.push(format!(
-                                "start:{}",
-                                request["params"]["network"].as_str().unwrap_or_default()
-                            ));
+                            calls.lock().await.push(format!("start:{network}"));
                             json!({"sandbox_id": "sandbox-1"})
                         }
                         "close" => {
@@ -448,10 +478,20 @@ mod tests {
 
     async fn lazy_sandbox_against_fake() -> (LazySandbox, Arc<Mutex<Vec<String>>>, tempfile::TempDir)
     {
+        lazy_sandbox_with(false).await
+    }
+
+    async fn lazy_sandbox_with(
+        refuse_replacement: bool,
+    ) -> (LazySandbox, Arc<Mutex<Vec<String>>>, tempfile::TempDir) {
         let dir = tempfile::tempdir().expect("temp dir");
         let socket = dir.path().join("sandbox.sock");
         let calls = Arc::new(Mutex::new(Vec::new()));
-        tokio::spawn(fake_sandboxd(socket.clone(), Arc::clone(&calls)));
+        tokio::spawn(fake_sandboxd(
+            socket.clone(),
+            Arc::clone(&calls),
+            refuse_replacement,
+        ));
         for _ in 0..100 {
             if socket.exists() {
                 break;
@@ -493,6 +533,34 @@ mod tests {
         assert_eq!(
             *calls.lock().await,
             vec!["start:public", "clone_repository", "list_files"]
+        );
+    }
+
+    /// A close that fails leaves the old container alive, so sandboxd refuses
+    /// the replacement. The session must keep its original sandbox rather than
+    /// losing the handle to a container nothing can close or reuse.
+    #[tokio::test]
+    async fn a_refused_replacement_keeps_the_original_sandbox() {
+        let (sandbox, calls, _dir) = lazy_sandbox_with(true).await;
+        sandbox.list_files(".", None).await.unwrap();
+
+        let error = sandbox
+            .clone_repository("https://github.com/owner/repo", None)
+            .await
+            .unwrap_err();
+        assert!(error.contains("busy"), "error: {error}");
+
+        // The retained sandbox still serves networkless work, with no second start.
+        sandbox.list_files(".", None).await.unwrap();
+        assert_eq!(
+            *calls.lock().await,
+            vec![
+                "start:none",
+                "list_files",
+                "refused:close",
+                "refused:start",
+                "list_files"
+            ]
         );
     }
 }

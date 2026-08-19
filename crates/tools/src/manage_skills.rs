@@ -39,9 +39,10 @@ pub fn run_script_definition() -> Value {
     json!({
         "name": "run_skill_script",
         "description": "Run one script from a skill's scripts/ directory inside the sandbox and \
-            return its output. Supported types are .py, .sh, and .js. The script has NO network \
-            access — gather any data you need with web_search or fetch_webpage first and pass it \
-            in through args. Run a script only when the skill's instructions call for it.",
+            return its output. Supported types are .py, .sh, and .js. The script never opens \
+            network access on its own, and has NO network unless the session already cloned a \
+            repository — gather any data you need with web_search or fetch_webpage first and pass \
+            it in through args. Run a script only when the skill's instructions call for it.",
         "input_schema": {
             "type": "object",
             "properties": {
@@ -447,9 +448,12 @@ mod tests {
         let run = run_script_definition();
         assert_eq!(run["name"], "run_skill_script");
         assert_eq!(run["input_schema"]["required"], json!(["skill", "file"]));
-        // The no-network constraint must reach the model, not just the runtime.
+        // The network constraint must reach the model, not just the runtime,
+        // and it is conditional: a clone earlier in the session leaves the
+        // sandbox networked for everything that follows.
         let description = run["description"].as_str().unwrap();
         assert!(description.contains("NO network"));
+        assert!(description.contains("unless the session already cloned"));
     }
 
     #[tokio::test]

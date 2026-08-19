@@ -417,7 +417,7 @@ pub(crate) fn build_loaded_skill_content(skill: &Skill, instructions: &str) -> S
     if !skill.scripts.is_empty() {
         parts.push(format!(
             "## Scripts\nRun these in the sandbox with run_skill_script when the instructions \
-             call for them: {}. They have no network access.",
+             call for them: {}. They cannot count on network access.",
             skill.scripts.join(", ")
         ));
     }
