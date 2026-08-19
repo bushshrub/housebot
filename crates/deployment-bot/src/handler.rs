@@ -28,6 +28,7 @@ impl EventHandler for DeploymentBot {
             }
         }
 
+        self.remove_compose_managed_duplicates().await;
         if let Some(message) = self.ensure_house_chatbot_running().await {
             if let Err(error) = ChannelId::new(self.channel_id)
                 .say(&ctx.http, message)
