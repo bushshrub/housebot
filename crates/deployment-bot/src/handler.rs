@@ -27,6 +27,15 @@ impl EventHandler for DeploymentBot {
                 }
             }
         }
+
+        if let Some(message) = self.ensure_house_chatbot_running().await {
+            if let Err(error) = ChannelId::new(self.channel_id)
+                .say(&ctx.http, message)
+                .await
+            {
+                tracing::error!(%error, "Could not report the startup deployment");
+            }
+        }
     }
 
     async fn message(&self, ctx: Context, message: Message) {

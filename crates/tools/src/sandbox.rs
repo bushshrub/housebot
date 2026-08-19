@@ -20,7 +20,7 @@ use housebot_sandbox::{NetworkAccess, Sandbox, SandboxClient};
 pub struct LazySandbox {
     client: SandboxClient,
     session_key: String,
-    inner: Arc<Mutex<Option<Sandbox>>>,
+    inner: Arc<Mutex<Option<(Sandbox, NetworkAccess)>>>,
     /// Track whether any sandbox tool has been called (to provide better errors).
     started: Arc<Mutex<bool>>,
 }
@@ -36,23 +36,40 @@ impl LazySandbox {
     }
 
     /// Attach to the session's sandbox, starting one if the session has none.
+    ///
+    /// A container's network mode is fixed at creation, so a request for
+    /// internet access against a networkless sandbox replaces it: sandboxd
+    /// would otherwise refuse, leaving the session unable to clone for as long
+    /// as it lives. The replacement discards the workspace, which is why only
+    /// `NetworkAccess::PublicInternet` triggers it — no networkless tool ever
+    /// throws away another tool's files.
     async fn get_or_start(&self, network: NetworkAccess) -> Result<Sandbox, String> {
         let mut guard = self.inner.lock().await;
-        if let Some(ref sandbox) = *guard {
-            return Ok(sandbox.clone());
+        match guard.take() {
+            Some((sandbox, existing))
+                if existing == NetworkAccess::PublicInternet || network == NetworkAccess::None =>
+            {
+                let result = sandbox.clone();
+                *guard = Some((sandbox, existing));
+                return Ok(result);
+            }
+            Some((sandbox, _)) => {
+                let _ = sandbox.close().await;
+            }
+            None => {}
         }
 
         let sandbox = self.client.start(&self.session_key, network).await?;
         *self.started.lock().await = true;
         let result = sandbox.clone();
-        *guard = Some(sandbox);
+        *guard = Some((sandbox, network));
         Ok(result)
     }
 
     /// Discard the session's workspace before the idle timeout would.
     pub async fn close(&self) {
         let mut guard = self.inner.lock().await;
-        if let Some(sandbox) = guard.take() {
+        if let Some((sandbox, _)) = guard.take() {
             let _ = sandbox.close().await;
         }
     }
@@ -160,11 +177,11 @@ impl LazySandbox {
     /// Requests `NetworkAccess::None`, so a skill script never *causes* a
     /// session's sandbox to gain network it would not otherwise have.
     ///
-    /// It does not guarantee the script runs without network. `get_or_start` is
-    /// first-wins: if the session already started networked — say a
-    /// `sandbox_clone_repository` ran first — the script executes in that
-    /// container. The containment that matters is the sandbox itself (gVisor,
-    /// tmpfs, no host mounts, no secrets), not the network mode.
+    /// It does not guarantee the script runs without network: if the session
+    /// already started networked — say a `sandbox_clone_repository` ran first —
+    /// the script executes in that container. The containment that matters is
+    /// the sandbox itself (gVisor, tmpfs, no host mounts, no secrets), not the
+    /// network mode.
     pub async fn run_skill_script(
         &self,
         skill: &str,
@@ -381,5 +398,101 @@ mod tests {
         let quoted = shell_quote("; rm -rf /");
         assert_eq!(quoted, "'; rm -rf /'");
         assert_eq!(shell_quote("it's"), r"'it'\''s'");
+    }
+
+    /// A stand-in sandboxd that records the methods it is asked for.
+    async fn fake_sandboxd(path: std::path::PathBuf, calls: Arc<Mutex<Vec<String>>>) {
+        let listener = tokio::net::UnixListener::bind(&path).expect("bind fake sandboxd");
+        loop {
+            let Ok((stream, _)) = listener.accept().await else {
+                return;
+            };
+            let calls = Arc::clone(&calls);
+            tokio::spawn(async move {
+                use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+                let (reader, mut writer) = stream.into_split();
+                let mut lines = BufReader::new(reader).lines();
+                while let Ok(Some(line)) = lines.next_line().await {
+                    let request: Value = serde_json::from_str(&line).expect("request is JSON");
+                    let method = request["method"].as_str().unwrap_or_default().to_string();
+                    let result = match method.as_str() {
+                        "start" => {
+                            calls.lock().await.push(format!(
+                                "start:{}",
+                                request["params"]["network"].as_str().unwrap_or_default()
+                            ));
+                            json!({"sandbox_id": "sandbox-1"})
+                        }
+                        "close" => {
+                            calls.lock().await.push("close".to_string());
+                            json!({"closed": true})
+                        }
+                        "list_files" => {
+                            calls.lock().await.push("list_files".to_string());
+                            json!([])
+                        }
+                        "clone_repository" => {
+                            calls.lock().await.push("clone_repository".to_string());
+                            json!({"exit_code": 0, "stdout": "", "stderr": "", "truncated": false})
+                        }
+                        other => panic!("unexpected method {other}"),
+                    };
+                    let response = json!({"id": request["id"], "result": result});
+                    let mut bytes = serde_json::to_vec(&response).expect("serialise response");
+                    bytes.push(b'\n');
+                    let _ = writer.write_all(&bytes).await;
+                }
+            });
+        }
+    }
+
+    async fn lazy_sandbox_against_fake() -> (LazySandbox, Arc<Mutex<Vec<String>>>, tempfile::TempDir)
+    {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let socket = dir.path().join("sandbox.sock");
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        tokio::spawn(fake_sandboxd(socket.clone(), Arc::clone(&calls)));
+        for _ in 0..100 {
+            if socket.exists() {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        let client = SandboxClient::new(socket.to_string_lossy().to_string());
+        (LazySandbox::new(client, "session-1"), calls, dir)
+    }
+
+    #[tokio::test]
+    async fn cloning_replaces_a_networkless_sandbox_instead_of_failing() {
+        let (sandbox, calls, _dir) = lazy_sandbox_against_fake().await;
+        sandbox.list_files(".", None).await.unwrap();
+        sandbox
+            .clone_repository("https://github.com/owner/repo", None)
+            .await
+            .unwrap();
+        assert_eq!(
+            *calls.lock().await,
+            vec![
+                "start:none",
+                "list_files",
+                "close",
+                "start:public",
+                "clone_repository"
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn a_networked_sandbox_is_reused_by_networkless_tools() {
+        let (sandbox, calls, _dir) = lazy_sandbox_against_fake().await;
+        sandbox
+            .clone_repository("https://github.com/owner/repo", None)
+            .await
+            .unwrap();
+        sandbox.list_files(".", None).await.unwrap();
+        assert_eq!(
+            *calls.lock().await,
+            vec!["start:public", "clone_repository", "list_files"]
+        );
     }
 }

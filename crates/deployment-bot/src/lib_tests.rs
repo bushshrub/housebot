@@ -311,6 +311,29 @@ fn deployment_starts_sandboxd_sidecar_and_shares_only_its_socket() {
     );
 }
 
+/// Without this the sidecar always asks Docker for gVisor, and a host without
+/// `runsc` installed cannot start a sandbox container at all.
+#[test]
+fn deployment_forwards_the_sandbox_runtime_to_the_sidecar() {
+    std::env::set_var("HOUSEBOT_SANDBOX_RUNTIME", "runc");
+    let commands = deploy_commands(Some("abcdef123456"), "network").unwrap();
+    std::env::remove_var("HOUSEBOT_SANDBOX_RUNTIME");
+
+    let daemon = &commands
+        .iter()
+        .find(|command| command.stage == DeploymentStage::StartSandboxDaemon)
+        .unwrap()
+        .args;
+    assert!(daemon.contains(&"HOUSEBOT_SANDBOX_RUNTIME=runc".to_string()));
+
+    let bot = &commands
+        .iter()
+        .find(|command| command.stage == DeploymentStage::StartRequestedImage)
+        .unwrap()
+        .args;
+    assert!(!bot.iter().any(|arg| arg.starts_with("HOUSEBOT_SANDBOX_")));
+}
+
 #[test]
 fn completed_deployment_message_includes_container_name_and_id() {
     let summary = DeploymentRunSummary {

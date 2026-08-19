@@ -6,10 +6,10 @@ use std::sync::Arc;
 
 use serde::Deserialize;
 use serenity::all::{
-    ButtonStyle, Command, CommandDataOptionValue, CommandOptionType, Context, CreateActionRow,
-    CreateButton, CreateCommand, CreateCommandOption, CreateEmbed, CreateInteractionResponse,
-    CreateInteractionResponseMessage, EditInteractionResponse, EventHandler, GatewayIntents,
-    GuildId, Interaction, Message, Ready,
+    ButtonStyle, ChannelId, Command, CommandDataOptionValue, CommandOptionType, Context,
+    CreateActionRow, CreateButton, CreateCommand, CreateCommandOption, CreateEmbed,
+    CreateInteractionResponse, CreateInteractionResponseMessage, EditInteractionResponse,
+    EventHandler, GatewayIntents, GuildId, Interaction, Message, Ready,
 };
 use serenity::Client;
 use tokio::process::Command as ProcessCommand;
@@ -174,6 +174,38 @@ impl DeploymentBot {
             }
         }
         Ok(())
+    }
+
+    /// Bring the chatbot back up when nothing is running it. Compose no longer
+    /// declares the `house-chatbot` service — this bot owns that container, and
+    /// it stops it on shutdown — so a host reboot leaves nothing to start it.
+    async fn ensure_house_chatbot_running(&self) -> Option<String> {
+        match run_docker(&[
+            "inspect",
+            "--format={{.State.Running}}",
+            HOUSE_CHATBOT_CONTAINER,
+        ])
+        .await
+        {
+            Ok(state) if state == "true" => return None,
+            Ok(_) => {}
+            Err(error) if docker_object_missing(&error) => {}
+            Err(error) => {
+                tracing::error!(%error, "Could not check whether housebot is running");
+                return None;
+            }
+        }
+        tracing::info!("No running housebot container at startup; deploying the latest commit");
+        match self.update_to_latest().await {
+            Ok(message) => {
+                tracing::info!("Startup deployment completed");
+                Some(message)
+            }
+            Err(error) => {
+                tracing::error!(%error, "Startup deployment failed");
+                Some(format!("❌ Startup deployment failed: {error}"))
+            }
+        }
     }
 
     async fn commits(&self, sha: &str) -> anyhow::Result<(GitHubCommit, Vec<GitHubCommit>)> {
@@ -441,8 +473,8 @@ const HOUSEBOT_ENV_VARS: &[&str] = &[
     "DEV_NOTIFY_SIGNING_KEY",
 ];
 
-fn housebot_env() -> Vec<(String, String)> {
-    let mut values: HashMap<String, String> = HOUSEBOT_ENV_VARS
+fn configured_env(names: &[&str]) -> HashMap<String, String> {
+    let mut values: HashMap<String, String> = names
         .iter()
         .filter_map(|name| {
             std::env::var(name)
@@ -456,13 +488,18 @@ fn housebot_env() -> Vec<(String, String)> {
     for path in ["/app/.env", ".env"] {
         if let Ok(contents) = std::fs::read_to_string(path) {
             for (name, value) in parse_dotenv(&contents) {
-                if HOUSEBOT_ENV_VARS.contains(&name.as_str()) {
+                if names.contains(&name.as_str()) {
                     values.insert(name, value);
                 }
             }
         }
     }
 
+    values
+}
+
+fn housebot_env() -> Vec<(String, String)> {
+    let mut values = configured_env(HOUSEBOT_ENV_VARS);
     HOUSEBOT_ENV_VARS
         .iter()
         .filter_map(|name| values.remove(*name).map(|value| ((*name).into(), value)))

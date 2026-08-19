@@ -162,6 +162,7 @@ pub(crate) fn container_commands_with_env(
         .unwrap_or_else(|| "latest".to_string());
     let sandboxd_image = format!("ghcr.io/bushshrub/housebot/sandboxd:{sandbox_tag}");
     let sandbox_image = format!("ghcr.io/bushshrub/housebot/sandbox:{sandbox_tag}");
+    let sandboxd_env = forwarded_sandboxd_env();
     let socket_volume = "housebot-sandbox-socket";
     let socket_mount = format!("{socket_volume}:/run/housebot-sandbox");
     let mut run = vec![
@@ -222,9 +223,8 @@ pub(crate) fn container_commands_with_env(
             DeploymentStage::CreateSandboxSocketVolume,
             vec!["volume".into(), "create".into(), socket_volume.into()],
         ),
-        DeploymentCommand::new(
-            DeploymentStage::StartSandboxDaemon,
-            vec![
+        DeploymentCommand::new(DeploymentStage::StartSandboxDaemon, {
+            let mut daemon = vec![
                 "run".into(),
                 "--detach".into(),
                 "--name".into(),
@@ -233,13 +233,20 @@ pub(crate) fn container_commands_with_env(
                 "unless-stopped".into(),
                 "--env".into(),
                 format!("HOUSEBOT_SANDBOX_IMAGE={sandbox_image}"),
+            ];
+            for (name, value) in &sandboxd_env {
+                daemon.push("--env".into());
+                daemon.push(format!("{name}={value}"));
+            }
+            daemon.extend([
                 "--volume".into(),
                 "/var/run/docker.sock:/var/run/docker.sock".into(),
                 "--volume".into(),
                 socket_mount,
                 sandboxd_image,
-            ],
-        ),
+            ]);
+            daemon
+        }),
         DeploymentCommand::new(
             DeploymentStage::CheckSandboxDaemon,
             vec![
@@ -260,6 +267,23 @@ pub(crate) fn container_commands_with_env(
             ],
         ),
     ])
+}
+
+/// Variables sandboxd reads from its own environment. Without them the sidecar
+/// falls back to gVisor, and a host without `runsc` installed cannot start any
+/// sandbox container at all.
+const SANDBOXD_ENV_VARS: &[&str] = &["HOUSEBOT_SANDBOX_RUNTIME", "SANDBOX_IDLE_TIMEOUT_SECS"];
+
+fn forwarded_sandboxd_env() -> Vec<(String, String)> {
+    let configured = configured_env(SANDBOXD_ENV_VARS);
+    SANDBOXD_ENV_VARS
+        .iter()
+        .filter_map(|name| {
+            configured
+                .get(*name)
+                .map(|value| ((*name).to_string(), value.clone()))
+        })
+        .collect()
 }
 
 pub fn deploy_progress(stage: DeploymentStage) -> &'static str {

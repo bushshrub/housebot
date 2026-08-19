@@ -16,36 +16,9 @@ services:
     volumes:
       - postgres-data:/var/lib/postgresql/data
 
-  # Owns Docker. The bot reaches it over `sandbox-socket` and never sees the
-  # Docker socket itself — that separation is the whole point of the sidecar,
-  # so do not add /var/run/docker.sock to the housebot service.
-  sandboxd:
-    image: ghcr.io/bushshrub/housebot/sandboxd:latest
-    restart: unless-stopped
-    env_file: .env
-    volumes:
-      - /var/run/docker.sock:/var/run/docker.sock
-      - sandbox-socket:/run/housebot-sandbox
-    environment:
-      - SANDBOX_SOCKET_PATH=/run/housebot-sandbox/sandbox.sock
-      - HOUSEBOT_SANDBOX_IMAGE=ghcr.io/bushshrub/housebot/sandbox:latest
-
-  housebot:
-    image: ghcr.io/bushshrub/housebot:latest
-    restart: unless-stopped
-    env_file: .env
-    depends_on:
-      postgres:
-        condition: service_healthy
-      sandboxd:
-        condition: service_started
-    volumes:
-      - ./data:/app/data
-      - sandbox-socket:/run/housebot-sandbox
-    environment:
-      - DATA_DIR=/app/data
-      - SANDBOX_SOCKET_PATH=/run/housebot-sandbox/sandbox.sock
-
+  # `house-chatbot` and `housebot-sandboxd` are deliberately absent: the
+  # deployment bot creates, replaces, and rolls those containers back itself.
+  # Declaring them here as well ran a second chatbot on the same Discord token.
   deployment-bot:
     image: ghcr.io/bushshrub/housebot/deployment-bot:latest
     restart: unless-stopped
@@ -58,4 +31,3 @@ services:
 
 volumes:
   postgres-data:
-  sandbox-socket:

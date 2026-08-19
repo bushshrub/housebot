@@ -25,8 +25,13 @@ A Discord-based house assistant bot powered by a local LLM (llama.cpp). **Writte
 
 ```bash
 cp .env.example .env          # fill in required values
-docker compose up -d          # start the bot
+docker compose up -d          # start postgres and the deployment bot
 ```
+
+Compose runs postgres and the deployment bot only. The deployment bot owns the
+`house-chatbot` and `housebot-sandboxd` containers: it deploys the latest commit
+when nothing is running one, and replaces them on `/deploy`, `/update`, and
+`/rollback`.
 
 ## Development
 
