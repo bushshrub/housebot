@@ -33,6 +33,10 @@ Compose runs postgres and the deployment bot only. The deployment bot owns the
 when nothing is running one, and replaces them on `/deploy`, `/update`, and
 `/rollback`.
 
+For the Kubernetes deployment — a single-replica gateway, an autoscaled sandbox
+tier under gVisor, and a CloudNativePG cluster — see
+[`deploy/kubernetes/README.md`](deploy/kubernetes/README.md).
+
 ## Development
 
 ```bash
@@ -55,6 +59,8 @@ See `.env.example` for all available options. Key variables:
 | `GITHUB_*` | GitHub App credentials for issue filing and coding-agent dispatch |
 | `SENTRY_DSN` / `SENTRY_ENVIRONMENT` | Optional Sentry error reporting for the chatbot |
 | `SANDBOX_SOCKET_PATH` | Unix socket path for sandboxd (default `/run/housebot-sandbox/sandbox.sock`) |
+| `SANDBOX_API_URL` / `SANDBOX_API_TOKEN` | Reach the sandbox tier over HTTP instead of the socket; set under Kubernetes |
+| `SANDBOX_RUNTIME_BACKEND` | `docker` (default) or `kubernetes`; read by the sandbox tier, not the bot |
 | `SANDBOX_IDLE_TIMEOUT_SECS` | Idle time before a user's sandbox is reaped (default 300) |
 | `HOUSEBOT_SANDBOX_RUNTIME` | Override container runtime (default `runsc`; set to `runc` for dev/CI) |
 | `SKILLS_DIR` | Skill directories on the data volume (default `<DATA_DIR>/skills`) |
@@ -93,10 +99,13 @@ upgrading it.
 ### Security model
 
 ```
-Housebot  →  typed request  →  sandboxd  →  docker run --runtime=runsc  →  gVisor
+Housebot  →  typed request  →  sandboxd     →  docker run --runtime=runsc  →  gVisor
+Housebot  →  HTTP request   →  sandbox-api  →  Pod with runtimeClass gvisor →  gVisor
 ```
 
-- **Housebot never holds the Docker socket** — only `sandboxd` does.
+- **Housebot never holds the Docker socket** — only `sandboxd` does. Under
+  Kubernetes nothing holds it: `sandbox-api` creates Pods through the API
+  server with permission over Pods in one namespace and nothing else.
 - **gVisor (runsc)** runs each container with a userspace kernel that intercepts
   syscalls, preventing container escape without requiring hardware virtualization.
 - The container is read-only, non-root, cap-dropped, network-isolated by
@@ -108,6 +117,8 @@ Housebot  →  typed request  →  sandboxd  →  docker run --runtime=runsc  �
   in `/etc/docker/daemon.json`
 - For manual or Compose deployments, the `sandboxd` binary running beside
   Housebot with Docker socket access
+- Under Kubernetes, nodes carrying the `runsc` handler and labelled
+  `housebot.dev/gvisor=true`, and a CNI that enforces NetworkPolicy
 
 The bot starts and operates normally when `sandboxd` is unavailable; only the
 sandbox tools return an error.

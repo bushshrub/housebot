@@ -132,6 +132,9 @@ const NOT_FORWARDED: &[&str] = &[
     // Read inside the sandboxd container, which gets its own env.
     "HOUSEBOT_SANDBOX_IMAGE",
     "HOUSEBOT_SANDBOX_RUNTIME",
+    // Read by the sandbox tier, which the Kubernetes manifests configure.
+    "SANDBOX_API_LISTEN",
+    "SANDBOX_RUNTIME_BACKEND",
 ];
 
 fn env_vars_read_by(relative_path: &str) -> std::collections::BTreeSet<String> {

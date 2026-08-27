@@ -1,0 +1,129 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: sandbox-api
+  namespace: housebot
+  labels:
+    app.kubernetes.io/name: sandbox-api
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: sandbox-api
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: sandbox-api
+    spec:
+      serviceAccountName: sandbox-api
+      # Unlike a sandbox Pod, the API does need its token: driving sandbox Pods
+      # is the whole job.
+      automountServiceAccountToken: true
+      enableServiceLinks: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: sandbox-api
+          image: ghcr.io/bushshrub/housebot/sandbox-api:latest
+          ports:
+            - name: http
+              containerPort: 8080
+          env:
+            - name: SANDBOX_RUNTIME_BACKEND
+              value: kubernetes
+            - name: HOUSEBOT_SANDBOX_NAMESPACE
+              value: housebot-sandboxes
+            - name: HOUSEBOT_SANDBOX_IMAGE
+              value: ghcr.io/bushshrub/housebot/sandbox:latest
+            - name: HOUSEBOT_SANDBOX_RUNTIME_CLASS
+              value: gvisor
+            - name: SANDBOX_API_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: housebot-sandbox-api
+                  key: token
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              cpu: 500m
+              memory: 256Mi
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            periodSeconds: 10
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: http
+            periodSeconds: 5
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: tmp
+          emptyDir:
+            medium: Memory
+            sizeLimit: 16Mi
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: kubernetes.io/hostname
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector:
+            matchLabels:
+              app.kubernetes.io/name: sandbox-api
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: sandbox-api
+  namespace: housebot
+spec:
+  selector:
+    app.kubernetes.io/name: sandbox-api
+  ports:
+    - name: http
+      port: 80
+      targetPort: http
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: sandbox-api
+  namespace: housebot
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: sandbox-api
+  minReplicas: 3
+  maxReplicas: 20
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: 70
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: sandbox-api
+  namespace: housebot
+spec:
+  minAvailable: 2
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: sandbox-api
