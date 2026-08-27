@@ -1,0 +1,141 @@
+# Sandboxes deny everything by default. A sandbox with `network: none` is
+# covered entirely by this policy, so no code path can grant it access.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: sandbox-default-deny
+  namespace: housebot-sandboxes
+spec:
+  podSelector: {}
+  policyTypes: ["Ingress", "Egress"]
+---
+# Sandboxes started with `network: public` may reach the public internet and
+# nothing else. Every private range is excluded, so a sandbox cannot reach the
+# API server, the database, the bot, or another sandbox.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: sandbox-public-egress
+  namespace: housebot-sandboxes
+spec:
+  podSelector:
+    matchLabels:
+      housebot.dev/network: public
+  policyTypes: ["Egress"]
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+          podSelector:
+            matchLabels:
+              k8s-app: kube-dns
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+            except:
+              - 10.0.0.0/8
+              - 172.16.0.0/12
+              - 192.168.0.0/16
+              - 169.254.0.0/16
+              - 100.64.0.0/10
+      ports:
+        - protocol: TCP
+          port: 80
+        - protocol: TCP
+          port: 443
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: housebot-default-deny
+  namespace: housebot
+spec:
+  podSelector: {}
+  policyTypes: ["Ingress", "Egress"]
+---
+# The sandbox API accepts requests from the bot only, and is never exposed
+# outside the cluster.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: sandbox-api
+  namespace: housebot
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: sandbox-api
+  policyTypes: ["Ingress", "Egress"]
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: housebot
+      ports:
+        - protocol: TCP
+          port: 8080
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+    # The API server, which is how sandbox Pods are created and exec'd into.
+    - ports:
+        - protocol: TCP
+          port: 443
+        - protocol: TCP
+          port: 6443
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: housebot
+  namespace: housebot
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: housebot
+  policyTypes: ["Egress"]
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: sandbox-api
+      ports:
+        - protocol: TCP
+          port: 8080
+    - to:
+        - podSelector:
+            matchLabels:
+              cnpg.io/cluster: housebot-pg
+      ports:
+        - protocol: TCP
+          port: 5432
+    # Discord, the LLM server, and the other services the bot calls out to.
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+            except:
+              - 169.254.0.0/16
+      ports:
+        - protocol: TCP
+          port: 443

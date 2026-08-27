@@ -1,0 +1,44 @@
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: sandbox-api
+  namespace: housebot
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  # The identity sandbox Pods run under. It is granted nothing, and Pods never
+  # mount its token — it exists only so sandboxes do not inherit `default`.
+  name: housebot-sandbox
+  namespace: housebot-sandboxes
+automountServiceAccountToken: false
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: sandbox-api
+  namespace: housebot-sandboxes
+rules:
+  # Exactly what driving a sandbox needs, in one namespace: nothing here can
+  # read a Secret, reach another namespace, or create a workload controller
+  # that would outlive the API.
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list", "watch", "create", "delete", "patch"]
+  - apiGroups: [""]
+    resources: ["pods/exec"]
+    verbs: ["create"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: sandbox-api
+  namespace: housebot-sandboxes
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: sandbox-api
+subjects:
+  - kind: ServiceAccount
+    name: sandbox-api
+    namespace: housebot

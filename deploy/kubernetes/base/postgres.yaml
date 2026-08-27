@@ -1,0 +1,35 @@
+apiVersion: postgresql.cnpg.io/v1
+kind: Cluster
+metadata:
+  name: housebot-pg
+  namespace: housebot
+spec:
+  instances: 3
+  imageName: ghcr.io/cloudnative-pg/postgresql:17
+  primaryUpdateStrategy: unsupervised
+  bootstrap:
+    initdb:
+      database: housebot
+      owner: housebot
+      # CloudNativePG generates the password and publishes the connection
+      # string as the `housebot-pg-app` Secret, so no credential is committed.
+      secret:
+        name: housebot-pg-app
+  storage:
+    size: 20Gi
+  monitoring:
+    enablePodMonitor: true
+  postgresql:
+    parameters:
+      max_connections: "200"
+  resources:
+    requests:
+      cpu: 250m
+      memory: 512Mi
+    limits:
+      cpu: "2"
+      memory: 2Gi
+  affinity:
+    # Losing one node must not lose a quorum of the cluster.
+    enablePodAntiAffinity: true
+    topologyKey: kubernetes.io/hostname
