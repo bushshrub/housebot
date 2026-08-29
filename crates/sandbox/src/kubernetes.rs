@@ -31,11 +31,23 @@ fn image() -> String {
     std::env::var("HOUSEBOT_SANDBOX_IMAGE").unwrap_or_else(|_| DEFAULT_SANDBOX_IMAGE.to_string())
 }
 
-/// The RuntimeClass that provides the syscall boundary. Override only where
-/// gVisor is genuinely unavailable, such as a kind cluster in CI.
-fn runtime_class() -> String {
-    std::env::var("HOUSEBOT_SANDBOX_RUNTIME_CLASS")
-        .unwrap_or_else(|_| DEFAULT_RUNTIME_CLASS.to_string())
+/// The RuntimeClass that provides the syscall boundary. An empty override
+/// drops the field entirely, which is the only way to run on a cluster without
+/// gVisor installed, such as a k3d cluster in CI.
+pub fn runtime_class_from(override_value: Option<&str>) -> Option<String> {
+    match override_value {
+        Some("") => None,
+        Some(value) => Some(value.to_string()),
+        None => Some(DEFAULT_RUNTIME_CLASS.to_string()),
+    }
+}
+
+fn runtime_class() -> Option<String> {
+    runtime_class_from(
+        std::env::var("HOUSEBOT_SANDBOX_RUNTIME_CLASS")
+            .ok()
+            .as_deref(),
+    )
 }
 
 pub fn pod_name(sandbox_id: &str) -> String {
@@ -96,7 +108,7 @@ pub fn build_pod_manifest(
         "seccompProfile": {"type": "RuntimeDefault"},
     });
 
-    serde_json::json!({
+    let mut manifest = serde_json::json!({
         "apiVersion": "v1",
         "kind": "Pod",
         "metadata": {
@@ -114,7 +126,6 @@ pub fn build_pod_manifest(
             },
         },
         "spec": {
-            "runtimeClassName": runtime_class(),
             "serviceAccountName": SERVICE_ACCOUNT,
             "automountServiceAccountToken": false,
             "enableServiceLinks": false,
@@ -156,7 +167,13 @@ pub fn build_pod_manifest(
                 {"name": "home", "emptyDir": {"medium": "Memory", "sizeLimit": "32Mi"}},
             ],
         },
-    })
+    });
+
+    if let Some(class) = runtime_class() {
+        manifest["spec"]["runtimeClassName"] = serde_json::Value::String(class);
+    }
+
+    manifest
 }
 
 fn namespaced(args: &mut Vec<String>) {

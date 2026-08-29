@@ -298,3 +298,21 @@ fn a_malformed_listing_is_an_error_not_an_empty_reap_list() {
         "treating a broken listing as 'no pods' would silently strand every sandbox"
     );
 }
+
+/// A cluster without gVisor is the one case where the syscall boundary has to
+/// come off; an empty override must drop the field rather than request a
+/// RuntimeClass that does not exist, which would leave the Pod unschedulable.
+#[test]
+fn an_empty_runtime_class_override_drops_the_field() {
+    assert_eq!(runtime_class_from(Some("")), None);
+}
+
+#[test]
+fn an_unset_runtime_class_still_means_gvisor() {
+    assert_eq!(runtime_class_from(None).as_deref(), Some("gvisor"));
+}
+
+#[test]
+fn a_runtime_class_override_is_honoured() {
+    assert_eq!(runtime_class_from(Some("kata")).as_deref(), Some("kata"));
+}

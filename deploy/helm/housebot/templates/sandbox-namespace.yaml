@@ -1,0 +1,18 @@
+{{- if .Values.sandbox.createNamespace }}
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: {{ .Values.sandbox.namespace }}
+  labels:
+    {{- include "housebot.labels" . | nindent 4 }}
+    # Pod Security Admission enforces the restricted profile: no privileged
+    # pods, no host namespaces, no root, and no unconfined seccomp.
+    pod-security.kubernetes.io/enforce: restricted
+    pod-security.kubernetes.io/enforce-version: latest
+    pod-security.kubernetes.io/audit: restricted
+    pod-security.kubernetes.io/warn: restricted
+  annotations:
+    # The namespace outlives the release: deleting it would delete every
+    # running sandbox Pod along with it.
+    helm.sh/resource-policy: keep
+{{- end }}
