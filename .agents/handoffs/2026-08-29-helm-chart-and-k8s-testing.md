@@ -51,11 +51,17 @@ with `helm lint` and `helm template` across the cnpg, external-secret, no-db,
 both-set and no-gvisor value paths. A `values.schema.json` rejects bad input at
 template time.
 
-The database is **consumed, not owned**: the chart creates no Postgres and no
-CNPG `Cluster` CR. `database.cnpgCluster: housebot-pg` resolves to the
-`housebot-pg-app` Secret and `uri` key that CloudNativePG publishes, and enables
-the `cnpg.io/cluster` NetworkPolicy egress rule. `database.existingSecret`
-covers any other Postgres. You create the Cluster with the operator yourself.
+The database has four mutually exclusive sources, validated in one helper:
+`database.url` (a literal URI the chart wraps in a Secret),
+`database.existingSecret`, `database.cnpgCluster` (an existing CNPG Cluster by
+name), and `database.cnpg.create` (a CNPG Cluster the chart renders, configured
+from values.yaml). Setting none or several fails at template time.
+
+**The chart never installs the CloudNativePG operator.** `database.cnpg.create`
+renders the Cluster resource only and refuses to template when the
+`postgresql.cnpg.io/v1` CRD is absent, pointing the operator at installation
+instead. The Cluster carries `helm.sh/resource-policy: keep` so an uninstall
+cannot take the data.
 
 ### `crates/sandbox/src/kubernetes.rs` — a real bug fix
 

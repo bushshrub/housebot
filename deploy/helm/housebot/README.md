@@ -29,29 +29,59 @@ the chart is needed for that path.
 
 ## Database
 
-The chart does not create or manage a database. It only needs a Secret holding
-a libpq URI, which keeps the database's lifecycle independent of the release —
-a `helm uninstall` can never take the data with it.
+Housebot needs one Postgres connection string, supplied in exactly one of four
+ways. Setting none, or more than one, fails at template time with a named
+error rather than rendering a broken manifest.
 
-This is designed to sit on top of CloudNativePG. Create the Cluster with the
-operator, then point the chart at it by name:
+**The chart never installs the CloudNativePG operator.** Where an option below
+involves CNPG, the operator is a cluster-scoped prerequisite you install
+yourself.
 
-```yaml
-database:
-  cnpgCluster: housebot-pg
-```
+1. A literal URI. The chart stores it in a Secret of its own:
 
-That resolves to the `housebot-pg-app` Secret and the `uri` key CNPG
-publishes, and adds the `cnpg.io/cluster` NetworkPolicy egress rule the bot
-needs to reach it.
+   ```yaml
+   database:
+     url: postgres://housebot:secret@db.example.com:5432/housebot
+   ```
 
-Any other Postgres works the same way:
+2. A Secret you manage:
 
-```yaml
-database:
-  existingSecret: my-database
-  secretKey: uri
-```
+   ```yaml
+   database:
+     existingSecret: my-database
+     secretKey: uri
+   ```
+
+3. An existing CloudNativePG Cluster, by name. Resolves to the `<name>-app`
+   Secret and `uri` key the operator publishes:
+
+   ```yaml
+   database:
+     cnpgCluster: housebot-pg
+   ```
+
+4. A CloudNativePG Cluster created by the chart, configured entirely from
+   `values.yaml` under `database.cnpg`:
+
+   ```yaml
+   database:
+     cnpg:
+       create: true
+       name: housebot-pg
+       instances: 3
+       storage:
+         size: 20Gi
+   ```
+
+   This renders the Cluster resource only. If the `postgresql.cnpg.io/v1` CRD
+   is absent, templating fails and tells you to install the operator. The
+   Cluster carries `helm.sh/resource-policy: keep`, so a `helm uninstall` does
+   not take the database and its PVCs with it.
+
+Options 3 and 4 let the bot reach the database through the `cnpg.io/cluster`
+Pod label. Options 1 and 2 open a NetworkPolicy egress rule on
+`networkPolicy.databasePort` instead — narrow `networkPolicy.databaseEgressCIDRs`
+to your database's address, since it defaults to any destination.
 
 ## Secrets
 

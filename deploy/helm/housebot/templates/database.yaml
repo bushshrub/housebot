@@ -1,0 +1,61 @@
+{{- $source := include "housebot.database.source" . }}
+{{- if eq $source "url" }}
+apiVersion: v1
+kind: Secret
+metadata:
+  name: {{ include "housebot.fullname" . }}-database
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "housebot.labels" . | nindent 4 }}
+type: Opaque
+data:
+  uri: {{ .Values.database.url | b64enc | quote }}
+{{- end }}
+{{- if .Values.database.cnpg.create }}
+{{- if not (.Capabilities.APIVersions.Has "postgresql.cnpg.io/v1") }}
+{{- fail "database.cnpg.create needs the CloudNativePG operator, whose postgresql.cnpg.io/v1 CRD is not present in this cluster. Install the operator first; this chart does not install it." }}
+{{- end }}
+apiVersion: postgresql.cnpg.io/v1
+kind: Cluster
+metadata:
+  name: {{ .Values.database.cnpg.name }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "housebot.labels" . | nindent 4 }}
+  annotations:
+    # The database outlives the release. Without this a `helm uninstall` takes
+    # the Cluster, and its PVCs, with it.
+    helm.sh/resource-policy: keep
+spec:
+  instances: {{ .Values.database.cnpg.instances }}
+  imageName: {{ .Values.database.cnpg.imageName }}
+  primaryUpdateStrategy: unsupervised
+  bootstrap:
+    initdb:
+      database: {{ .Values.database.cnpg.database }}
+      owner: {{ .Values.database.cnpg.owner }}
+      # The operator generates the password and publishes the connection
+      # string as the `<name>-app` Secret, so no credential is committed.
+      secret:
+        name: {{ .Values.database.cnpg.name }}-app
+  storage:
+    size: {{ .Values.database.cnpg.storage.size }}
+    {{- with .Values.database.cnpg.storage.storageClass }}
+    storageClass: {{ . | quote }}
+    {{- end }}
+  {{- with .Values.database.cnpg.parameters }}
+  postgresql:
+    parameters:
+      {{- toYaml . | nindent 6 }}
+  {{- end }}
+  monitoring:
+    enablePodMonitor: {{ .Values.database.cnpg.monitoring.enablePodMonitor }}
+  resources:
+    {{- toYaml .Values.database.cnpg.resources | nindent 4 }}
+  {{- if .Values.database.cnpg.enablePodAntiAffinity }}
+  affinity:
+    # Losing one node must not lose a quorum of the cluster.
+    enablePodAntiAffinity: true
+    topologyKey: kubernetes.io/hostname
+  {{- end }}
+{{- end }}

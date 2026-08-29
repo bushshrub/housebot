@@ -6,15 +6,29 @@
     "bot": {
       "type": "object",
       "properties": {
-        "enabled": { "type": "boolean" },
-        "replicas": { "type": "integer", "minimum": 0, "maximum": 1 },
-        "existingSecret": { "type": "string" },
+        "enabled": {
+          "type": "boolean"
+        },
+        "replicas": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 1
+        },
+        "existingSecret": {
+          "type": "string"
+        },
         "persistence": {
           "type": "object",
           "properties": {
-            "enabled": { "type": "boolean" },
-            "size": { "type": "string" },
-            "storageClassName": { "type": "string" }
+            "enabled": {
+              "type": "boolean"
+            },
+            "size": {
+              "type": "string"
+            },
+            "storageClassName": {
+              "type": "string"
+            }
           }
         }
       }
@@ -22,22 +36,43 @@
     "sandboxApi": {
       "type": "object",
       "properties": {
-        "enabled": { "type": "boolean" },
-        "replicaCount": { "type": "integer", "minimum": 1 },
+        "enabled": {
+          "type": "boolean"
+        },
+        "replicaCount": {
+          "type": "integer",
+          "minimum": 1
+        },
         "autoscaling": {
           "type": "object",
           "properties": {
-            "enabled": { "type": "boolean" },
-            "minReplicas": { "type": "integer", "minimum": 1 },
-            "maxReplicas": { "type": "integer", "minimum": 1 },
-            "targetCPUUtilizationPercentage": { "type": "integer", "minimum": 1, "maximum": 100 }
+            "enabled": {
+              "type": "boolean"
+            },
+            "minReplicas": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "maxReplicas": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "targetCPUUtilizationPercentage": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 100
+            }
           }
         },
         "auth": {
           "type": "object",
           "properties": {
-            "existingSecret": { "type": "string" },
-            "token": { "type": "string" }
+            "existingSecret": {
+              "type": "string"
+            },
+            "token": {
+              "type": "string"
+            }
           }
         }
       }
@@ -45,10 +80,21 @@
     "sandbox": {
       "type": "object",
       "properties": {
-        "namespace": { "type": "string", "minLength": 1 },
-        "createNamespace": { "type": "boolean" },
-        "image": { "type": "string", "minLength": 1 },
-        "idleTimeoutSeconds": { "type": "integer", "minimum": 1 },
+        "namespace": {
+          "type": "string",
+          "minLength": 1
+        },
+        "createNamespace": {
+          "type": "boolean"
+        },
+        "image": {
+          "type": "string",
+          "minLength": 1
+        },
+        "idleTimeoutSeconds": {
+          "type": "integer",
+          "minimum": 1
+        },
         "runtimeClassName": {
           "type": "string",
           "description": "Empty removes the gVisor boundary; only for clusters without runsc."
@@ -58,19 +104,92 @@
     "database": {
       "type": "object",
       "properties": {
-        "cnpgCluster": { "type": "string" },
-        "existingSecret": { "type": "string" },
-        "secretKey": { "type": "string", "minLength": 1 }
+        "url": {
+          "type": "string",
+          "description": "Literal libpq URI; the chart stores it in a Secret."
+        },
+        "existingSecret": {
+          "type": "string"
+        },
+        "secretKey": {
+          "type": "string",
+          "minLength": 1
+        },
+        "cnpgCluster": {
+          "type": "string"
+        },
+        "cnpg": {
+          "type": "object",
+          "properties": {
+            "create": {
+              "type": "boolean"
+            },
+            "name": {
+              "type": "string",
+              "minLength": 1
+            },
+            "instances": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "imageName": {
+              "type": "string",
+              "minLength": 1
+            },
+            "database": {
+              "type": "string",
+              "minLength": 1
+            },
+            "owner": {
+              "type": "string",
+              "minLength": 1
+            },
+            "enablePodAntiAffinity": {
+              "type": "boolean"
+            },
+            "storage": {
+              "type": "object",
+              "properties": {
+                "size": {
+                  "type": "string"
+                },
+                "storageClass": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        }
       }
     },
     "networkPolicy": {
       "type": "object",
       "properties": {
-        "enabled": { "type": "boolean" },
-        "dnsNamespace": { "type": "string", "minLength": 1 },
+        "enabled": {
+          "type": "boolean"
+        },
+        "dnsNamespace": {
+          "type": "string",
+          "minLength": 1
+        },
         "botEgressPorts": {
           "type": "array",
-          "items": { "type": "integer", "minimum": 1, "maximum": 65535 }
+          "items": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 65535
+          }
+        },
+        "databasePort": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 65535
+        },
+        "databaseEgressCIDRs": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
         }
       }
     }

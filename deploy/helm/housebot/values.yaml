@@ -150,19 +150,55 @@ networkPolicy:
     - 443
   dnsNamespace: kube-system
 
-# Housebot connects to a Postgres you run yourself. The chart never creates or
-# manages a database: it only needs a Secret holding a libpq URI.
-#
-# This is designed to drop straight onto CloudNativePG. A CNPG Cluster named
-# `housebot-pg` publishes a Secret `housebot-pg-app` with the connection string
-# under the key `uri`, so setting `cnpgCluster: housebot-pg` is all it takes.
-# Any other Postgres works the same way via existingSecret.
-database:
-  # Convenience for CloudNativePG: resolves to the `<name>-app` Secret and the
-  # `uri` key that the operator publishes. Mutually exclusive with
-  # existingSecret.
-  cnpgCluster: ""
+  databasePort: 5432
+  # Only used when the database is not a CloudNativePG Cluster in this cluster,
+  # which the bot reaches by the operator's own Pod label instead. Narrow this
+  # to your database's address; the default permits any destination on the
+  # database port.
+  databaseEgressCIDRs:
+    - 0.0.0.0/0
 
-  # Any Secret carrying a libpq connection URI.
+# Housebot needs one Postgres connection string, supplied in exactly one of
+# four ways. The chart never installs the CloudNativePG operator; where the
+# options below involve CNPG, the operator must already be present.
+database:
+  # 1. A literal libpq URI. The chart stores it in a Secret of its own. The
+  #    simplest option, and the escape hatch when the connection string comes
+  #    from somewhere the other three cannot express.
+  url: ""
+
+  # 2. A Secret you manage, holding a libpq URI.
   existingSecret: ""
   secretKey: uri
+
+  # 3. An existing CloudNativePG Cluster, by name. Resolves to the `<name>-app`
+  #    Secret and the `uri` key the operator publishes.
+  cnpgCluster: ""
+
+  # 4. Have the chart create a CloudNativePG Cluster. This renders the Cluster
+  #    resource only — the operator that reconciles it is a cluster-scoped
+  #    prerequisite you install yourself. Templating fails with a clear message
+  #    if its CRD is absent.
+  cnpg:
+    create: false
+    name: housebot-pg
+    instances: 3
+    imageName: ghcr.io/cloudnative-pg/postgresql:17
+    database: housebot
+    owner: housebot
+    storage:
+      size: 20Gi
+      storageClass: ""
+    parameters:
+      max_connections: "200"
+    resources:
+      requests:
+        cpu: 250m
+        memory: 512Mi
+      limits:
+        cpu: "2"
+        memory: 2Gi
+    # Losing one node must not lose a quorum of the cluster.
+    enablePodAntiAffinity: true
+    monitoring:
+      enablePodMonitor: false

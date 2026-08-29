@@ -134,15 +134,27 @@ spec:
       ports:
         - protocol: TCP
           port: 8080
-    {{- if .Values.database.cnpgCluster }}
+    {{- $cnpg := include "housebot.database.cnpgClusterName" . }}
+    {{- if $cnpg }}
     # The CloudNativePG cluster's Pods carry this label.
     - to:
         - podSelector:
             matchLabels:
-              cnpg.io/cluster: {{ .Values.database.cnpgCluster }}
+              cnpg.io/cluster: {{ $cnpg }}
       ports:
         - protocol: TCP
-          port: 5432
+          port: {{ .Values.networkPolicy.databasePort }}
+    {{- else }}
+    # A database outside the cluster still has to be reachable through the
+    # default-deny policy above.
+    - to:
+        {{- range .Values.networkPolicy.databaseEgressCIDRs }}
+        - ipBlock:
+            cidr: {{ . | quote }}
+        {{- end }}
+      ports:
+        - protocol: TCP
+          port: {{ .Values.networkPolicy.databasePort }}
     {{- end }}
     # Discord, the LLM server, and the other services the bot calls out to.
     - to:

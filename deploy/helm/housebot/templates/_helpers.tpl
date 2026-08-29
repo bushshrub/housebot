@@ -95,19 +95,55 @@ from under a running bot.
 {{- end -}}
 
 {{/*
-The Secret holding the libpq URI. A CNPG cluster name resolves to the
-`<name>-app` Secret the operator publishes; otherwise an explicit Secret.
+Exactly one of the four database sources must be set. Checking it in one place
+keeps every consumer below free to assume a single answer.
+*/}}
+{{- define "housebot.database.source" -}}
+{{- $sources := list -}}
+{{- if .Values.database.url }}{{ $sources = append $sources "url" }}{{ end -}}
+{{- if .Values.database.existingSecret }}{{ $sources = append $sources "existingSecret" }}{{ end -}}
+{{- if .Values.database.cnpgCluster }}{{ $sources = append $sources "cnpgCluster" }}{{ end -}}
+{{- if .Values.database.cnpg.create }}{{ $sources = append $sources "cnpg.create" }}{{ end -}}
+{{- if gt (len $sources) 1 -}}
+{{- fail (printf "set exactly one database source, got: %s" (join ", " $sources)) -}}
+{{- else if eq (len $sources) 0 -}}
+{{- fail "set exactly one of database.url, database.existingSecret, database.cnpgCluster or database.cnpg.create" -}}
+{{- else -}}
+{{- first $sources -}}
+{{- end -}}
+{{- end -}}
+
+{{/*
+The CNPG Cluster the bot talks to, whether the chart creates it or not. Empty
+when Postgres is not CloudNativePG, which is what gates the NetworkPolicy rule
+selecting on the operator's own label.
+*/}}
+{{- define "housebot.database.cnpgClusterName" -}}
+{{- if .Values.database.cnpg.create -}}
+{{- .Values.database.cnpg.name -}}
+{{- else -}}
+{{- .Values.database.cnpgCluster -}}
+{{- end -}}
+{{- end -}}
+
+{{/*
+The Secret holding the libpq URI.
 */}}
 {{- define "housebot.databaseSecretName" -}}
-{{- if and .Values.database.cnpgCluster .Values.database.existingSecret -}}
-{{- fail "set only one of database.cnpgCluster or database.existingSecret" -}}
-{{- else if .Values.database.cnpgCluster -}}
-{{- printf "%s-app" .Values.database.cnpgCluster -}}
+{{- $source := include "housebot.database.source" . -}}
+{{- if eq $source "url" -}}
+{{- include "housebot.fullname" . }}-database
+{{- else if eq $source "existingSecret" -}}
+{{- .Values.database.existingSecret -}}
 {{- else -}}
-{{- required "one of database.cnpgCluster or database.existingSecret is required" .Values.database.existingSecret -}}
+{{- printf "%s-app" (include "housebot.database.cnpgClusterName" .) -}}
 {{- end -}}
 {{- end -}}
 
 {{- define "housebot.databaseSecretKey" -}}
-{{- if .Values.database.cnpgCluster -}}uri{{- else -}}{{ .Values.database.secretKey }}{{- end -}}
+{{- if eq (include "housebot.database.source" .) "existingSecret" -}}
+{{- .Values.database.secretKey -}}
+{{- else -}}
+uri
+{{- end -}}
 {{- end -}}
