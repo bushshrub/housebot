@@ -1,0 +1,33 @@
+{{- if .Values.sandbox.resourceQuota.enabled }}
+apiVersion: v1
+kind: ResourceQuota
+metadata:
+  name: {{ include "housebot.fullname" . }}-sandbox-quota
+  namespace: {{ .Values.sandbox.namespace }}
+  labels:
+    {{- include "housebot.labels" . | nindent 4 }}
+spec:
+  # A ceiling on the whole tier: a runaway session cannot starve the cluster
+  # however many sandboxes the API is asked for.
+  hard:
+    {{- toYaml .Values.sandbox.resourceQuota.hard | nindent 4 }}
+{{- end }}
+{{- if .Values.sandbox.limitRange.enabled }}
+---
+apiVersion: v1
+kind: LimitRange
+metadata:
+  name: {{ include "housebot.fullname" . }}-sandbox-limits
+  namespace: {{ .Values.sandbox.namespace }}
+  labels:
+    {{- include "housebot.labels" . | nindent 4 }}
+spec:
+  limits:
+    - type: Container
+      default:
+        {{- toYaml .Values.sandbox.limitRange.default | nindent 8 }}
+      defaultRequest:
+        {{- toYaml .Values.sandbox.limitRange.defaultRequest | nindent 8 }}
+      max:
+        {{- toYaml .Values.sandbox.limitRange.max | nindent 8 }}
+{{- end }}

@@ -1,0 +1,15 @@
+# sandbox-api is the horizontally scalable front end for the sandbox tier.
+# It owns no local state: with SANDBOX_RUNTIME_BACKEND=kubernetes it drives
+# sandbox Pods through the API server, so every replica can serve every
+# session and the only credential it needs is its ServiceAccount token.
+FROM alpine:3.22
+
+RUN apk add --no-cache kubectl
+
+COPY dist/sandbox-api /usr/local/bin/sandbox-api
+
+USER 65532:65532
+
+EXPOSE 8080
+
+CMD ["sandbox-api"]

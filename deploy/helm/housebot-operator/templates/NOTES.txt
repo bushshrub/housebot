@@ -1,0 +1,42 @@
+housebot-operator {{ .Chart.AppVersion }} is installed in {{ .Release.Namespace }}.
+
+It owns which version of the housebot chart runs. It does not install that
+chart — declare the OCIRepository and HelmRelease for it in your GitOps repo,
+then point a Release at them.
+
+Watch what it decided:
+
+  kubectl -n {{ .Release.Namespace }} get releases.housebot.dev
+  kubectl -n {{ .Release.Namespace }} describe release {{ .Values.release.name }}
+
+{{ if .Values.release.create -}}
+A Release named {{ .Values.release.name }} follows the track {{ .Values.release.track | quote }}.
+{{- else -}}
+No Release was created. Apply one from your GitOps repo, or set release.create=true.
+{{- end }}
+
+Deploying and rolling back are patches on spec.version, not commits:
+
+  # roll back to the previous version in status.history
+  kubectl -n {{ .Release.Namespace }} patch release {{ .Values.release.name }} --type=merge \
+    -p '{"spec":{"version":"<previous version>"}}'
+
+  # resume following the track again
+  kubectl -n {{ .Release.Namespace }} patch release {{ .Values.release.name }} --type=merge \
+    -p '{"spec":{"version":""}}'
+
+While spec.version is set the track is suspended and status.pinned is true. That
+is what stops a rollback being undone by the next poll — and why it needs
+clearing once the fix has shipped, or the cluster sits on an old version
+indefinitely.
+{{ if not .Values.release.create }}
+Note that upgrading this chart does not upgrade the Release CRD: Helm only ever
+installs what is in crds/. Have Flux replace it by setting the following on the
+HelmRelease that deploys this chart.
+
+  spec:
+    install:
+      crds: Create
+    upgrade:
+      crds: CreateReplace
+{{- end }}

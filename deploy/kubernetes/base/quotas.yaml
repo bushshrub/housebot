@@ -1,0 +1,32 @@
+apiVersion: v1
+kind: ResourceQuota
+metadata:
+  name: sandbox-quota
+  namespace: housebot-sandboxes
+spec:
+  hard:
+    # A ceiling on the whole tier: a runaway session cannot starve the cluster
+    # however many sandboxes the API is asked for.
+    pods: "64"
+    requests.cpu: "8"
+    requests.memory: 16Gi
+    limits.cpu: "64"
+    limits.memory: 128Gi
+---
+apiVersion: v1
+kind: LimitRange
+metadata:
+  name: sandbox-limits
+  namespace: housebot-sandboxes
+spec:
+  limits:
+    - type: Container
+      default:
+        cpu: "1"
+        memory: 2Gi
+      defaultRequest:
+        cpu: 100m
+        memory: 256Mi
+      max:
+        cpu: "2"
+        memory: 4Gi

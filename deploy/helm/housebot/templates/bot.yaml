@@ -1,0 +1,160 @@
+{{- if .Values.bot.enabled }}
+apiVersion: v1
+kind: Service
+metadata:
+  # The governing Service for the StatefulSet below. A StatefulSet's
+  # serviceName must resolve to a headless Service or its Pods get no stable
+  # DNS name.
+  name: {{ include "housebot.fullname" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "housebot.labels" . | nindent 4 }}
+    app.kubernetes.io/component: bot
+spec:
+  clusterIP: None
+  selector:
+    {{- include "housebot.bot.selectorLabels" . | nindent 4 }}
+  ports:
+    - name: placeholder
+      port: 65535
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: {{ include "housebot.fullname" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "housebot.labels" . | nindent 4 }}
+    app.kubernetes.io/component: bot
+spec:
+  serviceName: {{ include "housebot.fullname" . }}
+  # The Discord gateway allows one connection per shard and Housebot runs a
+  # single shard, so this is a protocol constraint rather than a capacity
+  # choice. Scaling happens in the sandbox tier.
+  replicas: {{ .Values.bot.replicas }}
+  selector:
+    matchLabels:
+      {{- include "housebot.bot.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "housebot.bot.selectorLabels" . | nindent 8 }}
+        {{- with .Values.bot.podLabels }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      {{- with .Values.bot.podAnnotations }}
+      annotations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+    spec:
+      automountServiceAccountToken: false
+      enableServiceLinks: false
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        fsGroup: 65532
+        seccompProfile:
+          type: RuntimeDefault
+      {{- $waitHost := include "housebot.database.waitHost" . }}
+      {{- if and .Values.bot.waitForDatabase.enabled $waitHost }}
+      # Without this the bot starts alongside its database after a node reboot,
+      # fails to connect, and is restarted anyway — but as CrashLoopBackOff,
+      # which is indistinguishable from a genuinely wrong DATABASE_URL.
+      initContainers:
+        - name: wait-for-database
+          image: {{ .Values.bot.waitForDatabase.image }}
+          command:
+            - sh
+            - -c
+            # -U is not optional: this Pod runs as an arbitrary uid with no
+            # passwd entry, and without it libpq cannot derive a user name, so
+            # pg_isready exits non-zero even once the database is up.
+            - until pg_isready -h {{ $waitHost }} -p {{ include "housebot.database.waitPort" . }} -U {{ .Values.bot.waitForDatabase.user }}; do echo waiting for database; sleep 2; done
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          resources:
+            {{- toYaml .Values.bot.waitForDatabase.resources | nindent 12 }}
+      {{- end }}
+      containers:
+        - name: housebot
+          image: {{ include "housebot.image" (dict "image" .Values.bot.image "root" $) }}
+          imagePullPolicy: {{ .Values.bot.image.pullPolicy }}
+          env:
+            - name: DATA_DIR
+              value: /data
+            - name: SANDBOX_API_URL
+              value: http://{{ include "housebot.sandboxApi.fullname" . }}.{{ .Release.Namespace }}.svc.cluster.local:{{ .Values.sandboxApi.service.port }}
+            - name: SANDBOX_API_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "housebot.sandboxApi.secretName" . }}
+                  key: token
+            {{- include "housebot.databaseEnv" . | nindent 12 }}
+            {{- with .Values.bot.extraEnv }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          {{- with .Values.bot.existingSecret }}
+          envFrom:
+            - secretRef:
+                name: {{ . }}
+          {{- end }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          resources:
+            {{- toYaml .Values.bot.resources | nindent 12 }}
+          volumeMounts:
+            - name: data
+              mountPath: /data
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: tmp
+          emptyDir:
+            medium: Memory
+            sizeLimit: 64Mi
+        {{- if not .Values.bot.persistence.enabled }}
+        - name: data
+          emptyDir: {}
+        {{- end }}
+      {{- with .Values.bot.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.bot.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.bot.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.bot.topologySpreadConstraints }}
+      topologySpreadConstraints:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+  {{- if .Values.bot.persistence.enabled }}
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes:
+          {{- toYaml .Values.bot.persistence.accessModes | nindent 10 }}
+        {{- with .Values.bot.persistence.storageClassName }}
+        storageClassName: {{ . | quote }}
+        {{- end }}
+        resources:
+          requests:
+            storage: {{ .Values.bot.persistence.size }}
+  {{- end }}
+{{- end }}

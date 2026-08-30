@@ -1,0 +1,105 @@
+# Default values for the housebot-operator chart.
+#
+# This chart carries the Release CRD, the operator that reconciles it, and its
+# RBAC. It deliberately does not install the housebot chart — the operator does
+# that, and a chart that installed its own manager would be a bootstrap cycle.
+
+nameOverride: ""
+fullnameOverride: ""
+
+imagePullSecrets: []
+
+commonLabels: {}
+commonAnnotations: {}
+
+image:
+  repository: ghcr.io/bushshrub/housebot/operator
+  # Defaults to .Chart.AppVersion when empty.
+  tag: ""
+  pullPolicy: IfNotPresent
+
+# The operator holds no state of its own — status lives on the Release — so a
+# second replica buys nothing but failover. Leader election is what keeps two
+# from patching the same OCIRepository.
+replicas: 1
+
+leaderElection:
+  enabled: true
+
+# Namespaces the operator watches. Empty means all namespaces, which is what the
+# ClusterRole below grants. Narrowing this to the namespace housebot runs in is
+# the tighter setting, and costs nothing when there is only one Release.
+watchNamespace: ""
+
+# Credentials for listing chart tags in the registry. Only needed for a private
+# chart repository — GHCR public packages list anonymously. Name a Secret of
+# type kubernetes.io/dockerconfigjson; it is projected as the operator's Docker
+# config, which is what go-containerregistry's keychain reads.
+registryAuth:
+  existingSecret: ""
+
+  # Allow plain HTTP when listing chart tags. Only for a registry inside the
+  # cluster that serves no TLS; GHCR is HTTPS and needs this left off.
+  insecure: false
+
+rbac:
+  create: true
+
+serviceAccount:
+  create: true
+  name: ""
+  annotations: {}
+
+# The operator's own health probes, not housebot's.
+probes:
+  port: 8081
+
+metrics:
+  enabled: false
+  port: 8080
+
+resources:
+  requests:
+    cpu: 10m
+    memory: 64Mi
+  limits:
+    cpu: 500m
+    memory: 256Mi
+
+podAnnotations: {}
+podLabels: {}
+nodeSelector: {}
+tolerations: []
+affinity: {}
+
+# The Release resource the operator reconciles.
+#
+# Leaving this disabled is the arrangement the design assumes: the Release, the
+# OCIRepository and the HelmRelease are declared in the GitOps repo, and only
+# spec.version is absent there so the operator can own it under its own field
+# manager. Enable it to have this chart declare the Release instead, which is
+# convenient for a test cluster where there is no GitOps repo to commit to.
+release:
+  create: false
+  name: housebot
+
+  # Glob matched against chart tags in the registry. Master builds publish
+  # <chart version>-sha.<short sha>.
+  track: "0.1.0-sha.*"
+
+  # An explicit chart version. Setting it pins the Release and suspends track
+  # following — which is exactly what makes a rollback survive the next poll,
+  # and why it must be left empty here and set only through the bot.
+  version: ""
+
+  # The Flux OCIRepository whose tag the operator owns.
+  ociRepositoryRef:
+    name: housebot
+    namespace: ""
+
+  # The HelmRelease whose readiness is mirrored into the Release's status.
+  helmReleaseRef:
+    name: housebot
+
+  interval: 2m
+  historyLimit: 10

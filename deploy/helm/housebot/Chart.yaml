@@ -1,0 +1,20 @@
+apiVersion: v2
+name: housebot
+description: Housebot and its horizontally scalable gVisor sandbox tier
+type: application
+version: 0.1.0
+appVersion: "latest"
+home: https://github.com/bushshrub/housebot
+sources:
+  - https://github.com/bushshrub/housebot
+maintainers:
+  - name: bushshrub
+keywords:
+  - discord
+  - sandbox
+  - gvisor
+annotations:
+  # CloudNativePG provides the Cluster CR this chart creates when
+  # postgresql.enabled is set. It is a cluster-scoped operator with its own
+  # release cadence, so it is a prerequisite rather than a subchart.
+  housebot.dev/requires-operator: cloudnative-pg

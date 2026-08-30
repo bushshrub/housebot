@@ -1,12 +1,12 @@
 //! Server-side implementation — runs inside `sandboxd`.
 //!
-//! This module owns Docker access.  It:
-//!   - Listens on a Unix socket.
+//! This module owns container-runtime access.  It:
+//!   - Serves requests from the Unix socket and the HTTP API.
 //!   - Parses incoming `SandboxRequest`s.
-//!   - Constructs Docker commands via the `docker` module.
-//!   - Spawns `docker` as a subprocess and collects output.
-//!   - Manages the lifecycle of sandbox containers.
-//!   - Removes stale containers on startup.
+//!   - Builds runtime commands via the `runtime` dispatch.
+//!   - Spawns `docker` or `kubectl` as a subprocess and collects output.
+//!   - Manages the lifecycle of sandboxes.
+//!   - Removes stale sandboxes on startup.
 
 use std::collections::HashMap;
 use std::os::unix::fs::FileTypeExt;
@@ -19,18 +19,242 @@ use tokio::net::{UnixListener, UnixStream};
 use tokio::process::Command;
 use tokio::sync::Mutex;
 
-use crate::docker;
+use crate::kubernetes;
 use crate::limits;
 use crate::protocol::*;
+use crate::runtime::{Invocation, Runtime};
 use crate::validation;
 
 type ContainerMap = Arc<Mutex<HashMap<String, ContainerState>>>;
 
+/// How long a newly created sandbox has to reach a usable state. Only the
+/// Kubernetes backend schedules, so only it can wait.
+const SANDBOX_READY_TIMEOUT_SECS: u64 = 60;
+
 struct ContainerState {
-    container_name: String,
+    handle: String,
     session_key: String,
     network: NetworkAccess,
     last_used_at: std::time::Instant,
+}
+
+/// The daemon's view of the sandbox tier.
+///
+/// Under Docker the session index lives in `local`, so one daemon owns its
+/// sandboxes. Under Kubernetes the index is the Pod labels themselves and
+/// `local` stays empty, which is what lets several replicas serve the same
+/// session without coordinating.
+pub struct Server {
+    runtime: Runtime,
+    local: ContainerMap,
+    idle_timeout: std::time::Duration,
+}
+
+impl Server {
+    pub fn from_env() -> Self {
+        Self {
+            runtime: Runtime::from_env(),
+            local: Arc::new(Mutex::new(HashMap::new())),
+            idle_timeout: idle_timeout(),
+        }
+    }
+
+    /// Resolve a sandbox to its backend handle and defer its idle deadline.
+    async fn handle_for(&self, sandbox_id: &str) -> Result<String, String> {
+        let handle = self.runtime.handle(sandbox_id);
+        match self.runtime.touch(&handle) {
+            // Annotating is both the touch and the existence check: kubectl
+            // fails when the Pod is gone, so no second lookup is needed.
+            Some(invocation) => run_cli(&invocation, 15)
+                .await
+                .map(|_| handle)
+                .map_err(|_| format!("unknown sandbox: {sandbox_id}")),
+            None => {
+                let mut map = self.local.lock().await;
+                let state = map
+                    .get_mut(sandbox_id)
+                    .ok_or_else(|| format!("unknown sandbox: {sandbox_id}"))?;
+                state.last_used_at = std::time::Instant::now();
+                Ok(state.handle.clone())
+            }
+        }
+    }
+
+    /// Hand back the session's existing sandbox when it has one.
+    async fn reuse_session(&self, id: &str, start_params: &StartParams) -> Option<SandboxResponse> {
+        match self.runtime {
+            Runtime::Docker => reuse_local_session(id, start_params, &self.local).await,
+            Runtime::Kubernetes => self.reuse_cluster_session(id, start_params).await,
+        }
+    }
+
+    async fn reuse_cluster_session(
+        &self,
+        id: &str,
+        start_params: &StartParams,
+    ) -> Option<SandboxResponse> {
+        let invocation = self.runtime.list(Some(&start_params.session_key));
+        let output = run_cli(&invocation, 30).await.ok()?;
+        let pods = kubernetes::parse_pod_list(&output).ok()?;
+        // The session label is a hash, so confirm the key before handing a
+        // workspace over: a collision must not cross sessions.
+        let pod = pods
+            .into_iter()
+            .find(|pod| pod.ready && pod.session_key == start_params.session_key)?;
+
+        if let Some(response) = refuse_network_upgrade(id, start_params.network, pod.network) {
+            return Some(response);
+        }
+        let _ = self.handle_for(&pod.sandbox_id).await;
+        Some(SandboxResponse::ok(
+            id.to_string(),
+            serde_json::json!({"sandbox_id": pod.sandbox_id}),
+        ))
+    }
+
+    async fn register(&self, sandbox_id: &str, handle: String, start_params: &StartParams) {
+        if self.runtime != Runtime::Docker {
+            return;
+        }
+        self.local.lock().await.insert(
+            sandbox_id.to_string(),
+            ContainerState {
+                handle,
+                session_key: start_params.session_key.clone(),
+                network: start_params.network,
+                last_used_at: std::time::Instant::now(),
+            },
+        );
+    }
+
+    /// Drop a sandbox from the index and destroy it. Returns whether the
+    /// sandbox existed, so a caller can tell a close from a stale handle.
+    async fn discard(&self, sandbox_id: &str) -> bool {
+        match self.runtime {
+            Runtime::Docker => {
+                let Some(state) = self.local.lock().await.remove(sandbox_id) else {
+                    return false;
+                };
+                self.destroy(&state.handle).await;
+                true
+            }
+            // `kubectl delete --ignore-not-found` prints what it deleted and
+            // stays silent otherwise, so the output distinguishes the two
+            // without a second lookup racing another replica's reaper.
+            Runtime::Kubernetes => {
+                let invocation = self.runtime.destroy(&self.runtime.handle(sandbox_id));
+                run_cli(&invocation, 30)
+                    .await
+                    .is_ok_and(|output| !output.trim().is_empty())
+            }
+        }
+    }
+
+    /// Make sure the backend has somewhere for a networked sandbox to attach.
+    /// Kubernetes needs nothing: the Pod's network label selects a
+    /// NetworkPolicy that is already in the cluster.
+    async fn prepare_network(&self, network: NetworkAccess) -> Result<(), String> {
+        if self.runtime != Runtime::Docker || network != NetworkAccess::PublicInternet {
+            return Ok(());
+        }
+        // A dedicated bridge, never Housebot's own network. Creating it again
+        // is a harmless no-op, so an existing network is not an error.
+        let _ = run_cli(
+            &Invocation {
+                binary: "docker",
+                args: vec![
+                    "network".to_string(),
+                    "create".to_string(),
+                    "--driver".to_string(),
+                    "bridge".to_string(),
+                    "housebot-sandbox-net".to_string(),
+                ],
+            },
+            30,
+        )
+        .await;
+        Ok(())
+    }
+
+    async fn destroy(&self, handle: &str) {
+        let _ = run_cli(&self.runtime.destroy(handle), 30).await;
+    }
+
+    /// Destroy sandboxes untouched for longer than the idle timeout.
+    /// Everything in a sandbox is memory-backed, so reaping discards the
+    /// workspace with it.
+    async fn reap_once(&self) {
+        match self.runtime {
+            Runtime::Docker => {
+                for (id, handle) in take_expired_local(&self.local, self.idle_timeout).await {
+                    tracing::info!(sandbox_id = %id, "reaping idle sandbox");
+                    self.destroy(&handle).await;
+                }
+            }
+            Runtime::Kubernetes => {
+                let Ok(output) = run_cli(&self.runtime.list(None), 30).await else {
+                    return;
+                };
+                let Ok(pods) = kubernetes::parse_pod_list(&output) else {
+                    return;
+                };
+                let now = kubernetes::now_epoch_secs();
+                for pod in pods {
+                    if now.saturating_sub(pod.last_used_at) < self.idle_timeout.as_secs() {
+                        continue;
+                    }
+                    tracing::info!(sandbox_id = %pod.sandbox_id, "reaping idle sandbox");
+                    self.destroy(&self.runtime.handle(&pod.sandbox_id)).await;
+                }
+            }
+        }
+    }
+
+    /// Discard sandboxes left over from a previous daemon. Under Kubernetes
+    /// other replicas may be actively serving them, so only the idle ones go.
+    pub async fn cleanup_stale(&self) {
+        match self.runtime {
+            Runtime::Docker => {
+                let Ok(output) = run_cli(&self.runtime.list(None), 30).await else {
+                    tracing::warn!("failed to list stale sandbox containers");
+                    return;
+                };
+                for line in output.lines() {
+                    let parts: Vec<&str> = line.splitn(2, ' ').collect();
+                    if let [_id, name] = parts[..] {
+                        tracing::info!("removing stale sandbox container: {name}");
+                        self.destroy(name).await;
+                    }
+                }
+            }
+            Runtime::Kubernetes => self.reap_once().await,
+        }
+    }
+}
+
+async fn reap_idle_sandboxes(server: Arc<Server>) {
+    let mut ticker = tokio::time::interval(sweep_interval(server.idle_timeout));
+    loop {
+        ticker.tick().await;
+        server.reap_once().await;
+    }
+}
+
+/// A container's network mode is fixed at creation, so a request needing more
+/// access than the live sandbox has must be refused rather than downgraded.
+fn refuse_network_upgrade(
+    id: &str,
+    requested: NetworkAccess,
+    existing: NetworkAccess,
+) -> Option<SandboxResponse> {
+    (requested == NetworkAccess::PublicInternet && existing == NetworkAccess::None).then(|| {
+        SandboxResponse::err(
+            id.to_string(),
+            "This session's sandbox is already running without network access. \
+             Close it before running a tool that needs the internet."
+                .to_string(),
+        )
+    })
 }
 
 /// How long a sandbox may sit unused before it is destroyed.
@@ -62,30 +286,31 @@ pub async fn run_daemon(socket_path: &str) -> anyhow::Result<()> {
         tokio::fs::create_dir_all(parent).await?;
     }
 
-    // Clean stale sandbox containers
-    cleanup_stale_containers().await;
+    let server = start();
+    server.cleanup_stale().await;
 
     let listener = UnixListener::bind(socket_path)?;
     tracing::info!(socket_path, "sandboxd listening");
 
-    let containers: ContainerMap = Arc::new(Mutex::new(HashMap::new()));
-    tokio::spawn(reap_idle_containers(
-        Arc::clone(&containers),
-        idle_timeout(),
-    ));
-
     loop {
         let (stream, _addr) = listener.accept().await?;
-        let containers = Arc::clone(&containers);
+        let server = Arc::clone(&server);
         tokio::spawn(async move {
-            if let Err(e) = handle_connection(stream, containers).await {
+            if let Err(e) = handle_connection(stream, server).await {
                 tracing::error!("connection handler error: {e}");
             }
         });
     }
 }
 
-async fn handle_connection(mut stream: UnixStream, containers: ContainerMap) -> anyhow::Result<()> {
+/// Start the shared server and its idle reaper.
+pub fn start() -> Arc<Server> {
+    let server = Arc::new(Server::from_env());
+    tokio::spawn(reap_idle_sandboxes(Arc::clone(&server)));
+    server
+}
+
+async fn handle_connection(mut stream: UnixStream, server: Arc<Server>) -> anyhow::Result<()> {
     let (reader, mut writer) = stream.split();
 
     let mut buf_reader = BufReader::new(reader);
@@ -118,7 +343,7 @@ async fn handle_connection(mut stream: UnixStream, containers: ContainerMap) -> 
 
     let request: SandboxRequest = serde_json::from_str(line.trim())?;
 
-    let response = process_request(&request, &containers).await;
+    let response = process_request(&request, &server).await;
 
     let response_line = serde_json::to_string(&response)?;
     let mut bytes = response_line.into_bytes();
@@ -129,18 +354,18 @@ async fn handle_connection(mut stream: UnixStream, containers: ContainerMap) -> 
     Ok(())
 }
 
-async fn process_request(request: &SandboxRequest, containers: &ContainerMap) -> SandboxResponse {
+pub async fn process_request(request: &SandboxRequest, server: &Server) -> SandboxResponse {
     let id = &request.id;
 
     match request.method.as_str() {
-        "start" => handle_start(id, &request.params, containers).await,
-        "clone_repository" => handle_clone_repository(id, &request.params, containers).await,
-        "list_files" => handle_list_files(id, &request.params, containers).await,
-        "search_code" => handle_search_code(id, &request.params, containers).await,
-        "read_file" => handle_read_file(id, &request.params, containers).await,
-        "run" => handle_run(id, &request.params, containers).await,
-        "write_file" => handle_write_file(id, &request.params, containers).await,
-        "close" => handle_close(id, &request.params, containers).await,
+        "start" => handle_start(id, &request.params, server).await,
+        "clone_repository" => handle_clone_repository(id, &request.params, server).await,
+        "list_files" => handle_list_files(id, &request.params, server).await,
+        "search_code" => handle_search_code(id, &request.params, server).await,
+        "read_file" => handle_read_file(id, &request.params, server).await,
+        "run" => handle_run(id, &request.params, server).await,
+        "write_file" => handle_write_file(id, &request.params, server).await,
+        "close" => handle_close(id, &request.params, server).await,
         _ => SandboxResponse::err(id.clone(), format!("Unknown method: {}", request.method)),
     }
 }
@@ -153,43 +378,22 @@ fn get_sandbox_id(params: &serde_json::Value) -> Result<String, String> {
         .ok_or_else(|| "missing sandbox_id".to_string())
 }
 
-/// Resolve a sandbox and mark it as used, so the idle reaper leaves it alone
-/// for another full timeout.
-async fn require_sandbox<'a>(
-    containers: &'a ContainerMap,
-    sandbox_id: &str,
-) -> Result<tokio::sync::MutexGuard<'a, HashMap<String, ContainerState>>, String> {
+/// Remove every locally indexed sandbox past `timeout` and report what was
+/// dropped, so the caller can destroy them without holding the lock.
+async fn take_expired_local(
+    containers: &ContainerMap,
+    timeout: std::time::Duration,
+) -> Vec<(String, String)> {
     let mut map = containers.lock().await;
-    let Some(state) = map.get_mut(sandbox_id) else {
-        return Err(format!("unknown sandbox: {sandbox_id}"));
-    };
-    state.last_used_at = std::time::Instant::now();
-    Ok(map)
-}
-
-/// Destroy sandboxes that have gone untouched for longer than `timeout`.
-/// Everything in the container is tmpfs, so reaping discards the workspace.
-async fn reap_idle_containers(containers: ContainerMap, timeout: std::time::Duration) {
-    let mut ticker = tokio::time::interval(sweep_interval(timeout));
-    loop {
-        ticker.tick().await;
-        let expired = {
-            let mut map = containers.lock().await;
-            let expired: Vec<(String, String)> = map
-                .iter()
-                .filter(|(_, state)| state.last_used_at.elapsed() >= timeout)
-                .map(|(id, state)| (id.clone(), state.container_name.clone()))
-                .collect();
-            for (id, _) in &expired {
-                map.remove(id);
-            }
-            expired
-        };
-        for (id, container_name) in expired {
-            tracing::info!(sandbox_id = %id, "reaping idle sandbox");
-            let _ = destroy_container(&container_name).await;
-        }
+    let expired: Vec<(String, String)> = map
+        .iter()
+        .filter(|(_, state)| state.last_used_at.elapsed() >= timeout)
+        .map(|(id, state)| (id.clone(), state.handle.clone()))
+        .collect();
+    for (id, _) in &expired {
+        map.remove(id);
     }
+    expired
 }
 
 fn sweep_interval(timeout: std::time::Duration) -> std::time::Duration {
@@ -198,11 +402,7 @@ fn sweep_interval(timeout: std::time::Duration) -> std::time::Duration {
 
 // ── Handlers ────────────────────────────────────────────────────────────────
 
-async fn handle_start(
-    id: &str,
-    params: &serde_json::Value,
-    containers: &ContainerMap,
-) -> SandboxResponse {
+async fn handle_start(id: &str, params: &serde_json::Value, server: &Server) -> SandboxResponse {
     let start_params: StartParams = match serde_json::from_value(params.clone()) {
         Ok(p) => p,
         Err(e) => return SandboxResponse::err(id.to_string(), format!("invalid params: {e}")),
@@ -212,51 +412,54 @@ async fn handle_start(
         return SandboxResponse::err(id.to_string(), format!("invalid session key: {e}"));
     }
 
-    if let Some(response) = reuse_session(id, &start_params, containers).await {
+    if let Some(response) = server.reuse_session(id, &start_params).await {
         return response;
     }
 
+    if let Err(e) = server.prepare_network(start_params.network).await {
+        return SandboxResponse::err(id.to_string(), e);
+    }
+
     let sandbox_id = uuid::Uuid::new_v4().to_string();
-    let args = docker::build_run_args(&sandbox_id, start_params.network);
+    let (invocation, stdin) =
+        server
+            .runtime
+            .create(&sandbox_id, &start_params.session_key, start_params.network);
 
-    // Ensure the sandbox network exists (for public-internet mode)
-    if start_params.network == NetworkAccess::PublicInternet {
-        let net_args = vec![
-            "network".to_string(),
-            "create".to_string(),
-            "--driver".to_string(),
-            "bridge".to_string(),
-            "housebot-sandbox-net".to_string(),
-        ];
-        // Ignore error if the network already exists
-        let _ = run_docker(&net_args, 30).await;
-    }
-
-    let output = match run_docker(&args, 60).await {
-        Ok(o) => o,
-        Err(e) => return SandboxResponse::err(id.to_string(), format!("docker run failed: {e}")),
+    let created = match stdin {
+        Some(manifest) => run_cli_with_stdin(&invocation, &manifest, 60)
+            .await
+            .and_then(|(stderr, code)| {
+                (code == 0)
+                    .then_some(String::new())
+                    .ok_or_else(|| format!("exited with code {code}: {stderr}"))
+            }),
+        None => run_cli(&invocation, 60).await,
     };
-
-    let container_id = output.trim().to_string();
-    if container_id.is_empty() {
-        return SandboxResponse::err(
-            id.to_string(),
-            "docker run produced no container ID".to_string(),
-        );
+    if let Err(e) = created {
+        return SandboxResponse::err(id.to_string(), format!("failed to create sandbox: {e}"));
     }
 
-    let container_name = format!("housebot-sandbox-{sandbox_id}");
+    if let Some(wait) = server
+        .runtime
+        .wait_ready(&sandbox_id, SANDBOX_READY_TIMEOUT_SECS)
+    {
+        if let Err(e) = run_cli(&wait, SANDBOX_READY_TIMEOUT_SECS + 5).await {
+            let _ = server.discard(&sandbox_id).await;
+            return SandboxResponse::err(
+                id.to_string(),
+                format!("sandbox never became ready: {e}"),
+            );
+        }
+    }
 
-    let mut map = containers.lock().await;
-    map.insert(
-        sandbox_id.clone(),
-        ContainerState {
-            container_name: container_name.clone(),
-            session_key: start_params.session_key.clone(),
-            network: start_params.network,
-            last_used_at: std::time::Instant::now(),
-        },
-    );
+    server
+        .register(
+            &sandbox_id,
+            server.runtime.handle(&sandbox_id),
+            &start_params,
+        )
+        .await;
 
     SandboxResponse::ok(
         id.to_string(),
@@ -264,10 +467,8 @@ async fn handle_start(
     )
 }
 
-/// Hand back the session's existing sandbox when it has one. A container's
-/// network mode is fixed at creation, so a request needing more access than the
-/// live container has must be refused rather than silently downgraded.
-async fn reuse_session(
+/// Hand back the session's existing sandbox from the local Docker index.
+async fn reuse_local_session(
     id: &str,
     start_params: &StartParams,
     containers: &ContainerMap,
@@ -276,14 +477,8 @@ async fn reuse_session(
     let (sandbox_id, state) = map
         .iter_mut()
         .find(|(_, state)| state.session_key == start_params.session_key)?;
-    if start_params.network == NetworkAccess::PublicInternet && state.network == NetworkAccess::None
-    {
-        return Some(SandboxResponse::err(
-            id.to_string(),
-            "This session's sandbox is already running without network access. \
-             Close it before running a tool that needs the internet."
-                .to_string(),
-        ));
+    if let Some(response) = refuse_network_upgrade(id, start_params.network, state.network) {
+        return Some(response);
     }
     state.last_used_at = std::time::Instant::now();
     Some(SandboxResponse::ok(
@@ -295,7 +490,7 @@ async fn reuse_session(
 async fn handle_clone_repository(
     id: &str,
     params: &serde_json::Value,
-    containers: &ContainerMap,
+    server: &Server,
 ) -> SandboxResponse {
     let clone_params: CloneRepositoryParams = match serde_json::from_value(params.clone()) {
         Ok(p) => p,
@@ -312,26 +507,20 @@ async fn handle_clone_repository(
     }
 
     let sandbox_id = clone_params.sandbox_id.clone();
-    let container_name = {
-        let guard = match require_sandbox(containers, &sandbox_id).await {
-            Ok(s) => s,
-            Err(e) => return SandboxResponse::err(id.to_string(), e),
-        };
-        guard
-            .get(&sandbox_id)
-            .map(|s| s.container_name.clone())
-            .unwrap_or_default()
+    let handle = match server.handle_for(&sandbox_id).await {
+        Ok(handle) => handle,
+        Err(e) => return SandboxResponse::err(id.to_string(), e),
     };
 
     let dest = "/workspace/repo";
-    let args = docker::build_git_clone_args(
-        &container_name,
+    let invocation = server.runtime.git_clone(
+        &handle,
         &clone_params.url,
         dest,
         clone_params.branch.as_deref(),
     );
 
-    match run_docker_with_timeout(&args, limits::TEST_TIMEOUT_SECS).await {
+    match run_cli_checked(&invocation, limits::TEST_TIMEOUT_SECS).await {
         Ok(output) => SandboxResponse::ok(
             id.to_string(),
             serde_json::to_value(CommandResult {
@@ -349,7 +538,7 @@ async fn handle_clone_repository(
 async fn handle_list_files(
     id: &str,
     params: &serde_json::Value,
-    containers: &ContainerMap,
+    server: &Server,
 ) -> SandboxResponse {
     let list_params: ListFilesParams = match serde_json::from_value(params.clone()) {
         Ok(p) => p,
@@ -361,15 +550,9 @@ async fn handle_list_files(
     }
 
     let sandbox_id = list_params.sandbox_id.clone();
-    let container_name = {
-        let guard = match require_sandbox(containers, &sandbox_id).await {
-            Ok(s) => s,
-            Err(e) => return SandboxResponse::err(id.to_string(), e),
-        };
-        guard
-            .get(&sandbox_id)
-            .map(|s| s.container_name.clone())
-            .unwrap_or_default()
+    let handle = match server.handle_for(&sandbox_id).await {
+        Ok(handle) => handle,
+        Err(e) => return SandboxResponse::err(id.to_string(), e),
     };
 
     let max_depth = list_params.max_depth.unwrap_or(3);
@@ -380,9 +563,9 @@ async fn handle_list_files(
         limits::MAX_FILE_LIST_ENTRIES
     );
 
-    let args = docker::build_exec_args(&container_name, &cmd, None);
+    let invocation = server.runtime.exec(&handle, &cmd, None);
 
-    match run_docker_with_timeout(&args, limits::DEFAULT_COMMAND_TIMEOUT_SECS).await {
+    match run_cli_checked(&invocation, limits::DEFAULT_COMMAND_TIMEOUT_SECS).await {
         Ok(output) => {
             let mut entries = Vec::new();
             for line in output.lines() {
@@ -414,7 +597,7 @@ async fn handle_list_files(
 async fn handle_search_code(
     id: &str,
     params: &serde_json::Value,
-    containers: &ContainerMap,
+    server: &Server,
 ) -> SandboxResponse {
     let search_params: SearchCodeParams = match serde_json::from_value(params.clone()) {
         Ok(p) => p,
@@ -436,15 +619,9 @@ async fn handle_search_code(
     }
 
     let sandbox_id = search_params.sandbox_id.clone();
-    let container_name = {
-        let guard = match require_sandbox(containers, &sandbox_id).await {
-            Ok(s) => s,
-            Err(e) => return SandboxResponse::err(id.to_string(), e),
-        };
-        guard
-            .get(&sandbox_id)
-            .map(|s| s.container_name.clone())
-            .unwrap_or_default()
+    let handle = match server.handle_for(&sandbox_id).await {
+        Ok(handle) => handle,
+        Err(e) => return SandboxResponse::err(id.to_string(), e),
     };
 
     let search_path = search_params
@@ -463,9 +640,9 @@ async fn handle_search_code(
     rg_cmd.push_str(&format!(" -e '{}'", escaped_query));
     rg_cmd.push_str(&format!(" '{}'", shell_escape_path(&search_path)));
 
-    let args = docker::build_exec_args(&container_name, &rg_cmd, None);
+    let invocation = server.runtime.exec(&handle, &rg_cmd, None);
 
-    match run_docker_with_timeout(&args, limits::DEFAULT_COMMAND_TIMEOUT_SECS).await {
+    match run_cli_checked(&invocation, limits::DEFAULT_COMMAND_TIMEOUT_SECS).await {
         Ok(output) => {
             let mut matches = Vec::new();
             let mut truncated = false;
@@ -501,7 +678,7 @@ async fn handle_search_code(
 async fn handle_read_file(
     id: &str,
     params: &serde_json::Value,
-    containers: &ContainerMap,
+    server: &Server,
 ) -> SandboxResponse {
     let read_params: ReadFileParams = match serde_json::from_value(params.clone()) {
         Ok(p) => p,
@@ -513,15 +690,9 @@ async fn handle_read_file(
     }
 
     let sandbox_id = read_params.sandbox_id.clone();
-    let container_name = {
-        let guard = match require_sandbox(containers, &sandbox_id).await {
-            Ok(s) => s,
-            Err(e) => return SandboxResponse::err(id.to_string(), e),
-        };
-        guard
-            .get(&sandbox_id)
-            .map(|s| s.container_name.clone())
-            .unwrap_or_default()
+    let handle = match server.handle_for(&sandbox_id).await {
+        Ok(handle) => handle,
+        Err(e) => return SandboxResponse::err(id.to_string(), e),
     };
 
     // Canonicalize path to prevent symlink escape, then verify it's under /workspace
@@ -529,8 +700,8 @@ async fn handle_read_file(
         "realpath -q /workspace/{} 2>/dev/null || true",
         shell_escape_path(&read_params.path)
     );
-    let resolve_args = docker::build_exec_args(&container_name, &resolve_cmd, None);
-    let resolved = match run_docker_with_timeout(&resolve_args, 10).await {
+    let resolve = server.runtime.exec(&handle, &resolve_cmd, None);
+    let resolved = match run_cli_checked(&resolve, 10).await {
         Ok(out) => out.trim().to_string(),
         Err(_) => {
             return SandboxResponse::err(id.to_string(), "failed to resolve path".to_string())
@@ -563,9 +734,9 @@ async fn handle_read_file(
         )
     };
 
-    let args = docker::build_exec_args(&container_name, &cmd, None);
+    let invocation = server.runtime.exec(&handle, &cmd, None);
 
-    match run_docker_with_timeout(&args, limits::DEFAULT_COMMAND_TIMEOUT_SECS).await {
+    match run_cli_checked(&invocation, limits::DEFAULT_COMMAND_TIMEOUT_SECS).await {
         Ok(output) => {
             let truncated = output.len() >= limits::MAX_FILE_READ_BYTES;
             let line_count = output.lines().count();
@@ -585,11 +756,7 @@ async fn handle_read_file(
     }
 }
 
-async fn handle_run(
-    id: &str,
-    params: &serde_json::Value,
-    containers: &ContainerMap,
-) -> SandboxResponse {
+async fn handle_run(id: &str, params: &serde_json::Value, server: &Server) -> SandboxResponse {
     let run_params: RunParams = match serde_json::from_value(params.clone()) {
         Ok(p) => p,
         Err(e) => return SandboxResponse::err(id.to_string(), format!("invalid params: {e}")),
@@ -610,25 +777,18 @@ async fn handle_run(
         .unwrap_or(limits::DEFAULT_COMMAND_TIMEOUT_SECS)
         .min(limits::ABSOLUTE_MAX_TIMEOUT_SECS);
 
-    // Extract container name while holding the lock, then release it
-    let container_name = {
-        let guard = match require_sandbox(containers, &sandbox_id).await {
-            Ok(s) => s,
-            Err(e) => return SandboxResponse::err(id.to_string(), e),
-        };
-        guard
-            .get(&sandbox_id)
-            .map(|s| s.container_name.clone())
-            .unwrap_or_default()
+    let handle = match server.handle_for(&sandbox_id).await {
+        Ok(handle) => handle,
+        Err(e) => return SandboxResponse::err(id.to_string(), e),
     };
 
-    let args = docker::build_exec_args(
-        &container_name,
+    let invocation = server.runtime.exec(
+        &handle,
         &run_params.command,
         run_params.working_dir.as_deref(),
     );
 
-    match run_docker_with_timeout_raw(&args, timeout).await {
+    match run_cli_raw(&invocation, timeout).await {
         Ok((stdout, stderr, exit_code)) => {
             let (stdout, truncated) = truncate_output(stdout);
             SandboxResponse::ok(
@@ -644,14 +804,10 @@ async fn handle_run(
         }
         Err(e) => {
             if e.contains("timed out") {
-                // Destroy the container on timeout (lock is already released
-                // since container_name was extracted earlier)
-                let _ = destroy_container(&container_name).await;
-                let mut map = containers.lock().await;
-                map.remove(&sandbox_id);
+                let _ = server.discard(&sandbox_id).await;
                 SandboxResponse::err(
                     id.to_string(),
-                    format!("command timed out ({timeout}s) and container was destroyed"),
+                    format!("command timed out ({timeout}s) and the sandbox was destroyed"),
                 )
             } else {
                 SandboxResponse::err(id.to_string(), e)
@@ -660,79 +816,70 @@ async fn handle_run(
     }
 }
 
-async fn handle_close(
-    id: &str,
-    params: &serde_json::Value,
-    containers: &ContainerMap,
-) -> SandboxResponse {
+async fn handle_close(id: &str, params: &serde_json::Value, server: &Server) -> SandboxResponse {
     let sandbox_id = match get_sandbox_id(params) {
         Ok(s) => s,
         Err(e) => return SandboxResponse::err(id.to_string(), e),
     };
 
-    let state = {
-        let mut map = containers.lock().await;
-        map.remove(&sandbox_id)
-    };
-    match state {
-        Some(s) => {
-            let _ = destroy_container(&s.container_name).await;
-            SandboxResponse::ok(id.to_string(), serde_json::json!({"closed": true}))
-        }
-        None => SandboxResponse::err(id.to_string(), format!("unknown sandbox: {sandbox_id}")),
+    if server.discard(&sandbox_id).await {
+        SandboxResponse::ok(id.to_string(), serde_json::json!({"closed": true}))
+    } else {
+        SandboxResponse::err(id.to_string(), format!("unknown sandbox: {sandbox_id}"))
     }
 }
 
-// ── Docker process helpers ───────────────────────────────────────────────────
+// ── Runtime process helpers ─────────────────────────────────────────────────
 
-/// Run a docker command and return stdout.
-async fn run_docker(args: &[String], timeout_secs: u64) -> Result<String, String> {
+/// Run a runtime command and return stdout.
+async fn run_cli(invocation: &Invocation, timeout_secs: u64) -> Result<String, String> {
+    let binary = invocation.binary;
     let output = tokio::time::timeout(
         std::time::Duration::from_secs(timeout_secs),
-        Command::new("docker")
-            .args(args)
+        Command::new(binary)
+            .args(&invocation.args)
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .kill_on_drop(true)
             .output(),
     )
     .await
-    .map_err(|_| format!("docker command timed out after {timeout_secs}s"))?
-    .map_err(|e| format!("failed to execute docker: {e}"))?;
+    .map_err(|_| format!("{binary} command timed out after {timeout_secs}s"))?
+    .map_err(|e| format!("failed to execute {binary}: {e}"))?;
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
-        return Err(format!("docker command failed: {stderr}"));
+        return Err(format!("{binary} command failed: {stderr}"));
     }
 
     Ok(utf8_safe_string(&output.stdout))
 }
 
-/// Run a docker command and return (stdout, stderr, exit_code) with timeout.
-/// Run a docker command feeding `stdin` to the child, returning its exit code.
+/// Run a runtime command feeding `stdin` to the child, returning its exit code.
 ///
 /// Content passed this way never appears in argv or a shell command line, so a
 /// file body cannot be reinterpreted as part of the command.
-async fn run_docker_with_stdin(
-    args: &[String],
+async fn run_cli_with_stdin(
+    invocation: &Invocation,
     stdin_data: &[u8],
     timeout_secs: u64,
 ) -> Result<(String, i32), String> {
     use tokio::io::AsyncWriteExt;
 
-    let mut child = Command::new("docker")
-        .args(args)
+    let binary = invocation.binary;
+    let mut child = Command::new(binary)
+        .args(&invocation.args)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .kill_on_drop(true)
         .spawn()
-        .map_err(|e| format!("failed to execute docker: {e}"))?;
+        .map_err(|e| format!("failed to execute {binary}: {e}"))?;
 
     let mut stdin = child
         .stdin
         .take()
-        .ok_or_else(|| "failed to open docker stdin".to_string())?;
+        .ok_or_else(|| format!("failed to open {binary} stdin"))?;
     let data = stdin_data.to_vec();
     let writer = tokio::spawn(async move {
         let _ = stdin.write_all(&data).await;
@@ -746,7 +893,7 @@ async fn run_docker_with_stdin(
     )
     .await
     .map_err(|_| format!("command timed out after {timeout_secs}s"))?
-    .map_err(|e| format!("failed to execute docker: {e}"))?;
+    .map_err(|e| format!("failed to execute {binary}: {e}"))?;
     let _ = writer.await;
 
     Ok((
@@ -758,7 +905,7 @@ async fn run_docker_with_stdin(
 async fn handle_write_file(
     id: &str,
     params: &serde_json::Value,
-    containers: &ContainerMap,
+    server: &Server,
 ) -> SandboxResponse {
     let write_params: WriteFileParams = match serde_json::from_value(params.clone()) {
         Ok(p) => p,
@@ -776,15 +923,9 @@ async fn handle_write_file(
     }
 
     let sandbox_id = write_params.sandbox_id.clone();
-    let container_name = {
-        let guard = match require_sandbox(containers, &sandbox_id).await {
-            Ok(s) => s,
-            Err(e) => return SandboxResponse::err(id.to_string(), e),
-        };
-        guard
-            .get(&sandbox_id)
-            .map(|s| s.container_name.clone())
-            .unwrap_or_default()
+    let handle = match server.handle_for(&sandbox_id).await {
+        Ok(handle) => handle,
+        Err(e) => return SandboxResponse::err(id.to_string(), e),
     };
 
     // Resolve before writing so an existing symlink at the target cannot
@@ -794,8 +935,8 @@ async fn handle_write_file(
         "realpath -m /workspace/{} 2>/dev/null || true",
         shell_escape_path(&write_params.path)
     );
-    let resolve_args = docker::build_exec_args(&container_name, &resolve_cmd, None);
-    let resolved = match run_docker_with_timeout(&resolve_args, 10).await {
+    let resolve = server.runtime.exec(&handle, &resolve_cmd, None);
+    let resolved = match run_cli_checked(&resolve, 10).await {
         Ok(out) => out.trim().to_string(),
         Err(_) => {
             return SandboxResponse::err(id.to_string(), "failed to resolve path".to_string())
@@ -811,8 +952,8 @@ async fn handle_write_file(
             "-p".to_string(),
             parent.to_string_lossy().to_string(),
         ];
-        let args = docker::build_exec_argv(&container_name, &mkdir, false);
-        if let Err(e) = run_docker_with_timeout(&args, 10).await {
+        let invocation = server.runtime.exec_argv(&handle, &mkdir, false);
+        if let Err(e) = run_cli_checked(&invocation, 10).await {
             return SandboxResponse::err(
                 id.to_string(),
                 format!("failed to create directory: {e}"),
@@ -821,8 +962,8 @@ async fn handle_write_file(
     }
 
     let tee = vec!["/usr/bin/tee".to_string(), resolved.clone()];
-    let args = docker::build_exec_argv(&container_name, &tee, true);
-    match run_docker_with_stdin(&args, write_params.content.as_bytes(), 30).await {
+    let invocation = server.runtime.exec_argv(&handle, &tee, true);
+    match run_cli_with_stdin(&invocation, write_params.content.as_bytes(), 30).await {
         Ok((_, 0)) => {}
         Ok((stderr, code)) => {
             return SandboxResponse::err(
@@ -835,8 +976,8 @@ async fn handle_write_file(
 
     if write_params.executable {
         let chmod = vec!["/bin/chmod".to_string(), "+x".to_string(), resolved.clone()];
-        let args = docker::build_exec_argv(&container_name, &chmod, false);
-        if let Err(e) = run_docker_with_timeout(&args, 10).await {
+        let invocation = server.runtime.exec_argv(&handle, &chmod, false);
+        if let Err(e) = run_cli_checked(&invocation, 10).await {
             return SandboxResponse::err(id.to_string(), format!("chmod failed: {e}"));
         }
     }
@@ -851,14 +992,15 @@ async fn handle_write_file(
     )
 }
 
-async fn run_docker_with_timeout_raw(
-    args: &[String],
+async fn run_cli_raw(
+    invocation: &Invocation,
     timeout_secs: u64,
 ) -> Result<(String, String, i32), String> {
+    let binary = invocation.binary;
     let output = tokio::time::timeout(
         std::time::Duration::from_secs(timeout_secs),
-        Command::new("docker")
-            .args(args)
+        Command::new(binary)
+            .args(&invocation.args)
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .kill_on_drop(true)
@@ -866,7 +1008,7 @@ async fn run_docker_with_timeout_raw(
     )
     .await
     .map_err(|_| format!("command timed out after {timeout_secs}s"))?
-    .map_err(|e| format!("failed to execute docker: {e}"))?;
+    .map_err(|e| format!("failed to execute {binary}: {e}"))?;
 
     let stdout = utf8_safe_string(&output.stdout);
     let stderr = utf8_safe_string(&output.stderr);
@@ -875,9 +1017,10 @@ async fn run_docker_with_timeout_raw(
     Ok((stdout, stderr, exit_code))
 }
 
-/// Run a docker command and return stdout only (for commands where we only care about success).
-async fn run_docker_with_timeout(args: &[String], timeout_secs: u64) -> Result<String, String> {
-    let (stdout, stderr, exit_code) = run_docker_with_timeout_raw(args, timeout_secs).await?;
+/// Run a runtime command and return stdout only, for commands where nothing
+/// but success matters.
+async fn run_cli_checked(invocation: &Invocation, timeout_secs: u64) -> Result<String, String> {
+    let (stdout, stderr, exit_code) = run_cli_raw(invocation, timeout_secs).await?;
     if exit_code != 0 {
         return Err(format!("command exited with code {exit_code}: {stderr}",));
     }
@@ -908,35 +1051,9 @@ fn utf8_safe_string(bytes: &[u8]) -> String {
     String::from_utf8_lossy(bytes).to_string()
 }
 
-async fn destroy_container(container_name: &str) -> Result<(), String> {
-    let args = docker::build_remove_args(container_name);
-    let _ = run_docker(&args, 30).await;
-    Ok(())
-}
-
 /// Escape a path for safe use in a shell command (wraps in single quotes).
 fn shell_escape_path(path: &str) -> String {
     format!("'{}'", path.replace('\'', "'\\''"))
-}
-
-/// Remove all containers with sandbox labels at startup.
-pub async fn cleanup_stale_containers() {
-    let args = docker::build_list_sandbox_containers_args();
-    match run_docker(&args, 30).await {
-        Ok(output) => {
-            for line in output.lines() {
-                let parts: Vec<&str> = line.splitn(2, ' ').collect();
-                if parts.len() == 2 {
-                    let (_cid, name) = (parts[0], parts[1]);
-                    tracing::info!("removing stale sandbox container: {name}");
-                    let _ = destroy_container(name).await;
-                }
-            }
-        }
-        Err(e) => {
-            tracing::warn!("failed to list stale sandbox containers: {e}");
-        }
-    }
 }
 
 #[cfg(test)]
@@ -949,10 +1066,20 @@ mod tests {
         idle: std::time::Duration,
     ) -> ContainerState {
         ContainerState {
-            container_name: format!("housebot-sandbox-{session_key}"),
+            handle: format!("housebot-sandbox-{session_key}"),
             session_key: session_key.to_string(),
             network,
             last_used_at: std::time::Instant::now() - idle,
+        }
+    }
+
+    /// A Docker-backed server sharing the test's session index, so the local
+    /// path can be exercised without a container runtime.
+    fn local_server(local: ContainerMap) -> Server {
+        Server {
+            runtime: Runtime::Docker,
+            local,
+            idle_timeout: std::time::Duration::from_secs(300),
         }
     }
 
@@ -971,7 +1098,7 @@ mod tests {
             state("user-1", NetworkAccess::None, std::time::Duration::ZERO),
         );
 
-        let response = reuse_session(
+        let response = reuse_local_session(
             "req",
             &start_params("user-1", NetworkAccess::None),
             &containers,
@@ -996,7 +1123,7 @@ mod tests {
         );
 
         assert!(
-            reuse_session(
+            reuse_local_session(
                 "req",
                 &start_params("user-2", NetworkAccess::None),
                 &containers,
@@ -1015,7 +1142,7 @@ mod tests {
             state("user-1", NetworkAccess::None, std::time::Duration::ZERO),
         );
 
-        let response = reuse_session(
+        let response = reuse_local_session(
             "req",
             &start_params("user-1", NetworkAccess::PublicInternet),
             &containers,
@@ -1040,7 +1167,7 @@ mod tests {
             ),
         );
 
-        reuse_session(
+        reuse_local_session(
             "req",
             &start_params("user-1", NetworkAccess::None),
             &containers,
@@ -1068,7 +1195,8 @@ mod tests {
         );
 
         drop(
-            require_sandbox(&containers, "sandbox-1")
+            local_server(Arc::clone(&containers))
+                .handle_for("sandbox-1")
                 .await
                 .expect("sandbox is registered"),
         );
@@ -1096,21 +1224,12 @@ mod tests {
             );
         }
 
-        let reaper = tokio::spawn(reap_idle_containers(
-            Arc::clone(&containers),
-            std::time::Duration::from_secs(300),
-        ));
-        tokio::time::timeout(std::time::Duration::from_secs(5), async {
-            loop {
-                if containers.lock().await.len() == 1 {
-                    return;
-                }
-                tokio::task::yield_now().await;
-            }
-        })
-        .await
-        .expect("the idle sandbox must be reaped");
-        reaper.abort();
+        let expired = take_expired_local(&containers, std::time::Duration::from_secs(300)).await;
+        assert_eq!(
+            expired,
+            vec![("idle".to_string(), "housebot-sandbox-user-1".to_string())],
+            "only the idle sandbox may be handed to the reaper"
+        );
 
         let map = containers.lock().await;
         assert!(map.contains_key("busy"), "an active session must survive");

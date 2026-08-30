@@ -17,8 +17,11 @@
 
 pub mod client;
 pub mod docker;
+pub mod http;
+pub mod kubernetes;
 pub mod limits;
 pub mod protocol;
+pub mod runtime;
 pub mod server;
 pub mod validation;
 

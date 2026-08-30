@@ -1,0 +1,82 @@
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: housebot
+  namespace: housebot
+  labels:
+    app.kubernetes.io/name: housebot
+spec:
+  serviceName: housebot
+  # The Discord gateway allows one connection per shard, and Housebot uses a
+  # single shard, so this replica count is a protocol constraint rather than a
+  # capacity choice. Scaling happens in the sandbox tier, which is where the
+  # work actually is.
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: housebot
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: housebot
+    spec:
+      automountServiceAccountToken: false
+      enableServiceLinks: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        fsGroup: 65532
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: housebot
+          image: ghcr.io/bushshrub/housebot:latest
+          env:
+            - name: DATA_DIR
+              value: /data
+            - name: SANDBOX_API_URL
+              value: http://sandbox-api.housebot.svc.cluster.local
+            - name: SANDBOX_API_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: housebot-sandbox-api
+                  key: token
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: housebot-pg-app
+                  key: uri
+          envFrom:
+            - secretRef:
+                name: housebot-secrets
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          resources:
+            requests:
+              cpu: 200m
+              memory: 512Mi
+            limits:
+              cpu: "2"
+              memory: 2Gi
+          volumeMounts:
+            - name: data
+              mountPath: /data
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: tmp
+          emptyDir:
+            medium: Memory
+            sizeLimit: 64Mi
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        resources:
+          requests:
+            storage: 10Gi

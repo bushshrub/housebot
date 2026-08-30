@@ -8,14 +8,29 @@ use crate::limits;
 use crate::protocol::*;
 use crate::validation;
 
-/// Client that talks to a running `sandboxd` process over a Unix socket.
+/// How the client reaches the sandbox tier.
+///
+/// A Unix socket reaches the one `sandboxd` on the same host; an HTTP base URL
+/// reaches a load-balanced `sandbox-api` Service, where consecutive requests
+/// may land on different replicas.
+#[derive(Debug, Clone)]
+enum Transport {
+    Unix(String),
+    Http {
+        base_url: String,
+        token: String,
+        client: reqwest::Client,
+    },
+}
+
+/// Client that talks to the sandbox tier.
 ///
 /// Housebot holds one `SandboxClient` and uses it to create and interact
-/// with disposable sandbox containers.  The client never sees the Docker
-/// socket — it sends typed requests and receives typed responses.
+/// with disposable sandboxes.  The client never sees the Docker socket or the
+/// Kubernetes API — it sends typed requests and receives typed responses.
 #[derive(Debug, Clone)]
 pub struct SandboxClient {
-    socket_path: String,
+    transport: Transport,
 }
 
 impl SandboxClient {
@@ -24,20 +39,54 @@ impl SandboxClient {
     /// The default path is `/run/housebot-sandbox/sandbox.sock`.
     pub fn new(socket_path: impl Into<String>) -> Self {
         Self {
-            socket_path: socket_path.into(),
+            transport: Transport::Unix(socket_path.into()),
         }
     }
 
+    /// Connect to a `sandbox-api` Service.
+    pub fn http(base_url: impl Into<String>, token: impl Into<String>) -> Self {
+        Self {
+            transport: Transport::Http {
+                base_url: base_url.into().trim_end_matches('/').to_string(),
+                token: token.into(),
+                client: reqwest::Client::new(),
+            },
+        }
+    }
+
+    /// Prefer the HTTP API when one is configured, so a Kubernetes deployment
+    /// needs no code change to route through the scalable tier.
     pub fn from_env() -> Self {
-        let path = std::env::var("SANDBOX_SOCKET_PATH")
-            .unwrap_or_else(|_| "/run/housebot-sandbox/sandbox.sock".to_string());
-        Self::new(path)
+        match std::env::var("SANDBOX_API_URL") {
+            Ok(url) if !url.is_empty() => {
+                Self::http(url, std::env::var("SANDBOX_API_TOKEN").unwrap_or_default())
+            }
+            _ => Self::new(
+                std::env::var("SANDBOX_SOCKET_PATH")
+                    .unwrap_or_else(|_| "/run/housebot-sandbox/sandbox.sock".to_string()),
+            ),
+        }
     }
 
     async fn send_request(&self, request: SandboxRequest) -> Result<SandboxResponse, String> {
+        match &self.transport {
+            Transport::Unix(socket_path) => self.send_over_socket(socket_path, request).await,
+            Transport::Http {
+                base_url,
+                token,
+                client,
+            } => send_over_http(client, base_url, token, request).await,
+        }
+    }
+
+    async fn send_over_socket(
+        &self,
+        socket_path: &str,
+        request: SandboxRequest,
+    ) -> Result<SandboxResponse, String> {
         let timeout_dur = Duration::from_secs(limits::SOCKET_TIMEOUT_SECS);
 
-        let stream = timeout(timeout_dur, UnixStream::connect(&self.socket_path))
+        let stream = timeout(timeout_dur, UnixStream::connect(socket_path))
             .await
             .map_err(|_| {
                 format!(
@@ -124,6 +173,67 @@ impl SandboxClient {
             id,
             client: self.clone(),
         })
+    }
+}
+
+/// Map a protocol method onto its REST route.
+///
+/// The sandbox ID lives in the path, so a request can only ever reach the
+/// sandbox its URL names.
+fn route(method: &str, sandbox_id: &str) -> Result<(reqwest::Method, String), String> {
+    let sandboxes = "/v1/sandboxes".to_string();
+    let one = format!("{sandboxes}/{sandbox_id}");
+    Ok(match method {
+        "start" => (reqwest::Method::POST, sandboxes),
+        "close" => (reqwest::Method::DELETE, one),
+        "clone_repository" => (reqwest::Method::POST, format!("{one}/clone")),
+        "run" => (reqwest::Method::POST, format!("{one}/exec")),
+        "search_code" => (reqwest::Method::POST, format!("{one}/search")),
+        "list_files" => (reqwest::Method::POST, format!("{one}/list")),
+        "read_file" => (reqwest::Method::POST, format!("{one}/read")),
+        "write_file" => (reqwest::Method::PUT, format!("{one}/file")),
+        other => return Err(format!("unsupported method: {other}")),
+    })
+}
+
+async fn send_over_http(
+    client: &reqwest::Client,
+    base_url: &str,
+    token: &str,
+    request: SandboxRequest,
+) -> Result<SandboxResponse, String> {
+    let sandbox_id = request
+        .params
+        .get("sandbox_id")
+        .and_then(|v| v.as_str())
+        .unwrap_or_default();
+    let (method, path) = route(&request.method, sandbox_id)?;
+
+    let response = client
+        .request(method, format!("{base_url}{path}"))
+        .bearer_auth(token)
+        .timeout(Duration::from_secs(limits::SOCKET_TIMEOUT_SECS))
+        .json(&request.params)
+        .send()
+        .await
+        .map_err(|e| format!("failed to reach the sandbox API: {e}"))?;
+
+    let status = response.status();
+    let body: serde_json::Value = response
+        .json()
+        .await
+        .map_err(|e| format!("failed to parse sandbox API response: {e}"))?;
+
+    if status.is_success() {
+        Ok(SandboxResponse::ok(request.id, body))
+    } else {
+        Ok(SandboxResponse::err(
+            request.id,
+            body.get("error")
+                .and_then(|v| v.as_str())
+                .unwrap_or("sandbox API request failed")
+                .to_string(),
+        ))
     }
 }
 

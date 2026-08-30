@@ -1,0 +1,13 @@
+# The Release operator. It talks to the API server and to GHCR and nothing
+# else, so unlike the sandbox images it needs no shell and no kubectl — hence
+# distroless rather than the alpine base the Rust images use. Its `nonroot` user
+# is 65532, which is what the chart's securityContext pins.
+FROM gcr.io/distroless/static:nonroot
+
+COPY dist/operator /usr/local/bin/operator
+
+USER 65532:65532
+
+EXPOSE 8081
+
+ENTRYPOINT ["/usr/local/bin/operator"]

@@ -1,0 +1,32 @@
+{{- if .Values.release.create }}
+{{- if .Values.release.version }}
+{{- fail "release.version pins the Release through git, which is what the operator owns. Leave it empty and pin through the bot, or the next sync will fight the rollback." }}
+{{- end }}
+apiVersion: housebot.dev/v1alpha1
+kind: Release
+metadata:
+  name: {{ .Values.release.name }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "housebot-operator.labels" . | nindent 4 }}
+  {{- with .Values.commonAnnotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  track: {{ .Values.release.track | quote }}
+  # spec.version is deliberately absent rather than empty. Helm sets the fields
+  # it renders, so writing it here would make Helm its field manager and every
+  # sync would clear whatever the operator had pinned.
+  ociRepositoryRef:
+    name: {{ .Values.release.ociRepositoryRef.name }}
+    {{- with .Values.release.ociRepositoryRef.namespace }}
+    namespace: {{ . }}
+    {{- end }}
+  {{- with .Values.release.helmReleaseRef.name }}
+  helmReleaseRef:
+    name: {{ . }}
+  {{- end }}
+  interval: {{ .Values.release.interval }}
+  historyLimit: {{ .Values.release.historyLimit }}
+{{- end }}

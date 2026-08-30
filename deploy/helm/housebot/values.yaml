@@ -1,0 +1,239 @@
+# Default values for the housebot chart.
+
+nameOverride: ""
+fullnameOverride: ""
+
+imagePullSecrets: []
+
+commonLabels: {}
+commonAnnotations: {}
+
+bot:
+  enabled: true
+
+  image:
+    repository: ghcr.io/bushshrub/housebot
+    # Defaults to .Chart.AppVersion when empty.
+    tag: ""
+    pullPolicy: IfNotPresent
+
+  # The Discord gateway allows one connection per shard and Housebot runs a
+  # single shard, so this is a protocol constraint, not a capacity choice.
+  # Capacity comes from sandboxApi.replicaCount instead.
+  replicas: 1
+
+  # Discord token, LLM credentials and friends. Create this Secret out of band
+  # (or with your own secret manager) and name it here; the chart never
+  # templates production credentials into a manifest.
+  existingSecret: housebot-secrets
+
+  extraEnv: []
+
+  # Blocks the bot until Postgres accepts connections. Skipped when the
+  # connection string comes from database.url or database.existingSecret, where
+  # the host is opaque to the chart.
+  waitForDatabase:
+    enabled: true
+    image: ghcr.io/cloudnative-pg/postgresql:17
+    # Only ever used to satisfy libpq; pg_isready needs no real login.
+    user: postgres
+    resources:
+      requests:
+        cpu: 10m
+        memory: 32Mi
+      limits:
+        cpu: 100m
+        memory: 64Mi
+
+  persistence:
+    enabled: true
+    size: 10Gi
+    storageClassName: ""
+    accessModes:
+      - ReadWriteOnce
+
+  resources:
+    requests:
+      cpu: 200m
+      memory: 512Mi
+    limits:
+      cpu: "2"
+      memory: 2Gi
+
+  podAnnotations: {}
+  podLabels: {}
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
+  topologySpreadConstraints: []
+
+sandboxApi:
+  enabled: true
+
+  image:
+    repository: ghcr.io/bushshrub/housebot/sandbox-api
+    tag: ""
+    pullPolicy: IfNotPresent
+
+  # Ignored when autoscaling.enabled is true, so the HPA is the only writer of
+  # the replica count and an upgrade cannot fight it back down.
+  replicaCount: 3
+
+  autoscaling:
+    enabled: true
+    minReplicas: 3
+    maxReplicas: 20
+    targetCPUUtilizationPercentage: 70
+
+  podDisruptionBudget:
+    enabled: true
+    minAvailable: 2
+
+  service:
+    type: ClusterIP
+    port: 80
+
+  # Shared bearer token between the bot and the sandbox API. Leave both empty
+  # to have the chart generate one on first install and preserve it across
+  # upgrades via a lookup of the live Secret.
+  auth:
+    existingSecret: ""
+    token: ""
+
+  resources:
+    requests:
+      cpu: 50m
+      memory: 64Mi
+    limits:
+      cpu: 500m
+      memory: 256Mi
+
+  podAnnotations: {}
+  podLabels: {}
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
+
+sandbox:
+  # Sandboxes live in their own namespace so a NetworkPolicy or quota written
+  # for them can never loosen the bot's.
+  namespace: housebot-sandboxes
+  createNamespace: true
+
+  image: ghcr.io/bushshrub/housebot/sandbox:latest
+
+  idleTimeoutSeconds: 300
+
+  # The RuntimeClass sandbox Pods are pinned to. Set runtimeClassName to ""
+  # only where gVisor is genuinely unavailable, such as a local test cluster;
+  # doing so removes the syscall boundary.
+  runtimeClassName: gvisor
+
+  runtimeClass:
+    create: true
+    handler: runsc
+    # Nodes must have the runsc handler installed and carry this label.
+    # Set to {} to schedule sandboxes on any node.
+    nodeSelector:
+      housebot.dev/gvisor: "true"
+
+  resourceQuota:
+    enabled: true
+    hard:
+      pods: "64"
+      requests.cpu: "8"
+      requests.memory: 16Gi
+      limits.cpu: "64"
+      limits.memory: 128Gi
+
+  limitRange:
+    enabled: true
+    default:
+      cpu: "1"
+      memory: 2Gi
+    defaultRequest:
+      cpu: 100m
+      memory: 256Mi
+    max:
+      cpu: "2"
+      memory: 4Gi
+
+networkPolicy:
+  enabled: true
+  # Where the bot reaches Discord and the LLM server. Narrow this to your own
+  # egress CIDRs if you can.
+  botEgressPorts:
+    - 443
+  dnsNamespace: kube-system
+
+  databasePort: 5432
+  # Only used when the database is not a CloudNativePG Cluster in this cluster,
+  # which the bot reaches by the operator's own Pod label instead. Narrow this
+  # to your database's address; the default permits any destination on the
+  # database port.
+  databaseEgressCIDRs:
+    - 0.0.0.0/0
+
+# Housebot needs one Postgres connection string, supplied in exactly one of
+# five ways. The chart never installs the CloudNativePG operator; where the
+# options below involve CNPG, the operator must already be present. The two
+# CNPG options need no secret wiring — name the Cluster and the chart resolves
+# the Secret the operator publishes.
+database:
+  # 1. A literal libpq URI. The chart stores it in a Secret of its own. The
+  #    simplest option, and the escape hatch when the connection string comes
+  #    from somewhere the others cannot express.
+  url: ""
+
+  # 2. A Secret you manage, holding a libpq URI.
+  existingSecret: ""
+  secretKey: uri
+
+  # 3. Discrete connection settings, for a Postgres that is not managed by
+  #    CloudNativePG. Setting host selects this source. The chart assembles the
+  #    URI in the Pod spec, so the password stays in its Secret rather than
+  #    passing through values.
+  #
+  #    The assembly is Kubernetes $(VAR) interpolation, which does no
+  #    percent-encoding: a password containing @ : / ? # or % will produce a
+  #    malformed URI. Use database.existingSecret for those.
+  host: ""
+  port: 5432
+  name: housebot
+  user: housebot
+  passwordSecret:
+    name: ""
+    key: password
+  sslMode: require
+
+  # 4. An existing CloudNativePG Cluster, by name. Resolves to the `<name>-app`
+  #    Secret and the `uri` key the operator publishes.
+  cnpgCluster: ""
+
+  # 5. Have the chart create a CloudNativePG Cluster. This renders the Cluster
+  #    resource only — the operator that reconciles it is a cluster-scoped
+  #    prerequisite you install yourself. Templating fails with a clear message
+  #    if its CRD is absent.
+  cnpg:
+    create: false
+    name: housebot-pg
+    instances: 3
+    imageName: ghcr.io/cloudnative-pg/postgresql:17
+    database: housebot
+    owner: housebot
+    storage:
+      size: 20Gi
+      storageClass: ""
+    parameters:
+      max_connections: "200"
+    resources:
+      requests:
+        cpu: 250m
+        memory: 512Mi
+      limits:
+        cpu: "2"
+        memory: 2Gi
+    # Losing one node must not lose a quorum of the cluster.
+    enablePodAntiAffinity: true
+    monitoring:
+      enablePodMonitor: false

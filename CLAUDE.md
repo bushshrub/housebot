@@ -20,6 +20,28 @@ cargo fmt --check                             # formatting check
 
 Fix any `cargo fmt` or `cargo clippy` warnings before finishing.
 
+The release operator under `operator/` is a separate Go module and is **not**
+covered by `cargo test --all`. When you change it, run its own commands:
+
+```bash
+go -C operator build ./...
+go -C operator test ./...
+go -C operator vet ./...
+gofmt -l operator                             # must print nothing
+```
+
+Its CRD and RBAC are generated from the Go types and the kubebuilder markers on
+the reconciler, so regenerate them rather than editing the YAML by hand:
+
+```bash
+cd operator
+go tool controller-gen object paths=./api/...
+go tool controller-gen crd paths=./api/... \
+  output:crd:artifacts:config=../deploy/helm/housebot-operator/crds
+# The ClusterRole in the chart is transcribed from these markers by hand:
+go tool controller-gen rbac:roleName=housebot-operator paths=./internal/... output:stdout
+```
+
 ## Code conventions
 
 - **No comments that describe what the code does** — only add a comment when the WHY is non-obvious.

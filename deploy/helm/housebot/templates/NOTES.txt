@@ -1,0 +1,19 @@
+Housebot {{ .Chart.AppVersion }} is installed as {{ .Release.Name }}.
+
+Sandbox tier:
+  namespace:     {{ .Values.sandbox.namespace }}
+  runtime class: {{ .Values.sandbox.runtimeClassName | default "NONE" }}
+{{- if not .Values.sandbox.runtimeClassName }}
+
+  WARNING: sandbox.runtimeClassName is empty, so sandboxes run on the host
+  kernel with no gVisor boundary. Only do this on a throwaway cluster.
+{{- end }}
+
+Database: {{ include "housebot.databaseSecretName" . }} (key {{ include "housebot.databaseSecretKey" . }})
+
+Check the rollout:
+  kubectl -n {{ .Release.Namespace }} rollout status statefulset/{{ include "housebot.fullname" . }}
+  kubectl -n {{ .Release.Namespace }} rollout status deployment/{{ include "housebot.sandboxApi.fullname" . }}
+
+Verify sandboxes actually schedule under gVisor:
+  helm test {{ .Release.Name }} -n {{ .Release.Namespace }}
