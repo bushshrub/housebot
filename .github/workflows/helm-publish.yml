@@ -1,0 +1,132 @@
+name: Helm chart publish
+
+on:
+  push:
+    branches: [main, master]
+    tags: ['v*']
+  pull_request:
+    paths:
+      - deploy/helm/**
+      - .github/workflows/helm-publish.yml
+  workflow_dispatch:
+
+concurrency:
+  group: helm-publish-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CHART_DIR: deploy/helm/housebot
+  # Charts go under their own path: ghcr.io/<owner>/housebot is already the bot
+  # image, and an OCI chart pushed there would collide with it.
+  CHART_REGISTRY: oci://ghcr.io/${{ github.repository }}/charts
+
+jobs:
+  # The chart is not covered by cargo test -- manifest_tests.rs reads
+  # deploy/kubernetes, not deploy/helm -- so this is the only gate on it.
+  lint:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: azure/setup-helm@v4
+        with:
+          version: v3.16.4
+
+      - name: Install kubeconform
+        run: |
+          curl -sSfL https://github.com/yannh/kubeconform/releases/download/v0.6.7/kubeconform-linux-amd64.tar.gz \
+            | sudo tar -xz -C /usr/local/bin kubeconform
+
+      - name: Lint
+        run: helm lint "$CHART_DIR" --set database.url=postgres://u:p@h/db
+
+      # Every database source, since the helper that picks between them is the
+      # one piece of chart logic with real branching.
+      - name: Render and validate every database source
+        run: |
+          set -eu
+          render() {
+            name="$1"; shift
+            helm template hb "$CHART_DIR" --set sandbox.runtimeClassName="" "$@" > "/tmp/$name.yaml"
+            kubeconform -kubernetes-version 1.31.5 -strict -summary "/tmp/$name.yaml"
+          }
+          render url --set database.url=postgres://u:p@h/db
+          render existing-secret --set database.existingSecret=mysecret
+          render discrete --set database.host=pg.internal --set database.passwordSecret.name=pgpass
+          render cnpg-cluster --set database.cnpgCluster=housebot-pg
+
+      - name: Reject invalid database configurations
+        run: |
+          set -eu
+          refuses() {
+            if helm template hb "$CHART_DIR" "$@" >/dev/null 2>&1; then
+              echo "expected failure but template succeeded: $*" >&2
+              exit 1
+            fi
+          }
+          # No source, two sources, and a discrete source missing its password.
+          refuses
+          refuses --set database.url=postgres://x --set database.existingSecret=s
+          refuses --set database.host=pg.internal
+
+  publish:
+    if: github.event_name != 'pull_request'
+    needs: lint
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: azure/setup-helm@v4
+        with:
+          version: v3.16.4
+
+      - name: Log in to GitHub Container Registry
+        run: |
+          echo "${{ secrets.GITHUB_TOKEN }}" \
+            | helm registry login ghcr.io -u "${{ github.actor }}" --password-stdin
+
+      # appVersion is what the chart falls back to when an image tag is left
+      # empty, so it has to name tags docker-publish.yml actually pushes:
+      # `sha-<full sha>` for a branch build, the tag itself for a release.
+      - name: Resolve versions
+        id: version
+        run: |
+          set -eu
+          base=$(helm show chart "$CHART_DIR" | awk '/^version:/ {print $2}')
+          if [ "${GITHUB_REF_TYPE}" = tag ]; then
+            version="${GITHUB_REF_NAME#v}"
+            app_version="${GITHUB_REF_NAME}"
+          else
+            version="${base}-sha.$(git rev-parse --short HEAD)"
+            app_version="sha-${GITHUB_SHA}"
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "app_version=$app_version" >> "$GITHUB_OUTPUT"
+
+      - name: Package
+        run: |
+          helm package "$CHART_DIR" \
+            --version "${{ steps.version.outputs.version }}" \
+            --app-version "${{ steps.version.outputs.app_version }}" \
+            --destination dist
+
+      - name: Push
+        run: |
+          helm push "dist/housebot-${{ steps.version.outputs.version }}.tgz" "$CHART_REGISTRY"
+
+      - name: Summarise
+        run: |
+          {
+            echo "### Chart published"
+            echo
+            echo '```'
+            echo "helm install hb ${CHART_REGISTRY#oci://}/housebot --version ${{ steps.version.outputs.version }}"
+            echo '```'
+            echo
+            echo "Images pinned to \`${{ steps.version.outputs.app_version }}\`."
+          } >> "$GITHUB_STEP_SUMMARY"
