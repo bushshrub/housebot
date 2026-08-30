@@ -1,0 +1,24 @@
+apiVersion: v2
+name: housebot-operator
+description: Owns which version of the housebot chart is running, so a deploy is a field patch rather than a commit
+type: application
+version: 0.1.0
+appVersion: "latest"
+home: https://github.com/bushshrub/housebot
+sources:
+  - https://github.com/bushshrub/housebot
+maintainers:
+  - name: bushshrub
+keywords:
+  - gitops
+  - flux
+  - operator
+annotations:
+  # The operator patches Flux's own OCIRepository and reads its HelmRelease, so
+  # source-controller and helm-controller must already be running. Flux is a
+  # cluster-scoped prerequisite with its own release cadence, not a subchart.
+  housebot.dev/requires-operator: flux
+  # This chart must never be installed by the housebot chart it manages: the
+  # operator would then be patching the source its own HelmRelease reads from,
+  # and could delete itself mid-upgrade.
+  housebot.dev/deploy-separately: "true"

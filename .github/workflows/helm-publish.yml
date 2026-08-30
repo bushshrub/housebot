@@ -16,6 +16,7 @@ concurrency:
 
 env:
   CHART_DIR: deploy/helm/housebot
+  OPERATOR_CHART_DIR: deploy/helm/housebot-operator
   # Charts go under their own path: ghcr.io/<owner>/housebot is already the bot
   # image, and an OCI chart pushed there would collide with it.
   CHART_REGISTRY: oci://ghcr.io/${{ github.repository }}/charts
@@ -56,6 +57,30 @@ jobs:
           render existing-secret --set database.existingSecret=mysecret
           render discrete --set database.host=pg.internal --set database.passwordSecret.name=pgpass
           render cnpg-cluster --set database.cnpgCluster=housebot-pg
+
+      # The operator chart has little branching, but it carries the CRD and the
+      # RBAC the operator runs on, so a broken render is a broken deploy.
+      - name: Lint and validate the operator chart
+        run: |
+          set -eu
+          helm lint "$OPERATOR_CHART_DIR"
+          helm template hbo "$OPERATOR_CHART_DIR" > /tmp/operator.yaml
+          kubeconform -kubernetes-version 1.31.5 -strict -summary \
+            -ignore-missing-schemas /tmp/operator.yaml
+          helm template hbo "$OPERATOR_CHART_DIR" --set release.create=true \
+            | grep -q 'kind: Release'
+
+      # A Release rendered from git must not carry spec.version: Helm would
+      # become its field manager, and every sync would clear an operator pin and
+      # so undo a rollback.
+      - name: Reject a chart-managed pin
+        run: |
+          set -eu
+          if helm template hbo "$OPERATOR_CHART_DIR" \
+               --set release.create=true --set release.version=0.1.0 >/dev/null 2>&1; then
+            echo "expected release.version to be refused" >&2
+            exit 1
+          fi
 
       - name: Reject invalid database configurations
         run: |
@@ -108,16 +133,23 @@ jobs:
           echo "version=$version" >> "$GITHUB_OUTPUT"
           echo "app_version=$app_version" >> "$GITHUB_OUTPUT"
 
+      # Both charts are versioned together. The operator chart changes rarely,
+      # but a CRD field the controller relies on has to reach the cluster in the
+      # same release as the controller that reads it.
       - name: Package
         run: |
-          helm package "$CHART_DIR" \
-            --version "${{ steps.version.outputs.version }}" \
-            --app-version "${{ steps.version.outputs.app_version }}" \
-            --destination dist
+          for dir in "$CHART_DIR" "$OPERATOR_CHART_DIR"; do
+            helm package "$dir" \
+              --version "${{ steps.version.outputs.version }}" \
+              --app-version "${{ steps.version.outputs.app_version }}" \
+              --destination dist
+          done
 
       - name: Push
         run: |
-          helm push "dist/housebot-${{ steps.version.outputs.version }}.tgz" "$CHART_REGISTRY"
+          for chart in housebot housebot-operator; do
+            helm push "dist/${chart}-${{ steps.version.outputs.version }}.tgz" "$CHART_REGISTRY"
+          done
 
       - name: Summarise
         run: |
@@ -125,6 +157,8 @@ jobs:
             echo "### Chart published"
             echo
             echo '```'
+            echo "helm install hbo ${CHART_REGISTRY#oci://}/housebot-operator --version ${{ steps.version.outputs.version }}"
+            echo "# housebot itself is installed by the operator, not by hand:"
             echo "helm install hb ${CHART_REGISTRY#oci://}/housebot --version ${{ steps.version.outputs.version }}"
             echo '```'
             echo
