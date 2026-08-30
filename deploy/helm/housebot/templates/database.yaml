@@ -34,10 +34,10 @@ spec:
     initdb:
       database: {{ .Values.database.cnpg.database }}
       owner: {{ .Values.database.cnpg.owner }}
-      # The operator generates the password and publishes the connection
-      # string as the `<name>-app` Secret, so no credential is committed.
-      secret:
-        name: {{ .Values.database.cnpg.name }}-app
+      # No `secret:` here on purpose. Naming one tells the operator to consume
+      # an existing Secret; leaving it out is what makes the operator generate
+      # the password and publish it as `<name>-app`, which is the Secret the
+      # bot reads.
   storage:
     size: {{ .Values.database.cnpg.storage.size }}
     {{- with .Values.database.cnpg.storage.storageClass }}

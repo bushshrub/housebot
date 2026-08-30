@@ -55,6 +55,10 @@ spec:
         - protocol: TCP
           port: 443
 ---
+# Scoped to this release's own Pods rather than the whole namespace. A
+# namespace-wide deny also claims Pods the chart does not own — including the
+# CloudNativePG cluster it creates, whose instance manager needs the API
+# server to bootstrap at all.
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
@@ -63,7 +67,9 @@ metadata:
   labels:
     {{- include "housebot.labels" . | nindent 4 }}
 spec:
-  podSelector: {}
+  podSelector:
+    matchLabels:
+      {{- include "housebot.selectorLabels" . | nindent 6 }}
   policyTypes: ["Ingress", "Egress"]
 ---
 # The sandbox API accepts requests from the bot only, and is never exposed
