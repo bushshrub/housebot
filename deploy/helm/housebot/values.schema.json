@@ -30,6 +30,25 @@
               "type": "string"
             }
           }
+        },
+        "waitForDatabase": {
+          "type": "object",
+          "properties": {
+            "enabled": {
+              "type": "boolean"
+            },
+            "image": {
+              "type": "string",
+              "minLength": 1
+            },
+            "user": {
+              "type": "string",
+              "minLength": 1
+            },
+            "resources": {
+              "type": "object"
+            }
+          }
         }
       }
     },
@@ -114,6 +133,46 @@
         "secretKey": {
           "type": "string",
           "minLength": 1
+        },
+        "host": {
+          "type": "string",
+          "description": "Postgres host; setting it selects the discrete source."
+        },
+        "port": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 65535
+        },
+        "name": {
+          "type": "string",
+          "minLength": 1
+        },
+        "user": {
+          "type": "string",
+          "minLength": 1
+        },
+        "passwordSecret": {
+          "type": "object",
+          "properties": {
+            "name": {
+              "type": "string"
+            },
+            "key": {
+              "type": "string",
+              "minLength": 1
+            }
+          }
+        },
+        "sslMode": {
+          "type": "string",
+          "enum": [
+            "disable",
+            "allow",
+            "prefer",
+            "require",
+            "verify-ca",
+            "verify-full"
+          ]
         },
         "cnpgCluster": {
           "type": "string"

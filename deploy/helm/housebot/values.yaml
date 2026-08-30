@@ -29,6 +29,22 @@ bot:
 
   extraEnv: []
 
+  # Blocks the bot until Postgres accepts connections. Skipped when the
+  # connection string comes from database.url or database.existingSecret, where
+  # the host is opaque to the chart.
+  waitForDatabase:
+    enabled: true
+    image: ghcr.io/cloudnative-pg/postgresql:17
+    # Only ever used to satisfy libpq; pg_isready needs no real login.
+    user: postgres
+    resources:
+      requests:
+        cpu: 10m
+        memory: 32Mi
+      limits:
+        cpu: 100m
+        memory: 64Mi
+
   persistence:
     enabled: true
     size: 10Gi
@@ -159,23 +175,42 @@ networkPolicy:
     - 0.0.0.0/0
 
 # Housebot needs one Postgres connection string, supplied in exactly one of
-# four ways. The chart never installs the CloudNativePG operator; where the
-# options below involve CNPG, the operator must already be present.
+# five ways. The chart never installs the CloudNativePG operator; where the
+# options below involve CNPG, the operator must already be present. The two
+# CNPG options need no secret wiring — name the Cluster and the chart resolves
+# the Secret the operator publishes.
 database:
   # 1. A literal libpq URI. The chart stores it in a Secret of its own. The
   #    simplest option, and the escape hatch when the connection string comes
-  #    from somewhere the other three cannot express.
+  #    from somewhere the others cannot express.
   url: ""
 
   # 2. A Secret you manage, holding a libpq URI.
   existingSecret: ""
   secretKey: uri
 
-  # 3. An existing CloudNativePG Cluster, by name. Resolves to the `<name>-app`
+  # 3. Discrete connection settings, for a Postgres that is not managed by
+  #    CloudNativePG. Setting host selects this source. The chart assembles the
+  #    URI in the Pod spec, so the password stays in its Secret rather than
+  #    passing through values.
+  #
+  #    The assembly is Kubernetes $(VAR) interpolation, which does no
+  #    percent-encoding: a password containing @ : / ? # or % will produce a
+  #    malformed URI. Use database.existingSecret for those.
+  host: ""
+  port: 5432
+  name: housebot
+  user: housebot
+  passwordSecret:
+    name: ""
+    key: password
+  sslMode: require
+
+  # 4. An existing CloudNativePG Cluster, by name. Resolves to the `<name>-app`
   #    Secret and the `uri` key the operator publishes.
   cnpgCluster: ""
 
-  # 4. Have the chart create a CloudNativePG Cluster. This renders the Cluster
+  # 5. Have the chart create a CloudNativePG Cluster. This renders the Cluster
   #    resource only — the operator that reconciles it is a cluster-scoped
   #    prerequisite you install yourself. Templating fails with a clear message
   #    if its CRD is absent.

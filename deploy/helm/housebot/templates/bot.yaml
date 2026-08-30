@@ -60,6 +60,29 @@ spec:
         fsGroup: 65532
         seccompProfile:
           type: RuntimeDefault
+      {{- $waitHost := include "housebot.database.waitHost" . }}
+      {{- if and .Values.bot.waitForDatabase.enabled $waitHost }}
+      # Without this the bot starts alongside its database after a node reboot,
+      # fails to connect, and is restarted anyway — but as CrashLoopBackOff,
+      # which is indistinguishable from a genuinely wrong DATABASE_URL.
+      initContainers:
+        - name: wait-for-database
+          image: {{ .Values.bot.waitForDatabase.image }}
+          command:
+            - sh
+            - -c
+            # -U is not optional: this Pod runs as an arbitrary uid with no
+            # passwd entry, and without it libpq cannot derive a user name, so
+            # pg_isready exits non-zero even once the database is up.
+            - until pg_isready -h {{ $waitHost }} -p {{ include "housebot.database.waitPort" . }} -U {{ .Values.bot.waitForDatabase.user }}; do echo waiting for database; sleep 2; done
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          resources:
+            {{- toYaml .Values.bot.waitForDatabase.resources | nindent 12 }}
+      {{- end }}
       containers:
         - name: housebot
           image: {{ include "housebot.image" (dict "image" .Values.bot.image "root" $) }}
@@ -74,11 +97,7 @@ spec:
                 secretKeyRef:
                   name: {{ include "housebot.sandboxApi.secretName" . }}
                   key: token
-            - name: DATABASE_URL
-              valueFrom:
-                secretKeyRef:
-                  name: {{ include "housebot.databaseSecretName" . }}
-                  key: {{ include "housebot.databaseSecretKey" . }}
+            {{- include "housebot.databaseEnv" . | nindent 12 }}
             {{- with .Values.bot.extraEnv }}
             {{- toYaml . | nindent 12 }}
             {{- end }}
