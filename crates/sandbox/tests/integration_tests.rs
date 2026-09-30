@@ -23,46 +23,6 @@ use housebot_sandbox::{server, SandboxClient};
 // ══════════════════════════════════════════════════════════════════════════════
 
 #[test]
-fn validate_accepts_github_urls() {
-    assert!(validation::validate_repository_url("https://github.com/rust-lang/rust").is_ok());
-    assert!(validation::validate_repository_url("https://github.com/user/repo.git").is_ok());
-    assert!(validation::validate_repository_url("https://gitlab.com/user/project").is_ok());
-}
-
-#[test]
-fn validate_rejects_ssh_urls() {
-    assert!(validation::validate_repository_url("ssh://git@github.com/user/repo").is_err());
-    assert!(validation::validate_repository_url("git://github.com/user/repo").is_err());
-}
-
-#[test]
-fn validate_rejects_credentials_in_urls() {
-    assert!(validation::validate_repository_url("https://token@github.com/repo").is_err());
-    assert!(validation::validate_repository_url("https://user:pass@github.com/repo").is_err());
-}
-
-#[test]
-fn validate_rejects_private_addresses() {
-    assert!(validation::validate_repository_url("https://localhost/repo").is_err());
-    assert!(validation::validate_repository_url("https://127.0.0.1/repo").is_err());
-    assert!(validation::validate_repository_url("https://192.168.1.1/repo").is_err());
-    assert!(validation::validate_repository_url("https://10.0.0.1/repo").is_err());
-    assert!(validation::validate_repository_url("https://172.16.0.1/repo").is_err());
-    assert!(validation::validate_repository_url("https://host.docker.internal/repo").is_err());
-}
-
-#[test]
-fn validate_rejects_file_urls() {
-    assert!(validation::validate_repository_url("file:///etc/passwd").is_err());
-}
-
-#[test]
-fn validate_rejects_malformed_urls() {
-    assert!(validation::validate_repository_url("").is_err());
-    assert!(validation::validate_repository_url("not-a-url").is_err());
-}
-
-#[test]
 fn validate_workspace_path_normal() {
     assert!(validation::validate_workspace_path("src/main.rs").is_ok());
     assert!(validation::validate_workspace_path("src/lib/foo.rs").is_ok());
@@ -89,17 +49,6 @@ fn validate_workspace_path_rejects_null() {
 }
 
 #[test]
-fn validate_query_normal() {
-    assert!(validation::validate_query("fn main").is_ok());
-    assert!(validation::validate_query("TODO:").is_ok());
-}
-
-#[test]
-fn validate_query_rejects_empty() {
-    assert!(validation::validate_query("").is_err());
-}
-
-#[test]
 fn validate_command_normal() {
     assert!(validation::validate_command("ls -la").is_ok());
     assert!(validation::validate_command("echo hello").is_ok());
@@ -114,20 +63,6 @@ fn validate_command_rejects_empty() {
 #[test]
 fn validate_command_rejects_null() {
     assert!(validation::validate_command("echo\0hello").is_err());
-}
-
-#[test]
-fn validate_branch_normal() {
-    assert!(validation::validate_branch("main").is_ok());
-    assert!(validation::validate_branch("feature/my-feature").is_ok());
-    assert!(validation::validate_branch("abc123def").is_ok());
-}
-
-#[test]
-fn validate_branch_rejects_dangerous() {
-    assert!(validation::validate_branch("main; rm -rf /").is_err());
-    assert!(validation::validate_branch("main\nother").is_err());
-    assert!(validation::validate_branch("main\0extra").is_err());
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
@@ -261,8 +196,6 @@ fn limits_are_sane() {
         assert!(limits::DEFAULT_COMMAND_TIMEOUT_SECS <= limits::ABSOLUTE_MAX_TIMEOUT_SECS);
         assert!(limits::MAX_OUTPUT_BYTES > 0);
         assert!(limits::MAX_FILE_READ_BYTES > 0);
-        assert!(limits::MAX_SEARCH_MATCHES > 0);
-        assert!(limits::MAX_FILE_LIST_ENTRIES > 0);
     }
 }
 
@@ -409,20 +342,11 @@ async fn docker_sandbox_list_and_read_file() {
         .await
         .expect("start failed");
 
-    // Create a file then list and read it
+    // Create a file then read it
     sandbox
         .run("echo 'fn main() {}' > /workspace/main.rs", None, None)
         .await
         .expect("write failed");
-
-    let entries = sandbox
-        .list_files(".", None)
-        .await
-        .expect("list_files failed");
-    assert!(
-        entries.iter().any(|e| e.name.contains("main.rs")),
-        "main.rs must appear in listing: {entries:?}"
-    );
 
     let contents = sandbox
         .read_file("main.rs", None, None)
@@ -432,40 +356,6 @@ async fn docker_sandbox_list_and_read_file() {
         contents.contents.contains("fn main"),
         "contents: {}",
         contents.contents
-    );
-
-    sandbox.close().await.expect("close failed");
-}
-
-#[tokio::test]
-#[ignore = "requires Docker daemon + sandbox image; set HOUSEBOT_SANDBOX_RUNTIME=runc in CI"]
-async fn docker_sandbox_search_code() {
-    let socket = test_socket("search");
-    spawn_sandboxd(&socket).await;
-
-    let client = SandboxClient::new(&socket);
-    let sandbox = client
-        .start("integration-session", NetworkAccess::None)
-        .await
-        .expect("start failed");
-
-    sandbox
-        .run(
-            "printf 'fn hello() {}\\nfn world() {}\\n' > /workspace/lib.rs",
-            None,
-            None,
-        )
-        .await
-        .expect("write failed");
-
-    let result = sandbox
-        .search_code("fn hello", None, None)
-        .await
-        .expect("search_code failed");
-    assert!(!result.matches.is_empty(), "search must find matches");
-    assert!(
-        result.matches.iter().any(|m| m.line.contains("fn hello")),
-        "match must contain 'fn hello'"
     );
 
     sandbox.close().await.expect("close failed");

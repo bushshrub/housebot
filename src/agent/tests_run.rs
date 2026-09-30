@@ -21,7 +21,11 @@ fn test_agent(client: Arc<dyn ChatClient>) -> (TempDir, Agent) {
 }
 
 fn noop_sandbox() -> LazySandbox {
-    LazySandbox::new(SandboxClient::new("/dev/null"), "test-session")
+    LazySandbox::new(
+        SandboxClient::new("/dev/null"),
+        "test-session",
+        Skills::new("/dev/null"),
+    )
 }
 
 #[derive(Default)]
@@ -426,13 +430,13 @@ async fn run_creates_and_edits_skill_via_conversation() {
     let client = Arc::new(MockChatClient::new());
     client.push_tool_call(
         "call_1",
-        "create_skill",
-        r#"{"name":"greeter","instructions":"Say hello."}"#,
+        "manage_skill",
+        r#"{"action":"save","name":"greeter","description":"Greets people","instructions":"Say hello."}"#,
     );
     client.push_tool_call(
         "call_2",
-        "edit_skill",
-        r#"{"name":"greeter","instructions":"Say hello warmly."}"#,
+        "manage_skill",
+        r#"{"action":"save","name":"greeter","instructions":"Say hello warmly."}"#,
     );
     client.push_text("Done — created and refined the greeter skill.");
     let (_t, agent) = test_agent(client);
@@ -450,30 +454,16 @@ async fn run_creates_and_edits_skill_via_conversation() {
     assert_eq!(skill.instructions.trim(), "Say hello warmly.");
     assert_eq!(skill.created_by.as_deref(), Some("555"));
 
-    // create_skill auto-enables the new skill for its creator.
-    assert!(
-        agent
-            .user_config
-            .load(555)
-            .await
-            .enabled_skills
-            .contains(&"greeter".to_string()),
-        "creator should have the skill auto-enabled"
-    );
-
     let hist = agent.history.load("555").await;
     assert!(hist
         .iter()
         .any(|m| m["role"] == "tool" && m["content"].as_str().unwrap_or("").contains("updated")));
 }
 
-/// Regression test for the vulnerability this change fixes: the removed
-/// `!skill add` / `/skill add` commands let anyone silently overwrite a
-/// skill they didn't own. The replacement `edit_skill` tool must enforce
-/// author/editor ownership at the dispatch layer and leave the skill
-/// completely untouched when denied.
+/// Only the author or a delegated editor may change a skill; a denied save
+/// must leave the skill completely untouched.
 #[tokio::test]
-async fn dispatch_edit_skill_denies_non_owner_and_leaves_skill_unchanged() {
+async fn dispatch_manage_skill_denies_non_owner_and_leaves_skill_unchanged() {
     let client = Arc::new(MockChatClient::new());
     let (_t, agent) = test_agent(client);
     agent
@@ -485,14 +475,13 @@ async fn dispatch_edit_skill_denies_non_owner_and_leaves_skill_unchanged() {
 
     let out = agent
         .dispatch_tool(
-            "edit_skill",
-            &json!({"name": "locked", "instructions": "hacked instructions"}),
+            "manage_skill",
+            &json!({"action": "save", "name": "locked", "instructions": "hacked instructions"}),
             "intruder_2",
             "Intruder",
             0,
             None,
             &sb,
-            &NoHooks,
         )
         .await;
     match out {
@@ -504,57 +493,35 @@ async fn dispatch_edit_skill_denies_non_owner_and_leaves_skill_unchanged() {
     assert_eq!(unchanged.instructions.trim(), "original instructions");
 }
 
-/// Integration test stitching create → edit → use together through the
-/// dispatch layer: the instructions loaded by `use_skill` must reflect the
-/// most recent `edit_skill` update, and only the author can edit.
+/// Every skill's description reaches the model as a user message placed
+/// just before the user's request, never in the system prompt.
 #[tokio::test]
-async fn dispatch_edit_skill_then_use_skill_reflects_update() {
+async fn run_sends_the_skill_list_as_a_user_message() {
     let client = Arc::new(MockChatClient::new());
-    let (_t, agent) = test_agent(client);
+    client.push_text("hi");
+    let (_t, agent) = test_agent(client.clone());
     agent
         .skills
         .save(fixture_skill("greeter", "owner_1"))
         .await
         .unwrap();
-    agent.enable_skill_for_user("owner_1", "greeter").await;
-    let sb = noop_sandbox();
 
-    let edit_out = agent
-        .dispatch_tool(
-            "edit_skill",
-            &json!({"name": "greeter", "instructions": "Say hello warmly."}),
-            "owner_1",
-            "Owner",
-            0,
-            None,
-            &sb,
-            &NoHooks,
-        )
+    agent
+        .run(AgentRequest::text("u1", "Ann", "hello"), &NoHooks)
         .await;
-    match edit_out {
-        ToolOutcome::Text(t) => assert!(t.contains("updated"), "unexpected: {t}"),
-        other => panic!("unexpected outcome: {other:?}"),
-    }
 
-    let use_out = agent
-        .dispatch_tool(
-            "use_skill",
-            &json!({"name": "greeter"}),
-            "owner_1",
-            "Owner",
-            0,
-            None,
-            &sb,
-            &NoHooks,
-        )
-        .await;
-    match use_out {
-        ToolOutcome::Text(t) => assert!(
-            t.contains("Say hello warmly."),
-            "use_skill did not reflect the edit: {t}"
-        ),
-        other => panic!("unexpected outcome: {other:?}"),
-    }
+    let messages = client.stream_calls.lock().unwrap()[0].clone();
+    let skills_message = &messages[messages.len() - 2];
+    assert_eq!(skills_message["role"], "user");
+    assert!(skills_message["content"]
+        .as_str()
+        .unwrap()
+        .contains("**greeter**: desc"));
+    assert!(!messages[0]["content"]
+        .as_str()
+        .unwrap()
+        .contains("**greeter**"));
+    assert_eq!(messages[messages.len() - 1]["content"], "hello");
 }
 
 #[tokio::test]
@@ -571,7 +538,6 @@ async fn dispatch_unknown_tool_returns_error() {
             0,
             None,
             &sb,
-            &NoHooks,
         )
         .await;
     match out {
@@ -761,7 +727,6 @@ async fn explicit_memory_update_survives_compaction() {
             0,
             None,
             &sb,
-            &NoHooks,
         )
         .await;
     agent
@@ -822,7 +787,6 @@ async fn get_messages_refuses_a_channel_the_user_cannot_be_shown_to_have_access_
             42,
             Some(7),
             &sb,
-            &NoHooks,
         )
         .await;
 
@@ -850,7 +814,6 @@ async fn get_messages_refuses_a_server_channel_asked_for_from_a_dm() {
             42,
             None,
             &sb,
-            &NoHooks,
         )
         .await;
 
@@ -877,7 +840,6 @@ async fn get_messages_reads_the_current_channel_without_an_access_check() {
             42,
             Some(7),
             &sb,
-            &NoHooks,
         )
         .await;
 
@@ -910,7 +872,6 @@ async fn dispatch_github_api_merge_denies_non_administrators() {
             0,
             None,
             &sb,
-            &NoHooks,
         )
         .await;
 
@@ -957,7 +918,6 @@ async fn dispatch_github_api_merge_allows_configurers_and_audits_the_attempt() {
             0,
             None,
             &sb,
-            &NoHooks,
         )
         .await;
 
@@ -1003,11 +963,10 @@ async fn build_tools_includes_sandbox_tools() {
         .iter()
         .filter_map(|t| t["function"]["name"].as_str())
         .collect();
-    assert!(names.contains(&"sandbox_clone_repository"));
-    assert!(names.contains(&"sandbox_list_files"));
-    assert!(names.contains(&"sandbox_search_code"));
-    assert!(names.contains(&"sandbox_read_file"));
-    assert!(names.contains(&"sandbox_run"));
+    assert!(names.contains(&"read"));
+    assert!(names.contains(&"write"));
+    assert!(names.contains(&"shell"));
+    assert!(!names.contains(&"spawn_subagent"));
 }
 
 #[tokio::test]
@@ -1020,140 +979,4 @@ async fn build_tools_includes_configure_bot_only_for_configurers() {
         .filter_map(|t| t["function"]["name"].as_str())
         .collect();
     assert!(names.contains(&"configure_bot"));
-}
-
-/// Records the scheduler's sub-agent occupancy at the moment the model is
-/// called, which is the only externally visible proof of the request's
-/// priority.
-struct PriorityProbeClient {
-    scheduler: Arc<std::sync::OnceLock<Arc<crate::llm_scheduler::LlmScheduler>>>,
-    subagent_active: Arc<AtomicBool>,
-}
-
-#[async_trait]
-impl ChatClient for PriorityProbeClient {
-    async fn context_window_tokens(&self) -> anyhow::Result<Option<u64>> {
-        Ok(Some(10_000))
-    }
-
-    async fn chat_stream(
-        &self,
-        _model: &str,
-        _messages: &[Value],
-        _tools: &[Value],
-        _tool_choice: Option<Value>,
-        _thinking: ThinkingMode,
-        _max_completion_tokens: Option<u32>,
-        _sink: Option<&dyn TextSink>,
-    ) -> anyhow::Result<ChatCompletion> {
-        if let Some(scheduler) = self.scheduler.get() {
-            if scheduler.info().subagent_active > 0 {
-                self.subagent_active.store(true, Ordering::Release);
-            }
-        }
-        Ok(ChatCompletion {
-            content: Some("report body".into()),
-            ..Default::default()
-        })
-    }
-
-    async fn chat_once(
-        &self,
-        _model: &str,
-        _messages: &[Value],
-        _max_tokens: u32,
-    ) -> anyhow::Result<ChatCompletion> {
-        Ok(ChatCompletion::default())
-    }
-}
-
-#[tokio::test]
-async fn subagent_runs_at_subagent_priority() {
-    let scheduler = Arc::new(std::sync::OnceLock::new());
-    let subagent_active = Arc::new(AtomicBool::new(false));
-    let client = Arc::new(PriorityProbeClient {
-        scheduler: scheduler.clone(),
-        subagent_active: subagent_active.clone(),
-    });
-    let (_t, agent) = test_agent(client);
-    let _ = scheduler.set(agent.llm_scheduler().clone());
-
-    let out = agent
-        .run_subagent("find X", "", "42", "conv-1", &NoHooks)
-        .await;
-    assert_eq!(out, "report body");
-    assert!(
-        subagent_active.load(Ordering::Acquire),
-        "sub-agent request did not occupy a SubAgent scheduler slot"
-    );
-}
-
-#[tokio::test]
-async fn subagent_rejects_an_empty_task() {
-    let client = Arc::new(MockChatClient::new());
-    let (_t, agent) = test_agent(client);
-    let out = agent
-        .run_subagent("   ", "", "42", "conv-1", &NoHooks)
-        .await;
-    assert!(out.starts_with("Error:"));
-}
-
-#[tokio::test]
-async fn subagent_cannot_spawn_or_reach_stateful_tools() {
-    let client = Arc::new(MockChatClient::new());
-    let (_t, agent) = test_agent(client);
-    let names: Vec<String> = agent
-        .subagent_tools()
-        .iter()
-        .filter_map(|t| t["function"]["name"].as_str().map(str::to_string))
-        .collect();
-    assert_eq!(names, vec!["web_search", "fetch_webpage"]);
-}
-
-#[tokio::test]
-async fn build_tools_includes_spawn_subagent() {
-    let client = Arc::new(MockChatClient::new());
-    let (_t, agent) = test_agent(client);
-    let tools = agent.build_tools(true, false).await;
-    let names: Vec<&str> = tools
-        .iter()
-        .filter_map(|t| t["function"]["name"].as_str())
-        .collect();
-    assert!(names.contains(&"spawn_subagent"));
-}
-
-struct SubagentToolRecorder(std::sync::Mutex<Vec<String>>);
-
-#[async_trait]
-impl AgentHooks for SubagentToolRecorder {
-    async fn on_subagent_tool_called(&self, tool: &str, _args: &Value) {
-        self.0.lock().unwrap().push(tool.to_string());
-    }
-}
-
-#[tokio::test]
-async fn subagent_tool_calls_are_reported_to_the_hooks() {
-    let client = Arc::new(MockChatClient::new());
-    client.push_completion(crate::llm::ChatCompletion {
-        content: None,
-        tool_calls: vec![crate::llm::ToolCall {
-            id: "call_a".into(),
-            // Not a real sub-agent tool: the hook fires before dispatch, so this
-            // keeps the test off the network.
-            name: "not_a_subagent_tool".into(),
-            arguments: "{}".into(),
-        }],
-        finish_reason: Some("tool_calls".into()),
-        usage: Default::default(),
-    });
-    client.push_text("report body");
-    let (_t, agent) = test_agent(client);
-    let hooks = SubagentToolRecorder(std::sync::Mutex::new(Vec::new()));
-
-    let out = agent
-        .run_subagent("find X", "", "42", "conv-1", &hooks)
-        .await;
-
-    assert_eq!(out, "report body");
-    assert_eq!(hooks.0.lock().unwrap().as_slice(), ["not_a_subagent_tool"]);
 }

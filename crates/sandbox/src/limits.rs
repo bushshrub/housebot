@@ -3,26 +3,19 @@
 //! These are compile-time constants.  They are never derived from user input.
 
 pub const DEFAULT_COMMAND_TIMEOUT_SECS: u64 = 30;
-pub const TEST_TIMEOUT_SECS: u64 = 120;
 pub const ABSOLUTE_MAX_TIMEOUT_SECS: u64 = 300;
 
 pub const MAX_OUTPUT_BYTES: usize = 64 * 1024; // combined stdout+stderr
 pub const MAX_FILE_READ_BYTES: usize = 64 * 1024;
-pub const MAX_SEARCH_MATCHES: usize = 100;
-pub const MAX_FILE_LIST_ENTRIES: usize = 500;
 
 pub const MAX_FILE_READ_LINES: usize = 2000;
 
-pub const MAX_CLONE_BRANCH_LENGTH: usize = 256;
-pub const MAX_URL_LENGTH: usize = 2048;
 pub const MAX_COMMAND_LENGTH: usize = 4096;
 /// Ceiling on a single `write_file` payload. Generous enough for a skill
 /// script, far below the 1 MiB request frame so the framing limit is never the
 /// thing that rejects a write.
 pub const MAX_WRITE_FILE_BYTES: usize = 256 * 1024;
 pub const MAX_PATH_DEPTH: usize = 64;
-pub const MAX_GLOB_LENGTH: usize = 256;
-pub const MAX_QUERY_LENGTH: usize = 512;
 
 pub const MAX_REQUEST_FRAME_BYTES: usize = 1024 * 1024; // 1 MiB
 pub const SOCKET_TIMEOUT_SECS: u64 = 30;

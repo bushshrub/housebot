@@ -108,7 +108,7 @@ async fn scheduler_limits_apply_to_the_running_scheduler_and_persist() {
         .await
         .unwrap();
     let limits = SchedulerLimitsStore::new(temp.path().join("bot_config"));
-    let scheduler = Arc::new(LlmScheduler::new(4, 2));
+    let scheduler = Arc::new(LlmScheduler::new(4));
     let options: Vec<serenity::all::CommandDataOption> = serde_json::from_value(json!([{
         "name": "scheduler",
         "type": 2,
@@ -129,11 +129,10 @@ async fn scheduler_limits_apply_to_the_running_scheduler_and_persist() {
     assert_eq!(scheduler.info().max_inflight, 9);
     let stored = limits.load().await.unwrap();
     assert_eq!(stored.max_inflight, 9);
-    assert_eq!(stored.max_subagent, 2);
 }
 
 #[tokio::test]
-async fn scheduler_show_reports_both_ceilings() {
+async fn scheduler_show_reports_the_ceiling() {
     let temp = TempDir::new().unwrap();
     let access = AccessControlStore::new(temp.path().join("bot_config"));
     access
@@ -141,7 +140,7 @@ async fn scheduler_show_reports_both_ceilings() {
         .await
         .unwrap();
     let limits = SchedulerLimitsStore::new(temp.path().join("bot_config"));
-    let scheduler = Arc::new(LlmScheduler::new(4, 2));
+    let scheduler = Arc::new(LlmScheduler::new(4));
     let options: Vec<serenity::all::CommandDataOption> = serde_json::from_value(json!([{
         "name": "scheduler",
         "type": 2,
@@ -151,7 +150,6 @@ async fn scheduler_show_reports_both_ceilings() {
 
     let shown = handle_config_interaction(&access, &scheduler, &limits, &options, 42).await;
     assert!(shown.contains("0 of 4 slots busy"));
-    assert!(shown.contains("0 of 2 slots busy"));
 }
 
 #[tokio::test]
@@ -319,14 +317,17 @@ fn split_custom_limit() {
 
 // ── tool_hint ──
 #[test]
-fn hint_use_skill_with_name() {
-    let h = tool_hint("use_skill", &json!({"name": "summarize"}));
+fn hint_manage_skill_with_name() {
+    let h = tool_hint(
+        "manage_skill",
+        &json!({"action": "save", "name": "summarize"}),
+    );
     assert!(h.contains("summarize"));
 }
 
 #[test]
-fn hint_use_skill_no_name() {
-    assert_eq!(tool_hint("use_skill", &json!({})), "");
+fn hint_manage_skill_no_name() {
+    assert_eq!(tool_hint("manage_skill", &json!({})), "");
 }
 
 #[test]
@@ -354,26 +355,10 @@ fn hint_unknown_tool_no_known_key() {
 #[test]
 fn status_uses_a_human_readable_label() {
     assert_eq!(tool_status("web_search"), "🔎 **Searching the web...**");
-    assert_eq!(tool_status("sandbox_run"), "📦 **Running a command...**");
-    assert_eq!(
-        tool_status("spawn_subagent"),
-        "🧠 **Starting a subagent...**"
-    );
+    assert_eq!(tool_status("shell"), "📦 **Running a command...**");
     assert_eq!(
         tool_status("get_messages"),
         "💬 **Reading conversations...**"
-    );
-}
-
-#[test]
-fn subagent_status_is_marked_as_nested() {
-    assert_eq!(
-        subagent_tool_status("web_search"),
-        "╰ 🔎 **Searching the web...**"
-    );
-    assert_eq!(
-        subagent_tool_status("new_external_tool"),
-        "╰ 🔧 **Running `new_external_tool`...**"
     );
 }
 
@@ -587,21 +572,19 @@ fn test_skill(name: &str, author: &str) -> crate::skills::Skill {
 
 #[tokio::test]
 async fn skill_list_shows_saved_skill() {
-    let (t, skills, _m, _h) = stores();
-    let user_config = UserConfigStore::new(t.path().join("user_config"));
+    let (_t, skills, _m, _h) = stores();
     skills.save(test_skill("greeter", "7")).await.unwrap();
-    let list = skill_command(&skills, &user_config, "!skill list", 7).await;
+    let list = skill_command(&skills, "!skill list", 7).await;
     assert!(list.contains("greeter"));
 }
 
 #[tokio::test]
 async fn skill_add_and_edit_redirect_to_conversation() {
-    let (t, skills, _m, _h) = stores();
-    let user_config = UserConfigStore::new(t.path().join("user_config"));
-    let add = skill_command(&skills, &user_config, "!skill add greeter", 1).await;
-    assert!(add.contains("create_skill"), "add: {add}");
-    let edit = skill_command(&skills, &user_config, "!skill edit greeter", 1).await;
-    assert!(edit.contains("edit_skill"), "edit: {edit}");
+    let (_t, skills, _m, _h) = stores();
+    let add = skill_command(&skills, "!skill add greeter", 1).await;
+    assert!(add.contains("manage_skill"), "add: {add}");
+    let edit = skill_command(&skills, "!skill edit greeter", 1).await;
+    assert!(edit.contains("manage_skill"), "edit: {edit}");
 }
 
 /// Regression test for the vulnerability this removal fixes: `!skill add`
@@ -610,11 +593,10 @@ async fn skill_add_and_edit_redirect_to_conversation() {
 /// redirect, an attempted overwrite must leave the existing skill untouched.
 #[tokio::test]
 async fn skill_add_cannot_overwrite_an_existing_skill_owned_by_someone_else() {
-    let (t, skills, _m, _h) = stores();
-    let user_config = UserConfigStore::new(t.path().join("user_config"));
+    let (_t, skills, _m, _h) = stores();
     skills.save(test_skill("greeter", "7")).await.unwrap();
-    let out = skill_command(&skills, &user_config, "!skill add greeter", 999).await;
-    assert!(out.contains("create_skill"), "out: {out}");
+    let out = skill_command(&skills, "!skill add greeter", 999).await;
+    assert!(out.contains("manage_skill"), "out: {out}");
     let unchanged = skills.get("greeter").await.unwrap();
     assert_eq!(unchanged.instructions.trim(), "You greet people");
     assert_eq!(unchanged.created_by.as_deref(), Some("7"));
@@ -625,8 +607,7 @@ async fn skill_add_cannot_overwrite_an_existing_skill_owned_by_someone_else() {
 /// subcommand shape must no longer be recognized or create anything.
 #[tokio::test]
 async fn skill_interaction_add_subcommand_no_longer_recognized() {
-    let (t, skills, _m, _h) = stores();
-    let user_config = UserConfigStore::new(t.path().join("user_config"));
+    let (_t, skills, _m, _h) = stores();
     let options: Vec<serenity::all::CommandDataOption> = serde_json::from_value(json!([{
         "name": "add",
         "type": 1,
@@ -636,14 +617,14 @@ async fn skill_interaction_add_subcommand_no_longer_recognized() {
         ]
     }]))
     .unwrap();
-    let out = handle_skill_interaction(&skills, &user_config, &options, 1).await;
+    let out = handle_skill_interaction(&skills, &options, 1).await;
     assert!(out.contains("Unknown subcommand"), "out: {out}");
     assert!(skills.get("greeter").await.is_none());
 }
 
 /// Regression test: the `/skill` command definition must not re-offer an
 /// `add` subcommand — creation/editing now happens only through the
-/// create_skill / edit_skill LLM tools.
+/// manage_skill LLM tool.
 #[test]
 fn skill_slash_command_definition_has_no_add_option() {
     let definition = serde_json::to_value(skill_command_definition()).unwrap();
@@ -657,41 +638,11 @@ fn skill_slash_command_definition_has_no_add_option() {
 }
 
 #[tokio::test]
-async fn skill_enable_then_disable() {
-    let (t, skills, _m, _h) = stores();
-    let user_config = UserConfigStore::new(t.path().join("user_config"));
-    skills.save(test_skill("greeter", "7")).await.unwrap();
-    let enable = skill_command(&skills, &user_config, "!skill enable greeter", 7).await;
-    assert!(enable.contains("enabled"));
-    assert!(user_config
-        .load(7)
-        .await
-        .enabled_skills
-        .contains(&"greeter".to_string()));
-    let list = skill_command(&skills, &user_config, "!skill list", 7).await;
-    assert!(list.contains("✓ **greeter**"));
-    let disable = skill_command(&skills, &user_config, "!skill disable greeter", 7).await;
-    assert!(disable.contains("disabled"));
-    assert!(user_config.load(7).await.enabled_skills.is_empty());
-}
-
-#[tokio::test]
-async fn skill_enable_missing_rejected() {
-    let (t, skills, _m, _h) = stores();
-    let user_config = UserConfigStore::new(t.path().join("user_config"));
-    let out = skill_command(&skills, &user_config, "!skill enable nope", 7).await;
-    assert!(out.contains("not found"));
-}
-
-#[tokio::test]
 async fn skill_delete_missing() {
-    let (t, skills, _m, _h) = stores();
-    let user_config = UserConfigStore::new(t.path().join("user_config"));
-    assert!(
-        skill_command(&skills, &user_config, "!skill delete nope", 1)
-            .await
-            .contains("not found")
-    );
+    let (_t, skills, _m, _h) = stores();
+    assert!(skill_command(&skills, "!skill delete nope", 1)
+        .await
+        .contains("not found"));
 }
 
 #[tokio::test]

@@ -5,9 +5,8 @@ A Discord-based house assistant bot powered by a local LLM (llama.cpp). **Writte
 ## Features
 
 - **LLM-powered chat** — per-user conversation history and persistent memory
-- **Skills** — user-authored `SKILL.md` directories on a persistent volume, disclosed progressively: names in the prompt, instructions on `use_skill`, bundled files opened only on request
-- **Sub-agents** — `spawn_subagent` researches in the background at a lower scheduling priority than user chat
-- **Priority scheduling** — user chat outranks sub-agents; both ceilings are adjustable at runtime with `/config scheduler`
+- **Skills** — user-authored `SKILL.md` directories on a persistent volume, copied into each sandbox at `skills/<name>/`; names and descriptions reach the model in a user message, and it reads a skill with `read` when one applies
+- **Priority scheduling** — user chat outranks background work; the ceiling is adjustable at runtime with `/config scheduler`
 - **Multi-tier token leaderboards** — durable PostgreSQL daily, weekly, monthly, and all-time rankings that survive restarts, with cache-efficiency metrics and administrator-controlled visibility
 - **Web search** — SearXNG JSON API integration for live information retrieval
 - **Channel context** — an in-memory ring buffer per channel, gated on the requesting user's live Discord permissions
@@ -58,7 +57,7 @@ See `.env.example` for all available options. Key variables:
 | `SANDBOX_IDLE_TIMEOUT_SECS` | Idle time before a user's sandbox is reaped (default 300) |
 | `HOUSEBOT_SANDBOX_RUNTIME` | Override container runtime (default `runsc`; set to `runc` for dev/CI) |
 | `SKILLS_DIR` | Skill directories on the data volume (default `<DATA_DIR>/skills`) |
-| `MAX_INFLIGHT_LLM` / `MAX_SUBAGENT_CONCURRENCY` | Scheduler ceilings — **startup defaults only**, overridden once `/config scheduler` stores a value |
+| `MAX_INFLIGHT_LLM` | Scheduler ceiling — **startup defaults only**, overridden once `/config scheduler` stores a value |
 | `CHANNEL_CONTEXT_CAPACITY` / `CHANNEL_CONTEXT_RETENTION_SECS` | Ring-buffer bounds, whichever binds first |
 
 ## Architecture
@@ -69,18 +68,17 @@ Discord message → HouseBot::message() → Agent::run()
   │   ├── update_memory → user memory (markdown)
   │   ├── set_reminder / create_feature_request
   │   ├── web_search / fetch_webpage → SearXNG + guarded HTTP fetch
-  │   └── sandbox_* → sandboxd (Unix socket) → gVisor container
+  │   └── read / write / shell → sandboxd (Unix socket) → gVisor container
   └── streamed response back to Discord
 ```
 
 ## Code inspection sandbox
 
-The five `sandbox_*` tools let the bot clone a public repository,
-browse its files, and run short commands for diagnostic purposes. Skill scripts
-run here too. They request a networkless container, but the session's network
-mode is fixed by whichever tool starts it first — a script invoked after a
-repository clone shares that networked container. The sandbox itself is the
-boundary: gVisor, tmpfs-only writable paths, no host mounts, no secrets.
+The `read`, `write`, and `shell` tools work in the user's sandbox. The sandbox
+has internet access, so `shell` can clone repositories and install packages.
+Every skill is copied into the workspace at `skills/<name>/`, and skill scripts
+run here too. The sandbox itself is the boundary: gVisor, tmpfs-only writable
+paths, no host mounts, no secrets.
 
 Containers are **session-scoped, keyed by user**: a follow-up message reuses the
 same workspace, and a reaper destroys it after `SANDBOX_IDLE_TIMEOUT_SECS` of
@@ -124,7 +122,7 @@ The binary is a thin shell over a workspace of individually unit-tested crates:
 src/
   main.rs      # entry point
   bot/         # serenity client, routing, commands, streaming render, attachments
-  agent/       # agentic loop, prompt building, tool dispatch, sub-agents
+  agent/       # agentic loop, prompt building, tool dispatch
 
 crates/
   llm, llm-scheduler        # streaming chat client; priority scheduler over it

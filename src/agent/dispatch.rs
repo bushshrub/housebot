@@ -14,7 +14,6 @@ impl Agent {
         channel_id: u64,
         guild_id: u64,
         sandbox: &LazySandbox,
-        hooks: &dyn AgentHooks,
     ) -> ToolOutcome {
         match name {
             "web_search" => ToolOutcome::Text(
@@ -239,147 +238,8 @@ impl Agent {
                     .await,
                 )
             }
-            "spawn_subagent" => {
-                let conversation_id = self
-                    .current_conversation_id(user_id, username, channel_id)
-                    .await;
-                ToolOutcome::Text(
-                    self.run_subagent(
-                        str_arg(args, "task"),
-                        str_arg(args, "context"),
-                        user_id,
-                        &conversation_id,
-                        hooks,
-                    )
-                    .await,
-                )
-            }
-            "read_skill_file" => {
-                let skill_name = str_arg(args, "skill");
-                if !self.skill_enabled_for(user_id, skill_name).await {
-                    return ToolOutcome::Text(format!(
-                        "Error: Skill '{skill_name}' is not enabled for this user."
-                    ));
-                }
-                match self
-                    .skills
-                    .read_bundled(
-                        skill_name,
-                        housebot_skills::BundleKind::References,
-                        str_arg(args, "file"),
-                    )
-                    .await
-                {
-                    Ok(body) => ToolOutcome::Text(body),
-                    Err(error) => ToolOutcome::Text(error),
-                }
-            }
-            "run_skill_script" => {
-                let skill_name = str_arg(args, "skill");
-                let file = str_arg(args, "file");
-                if !self.skill_enabled_for(user_id, skill_name).await {
-                    return ToolOutcome::Text(format!(
-                        "Error: Skill '{skill_name}' is not enabled for this user."
-                    ));
-                }
-                let source = match self
-                    .skills
-                    .read_bundled(skill_name, housebot_skills::BundleKind::Scripts, file)
-                    .await
-                {
-                    Ok(source) => source,
-                    Err(error) => return ToolOutcome::Text(error),
-                };
-                let script_args: Vec<String> = args
-                    .get("args")
-                    .and_then(Value::as_array)
-                    .map(|items| {
-                        items
-                            .iter()
-                            .filter_map(Value::as_str)
-                            .map(str::to_string)
-                            .collect()
-                    })
-                    .unwrap_or_default();
-                match sandbox
-                    .run_skill_script(skill_name, file, &source, &script_args, None)
-                    .await
-                {
-                    Ok(output) => ToolOutcome::Text(output),
-                    Err(error) => ToolOutcome::Text(format!("Error: {error}")),
-                }
-            }
-            "use_skill" => {
-                let skill_name = str_arg(args, "name");
-                match self.skills.get(skill_name).await {
-                    None => ToolOutcome::Text(format!("Error: Skill '{skill_name}' not found.")),
-                    Some(skill) => {
-                        if self.skill_enabled_for(user_id, skill_name).await {
-                            let instructions = skill.effective_instructions();
-                            ToolOutcome::Text(build_loaded_skill_content(&skill, instructions))
-                        } else {
-                            ToolOutcome::Text(format!(
-                                "Error: Skill '{skill_name}' is not enabled for this user. Enable \
-                                 it first with the enable_skill tool (or `!skill enable {skill_name}`)."
-                            ))
-                        }
-                    }
-                }
-            }
-            "create_skill" => {
-                let skill_name = args
-                    .get("name")
-                    .and_then(Value::as_str)
-                    .unwrap_or("")
-                    .to_lowercase();
-                let existed = self.skills.get(&skill_name).await.is_some();
-                let result =
-                    tools::create_skill::dispatch_create_skill(&self.skills, user_id, args).await;
-                if !existed && result.starts_with('✅') {
-                    self.enable_skill_for_user(user_id, &skill_name).await;
-                }
-                ToolOutcome::Text(result)
-            }
-            "list_skills" => {
-                let enabled = self.enabled_skills_for(user_id).await;
-                ToolOutcome::Text(
-                    tools::manage_skills::dispatch_list_skills(&self.skills, &enabled).await,
-                )
-            }
-            "skill_info" => ToolOutcome::Text(
-                tools::manage_skills::dispatch_skill_info(&self.skills, args).await,
-            ),
-            "delete_skill" => ToolOutcome::Text(
-                tools::manage_skills::dispatch_delete_skill(&self.skills, user_id, args).await,
-            ),
-            "edit_skill" => ToolOutcome::Text(
-                tools::manage_skills::dispatch_edit_skill(&self.skills, user_id, args).await,
-            ),
-            "enable_skill" => {
-                let name = str_arg(args, "name").to_lowercase();
-                if self.skills.get(&name).await.is_none() {
-                    ToolOutcome::Text(format!(
-                        "Error: Skill '{name}' not found in the marketplace."
-                    ))
-                } else if name == housebot_skills::SKILL_CREATOR_NAME {
-                    ToolOutcome::Text(format!("Skill '{name}' is built in and always enabled."))
-                } else if self.enable_skill_for_user(user_id, &name).await {
-                    ToolOutcome::Text(format!(
-                        "✅ Skill '{name}' enabled. You can now load it with use_skill."
-                    ))
-                } else {
-                    ToolOutcome::Text(format!("Skill '{name}' is already enabled."))
-                }
-            }
-            "disable_skill" => {
-                let name = str_arg(args, "name").to_lowercase();
-                if name == housebot_skills::SKILL_CREATOR_NAME {
-                    ToolOutcome::Text(format!("Skill '{name}' is built in and always enabled."))
-                } else if self.disable_skill_for_user(user_id, &name).await {
-                    ToolOutcome::Text(format!("✅ Skill '{name}' disabled."))
-                } else {
-                    ToolOutcome::Text(format!("Skill '{name}' was not enabled."))
-                }
+            "manage_skill" => {
+                ToolOutcome::Text(tools::manage_skills::dispatch(&self.skills, user_id, args).await)
             }
             "get_bot_features" => ToolOutcome::Text(tools::features::features_text().to_string()),
             "get_messages" => {
@@ -484,64 +344,36 @@ impl Agent {
                 }
                 ToolOutcome::Text(self.handle_configure_bot(args, access).await)
             }
-            // ── Sandbox tools ──
-            name if name.starts_with("sandbox_") => match name {
-                "sandbox_clone_repository" => ToolOutcome::Text(
-                    sandbox
-                        .clone_repository(
-                            str_arg(args, "url"),
-                            args.get("branch").and_then(Value::as_str),
-                        )
-                        .await
-                        .unwrap_or_else(|e| format!("Error: {e}")),
-                ),
-                "sandbox_list_files" => ToolOutcome::Text(
-                    sandbox
-                        .list_files(
-                            str_arg(args, "path"),
-                            args.get("max_depth")
-                                .and_then(Value::as_u64)
-                                .map(|d| d as u32),
-                        )
-                        .await
-                        .unwrap_or_else(|e| format!("Error: {e}")),
-                ),
-                "sandbox_search_code" => ToolOutcome::Text(
-                    sandbox
-                        .search_code(
-                            str_arg(args, "query"),
-                            args.get("path").and_then(Value::as_str),
-                            args.get("glob").and_then(Value::as_str),
-                        )
-                        .await
-                        .unwrap_or_else(|e| format!("Error: {e}")),
-                ),
-                "sandbox_read_file" => ToolOutcome::Text(
-                    sandbox
-                        .read_file(
-                            str_arg(args, "path"),
-                            args.get("start_line")
-                                .and_then(Value::as_u64)
-                                .map(|l| l as u32),
-                            args.get("end_line")
-                                .and_then(Value::as_u64)
-                                .map(|l| l as u32),
-                        )
-                        .await
-                        .unwrap_or_else(|e| format!("Error: {e}")),
-                ),
-                "sandbox_run" => ToolOutcome::Text(
-                    sandbox
-                        .run(
-                            str_arg(args, "command"),
-                            args.get("working_dir").and_then(Value::as_str),
-                            args.get("timeout").and_then(Value::as_u64),
-                        )
-                        .await
-                        .unwrap_or_else(|e| format!("Error: {e}")),
-                ),
-                _ => ToolOutcome::Text(format!("Unknown tool: {name}")),
-            },
+            "read" => ToolOutcome::Text(
+                sandbox
+                    .read(
+                        str_arg(args, "path"),
+                        args.get("start_line")
+                            .and_then(Value::as_u64)
+                            .map(|l| l as u32),
+                        args.get("end_line")
+                            .and_then(Value::as_u64)
+                            .map(|l| l as u32),
+                    )
+                    .await
+                    .unwrap_or_else(|e| format!("Error: {e}")),
+            ),
+            "write" => ToolOutcome::Text(
+                sandbox
+                    .write(str_arg(args, "path"), str_arg(args, "content"))
+                    .await
+                    .unwrap_or_else(|e| format!("Error: {e}")),
+            ),
+            "shell" => ToolOutcome::Text(
+                sandbox
+                    .shell(
+                        str_arg(args, "command"),
+                        args.get("working_dir").and_then(Value::as_str),
+                        args.get("timeout").and_then(Value::as_u64),
+                    )
+                    .await
+                    .unwrap_or_else(|e| format!("Error: {e}")),
+            ),
             _ => ToolOutcome::Text(format!("Unknown tool: {name}")),
         }
     }
@@ -826,59 +658,6 @@ impl Agent {
                 "Error: failed to save the bot configuration.".to_string()
             }
         }
-    }
-
-    /// The marketplace skills `user_id` has enabled.
-    pub(crate) async fn enabled_skills_for(&self, user_id: &str) -> Vec<String> {
-        let mut enabled = self
-            .user_config
-            .load(user_id.parse().unwrap_or(0))
-            .await
-            .enabled_skills;
-        if !enabled
-            .iter()
-            .any(|name| name == housebot_skills::SKILL_CREATOR_NAME)
-        {
-            enabled.push(housebot_skills::SKILL_CREATOR_NAME.to_string());
-        }
-        enabled
-    }
-
-    /// Whether `user_id` has enabled the skill named `name`.
-    async fn skill_enabled_for(&self, user_id: &str, name: &str) -> bool {
-        self.enabled_skills_for(user_id)
-            .await
-            .iter()
-            .any(|n| n == name)
-    }
-
-    /// Enable `name` for `user_id`. Returns `false` if it was already enabled.
-    pub(crate) async fn enable_skill_for_user(&self, user_id: &str, name: &str) -> bool {
-        let uid = user_id.parse().unwrap_or(0);
-        let mut cfg = self.user_config.load(uid).await;
-        if cfg.enabled_skills.iter().any(|n| n == name) {
-            return false;
-        }
-        cfg.enabled_skills.push(name.to_string());
-        if let Err(error) = self.user_config.save(uid, &cfg).await {
-            tracing::error!(%error, %uid, %name, "failed to enable skill for user");
-        }
-        true
-    }
-
-    /// Disable `name` for `user_id`. Returns `false` if it was not enabled.
-    async fn disable_skill_for_user(&self, user_id: &str, name: &str) -> bool {
-        let uid = user_id.parse().unwrap_or(0);
-        let mut cfg = self.user_config.load(uid).await;
-        let before = cfg.enabled_skills.len();
-        cfg.enabled_skills.retain(|n| n != name);
-        if cfg.enabled_skills.len() == before {
-            return false;
-        }
-        if let Err(error) = self.user_config.save(uid, &cfg).await {
-            tracing::error!(%error, %uid, %name, "failed to disable skill for user");
-        }
-        true
     }
 }
 

@@ -131,8 +131,8 @@ pub(crate) async fn handle_config_interaction(
             if sub.name == "show" {
                 let info = scheduler.info();
                 return format!(
-                    "LLM scheduler: {} of {} slots busy, {} queued.\nSub-agents: {} of {} slots busy.",
-                    info.active, info.max_inflight, info.pending, info.subagent_active, info.max_subagent
+                    "LLM scheduler: {} of {} slots busy, {} queued.",
+                    info.active, info.max_inflight, info.pending
                 );
             }
             let options = match &sub.value {
@@ -151,13 +151,11 @@ pub(crate) async fn handle_config_interaction(
             };
             match sub.name.as_str() {
                 "max_inflight" => scheduler.set_max_inflight(value),
-                "max_subagent" => scheduler.set_max_subagent(value),
                 other => return format!("Unknown scheduler subcommand `{other}`."),
             }
             let info = scheduler.info();
             let limits = SchedulerLimits {
                 max_inflight: info.max_inflight,
-                max_subagent: info.max_subagent,
             };
             if limits_store.save(limits).await.is_err() {
                 return format!(

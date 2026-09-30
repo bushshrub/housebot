@@ -7,13 +7,13 @@
 //!   scripts/      # executed in the sandbox on demand
 //! ```
 //!
-//! Progressive disclosure has three levels: the system prompt carries skill
-//! *names* only, `SKILL.md`'s body is loaded when a skill is invoked, and
-//! `references/` and `scripts/` are opened only when the body calls for them.
+//! Every skill is copied into each sandbox at `skills/<name>/`. The agent is
+//! told each skill's name and description in a user message, reads `SKILL.md`
+//! with its normal file tools when a skill applies, and opens `references/` and
+//! runs `scripts/` only when the body calls for them.
 //!
-//! A skill's description is user-authored and never reaches the system prompt —
-//! it is surfaced through the `list_skills` tool result instead, where it is
-//! data the model read rather than instructions it believes.
+//! A skill's description is user-authored, so it never reaches the system
+//! prompt: it arrives as user-message data, not instructions the model trusts.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -206,20 +206,13 @@ fn builtin_skill_creator() -> Skill {
         instructions: "Help the user design or improve a Housebot skill. First clarify the \
             desired behaviour, its boundaries, and the tools it genuinely needs. Prefer focused \
             instructions over broad personality prompts, and recommend only tools that actually \
-            exist. A skill is a directory: SKILL.md holds the instructions, references/ holds \
-            material to read on demand, and scripts/ holds code run in the sandbox. Keep SKILL.md \
-            short and move detail into references/ so it is loaded only when needed. Sandbox \
-            scripts cannot count on network access — have the agent gather data and pass it in. Check \
-            list_skills before choosing a name so you do not duplicate an existing skill. Present \
-            a concise final draft of the name, description, instructions, and recommended tools, \
-            and obtain explicit user approval before calling create_skill or edit_skill."
+            exist. Write a description that says what the skill does and when to use it: it is \
+            the only part the agent sees before it reads the skill. Check the existing skills \
+            with `ls skills` in the shell before choosing a name so you do not duplicate one. \
+            Present a concise final draft of the name, description, and instructions, and obtain \
+            explicit user approval before calling manage_skill with action 'save'."
             .to_string(),
-        enabled_tools: vec![
-            "list_skills".to_string(),
-            "skill_info".to_string(),
-            "create_skill".to_string(),
-            "edit_skill".to_string(),
-        ],
+        enabled_tools: vec!["manage_skill".to_string(), "shell".to_string()],
         created_by: None,
         editors: Vec::new(),
         created_at: 0,

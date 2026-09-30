@@ -5,7 +5,6 @@ use std::time::{Duration, Instant};
 
 use tokio::sync::Mutex;
 
-pub mod create_skill;
 pub mod edit_feature_request;
 pub mod feature_development;
 pub mod feature_request;
@@ -15,7 +14,6 @@ pub mod manage_skills;
 pub mod remind;
 pub mod sandbox;
 pub mod searxng;
-pub mod subagent;
 pub mod web_fetch;
 
 /// Single Source of Truth for all built-in tool names (used by autocomplete).
@@ -25,31 +23,19 @@ pub fn all_tool_names() -> &'static [&'static str] {
         "housebot",
         "web_search",
         "fetch_webpage",
-        "create_skill",
-        "use_skill",
-        "list_skills",
-        "skill_info",
-        "delete_skill",
-        "edit_skill",
-        "enable_skill",
-        "disable_skill",
-        "read_skill_file",
-        "run_skill_script",
+        "manage_skill",
         "create_feature_request",
         "edit_feature_request",
         "prepare_feature_development",
         "github_api",
         "set_reminder",
-        "spawn_subagent",
         "get_bot_features",
         "get_messages",
         "update_memory",
         "search_memory",
-        "sandbox_clone_repository",
-        "sandbox_list_files",
-        "sandbox_search_code",
-        "sandbox_read_file",
-        "sandbox_run",
+        "read",
+        "write",
+        "shell",
     ]
 }
 

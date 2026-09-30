@@ -25,73 +25,29 @@ fn parse_mention(raw: &str) -> &str {
 
 const SKILL_ADD_EDIT_REDIRECT: &str =
     "Skills are now created and edited by asking the bot directly in conversation \
-     (it uses the create_skill / edit_skill tools) rather than through this command.";
+     (it uses the manage_skill tool) rather than through this command.";
 
-/// `!skill list` / `/skill list`: every marketplace skill, marked with whether
-/// `author_id` has it enabled.
-pub async fn skill_list(skills: &Skills, user_config: &UserConfigStore, author_id: u64) -> String {
+/// `!skill list` / `/skill list`: every skill shared across all users.
+pub async fn skill_list(skills: &Skills) -> String {
     let all = skills.load_all().await;
     if all.is_empty() {
-        return "No skills in the marketplace yet. Ask the bot in conversation to create one."
-            .into();
+        return "No skills yet. Ask the bot in conversation to create one.".into();
     }
-    let enabled = user_config.load(author_id).await.enabled_skills;
-    let mut lines = vec!["**Marketplace skills** (✓ = enabled for you):".to_string()];
+    let mut lines = vec!["**Skills:**".to_string()];
     for skill in all.values() {
-        let mark = if enabled.iter().any(|n| n == &skill.name) {
-            "✓"
-        } else {
-            "•"
-        };
         let author = skill
             .created_by
             .as_deref()
             .map(|id| format!(" <@{id}>"))
             .unwrap_or_default();
         lines.push(format!(
-            "{} **{}** — {}{}",
-            mark,
+            "• **{}** — {}{}",
             skill.name,
             truncate_chars(skill.description_or_name(), 80),
             author,
         ));
     }
     lines.join("\n")
-}
-
-/// `!skill enable <name>`: opt `author_id` into a marketplace skill.
-pub async fn skill_enable(
-    skills: &Skills,
-    user_config: &UserConfigStore,
-    author_id: u64,
-    name: &str,
-) -> String {
-    if skills.get(name).await.is_none() {
-        return format!("Skill `{name}` not found in the marketplace.");
-    }
-    let mut cfg = user_config.load(author_id).await;
-    if cfg.enabled_skills.iter().any(|n| n == name) {
-        return format!("Skill **{name}** is already enabled.");
-    }
-    cfg.enabled_skills.push(name.to_string());
-    if user_config.save(author_id, &cfg).await.is_err() {
-        return "Error: failed to save your configuration.".into();
-    }
-    format!("✅ Skill **{name}** enabled.")
-}
-
-/// `!skill disable <name>`: opt `author_id` out of a previously enabled skill.
-pub async fn skill_disable(user_config: &UserConfigStore, author_id: u64, name: &str) -> String {
-    let mut cfg = user_config.load(author_id).await;
-    let before = cfg.enabled_skills.len();
-    cfg.enabled_skills.retain(|n| n != name);
-    if cfg.enabled_skills.len() == before {
-        return format!("Skill **{name}** was not enabled.");
-    }
-    if user_config.save(author_id, &cfg).await.is_err() {
-        return "Error: failed to save your configuration.".into();
-    }
-    format!("✅ Skill **{name}** disabled.")
 }
 
 /// `!skill info <name>` / `/skill info <name>`: full details of one skill.
@@ -213,19 +169,13 @@ pub async fn skill_revoke(skills: &Skills, author_id: u64, name: &str, target_ra
     skill_delegate_editor(skills, author_id, name, target_raw, false).await
 }
 
-pub async fn skill_command(
-    skills: &Skills,
-    user_config: &UserConfigStore,
-    first_line: &str,
-    author_id: u64,
-) -> String {
+pub async fn skill_command(skills: &Skills, first_line: &str, author_id: u64) -> String {
     let parts: Vec<&str> = first_line
         .splitn(4, char::is_whitespace)
         .filter(|s| !s.is_empty())
         .collect();
     if parts.len() < 2 {
         return "Usage: `!skill list` | `!skill delete <name>` | `!skill info <name>` \
-                | `!skill enable <name>` | `!skill disable <name>` \
                 | `!skill grant <name> <@user>` | `!skill revoke <name> <@user>`\n\
                 To create or edit a skill, just ask the bot in conversation."
             .into();
@@ -240,15 +190,7 @@ pub async fn skill_command(
             .ok_or_else(|| usage.to_string())
     };
     match parts[1].to_lowercase().as_str() {
-        "list" => skill_list(skills, user_config, author_id).await,
-        "enable" => match require_name("Usage: `!skill enable <name>`") {
-            Ok(name) => skill_enable(skills, user_config, author_id, &name).await,
-            Err(usage) => usage,
-        },
-        "disable" => match require_name("Usage: `!skill disable <name>`") {
-            Ok(name) => skill_disable(user_config, author_id, &name).await,
-            Err(usage) => usage,
-        },
+        "list" => skill_list(skills).await,
         "info" => match require_name("Usage: `!skill info <name>`") {
             Ok(name) => skill_info(skills, &name).await,
             Err(usage) => usage,
@@ -274,7 +216,7 @@ pub async fn skill_command(
         }
         other => {
             format!(
-                "Unknown subcommand `{other}`. Options: `list`, `add`, `edit`, `delete`, `info`, `enable`, `disable`, `grant`, `revoke`"
+                "Unknown subcommand `{other}`. Options: `list`, `add`, `edit`, `delete`, `info`, `grant`, `revoke`"
             )
         }
     }

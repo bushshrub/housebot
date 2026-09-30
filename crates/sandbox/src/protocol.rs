@@ -14,23 +14,6 @@ pub enum NetworkAccess {
     PublicInternet,
 }
 
-/// A single entry in a file listing.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct FileEntry {
-    pub name: String,
-    #[serde(rename = "type")]
-    pub entry_type: String, // "file" or "dir"
-    pub size: Option<i64>,
-}
-
-/// A single search match.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct SearchMatch {
-    pub path: String,
-    pub line_number: u64,
-    pub line: String,
-}
-
 /// A file read result.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FileContents {
@@ -46,13 +29,6 @@ pub struct CommandResult {
     pub exit_code: i32,
     pub stdout: String,
     pub stderr: String,
-    pub truncated: bool,
-}
-
-/// A search result.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct SearchResult {
-    pub matches: Vec<SearchMatch>,
     pub truncated: bool,
 }
 
@@ -119,28 +95,6 @@ pub struct StartParams {
     /// one container, so work survives across turns.
     pub session_key: String,
     pub network: NetworkAccess,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct CloneRepositoryParams {
-    pub sandbox_id: String,
-    pub url: String,
-    pub branch: Option<String>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ListFilesParams {
-    pub sandbox_id: String,
-    pub path: String,
-    pub max_depth: Option<u32>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct SearchCodeParams {
-    pub sandbox_id: String,
-    pub query: String,
-    pub path: Option<String>,
-    pub glob: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

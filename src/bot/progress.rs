@@ -124,11 +124,6 @@ impl AgentHooks for ResponseProgressHooks {
     async fn on_tool_called(&self, tool: &str, args: &serde_json::Value) {
         self.push_status(tool_status(tool), tool, args).await;
     }
-
-    async fn on_subagent_tool_called(&self, tool: &str, args: &serde_json::Value) {
-        self.push_status(subagent_tool_status(tool), tool, args)
-            .await;
-    }
 }
 
 impl ResponseProgressHooks {

@@ -291,7 +291,6 @@ pub(crate) async fn handle_privacy_interaction(
 
 pub(crate) async fn handle_skill_interaction(
     skills: &Skills,
-    user_cfg: &UserConfigStore,
     options: &[serenity::all::CommandDataOption],
     author_id: u64,
 ) -> String {
@@ -312,7 +311,7 @@ pub(crate) async fn handle_skill_interaction(
             .unwrap_or_default()
     };
     match command.name.as_str() {
-        "list" => skill_list(skills, user_cfg, author_id).await,
+        "list" => skill_list(skills).await,
         "info" => skill_info(skills, &name_option(sub_opts)).await,
         "delete" => skill_delete(skills, author_id, &name_option(sub_opts)).await,
         other => format!("Unknown subcommand `{other}`. Options: list, info, delete"),

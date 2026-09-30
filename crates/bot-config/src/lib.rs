@@ -268,10 +268,6 @@ pub struct UserConfig {
     /// When disabled, short-term conversation history still works normally.
     #[serde(default = "default_deep_memory_enabled")]
     pub deep_memory_enabled: bool,
-    /// Names of global marketplace skills this user has enabled. Only enabled
-    /// skills are listed in the user's prompt and executable via `use_skill`.
-    #[serde(default)]
-    pub enabled_skills: Vec<String>,
 }
 
 fn default_followup_timeout() -> u64 {
@@ -296,7 +292,6 @@ impl Default for UserConfig {
             thinking_mode: ThinkingMode::default(),
             progress_updates_enabled: true,
             deep_memory_enabled: true,
-            enabled_skills: Vec::new(),
         }
     }
 }
@@ -359,7 +354,6 @@ impl UserConfigStore {
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 pub struct SchedulerLimits {
     pub max_inflight: usize,
-    pub max_subagent: usize,
 }
 
 const SCHEDULER_LIMITS_KEY: &str = "scheduler_limits";
@@ -402,7 +396,6 @@ impl SchedulerLimitsStore {
         // reach it.
         Some(SchedulerLimits {
             max_inflight: limits.max_inflight.max(1),
-            max_subagent: limits.max_subagent.max(1),
         })
     }
 
@@ -745,15 +738,11 @@ mod tests {
         let store = SchedulerLimitsStore::new(tmp.path().join("bot_config"));
         assert!(store.load().await.is_none());
         store
-            .save(SchedulerLimits {
-                max_inflight: 8,
-                max_subagent: 3,
-            })
+            .save(SchedulerLimits { max_inflight: 8 })
             .await
             .unwrap();
         let limits = store.load().await.unwrap();
         assert_eq!(limits.max_inflight, 8);
-        assert_eq!(limits.max_subagent, 3);
     }
 
     #[tokio::test]
@@ -761,15 +750,11 @@ mod tests {
         let tmp = tempfile::TempDir::new().unwrap();
         let store = SchedulerLimitsStore::new(tmp.path().join("bot_config"));
         store
-            .save(SchedulerLimits {
-                max_inflight: 0,
-                max_subagent: 0,
-            })
+            .save(SchedulerLimits { max_inflight: 0 })
             .await
             .unwrap();
         let limits = store.load().await.unwrap();
         assert_eq!(limits.max_inflight, 1);
-        assert_eq!(limits.max_subagent, 1);
     }
 
     #[tokio::test]

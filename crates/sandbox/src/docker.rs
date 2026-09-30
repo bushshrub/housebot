@@ -180,32 +180,6 @@ pub fn build_exec_argv(container_name: &str, argv: &[String], interactive: bool)
     args
 }
 
-/// Build a `docker exec git clone` command using separate argv elements.
-///
-/// Every argument is passed individually to avoid shell interpretation of
-/// branch names, URLs, or destination paths.
-pub fn build_git_clone_args(
-    container_name: &str,
-    url: &str,
-    dest: &str,
-    branch: Option<&str>,
-) -> Vec<String> {
-    let mut args = vec![
-        "exec".to_string(),
-        container_name.to_string(),
-        "git".to_string(),
-        "clone".to_string(),
-        "--depth=1".to_string(),
-    ];
-    if let Some(b) = branch {
-        args.push("--branch".to_string());
-        args.push(b.to_string());
-    }
-    args.push(url.to_string());
-    args.push(dest.to_string());
-    args
-}
-
 /// Build a `docker rm -f` command for cleanup.
 pub fn build_remove_args(container_name: &str) -> Vec<String> {
     vec![
@@ -466,48 +440,6 @@ mod tests {
     fn remove_args_target_correct_container() {
         let args = build_remove_args("housebot-sandbox-abc123");
         assert!(args.contains(&"housebot-sandbox-abc123".to_string()));
-    }
-
-    #[test]
-    fn git_clone_args_use_argv_instead_of_shell_string() {
-        let args = build_git_clone_args(
-            "c",
-            "https://github.com/user/repo",
-            "/workspace/repo",
-            Some("main"),
-        );
-        assert_eq!(
-            args,
-            vec![
-                "exec",
-                "c",
-                "git",
-                "clone",
-                "--depth=1",
-                "--branch",
-                "main",
-                "https://github.com/user/repo",
-                "/workspace/repo"
-            ]
-        );
-    }
-
-    #[test]
-    fn git_clone_args_without_branch() {
-        let args =
-            build_git_clone_args("c", "https://github.com/user/repo", "/workspace/repo", None);
-        assert_eq!(
-            args,
-            vec![
-                "exec",
-                "c",
-                "git",
-                "clone",
-                "--depth=1",
-                "https://github.com/user/repo",
-                "/workspace/repo"
-            ]
-        );
     }
 
     #[test]

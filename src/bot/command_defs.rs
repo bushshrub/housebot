@@ -295,22 +295,6 @@ pub(crate) async fn register_slash_commands(ctx: &Context, guild_ids: &[GuildId]
                     .min_int_value(1)
                     .required(true),
                 ),
-            )
-            .add_sub_option(
-                CreateCommandOption::new(
-                    CommandOptionType::SubCommand,
-                    "max_subagent",
-                    "Set how many of those slots sub-agents may occupy",
-                )
-                .add_sub_option(
-                    CreateCommandOption::new(
-                        CommandOptionType::Integer,
-                        "value",
-                        "Maximum concurrent sub-agent requests",
-                    )
-                    .min_int_value(1)
-                    .required(true),
-                ),
             ),
         );
 

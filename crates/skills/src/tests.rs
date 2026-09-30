@@ -132,7 +132,7 @@ async fn skill_creator_is_builtin_and_protected() {
     let (tmp, skills) = store();
     let creator = skills.get(SKILL_CREATOR_NAME).await.unwrap();
     assert!(creator.created_by.is_none());
-    assert!(creator.enabled_tools.contains(&"create_skill".to_string()));
+    assert!(creator.enabled_tools.contains(&"manage_skill".to_string()));
 
     let mut clash = skill(SKILL_CREATOR_NAME);
     clash.name = SKILL_CREATOR_NAME.to_string();

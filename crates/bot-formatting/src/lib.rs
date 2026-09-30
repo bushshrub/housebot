@@ -70,7 +70,7 @@ pub fn split_text(text: &str, limit: usize) -> Vec<String> {
 pub fn tool_hint(tool_name: &str, args: &Value) -> String {
     let get = |key| args.get(key).and_then(Value::as_str).unwrap_or("");
     match tool_name {
-        "use_skill" if !get("name").is_empty() => format!(" — {}", get("name")),
+        "manage_skill" if !get("name").is_empty() => format!(" — {}", get("name")),
         "set_reminder" if !get("message").is_empty() => format!(
             " — in {}m: {}",
             args.get("delay_minutes")
@@ -83,7 +83,7 @@ pub fn tool_hint(tool_name: &str, args: &Value) -> String {
             get("target_language"),
             truncate(get("text"), 40).replace('\n', " ")
         ),
-        "use_skill" | "set_reminder" | "translate" => String::new(),
+        "manage_skill" | "set_reminder" | "translate" => String::new(),
         _ => [
             "query",
             "task",
@@ -91,6 +91,7 @@ pub fn tool_hint(tool_name: &str, args: &Value) -> String {
             "memory_content",
             "url",
             "command",
+            "path",
         ]
         .into_iter()
         .map(get)
@@ -123,14 +124,7 @@ fn tool_label(tool_name: &str) -> Option<(&'static str, &'static str)> {
     let pair = match tool_name {
         "web_search" => ("🔎", "Searching the web"),
         "fetch_webpage" => ("🌐", "Reading a webpage"),
-        "use_skill" => ("🧩", "Using a skill"),
-        "list_skills" | "skill_info" | "read_skill_file" => ("🧩", "Looking up skills"),
-        "create_skill" => ("🧩", "Creating a skill"),
-        "edit_skill" | "delete_skill" | "enable_skill" | "disable_skill" => {
-            ("🧩", "Updating skills")
-        }
-        "run_skill_script" => ("🧩", "Running a skill script"),
-        "spawn_subagent" => ("🧠", "Starting a subagent"),
+        "manage_skill" => ("🧩", "Updating skills"),
         "set_reminder" => ("⏰", "Setting a reminder"),
         "get_messages" => ("💬", "Reading conversations"),
         "get_bot_features" => ("🤖", "Checking my features"),
@@ -141,11 +135,9 @@ fn tool_label(tool_name: &str) -> Option<(&'static str, &'static str)> {
         "create_feature_request" => ("📝", "Filing a feature request"),
         "edit_feature_request" => ("📝", "Updating a feature request"),
         "prepare_feature_development" => ("🛠️", "Preparing feature development"),
-        "sandbox_clone_repository" => ("📦", "Cloning a repository"),
-        "sandbox_list_files" => ("📦", "Listing files"),
-        "sandbox_read_file" => ("📦", "Reading a file"),
-        "sandbox_search_code" => ("📦", "Searching code"),
-        "sandbox_run" => ("📦", "Running a command"),
+        "read" => ("📦", "Reading a file"),
+        "write" => ("📦", "Writing a file"),
+        "shell" => ("📦", "Running a command"),
         _ => return None,
     };
     Some(pair)
@@ -157,11 +149,6 @@ pub fn tool_status(tool_name: &str) -> String {
         Some((icon, label)) => format!("{icon} **{label}...**"),
         None => format!("🔧 **Running `{}`...**", display_tool_name(tool_name)),
     }
-}
-
-/// Same as [`tool_status`], marked as running inside a sub-agent.
-pub fn subagent_tool_status(tool_name: &str) -> String {
-    format!("╰ {}", tool_status(tool_name))
 }
 
 pub fn extract_code_files(text: &str) -> (String, Vec<(String, Vec<u8>)>) {
@@ -208,31 +195,31 @@ mod tests {
     use serde_json::json;
 
     #[test]
-    fn tool_hint_sandbox_run_shows_command() {
+    fn tool_hint_shell_shows_command() {
         let args = json!({"command": "ls -la /tmp"});
-        let hint = tool_hint("sandbox_run", &args);
+        let hint = tool_hint("shell", &args);
         assert_eq!(hint, " — ls -la /tmp");
     }
 
     #[test]
-    fn tool_hint_sandbox_run_truncates_long_command() {
+    fn tool_hint_shell_truncates_long_command() {
         let command = "x".repeat(100);
         let args = json!({"command": command});
-        let hint = tool_hint("sandbox_run", &args);
+        let hint = tool_hint("shell", &args);
         assert_eq!(hint, format!(" — {}…", "x".repeat(80)));
     }
 
     #[test]
-    fn tool_hint_sandbox_run_missing_command() {
+    fn tool_hint_shell_missing_command() {
         let args = json!({});
-        let hint = tool_hint("sandbox_run", &args);
+        let hint = tool_hint("shell", &args);
         assert_eq!(hint, "");
     }
 
     #[test]
-    fn tool_hint_sandbox_run_negated_command_empty() {
+    fn tool_hint_shell_negated_command_empty() {
         let args = json!({"command": ""});
-        let hint = tool_hint("sandbox_run", &args);
+        let hint = tool_hint("shell", &args);
         assert_eq!(hint, "");
     }
 
@@ -267,7 +254,7 @@ mod tests {
     #[test]
     fn tool_hint_redactable_command() {
         let args = json!({"command": "export MY_SECRET_KEY=hunter2"});
-        let hint = tool_hint("sandbox_run", &args);
+        let hint = tool_hint("shell", &args);
         assert_eq!(hint, " — export MY_SECRET_KEY=hunter2");
     }
 }

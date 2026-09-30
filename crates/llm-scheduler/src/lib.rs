@@ -15,20 +15,17 @@ use housebot_llm::{ChatClient, ChatCompletion, TextSink, ThinkingMode};
 pub enum Priority {
     /// A human is waiting on a Discord message.
     UserChat,
-    /// Spawned by an agent turn.
-    SubAgent,
     /// Reminders and maintenance work.
     Background,
 }
 
 impl Priority {
-    const ORDER: [Priority; 3] = [Priority::UserChat, Priority::SubAgent, Priority::Background];
+    const ORDER: [Priority; 2] = [Priority::UserChat, Priority::Background];
 
     fn index(self) -> usize {
         match self {
             Priority::UserChat => 0,
-            Priority::SubAgent => 1,
-            Priority::Background => 2,
+            Priority::Background => 1,
         }
     }
 }
@@ -42,10 +39,6 @@ pub struct SchedulerInfo {
     pub pending: usize,
     /// Total concurrent request ceiling.
     pub max_inflight: usize,
-    /// How many sub-agent requests are executing right now.
-    pub subagent_active: usize,
-    /// Sub-agent concurrency ceiling.
-    pub max_subagent: usize,
 }
 
 impl SchedulerInfo {
@@ -56,34 +49,16 @@ impl SchedulerInfo {
 }
 
 pub const DEFAULT_MAX_INFLIGHT: usize = 4;
-pub const DEFAULT_MAX_SUBAGENT: usize = 2;
 
 struct State {
     max_inflight: usize,
-    max_subagent: usize,
     inflight: usize,
-    subagent_inflight: usize,
-    waiters: [VecDeque<oneshot::Sender<Permit>>; 3],
+    waiters: [VecDeque<oneshot::Sender<Permit>>; 2],
 }
 
 impl State {
-    fn can_admit(&self, priority: Priority) -> bool {
+    fn can_admit(&self) -> bool {
         self.inflight < self.max_inflight
-            && (priority != Priority::SubAgent || self.subagent_inflight < self.max_subagent)
-    }
-
-    fn admit(&mut self, priority: Priority) {
-        self.inflight += 1;
-        if priority == Priority::SubAgent {
-            self.subagent_inflight += 1;
-        }
-    }
-
-    fn withdraw(&mut self, priority: Priority) {
-        self.inflight -= 1;
-        if priority == Priority::SubAgent {
-            self.subagent_inflight -= 1;
-        }
     }
 
     fn pending(&self) -> usize {
@@ -94,32 +69,28 @@ impl State {
     }
 }
 
-/// Shared scheduler owning both the total in-flight limit and the sub-agent limit.
+/// Shared scheduler owning the total in-flight limit.
 ///
-/// A queued `UserChat` request always takes the next free slot ahead of a queued
-/// `SubAgent`, and sub-agents are additionally capped by `max_subagent` so a
-/// fan-out cannot consume the whole LLM budget.
+/// A queued `UserChat` request always takes the next free slot ahead of queued
+/// `Background` work.
 pub struct LlmScheduler {
     state: Mutex<State>,
 }
 
 impl Default for LlmScheduler {
     fn default() -> Self {
-        Self::new(DEFAULT_MAX_INFLIGHT, DEFAULT_MAX_SUBAGENT)
+        Self::new(DEFAULT_MAX_INFLIGHT)
     }
 }
 
 impl LlmScheduler {
-    pub fn new(max_inflight: usize, max_subagent: usize) -> Self {
+    pub fn new(max_inflight: usize) -> Self {
         assert!(max_inflight > 0, "LLM in-flight limit must be positive");
-        assert!(max_subagent > 0, "sub-agent limit must be positive");
         Self {
             state: Mutex::new(State {
                 max_inflight,
-                max_subagent,
                 inflight: 0,
-                subagent_inflight: 0,
-                waiters: [VecDeque::new(), VecDeque::new(), VecDeque::new()],
+                waiters: [VecDeque::new(), VecDeque::new()],
             }),
         }
     }
@@ -129,8 +100,8 @@ impl LlmScheduler {
     pub async fn acquire(self: &Arc<Self>, priority: Priority) -> Permit {
         let rx = {
             let mut state = self.lock();
-            if state.can_admit(priority) {
-                state.admit(priority);
+            if state.can_admit() {
+                state.inflight += 1;
                 return Permit {
                     scheduler: Some(Arc::clone(self)),
                     priority,
@@ -163,15 +134,13 @@ impl LlmScheduler {
         self.lock().pending()
     }
 
-    /// Snapshot of utilization: active, pending, and both ceilings.
+    /// Snapshot of utilization: active, pending, and the ceiling.
     pub fn info(&self) -> SchedulerInfo {
         let state = self.lock();
         SchedulerInfo {
             active: state.inflight,
             pending: state.pending(),
             max_inflight: state.max_inflight,
-            subagent_active: state.subagent_inflight,
-            max_subagent: state.max_subagent,
         }
     }
 
@@ -184,39 +153,29 @@ impl LlmScheduler {
         self.pump(&mut state);
     }
 
-    /// Raise or lower the sub-agent ceiling at runtime.
-    pub fn set_max_subagent(self: &Arc<Self>, max_subagent: usize) {
-        assert!(max_subagent > 0, "sub-agent limit must be positive");
-        let mut state = self.lock();
-        state.max_subagent = max_subagent;
-        self.pump(&mut state);
-    }
-
     fn lock(&self) -> std::sync::MutexGuard<'_, State> {
         self.state.lock().expect("scheduler state lock poisoned")
     }
 
-    fn release(self: &Arc<Self>, priority: Priority) {
+    fn release(self: &Arc<Self>) {
         let mut state = self.lock();
-        state.withdraw(priority);
+        state.inflight -= 1;
         self.pump(&mut state);
     }
 
-    /// Hand free slots to queued waiters, highest priority first. A waiter that
-    /// cannot be admitted is skipped rather than blocking the ones behind it,
-    /// so a sub-agent stuck on its own cap never stalls background work.
+    /// Hand free slots to queued waiters, highest priority first.
     fn pump(self: &Arc<Self>, state: &mut State) {
-        loop {
+        while state.can_admit() {
             let Some(priority) = Priority::ORDER.into_iter().find(|&priority| {
                 state.waiters[priority.index()].retain(|tx| !tx.is_closed());
-                !state.waiters[priority.index()].is_empty() && state.can_admit(priority)
+                !state.waiters[priority.index()].is_empty()
             }) else {
                 return;
             };
             let tx = state.waiters[priority.index()]
                 .pop_front()
                 .expect("queue was non-empty");
-            state.admit(priority);
+            state.inflight += 1;
             let permit = Permit {
                 scheduler: Some(Arc::clone(self)),
                 priority,
@@ -225,7 +184,7 @@ impl LlmScheduler {
                 // The waiter was cancelled between the liveness check and the
                 // send; reclaim the slot without running Drop under the lock.
                 permit.forget();
-                state.withdraw(priority);
+                state.inflight -= 1;
             }
         }
     }
@@ -251,7 +210,7 @@ impl Permit {
 impl Drop for Permit {
     fn drop(&mut self) {
         if let Some(scheduler) = self.scheduler.take() {
-            scheduler.release(self.priority);
+            scheduler.release();
         }
     }
 }

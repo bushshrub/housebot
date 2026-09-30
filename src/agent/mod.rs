@@ -10,9 +10,7 @@ use chrono::{Local, Utc};
 use serde_json::{json, Value};
 use tokio::sync::Notify;
 
-use crate::bot_config::{
-    AccessControl, AccessControlStore, SchedulerLimits, SchedulerLimitsStore, UserConfigStore,
-};
+use crate::bot_config::{AccessControl, AccessControlStore, SchedulerLimits, SchedulerLimitsStore};
 use crate::channel_context::ChannelContext;
 use crate::coding_agent::pending::PendingJobStore;
 use crate::config;
@@ -164,8 +162,6 @@ pub trait AgentHooks: Send + Sync {
     async fn on_text_stream_end(&self) {}
     /// A tool is about to run.
     async fn on_tool_called(&self, _tool: &str, _args: &Value) {}
-    /// A tool is about to run inside a sub-agent spawned by this turn.
-    async fn on_subagent_tool_called(&self, _tool: &str, _args: &Value) {}
     /// A progress update from a long-running operation.
     async fn on_progress(&self, _line: &str) {}
 }
@@ -220,8 +216,6 @@ pub struct Agent {
     active_conversations: tokio::sync::Mutex<HashMap<String, String>>,
     access_control: AccessControlStore,
     scheduler_limits: SchedulerLimitsStore,
-    /// Per-user configuration, including each user's enabled marketplace skills.
-    user_config: UserConfigStore,
     discord: Arc<DiscordBridge>,
     channel_context: ChannelContext,
     sandbox_client: housebot_sandbox::SandboxClient,
@@ -234,7 +228,6 @@ mod leaderboard_fmt;
 mod prompt;
 mod run;
 mod session;
-mod subagent;
 mod tools_def;
 
 #[allow(unused_imports)]
@@ -301,12 +294,8 @@ impl Agent {
                 "MAX_INFLIGHT_LLM",
                 housebot_llm_scheduler::DEFAULT_MAX_INFLIGHT,
             ),
-            max_subagent: config::env_parse(
-                "MAX_SUBAGENT_CONCURRENCY",
-                housebot_llm_scheduler::DEFAULT_MAX_SUBAGENT,
-            ),
         });
-        let scheduler = Arc::new(LlmScheduler::new(limits.max_inflight, limits.max_subagent));
+        let scheduler = Arc::new(LlmScheduler::new(limits.max_inflight));
         let scheduled_client = Arc::new(ScheduledChatClient::new(raw_client, scheduler));
         let client: Arc<dyn ChatClient> = scheduled_client.clone();
         let token_monitor = TokenMonitor::from_env().await.map_err(|error| {
@@ -336,7 +325,6 @@ impl Agent {
             active_conversations: tokio::sync::Mutex::new(HashMap::new()),
             access_control,
             scheduler_limits,
-            user_config: UserConfigStore::default(),
             discord,
             channel_context: ChannelContext::default(),
             sandbox_client: housebot_sandbox::SandboxClient::from_env(),
@@ -529,7 +517,6 @@ impl Agent {
             active_conversations: tokio::sync::Mutex::new(HashMap::new()),
             access_control: AccessControlStore::default(),
             scheduler_limits: SchedulerLimitsStore::default(),
-            user_config: UserConfigStore::default(),
             discord: Arc::new(DiscordBridge::default()),
             channel_context: ChannelContext::default(),
             sandbox_client: housebot_sandbox::SandboxClient::new("/dev/null"),

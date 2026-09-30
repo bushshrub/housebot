@@ -71,31 +71,6 @@ fn command_result_serialization() {
 }
 
 #[test]
-fn file_entry_serialization() {
-    let entry = FileEntry {
-        name: "src/main.rs".into(),
-        entry_type: "file".into(),
-        size: Some(42),
-    };
-    let json = serde_json::to_value(&entry).unwrap();
-    assert_eq!(json["name"], "src/main.rs");
-    assert_eq!(json["type"], "file");
-    assert_eq!(json["size"], 42);
-}
-
-#[test]
-fn search_match_serialization() {
-    let m = SearchMatch {
-        path: "src/lib.rs".into(),
-        line_number: 10,
-        line: "fn main()".into(),
-    };
-    let json = serde_json::to_value(&m).unwrap();
-    assert_eq!(json["path"], "src/lib.rs");
-    assert_eq!(json["line_number"], 10);
-}
-
-#[test]
 fn file_contents_serialization() {
     let fc = FileContents {
         contents: "fn main() {}".into(),
@@ -106,16 +81,6 @@ fn file_contents_serialization() {
     let json = serde_json::to_value(&fc).unwrap();
     assert_eq!(json["line_count"], 1);
     assert!(!json["binary"].as_bool().unwrap());
-}
-
-#[test]
-fn search_result_truncated_flag() {
-    let sr = SearchResult {
-        matches: vec![],
-        truncated: true,
-    };
-    let json = serde_json::to_value(&sr).unwrap();
-    assert!(json["truncated"].as_bool().unwrap());
 }
 
 #[test]

@@ -2,27 +2,6 @@
 
 use super::*;
 
-pub(crate) fn use_skill_tool() -> Value {
-    json!({
-        "name": "use_skill",
-        "description": "Load a named custom skill into your context — a packaged set of \
-            instructions, recommended tools, and examples for handling a particular kind of \
-            request. This returns the skill's full instructions; follow them yourself using your \
-            normal tools. Call it when a skill listed in the session information looks relevant.",
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "name": {"type": "string", "description": "The skill name to load."}
-            },
-            "required": ["name"]
-        }
-    })
-}
-
-pub(crate) fn create_skill_tool() -> Value {
-    tools::create_skill::definition()
-}
-
 /// Wrap a tool in the OpenAI function-calling envelope.
 pub fn to_openai_tool(name: &str, description: &str, parameters: Value) -> Value {
     json!({

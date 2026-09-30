@@ -108,7 +108,6 @@ data/                # runtime — gitignored
 | `LLM_MODEL` | yes | `gemma-4-26b-a4b-qat` | Model name |
 | `LLM_API_KEY` | no | `not-required` | API key (llama.cpp ignores it) |
 | `MAX_INFLIGHT_LLM` | no | `4` | Total concurrent LLM requests |
-| `MAX_SUBAGENT_CONCURRENCY` | no | `2` | Ceiling on concurrent sub-agent requests |
 | `MAX_HISTORY_TURNS` | no | `30` | Conversation turn pairs kept |
 | `CHANNEL_CONTEXT_CAPACITY` | no | `2000` | Messages buffered in RAM per channel |
 | `CHANNEL_CONTEXT_RETENTION_SECS` | no | `2592000` | Age at which a buffered message is dropped (30 days) |
@@ -152,8 +151,8 @@ Discord message
                  │    ├─ web_search → SearXNG / fetch_webpage → guarded HTTP fetch
                  │    ├─ update_memory → memory.save()
                  │    ├─ set_reminder / summarize_url / translate / create_feature_request
-                 │    ├─ use_skill (loads an enabled skill's instructions into context) / create_skill
-                 │    ├─ list_skills / skill_info / delete_skill / edit_skill / enable_skill / disable_skill (per-user marketplace)
+                 │    ├─ manage_skill (save / delete a skill shared by all users)
+                 │    ├─ read / write / shell → LazySandbox → sandboxd
                  │    ├─ prepare_feature_development → PendingJobStore (owner-only; returns DISPATCH_FLOW:<uuid>)
                  │    └─ prefix__tool → McpServer::call_tool()
                  └─ repeat until finish_reason == "stop"
@@ -196,9 +195,9 @@ handshake, lists tools, and calls them. Tool names are namespaced `{server}__{to
 
 ## Code inspection sandbox
 
-Five tools (`sandbox_clone_repository`, `sandbox_list_files`,
-`sandbox_search_code`, `sandbox_read_file`, `sandbox_run`) let the bot inspect
-and run short commands in a temporary isolated container.
+Three tools (`read`, `write`, `shell`) let the bot read and write files and
+run commands in a temporary isolated container with internet access. Every
+skill is copied into the container at `skills/<name>/`.
 All users have access to these tools.
 
 ### Security boundary
@@ -230,8 +229,8 @@ error message rather than crashing.
 
 When adding or changing a sandbox tool:
 
-1. Define it in `src/tools/sandbox.rs` (`all_definitions()` + the `LazySandbox` method).
-2. Add a dispatch arm in `src/agent/dispatch.rs` under the `name if name.starts_with("sandbox_")` block.
+1. Define it in `crates/tools/src/sandbox.rs` (`all_definitions()` + the `LazySandbox` method).
+2. Add a dispatch arm in `src/agent/dispatch.rs`.
 3. Keep the operation in `crates/sandbox/src/client.rs` / `server.rs`.
 4. Update validation in `crates/sandbox/src/validation.rs` if new input types are introduced.
 5. Add unit tests in `crates/sandbox/src/docker.rs` or `tests/` for argument construction.

@@ -28,7 +28,7 @@ pub fn features_text() -> &'static str {
 `/model` — show the current model name and context size
 `/config access allow|revoke|list` — manage who may configure the bot (configurers only; the owner is always allowed)
 `/config user limit|respond|show` — per-user output-token caps and respond policies (configurers only)
-`/config scheduler show|max_inflight|max_subagent` — LLM concurrency ceilings (configurers only)
+`/config scheduler show|max_inflight` — LLM concurrency ceilings (configurers only)
 `/config dev_notify_channel [channel]` — watch a channel for feature-development completion notices (configurers only)
 `/server-config channel add|remove|list|clear` — restrict which channels the bot responds in (server admins and configurers)
 `/server-config leaderboard visibility|role_add|role_remove|role_list` — make leaderboard responses public, private, or role-restricted
@@ -38,9 +38,8 @@ pub fn features_text() -> &'static str {
 - Web search and webpage fetching
 - Image and PDF attachments read directly from your message
 - Timed reminders delivered by DM
-- Skills: reusable instruction sets with bundled reference files and scripts, authored by any user and run in a sandbox
-- A per-session gVisor sandbox for cloning repositories, searching code, and running commands
-- Sub-agents for research that would otherwise crowd out the main conversation
+- Skills: reusable instruction sets with bundled reference files and scripts, authored by any user and run in the sandbox
+- A per-session gVisor sandbox with internet access for reading and writing files and running commands; it is removed after 5 minutes of inactivity
 - Chat search: search channel messages by regex, limited to channels you can read yourself
 - Persistent memory across conversations, plus token-usage leaderboards
 - Create and edit your own GitHub feature requests and bug reports, and hand them to a coding agent

@@ -1,7 +1,5 @@
 //! End-to-end tests against the housebot crate's public API surface.
 
-use std::collections::BTreeMap;
-
 use housebot::agent::build_system_prompt;
 use housebot::bot::{extract_code_files, split_text};
 use housebot::github_issues::GitHubIssueReporter;
@@ -54,31 +52,18 @@ async fn storage_layer_round_trips_across_modules() {
 }
 
 #[test]
-fn system_prompt_reflects_memory_and_skills() {
-    let mut skills = BTreeMap::new();
-    skills.insert(
-        "summarize".into(),
-        Skill {
-            name: "summarize".into(),
-            description: Some("Condense text".into()),
-            instructions: "..".into(),
-            created_by: None,
-            ..Skill::default()
-        },
-    );
+fn system_prompt_reflects_memory_and_personality() {
     let prompt = build_system_prompt(
         "alice",
         "7",
         "Alice",
         "Ali",
         "Prefers metric units",
-        &skills,
         Some("Be terse"),
         true,
     );
     assert!(prompt.contains("Alice"));
     assert!(prompt.contains("Prefers metric units"));
-    assert!(prompt.contains("summarize"));
     assert!(prompt.contains("Be terse"));
 }
 

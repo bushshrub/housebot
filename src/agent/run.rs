@@ -64,9 +64,6 @@ impl Agent {
             .current_conversation_id(user_id, display_name, channel_id)
             .await;
 
-        let enabled_skills = self.enabled_skills_for(user_id).await;
-        let mut all_skills = self.skills.load_all().await;
-        all_skills.retain(|name, _| enabled_skills.iter().any(|n| n == name));
         let now = Local::now().format("%Y-%m-%d %H:%M").to_string();
         let system = json!({
             "role": "system",
@@ -77,15 +74,15 @@ impl Agent {
                 nickname,
                 avatar_url,
                 &user_memory,
-                &all_skills,
                 personality,
                 deep_memory_enabled,
                         &now,
             ),
         });
-        let mut messages: Vec<Value> = Vec::with_capacity(past.len() + 2);
+        let mut messages: Vec<Value> = Vec::with_capacity(past.len() + 3);
         messages.push(system);
         messages.extend(past);
+        messages.push(build_skills_message(&self.skills.load_all().await));
         messages.push(new_user_message.clone());
 
         let is_configurer = self
@@ -94,7 +91,7 @@ impl Agent {
             .await
             .is_configurer(user_id.parse::<u64>().unwrap_or(0), config::owner_id());
         let tools = self.build_tools(deep_memory_enabled, is_configurer).await;
-        let sandbox = LazySandbox::new(self.sandbox_client.clone(), user_id);
+        let sandbox = LazySandbox::new(self.sandbox_client.clone(), user_id, self.skills.clone());
         let mut turn_messages: Vec<Value> = Vec::new();
         let mut tools_called = Vec::new();
 
@@ -215,7 +212,7 @@ impl Agent {
                 hooks.on_tool_called(&tc.name, &args).await;
                 let outcome = self
                     .dispatch_tool(
-                        &tc.name, &args, user_id, username, channel_id, guild_id, &sandbox, hooks,
+                        &tc.name, &args, user_id, username, channel_id, guild_id, &sandbox,
                     )
                     .await;
                 let content = match outcome {
@@ -288,22 +285,12 @@ impl Agent {
         let mut defs: Vec<Value> = vec![
             tools::searxng::definition(),
             tools::web_fetch::definition(),
-            use_skill_tool(),
-            create_skill_tool(),
-            tools::manage_skills::list_definition(),
-            tools::manage_skills::info_definition(),
-            tools::manage_skills::delete_definition(),
-            tools::manage_skills::edit_definition(),
-            tools::manage_skills::enable_definition(),
-            tools::manage_skills::disable_definition(),
-            tools::manage_skills::read_file_definition(),
-            tools::manage_skills::run_script_definition(),
+            tools::manage_skills::definition(),
             tools::feature_request::definition(),
             tools::edit_feature_request::definition(),
             tools::feature_development::definition(),
             tools::github_api::definition(),
             tools::remind::definition(),
-            tools::subagent::definition(),
             tools::features::definition(),
             get_messages_tool(),
         ];
@@ -335,7 +322,6 @@ impl Agent {
         channel_id: u64,
         guild_id: Option<u64>,
         sandbox: &LazySandbox,
-        hooks: &dyn AgentHooks,
     ) -> ToolOutcome {
         let started = std::time::Instant::now();
         let outcome = self
@@ -347,7 +333,6 @@ impl Agent {
                 channel_id,
                 guild_id.unwrap_or(0),
                 sandbox,
-                hooks,
             )
             .await;
         let content = match &outcome {
