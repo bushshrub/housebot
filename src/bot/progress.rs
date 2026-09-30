@@ -107,6 +107,19 @@ impl AgentHooks for ResponseProgressHooks {
         }
     }
 
+    async fn on_assistant_text(&self, text: &str) {
+        self.generating.store(false, Ordering::Release);
+        let redacted = self.redactor.redact(text);
+        for chunk in split_text(&redacted, MAX_MESSAGE_LENGTH) {
+            let message = CreateMessage::new()
+                .content(chunk)
+                .allowed_mentions(CreateAllowedMentions::new());
+            if let Err(e) = self.channel_id.send_message(&self.ctx.http, message).await {
+                tracing::warn!(%e, "Failed to post intermediate assistant text");
+            }
+        }
+    }
+
     async fn on_tool_called(&self, tool: &str, args: &serde_json::Value) {
         self.generating.store(false, Ordering::Release);
         let content = self.redactor.redact(&tool_message(tool, args));
