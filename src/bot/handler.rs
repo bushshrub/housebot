@@ -2,6 +2,7 @@
 
 use super::message_flow::ResponseMode;
 use super::*;
+use crate::bot_formatting::format_tokens;
 
 #[serenity::async_trait]
 impl EventHandler for HouseBot {
@@ -172,15 +173,20 @@ impl EventHandler for HouseBot {
                                         "Context",
                                         format!(
                                             "{} / {} tokens ({percent:.1}%)",
-                                            info.context_tokens, info.context_window_tokens
+                                            format_tokens(info.context_tokens as u64),
+                                            format_tokens(info.context_window_tokens as u64)
                                         ),
                                         true,
                                     )
                                     .field("Messages", info.messages.to_string(), true)
                                     .field("Model requests", info.requests.to_string(), true)
-                                    .field("Input tokens", info.input_tokens.to_string(), true)
-                                    .field("Output tokens", info.output_tokens.to_string(), true)
-                                    .field("Cached tokens", info.cached_tokens.to_string(), true),
+                                    .field("Input tokens", format_tokens(info.input_tokens), true)
+                                    .field("Output tokens", format_tokens(info.output_tokens), true)
+                                    .field(
+                                        "Cached tokens",
+                                        format_tokens(info.cached_tokens),
+                                        true,
+                                    ),
                             )
                             .ephemeral(false),
                     );

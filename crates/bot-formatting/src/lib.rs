@@ -189,10 +189,59 @@ pub fn append_tool_summary(text: &str, tools: &[String]) -> String {
     format!("{text}\n\n🛠️ **Tools used:** {summary}")
 }
 
+/// Render a token count to three significant figures once it reaches the
+/// thousands (`12,345` → `12.3k`), so long counts stay readable at a glance.
+pub fn format_tokens(count: u64) -> String {
+    if count < 1_000 {
+        return count.to_string();
+    }
+    let mut value = count as f64;
+    for suffix in ["k", "M", "B"] {
+        value /= 1_000.0;
+        let digits_before_point = value.log10().floor() as i32 + 1;
+        let scale = 10f64.powi(3 - digits_before_point);
+        let rounded = (value * scale).round() / scale;
+        if rounded < 1_000.0 || suffix == "B" {
+            let decimals = if rounded < 10.0 {
+                2
+            } else if rounded < 100.0 {
+                1
+            } else {
+                0
+            };
+            return format!("{rounded:.decimals$}{suffix}");
+        }
+    }
+    unreachable!("the last suffix always returns")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn format_tokens_leaves_sub_thousand_counts_exact() {
+        assert_eq!(format_tokens(0), "0");
+        assert_eq!(format_tokens(999), "999");
+    }
+
+    #[test]
+    fn format_tokens_rounds_to_three_significant_figures() {
+        assert_eq!(format_tokens(1_000), "1.00k");
+        assert_eq!(format_tokens(1_234), "1.23k");
+        assert_eq!(format_tokens(12_345), "12.3k");
+        assert_eq!(format_tokens(123_456), "123k");
+        assert_eq!(format_tokens(1_234_567), "1.23M");
+        assert_eq!(format_tokens(12_345_678_901), "12.3B");
+    }
+
+    #[test]
+    fn format_tokens_carries_into_the_next_unit_when_rounding_up() {
+        assert_eq!(format_tokens(9_996), "10.0k");
+        assert_eq!(format_tokens(999_499), "999k");
+        assert_eq!(format_tokens(999_500), "1.00M");
+    }
 
     #[test]
     fn tool_hint_shell_shows_command() {
