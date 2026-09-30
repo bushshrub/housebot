@@ -2,6 +2,8 @@ use crate::protocol::NetworkAccess;
 
 const DEFAULT_SANDBOX_IMAGE: &str = "ghcr.io/bushshrub/housebot/sandbox:latest";
 const SANDBOX_LABEL_PREFIX: &str = "com.housebot.sandbox";
+pub const SANDBOX_NETWORK: &str = "housebot-sandbox-net";
+pub const DNS_FORWARDER_NAME: &str = "housebot-sandbox-dns";
 
 pub struct ContainerConfig {
     pub image: String,
@@ -59,6 +61,81 @@ impl ContainerConfig {
     }
 }
 
+fn sandbox_runtime() -> String {
+    std::env::var("HOUSEBOT_SANDBOX_RUNTIME").unwrap_or_else(|_| "runsc".to_string())
+}
+
+/// Docker's embedded resolver (127.0.0.11) is unreachable from any runtime
+/// other than runc, so those sandboxes need a forwarder on the network.
+pub fn dns_forwarder_needed() -> bool {
+    sandbox_runtime() != "runc"
+}
+
+/// Build the `docker run` arguments for the DNS forwarder that sandboxes use in
+/// place of Docker's embedded resolver. It runs on runc, where the embedded
+/// resolver works, and dnsmasq relays each query to it.
+pub fn build_dns_forwarder_run_args() -> Vec<String> {
+    let image = std::env::var("HOUSEBOT_SANDBOX_IMAGE")
+        .unwrap_or_else(|_| DEFAULT_SANDBOX_IMAGE.to_string());
+    [
+        "run",
+        "--detach",
+        "--runtime=runc",
+        "--restart=unless-stopped",
+        &format!("--name={DNS_FORWARDER_NAME}"),
+        &format!("--network={SANDBOX_NETWORK}"),
+        "--user=root",
+        "--read-only",
+        "--cap-drop=ALL",
+        "--cap-add=NET_BIND_SERVICE",
+        "--cap-add=SETUID",
+        "--cap-add=SETGID",
+        "--security-opt=no-new-privileges:true",
+        "--memory=64m",
+        "--pids-limit=32",
+        &image,
+        "dnsmasq",
+        "--keep-in-foreground",
+        "--no-hosts",
+        "--no-resolv",
+        "--server=127.0.0.11",
+        "--cache-size=1000",
+    ]
+    .iter()
+    .map(|arg| arg.to_string())
+    .collect()
+}
+
+/// Build the `docker inspect` command that prints the forwarder's address on
+/// the sandbox network.
+pub fn build_dns_forwarder_ip_args() -> Vec<String> {
+    vec![
+        "inspect".to_string(),
+        "--format".to_string(),
+        format!("{{{{(index .NetworkSettings.Networks \"{SANDBOX_NETWORK}\").IPAddress}}}}"),
+        DNS_FORWARDER_NAME.to_string(),
+    ]
+}
+
+/// Build the `docker exec` argv that points a sandbox's resolver at
+/// `nameserver`. Docker owns `/etc/resolv.conf` and only root may overwrite it,
+/// so this runs as root.
+pub fn build_set_nameserver_argv(
+    container_name: &str,
+    nameserver: std::net::Ipv4Addr,
+) -> Vec<String> {
+    vec![
+        "exec".to_string(),
+        "--user=root".to_string(),
+        container_name.to_string(),
+        "/bin/sh".to_string(),
+        "-c".to_string(),
+        "printf 'nameserver %s\\n' \"$1\" > /etc/resolv.conf".to_string(),
+        "sh".to_string(),
+        nameserver.to_string(),
+    ]
+}
+
 /// Build the `docker run` arguments for creating a sandbox container.
 ///
 /// The returned arguments are fixed — they must never be influenced by user
@@ -76,8 +153,7 @@ pub fn build_run_args(id: &str, network: NetworkAccess) -> Vec<String> {
     // hardware virtualization or nested VM support.
     // Override with HOUSEBOT_SANDBOX_RUNTIME=runc for CI or dev environments
     // that don't have gVisor installed.
-    let runtime = std::env::var("HOUSEBOT_SANDBOX_RUNTIME").unwrap_or_else(|_| "runsc".to_string());
-    args.push(format!("--runtime={runtime}"));
+    args.push(format!("--runtime={}", sandbox_runtime()));
 
     // Container identity
     args.push(format!("--name={}", cfg.container_name));
@@ -126,7 +202,7 @@ pub fn build_run_args(id: &str, network: NetworkAccess) -> Vec<String> {
         NetworkAccess::PublicInternet => {
             // Use a dedicated bridge network; do NOT join Housebot's network.
             // The sandboxd creates this network on startup if needed.
-            args.push("--network=housebot-sandbox-net".to_string());
+            args.push(format!("--network={SANDBOX_NETWORK}"));
         }
     }
 
@@ -205,6 +281,29 @@ pub fn build_list_sandbox_containers_args() -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn dns_forwarder_runs_on_runc_with_minimal_privileges() {
+        let args = build_dns_forwarder_run_args();
+        assert!(args.contains(&"--runtime=runc".to_string()));
+        assert!(args.contains(&"--cap-drop=ALL".to_string()));
+        assert!(args.contains(&format!("--network={SANDBOX_NETWORK}")));
+        assert!(args.contains(&"--server=127.0.0.11".to_string()));
+    }
+
+    #[test]
+    fn dns_forwarder_carries_no_label_the_stale_sweep_would_match() {
+        assert!(!build_dns_forwarder_run_args()
+            .iter()
+            .any(|arg| arg.starts_with("--label")));
+    }
+
+    #[test]
+    fn set_nameserver_passes_the_address_as_an_argument_not_shell_text() {
+        let argv = build_set_nameserver_argv("c", "10.1.2.3".parse().unwrap());
+        assert_eq!(argv.last().unwrap(), "10.1.2.3");
+        assert!(!argv[5].contains("10.1.2.3"));
+    }
 
     #[test]
     fn run_args_contain_read_only() {

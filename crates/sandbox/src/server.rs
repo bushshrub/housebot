@@ -64,6 +64,9 @@ pub async fn run_daemon(socket_path: &str) -> anyhow::Result<()> {
 
     // Clean stale sandbox containers
     cleanup_stale_containers().await;
+    if docker::dns_forwarder_needed() {
+        ensure_dns_forwarder().await;
+    }
 
     let listener = UnixListener::bind(socket_path)?;
     tracing::info!(socket_path, "sandboxd listening");
@@ -218,17 +221,8 @@ async fn handle_start(
     let sandbox_id = uuid::Uuid::new_v4().to_string();
     let args = docker::build_run_args(&sandbox_id, start_params.network);
 
-    // Ensure the sandbox network exists (for public-internet mode)
     if start_params.network == NetworkAccess::PublicInternet {
-        let net_args = vec![
-            "network".to_string(),
-            "create".to_string(),
-            "--driver".to_string(),
-            "bridge".to_string(),
-            "housebot-sandbox-net".to_string(),
-        ];
-        // Ignore error if the network already exists
-        let _ = run_docker(&net_args, 30).await;
+        ensure_sandbox_network().await;
     }
 
     let output = match run_docker(&args, 60).await {
@@ -245,6 +239,11 @@ async fn handle_start(
     }
 
     let container_name = format!("housebot-sandbox-{sandbox_id}");
+    if start_params.network == NetworkAccess::PublicInternet && docker::dns_forwarder_needed() {
+        if let Err(error) = use_dns_forwarder(&container_name).await {
+            tracing::warn!(%error, %container_name, "sandbox DNS forwarder unavailable; name resolution will fail");
+        }
+    }
 
     let mut map = containers.lock().await;
     map.insert(
@@ -261,6 +260,46 @@ async fn handle_start(
         id.to_string(),
         serde_json::json!({"sandbox_id": sandbox_id}),
     )
+}
+
+async fn ensure_sandbox_network() {
+    let net_args = vec![
+        "network".to_string(),
+        "create".to_string(),
+        "--driver".to_string(),
+        "bridge".to_string(),
+        docker::SANDBOX_NETWORK.to_string(),
+    ];
+    // Ignore error if the network already exists
+    let _ = run_docker(&net_args, 30).await;
+}
+
+/// (Re)create the DNS forwarder. Sandboxes are wiped at startup, so replacing
+/// the forwarder loses nothing and picks up an updated image.
+async fn ensure_dns_forwarder() {
+    ensure_sandbox_network().await;
+    let remove = docker::build_remove_args(docker::DNS_FORWARDER_NAME);
+    let _ = run_docker(&remove, 30).await;
+    match run_docker(&docker::build_dns_forwarder_run_args(), 60).await {
+        Ok(_) => tracing::info!("sandbox DNS forwarder started"),
+        Err(error) => tracing::warn!(%error, "could not start the sandbox DNS forwarder"),
+    }
+}
+
+/// Point a new sandbox's resolver at the forwarder, which gVisor sandboxes
+/// need because Docker's embedded resolver cannot be reached from them.
+async fn use_dns_forwarder(container_name: &str) -> Result<(), String> {
+    let output = run_docker(&docker::build_dns_forwarder_ip_args(), 10).await?;
+    let address: std::net::Ipv4Addr = output
+        .trim()
+        .parse()
+        .map_err(|_| format!("forwarder has no address on the sandbox network: {output:?}"))?;
+    run_docker(
+        &docker::build_set_nameserver_argv(container_name, address),
+        10,
+    )
+    .await?;
+    Ok(())
 }
 
 /// Defer the idle deadline of a session's sandbox without provisioning one, so
