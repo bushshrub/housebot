@@ -78,11 +78,15 @@ fn run_args_have_correct_labels() {
 }
 
 #[test]
-fn run_args_use_sandbox_network_for_public_internet() {
+fn run_args_use_default_bridge_with_public_dns_for_public_internet() {
     let args = build_run_args("test", NetworkAccess::PublicInternet);
     assert!(
-        args.iter().any(|a| a == "--network=housebot-sandbox-net"),
-        "must use sandbox network for public internet access"
+        args.iter().any(|a| a == "--network=bridge"),
+        "must use the default bridge for public internet access"
+    );
+    assert!(
+        args.iter().any(|a| a.starts_with("--dns=")),
+        "must set DNS servers the sandbox can reach directly"
     );
 }
 
