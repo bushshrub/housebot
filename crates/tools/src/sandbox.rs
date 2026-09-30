@@ -17,7 +17,7 @@ use housebot_skills::{BundleKind, Skills};
 /// Workspace directory that holds a copy of every skill.
 pub const SKILLS_DIR: &str = "skills";
 
-const RESET_NOTICE: &str = "[The sandbox was reset after sitting idle, so earlier files, \
+const RESET_NOTICE: &str = "[The sandbox was recycled and is empty, so earlier files, \
     installed packages and clones are gone. Recreate what you need.]\n";
 
 /// A per-turn handle to the session's sandbox, attached on first tool use.
@@ -449,6 +449,55 @@ mod tests {
             "one turn attaches once: {calls:?}"
         );
         assert_eq!(&calls[calls.len() - 2..], ["run:ls", "run:pwd"]);
+    }
+
+    #[tokio::test]
+    async fn a_second_unknown_sandbox_error_is_returned_instead_of_retried_again() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let socket = dir.path().join("sandbox.sock");
+        let listener = tokio::net::UnixListener::bind(&socket).expect("bind fake sandboxd");
+        let starts = Arc::new(Mutex::new(0u32));
+        let seen = Arc::clone(&starts);
+        tokio::spawn(async move {
+            use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+            loop {
+                let Ok((stream, _)) = listener.accept().await else {
+                    return;
+                };
+                let starts = Arc::clone(&seen);
+                tokio::spawn(async move {
+                    let (reader, mut writer) = stream.into_split();
+                    let mut lines = BufReader::new(reader).lines();
+                    while let Ok(Some(line)) = lines.next_line().await {
+                        let request: Value = serde_json::from_str(&line).expect("request is JSON");
+                        let reply = if request["method"] == "start" {
+                            *starts.lock().await += 1;
+                            json!({"id": request["id"], "result": {"sandbox_id": "sandbox-x"}})
+                        } else {
+                            json!({"id": request["id"], "error": "unknown sandbox: sandbox-x"})
+                        };
+                        let mut bytes = serde_json::to_vec(&reply).expect("serialise response");
+                        bytes.push(b'\n');
+                        let _ = writer.write_all(&bytes).await;
+                    }
+                });
+            }
+        });
+        for _ in 0..100 {
+            if socket.exists() {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+
+        let skills = Skills::new(dir.path().join("skills"));
+        let client = SandboxClient::new(socket.to_string_lossy().to_string());
+        let sandbox = LazySandbox::new(client, "session-1", skills);
+
+        let error = sandbox.shell("ls", None, None).await.unwrap_err();
+
+        assert!(is_unknown_sandbox(&error), "{error}");
+        assert_eq!(*starts.lock().await, 2, "one retry, not a loop");
     }
 
     #[tokio::test]
