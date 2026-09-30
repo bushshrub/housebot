@@ -5,6 +5,14 @@
 
 use serde::{Deserialize, Serialize};
 
+/// Prefix of the error sandboxd returns for a sandbox ID it no longer tracks,
+/// which is what a reaped sandbox looks like to a handle that outlived it.
+pub const UNKNOWN_SANDBOX: &str = "unknown sandbox";
+
+pub fn is_unknown_sandbox(error: &str) -> bool {
+    error.starts_with(UNKNOWN_SANDBOX)
+}
+
 /// Whether the sandbox container can access the public internet.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum NetworkAccess {

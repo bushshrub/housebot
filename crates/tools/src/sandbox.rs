@@ -5,16 +5,20 @@
 //!
 //! Available to all users.
 
+use std::future::Future;
 use std::sync::Arc;
 
 use serde_json::{json, Value};
 use tokio::sync::Mutex;
 
-use housebot_sandbox::{NetworkAccess, Sandbox, SandboxClient};
+use housebot_sandbox::{is_unknown_sandbox, NetworkAccess, Sandbox, SandboxClient};
 use housebot_skills::{BundleKind, Skills};
 
 /// Workspace directory that holds a copy of every skill.
 pub const SKILLS_DIR: &str = "skills";
+
+const RESET_NOTICE: &str = "[The sandbox was reset after sitting idle, so earlier files, \
+    installed packages and clones are gone. Recreate what you need.]\n";
 
 /// A per-turn handle to the session's sandbox, attached on first tool use.
 ///
@@ -54,6 +58,31 @@ impl LazySandbox {
         self.copy_skills(&sandbox).await;
         *guard = Some(sandbox.clone());
         Ok(sandbox)
+    }
+
+    /// Run `op` against the sandbox, attaching to a fresh one once if sandboxd
+    /// reaped the cached sandbox mid-turn. The flag says the workspace was
+    /// replaced, so callers can tell the model its files are gone.
+    async fn with_sandbox<T, F, Fut>(&self, op: F) -> Result<(T, bool), String>
+    where
+        F: Fn(Sandbox) -> Fut,
+        Fut: Future<Output = Result<T, String>>,
+    {
+        let sandbox = self.attach().await?;
+        let stale_id = sandbox.id().to_string();
+        match op(sandbox).await {
+            Err(error) if is_unknown_sandbox(&error) => {
+                tracing::warn!(%error, "Sandbox was reaped mid-turn; starting a new one");
+                let mut guard = self.inner.lock().await;
+                if guard.as_ref().is_some_and(|s| s.id() == stale_id) {
+                    *guard = None;
+                }
+                drop(guard);
+                let fresh = self.attach().await?;
+                Ok((op(fresh).await?, true))
+            }
+            result => Ok((result?, false)),
+        }
     }
 
     /// Replace `skills/` in the workspace with the current skill store. A skill
@@ -104,24 +133,31 @@ impl LazySandbox {
         start_line: Option<u32>,
         end_line: Option<u32>,
     ) -> Result<String, String> {
-        let sandbox = self.attach().await?;
-        let result = sandbox.read_file(path, start_line, end_line).await?;
+        let (result, reset) = self
+            .with_sandbox(
+                |sandbox| async move { sandbox.read_file(path, start_line, end_line).await },
+            )
+            .await?;
         if result.binary {
-            return Ok("(binary file — cannot display)".to_string());
+            return Ok(with_reset_notice(
+                "(binary file — cannot display)".to_string(),
+                reset,
+            ));
         }
         let mut text = result.contents;
         if result.truncated {
             text.push_str("\n... (truncated)");
         }
-        Ok(text)
+        Ok(with_reset_notice(text, reset))
     }
 
     pub async fn write(&self, path: &str, content: &str) -> Result<String, String> {
-        let sandbox = self.attach().await?;
-        let result = sandbox.write_file(path, content, false).await?;
-        Ok(format!(
-            "Wrote {} bytes to {}",
-            result.bytes_written, result.path
+        let (result, reset) = self
+            .with_sandbox(|sandbox| async move { sandbox.write_file(path, content, false).await })
+            .await?;
+        Ok(with_reset_notice(
+            format!("Wrote {} bytes to {}", result.bytes_written, result.path),
+            reset,
         ))
     }
 
@@ -131,8 +167,11 @@ impl LazySandbox {
         working_dir: Option<&str>,
         timeout_secs: Option<u64>,
     ) -> Result<String, String> {
-        let sandbox = self.attach().await?;
-        let result = sandbox.run(command, working_dir, timeout_secs).await?;
+        let (result, reset) = self
+            .with_sandbox(
+                |sandbox| async move { sandbox.run(command, working_dir, timeout_secs).await },
+            )
+            .await?;
         let mut parts = Vec::new();
         if !result.stdout.is_empty() {
             parts.push(truncate_output(&result.stdout));
@@ -145,7 +184,15 @@ impl LazySandbox {
         if result.truncated {
             text.push_str("\n(output truncated)");
         }
-        Ok(text)
+        Ok(with_reset_notice(text, reset))
+    }
+}
+
+fn with_reset_notice(text: String, reset: bool) -> String {
+    if reset {
+        format!("{RESET_NOTICE}{text}")
+    } else {
+        text
     }
 }
 
@@ -338,5 +385,62 @@ mod tests {
             "one turn attaches once: {calls:?}"
         );
         assert_eq!(&calls[calls.len() - 2..], ["run:ls", "run:pwd"]);
+    }
+
+    #[tokio::test]
+    async fn a_reaped_sandbox_is_replaced_and_the_call_retried() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let socket = dir.path().join("sandbox.sock");
+        let listener = tokio::net::UnixListener::bind(&socket).expect("bind fake sandboxd");
+        let starts = Arc::new(Mutex::new(0u32));
+        let seen = Arc::clone(&starts);
+        tokio::spawn(async move {
+            use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+            loop {
+                let Ok((stream, _)) = listener.accept().await else {
+                    return;
+                };
+                let starts = Arc::clone(&seen);
+                tokio::spawn(async move {
+                    let (reader, mut writer) = stream.into_split();
+                    let mut lines = BufReader::new(reader).lines();
+                    while let Ok(Some(line)) = lines.next_line().await {
+                        let request: Value = serde_json::from_str(&line).expect("request is JSON");
+                        let mut starts = starts.lock().await;
+                        let reply = match request["method"].as_str().unwrap_or_default() {
+                            "start" => {
+                                *starts += 1;
+                                json!({"id": request["id"], "result": {"sandbox_id": format!("sandbox-{starts}")}})
+                            }
+                            _ if request["params"]["sandbox_id"] == "sandbox-1" => {
+                                json!({"id": request["id"], "error": "unknown sandbox: sandbox-1"})
+                            }
+                            _ => json!({"id": request["id"], "result": {
+                                "exit_code": 0, "stdout": "ok", "stderr": "", "truncated": false
+                            }}),
+                        };
+                        let mut bytes = serde_json::to_vec(&reply).expect("serialise response");
+                        bytes.push(b'\n');
+                        let _ = writer.write_all(&bytes).await;
+                    }
+                });
+            }
+        });
+        for _ in 0..100 {
+            if socket.exists() {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+
+        let skills = Skills::new(dir.path().join("skills"));
+        let client = SandboxClient::new(socket.to_string_lossy().to_string());
+        let sandbox = LazySandbox::new(client, "session-1", skills);
+
+        let output = sandbox.shell("ls", None, None).await.unwrap();
+
+        assert!(output.starts_with(RESET_NOTICE), "{output}");
+        assert!(output.contains("Exit code: 0"));
+        assert_eq!(*starts.lock().await, 2);
     }
 }
