@@ -144,6 +144,22 @@ pub struct WriteFileResult {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EditFileParams {
+    pub sandbox_id: String,
+    pub path: String,
+    pub old_string: String,
+    pub new_string: String,
+    #[serde(default)]
+    pub replace_all: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EditFileResult {
+    pub path: String,
+    pub replacements: usize,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CloseParams {
     pub sandbox_id: String,
 }

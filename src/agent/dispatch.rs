@@ -363,6 +363,19 @@ impl Agent {
                     .await
                     .unwrap_or_else(|e| format!("Error: {e}")),
             ),
+            "edit" => ToolOutcome::Text(
+                sandbox
+                    .edit(
+                        str_arg(args, "path"),
+                        str_arg(args, "old_string"),
+                        str_arg(args, "new_string"),
+                        args.get("replace_all")
+                            .and_then(Value::as_bool)
+                            .unwrap_or(false),
+                    )
+                    .await
+                    .unwrap_or_else(|e| format!("Error: {e}")),
+            ),
             "shell" => ToolOutcome::Text(
                 sandbox
                     .shell(

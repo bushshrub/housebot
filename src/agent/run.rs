@@ -21,6 +21,7 @@ impl Agent {
             avatar_url,
             guild_id,
             max_output_tokens,
+            max_tool_rounds,
             cancel,
         } = request;
         let run_started = std::time::Instant::now();
@@ -116,13 +117,12 @@ impl Agent {
 
         // Bound the tool loop so a model that keeps requesting tools cannot
         // spin forever (each iteration is a full LLM round trip).
-        const MAX_TOOL_ROUNDS: usize = 16;
         let mut rounds = 0;
         let final_text = loop {
             rounds += 1;
-            if rounds > MAX_TOOL_ROUNDS {
-                tracing::warn!(target: "housebot::agent", user_id, "Tool loop exceeded {MAX_TOOL_ROUNDS} rounds — stopping");
-                break "I had to stop because this request required too many tool calls in a row. Please try a more specific request.".to_string();
+            if rounds > max_tool_rounds {
+                tracing::warn!(target: "housebot::agent", user_id, "Tool loop exceeded {max_tool_rounds} rounds — stopping");
+                break format!("I had to stop because this request required more than {max_tool_rounds} tool calls in a row. Try a more specific request, or raise the limit with `/labs tool_rounds`.");
             }
 
             // Honour cancellation — checked before each LLM call so the user

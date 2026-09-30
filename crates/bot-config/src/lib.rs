@@ -268,6 +268,18 @@ pub struct UserConfig {
     /// When disabled, short-term conversation history still works normally.
     #[serde(default = "default_deep_memory_enabled")]
     pub deep_memory_enabled: bool,
+    /// How many tool calls in a row the model may make in one reply (set with `/labs tool_rounds`).
+    #[serde(default = "default_max_tool_rounds")]
+    pub max_tool_rounds: u32,
+}
+
+/// Default and ceiling for [`UserConfig::max_tool_rounds`]. Every round is a
+/// full LLM round trip, so the ceiling keeps a runaway loop bounded.
+pub const DEFAULT_MAX_TOOL_ROUNDS: u32 = 50;
+pub const MAX_TOOL_ROUNDS_LIMIT: u32 = 200;
+
+fn default_max_tool_rounds() -> u32 {
+    DEFAULT_MAX_TOOL_ROUNDS
 }
 
 fn default_followup_timeout() -> u64 {
@@ -292,6 +304,7 @@ impl Default for UserConfig {
             thinking_mode: ThinkingMode::default(),
             progress_updates_enabled: true,
             deep_memory_enabled: true,
+            max_tool_rounds: DEFAULT_MAX_TOOL_ROUNDS,
         }
     }
 }
@@ -619,6 +632,24 @@ mod tests {
         let json = serde_json::to_string(&config).unwrap();
         let restored: UserConfig = serde_json::from_str(&json).unwrap();
         assert!(!restored.progress_updates_enabled);
+    }
+
+    #[test]
+    fn old_user_config_defaults_tool_rounds_to_fifty() {
+        let config: UserConfig =
+            serde_json::from_str(r#"{"personality":null,"followup_timeout_secs":300}"#).unwrap();
+        assert_eq!(config.max_tool_rounds, 50);
+    }
+
+    #[test]
+    fn tool_rounds_persist_through_serde() {
+        let config = UserConfig {
+            max_tool_rounds: 120,
+            ..UserConfig::default()
+        };
+        let json = serde_json::to_string(&config).unwrap();
+        let restored: UserConfig = serde_json::from_str(&json).unwrap();
+        assert_eq!(restored.max_tool_rounds, 120);
     }
 
     #[test]

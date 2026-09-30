@@ -314,7 +314,7 @@ async fn run_dispatches_a_tool_then_answers() {
 async fn tool_loop_is_bounded() {
     let client = Arc::new(MockChatClient::new());
     // Script far more tool rounds than the loop allows.
-    for i in 0..40 {
+    for i in 0..60 {
         client.push_tool_call(&format!("call_{i}"), "get_lua_docs", "{}");
     }
     let (_t, agent) = test_agent(client);
@@ -322,11 +322,31 @@ async fn tool_loop_is_bounded() {
         .run(AgentRequest::text("u_loop", "Al", "loop forever"), &NoHooks)
         .await;
     assert!(
-        result.text.contains("too many tool calls"),
+        result.text.contains("more than 50 tool calls"),
         "unexpected: {}",
         result.text
     );
-    assert!(result.tools_called.len() <= 16);
+    assert_eq!(result.tools_called.len(), 50);
+}
+
+#[tokio::test]
+async fn tool_loop_honours_the_requested_limit() {
+    let client = Arc::new(MockChatClient::new());
+    for i in 0..10 {
+        client.push_tool_call(&format!("call_{i}"), "get_lua_docs", "{}");
+    }
+    let (_t, agent) = test_agent(client);
+    let mut request = AgentRequest::text("u_limit", "Al", "loop");
+    request.max_tool_rounds = 3;
+
+    let result = agent.run(request, &NoHooks).await;
+
+    assert!(
+        result.text.contains("more than 3 tool calls"),
+        "unexpected: {}",
+        result.text
+    );
+    assert_eq!(result.tools_called.len(), 3);
 }
 
 #[tokio::test]

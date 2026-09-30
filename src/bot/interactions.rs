@@ -1,6 +1,7 @@
 //! Slash-command interaction handlers (effort, tool bans, status, data, privacy, skill, stats).
 
 use super::*;
+use crate::bot_config::MAX_TOOL_ROUNDS_LIMIT;
 
 pub(crate) async fn handle_effort_interaction(
     user_cfg: &UserConfigStore,
@@ -116,13 +117,46 @@ pub(crate) async fn handle_labs_interaction(
     };
     match top.name.as_str() {
         "list" => format!(
-            "**Labs features**\n• Pagination: {}",
+            "**Labs features**\n• Pagination: {}\n• Tool rounds: {} per reply",
             if cfg.labs_pagination_enabled {
                 "enabled"
             } else {
                 "disabled"
-            }
+            },
+            cfg.max_tool_rounds
         ),
+        "tool_rounds" => {
+            let CommandDataOptionValue::SubCommand(sub_opts) = &top.value else {
+                return "Unexpected option structure.".into();
+            };
+            let Some(limit) =
+                sub_opts
+                    .iter()
+                    .find(|o| o.name == "limit")
+                    .and_then(|o| match &o.value {
+                        CommandDataOptionValue::Integer(value) => Some(*value),
+                        _ => None,
+                    })
+            else {
+                return format!(
+                    "Tool calls allowed per reply: {}. Set it with `/labs tool_rounds limit:<1-{}>`.",
+                    cfg.max_tool_rounds, MAX_TOOL_ROUNDS_LIMIT
+                );
+            };
+            let Some(limit) = u32::try_from(limit)
+                .ok()
+                .filter(|limit| (1..=MAX_TOOL_ROUNDS_LIMIT).contains(limit))
+            else {
+                return format!("The limit must be between 1 and {MAX_TOOL_ROUNDS_LIMIT}.");
+            };
+            cfg.max_tool_rounds = limit;
+            if let Err(error) = user_cfg.save(author_id, &cfg).await {
+                tracing::error!(target: "housebot::labs::tool_rounds", user_id = author_id, %error, "Failed to save tool round limit");
+                return "Error: failed to save labs configuration.".into();
+            }
+            tracing::info!(target: "housebot::labs::tool_rounds", user_id = author_id, limit, "Updated tool round limit");
+            format!("✅ The bot may now make up to {limit} tool calls in a row per reply.")
+        }
         "pagination" => {
             let CommandDataOptionValue::SubCommand(sub_opts) = &top.value else {
                 return "Unexpected option structure.".into();

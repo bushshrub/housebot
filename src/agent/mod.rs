@@ -94,6 +94,8 @@ pub struct AgentRequest<'a> {
     pub guild_id: Option<u64>,
     /// Per-user cap on completion output tokens, set by the bot's configurers.
     pub max_output_tokens: Option<u32>,
+    /// How many tool calls in a row the model may make before the turn is stopped.
+    pub max_tool_rounds: usize,
     /// Optional cancellation token. When triggered, the active LLM stream is
     /// dropped and the agent loop stops without producing a response.
     pub cancel: Option<CancelToken>,
@@ -116,6 +118,7 @@ impl<'a> AgentRequest<'a> {
             avatar_url: "",
             guild_id: None,
             max_output_tokens: None,
+            max_tool_rounds: crate::bot_config::DEFAULT_MAX_TOOL_ROUNDS as usize,
             cancel: None,
         }
     }

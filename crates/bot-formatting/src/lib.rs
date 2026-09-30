@@ -137,6 +137,7 @@ fn tool_label(tool_name: &str) -> Option<(&'static str, &'static str)> {
         "prepare_feature_development" => ("🛠️", "Preparing feature development"),
         "read" => ("📦", "Reading a file"),
         "write" => ("📦", "Writing a file"),
+        "edit" => ("📦", "Editing a file"),
         "shell" => ("📦", "Running a command"),
         _ => return None,
     };

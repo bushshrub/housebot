@@ -72,8 +72,8 @@ output token caps, toggle per-user responses, control global proactive assistanc
 the development-completion notification channel. Collective batch operations (set_user_limit_all, \
 set_user_respond_all) apply to all users with existing policies. Only available to authorized \
 configurers (the bot owner plus users granted access).\n\
-- read, write, shell — Read and write files and run Bash commands in the user's own sandbox \
-(/workspace). It has internet access, git, Python, Node, and Rust. Files persist between turns \
+- read, write, edit, shell — Read, write and edit files and run Bash commands in the user's own \
+sandbox (/workspace). Use edit, not write, to change part of an existing file. It has internet access, git, Python, Node, and Rust. Files persist between turns \
 until the sandbox has been idle for 5 minutes. Use it when running code, cloning a repository, \
 or inspecting files would materially improve the answer. This is not a full \
 software-development environment. Do not use it for autonomous feature implementation, \

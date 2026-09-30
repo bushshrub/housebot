@@ -161,6 +161,31 @@ impl LazySandbox {
         ))
     }
 
+    pub async fn edit(
+        &self,
+        path: &str,
+        old_string: &str,
+        new_string: &str,
+        replace_all: bool,
+    ) -> Result<String, String> {
+        let (result, reset) = self
+            .with_sandbox(|sandbox| async move {
+                sandbox
+                    .edit_file(path, old_string, new_string, replace_all)
+                    .await
+            })
+            .await?;
+        Ok(with_reset_notice(
+            format!(
+                "Edited {} ({} replacement{})",
+                result.path,
+                result.replacements,
+                if result.replacements == 1 { "" } else { "s" }
+            ),
+            reset,
+        ))
+    }
+
     pub async fn shell(
         &self,
         command: &str,
@@ -212,7 +237,12 @@ fn truncate_output(s: &str) -> String {
 }
 
 pub fn all_definitions() -> Vec<Value> {
-    vec![read_definition(), write_definition(), shell_definition()]
+    vec![
+        read_definition(),
+        write_definition(),
+        edit_definition(),
+        shell_definition(),
+    ]
 }
 
 // ── Tool definitions ────────────────────────────────────────────────────────
@@ -246,8 +276,9 @@ pub fn read_definition() -> Value {
 pub fn write_definition() -> Value {
     json!({
         "name": "write",
-        "description": "Create or overwrite a text file in your sandbox workspace (/workspace). \
-            Parent directories are created as needed.",
+        "description": "Create a new text file, or fully replace one, in your sandbox workspace \
+            (/workspace). Parent directories are created as needed. To change part of an \
+            existing file use edit instead of rewriting it.",
         "input_schema": {
             "type": "object",
             "properties": {
@@ -261,6 +292,39 @@ pub fn write_definition() -> Value {
                 }
             },
             "required": ["path", "content"]
+        }
+    })
+}
+
+pub fn edit_definition() -> Value {
+    json!({
+        "name": "edit",
+        "description": "Make a targeted change to an existing text file in your sandbox \
+            workspace (/workspace) by replacing an exact string. Prefer this over write \
+            for any change to a file that already exists. old_string must match the file \
+            exactly, including whitespace, and must be unique in the file unless \
+            replace_all is set. Files over 256 KiB cannot be edited this way.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "path": {
+                    "type": "string",
+                    "description": "Path relative to /workspace."
+                },
+                "old_string": {
+                    "type": "string",
+                    "description": "The exact text to replace. Include enough surrounding lines to make it unique."
+                },
+                "new_string": {
+                    "type": "string",
+                    "description": "The text to put in its place. Must differ from old_string."
+                },
+                "replace_all": {
+                    "type": "boolean",
+                    "description": "Replace every occurrence instead of requiring a unique match (default false)."
+                }
+            },
+            "required": ["path", "old_string", "new_string"]
         }
     })
 }

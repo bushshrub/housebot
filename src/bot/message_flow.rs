@@ -269,6 +269,7 @@ impl HouseBot {
                     avatar_url: &avatar_url,
                     guild_id: msg.guild_id.map(|guild| guild.get()),
                     max_output_tokens,
+                    max_tool_rounds: user_config.max_tool_rounds as usize,
                     cancel: Some(cancel_token),
                 },
                 response_hooks
