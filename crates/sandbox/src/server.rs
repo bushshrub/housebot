@@ -425,11 +425,14 @@ async fn handle_run(
             .unwrap_or_default()
     };
 
-    let args = docker::build_exec_args(
-        &container_name,
-        &run_params.command,
-        run_params.working_dir.as_deref(),
-    );
+    // Validation only admits paths relative to /workspace, and `docker exec -w`
+    // only accepts absolute ones.
+    let working_dir = run_params
+        .working_dir
+        .as_deref()
+        .map(|dir| format!("/workspace/{dir}"));
+    let args =
+        docker::build_exec_args(&container_name, &run_params.command, working_dir.as_deref());
 
     match run_docker_with_timeout_raw(&args, timeout).await {
         Ok((stdout, stderr, exit_code)) => {
