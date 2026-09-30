@@ -401,6 +401,16 @@ impl DeploymentBot {
         Ok(deployment_changelog(current_sha, target_sha, &commits))
     }
 
+    async fn chatbot_running(&self) -> bool {
+        run_docker(&[
+            "inspect",
+            "--format={{.State.Running}}",
+            HOUSE_CHATBOT_CONTAINER,
+        ])
+        .await
+        .is_ok_and(|state| state == "true")
+    }
+
     async fn current_running_sha(&self) -> anyhow::Result<String> {
         let image = run_docker(&["inspect", "--format={{.Config.Image}}", "house-chatbot"]).await?;
         let sha = image
@@ -427,7 +437,13 @@ impl DeploymentBot {
         };
         let (latest, note) = self.deployable_branch_commit().await?;
         let note = note.map(|note| format!("{note}\n\n")).unwrap_or_default();
-        if current_sha.as_deref() == Some(latest.sha.as_str()) {
+        // A container left stopped by a failed health check still reports the
+        // target image, so the SHA alone would end a startup retry as a no-op.
+        if already_deployed(
+            current_sha.as_deref(),
+            self.chatbot_running().await,
+            &latest.sha,
+        ) {
             return Ok(format!(
                 "{note}✅ Already running the latest deployable `{}` commit on `{}`.",
                 short_sha(current_sha.as_deref().expect("current SHA was checked")),
@@ -502,6 +518,10 @@ pub fn commit_summary(selected: &GitHubCommit, recent: &[GitHubCommit]) -> Strin
         ));
     }
     text
+}
+
+fn already_deployed(current_sha: Option<&str>, running: bool, target_sha: &str) -> bool {
+    running && current_sha == Some(target_sha)
 }
 
 /// Why a commit other than the one asked for is being offered.
@@ -673,6 +693,9 @@ fn dotenv_value(raw: &str) -> &str {
                 return &rest[..end];
             }
         }
+    }
+    if raw.starts_with('#') {
+        return "";
     }
     let value = match raw.find(" #").or_else(|| raw.find("\t#")) {
         Some(comment) => &raw[..comment],

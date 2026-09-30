@@ -457,6 +457,14 @@ fn unpublished_note_names_both_commits() {
 }
 
 #[test]
+fn a_stopped_container_on_the_target_commit_is_redeployed() {
+    assert!(already_deployed(Some("abc1234"), true, "abc1234"));
+    assert!(!already_deployed(Some("abc1234"), false, "abc1234"));
+    assert!(!already_deployed(Some("0000000"), true, "abc1234"));
+    assert!(!already_deployed(None, false, "abc1234"));
+}
+
+#[test]
 fn release_images_cover_the_bot_and_both_sandbox_images() {
     assert_eq!(
         release_images("abc1234"),
@@ -499,7 +507,7 @@ jellyfin/jellyfin:latest";
 fn dotenv_values_drop_trailing_comments_and_quotes() {
     let parsed = parse_dotenv(
         "# heading\nLLM_API_KEY=sk-123 # the gateway key\nQUOTED=\"a # b\" # note\n\
-         SINGLE='x'\nexport PLAIN=value\nHASH=abc#def\nEMPTY=\n",
+         SINGLE='x'\nexport PLAIN=value\nHASH=abc#def\nEMPTY=\nBLANK= # optional\n",
     );
     assert_eq!(
         parsed,
@@ -510,6 +518,7 @@ fn dotenv_values_drop_trailing_comments_and_quotes() {
             ("PLAIN".to_string(), "value".to_string()),
             ("HASH".to_string(), "abc#def".to_string()),
             ("EMPTY".to_string(), String::new()),
+            ("BLANK".to_string(), String::new()),
         ]
     );
 }

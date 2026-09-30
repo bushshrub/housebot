@@ -352,15 +352,20 @@ impl EventHandler for DeploymentBot {
                 }
                 None => None,
             };
+            // The image checks can outlast Discord's three-second window for
+            // the first response, so acknowledge first and fill the card in.
+            let deferred = CreateInteractionResponse::Defer(
+                CreateInteractionResponseMessage::new().ephemeral(true),
+            );
+            if command.create_response(&ctx.http, deferred).await.is_err() {
+                return;
+            }
             let response = match self.deploy_card(sha).await {
                 Ok(response) => response,
-                Err(error) => CreateInteractionResponseMessage::new()
-                    .content(format!("Could not find that commit: {error}"))
-                    .ephemeral(true),
+                Err(error) => EditInteractionResponse::new()
+                    .content(format!("Could not find that commit: {error}")),
             };
-            let _ = command
-                .create_response(&ctx.http, CreateInteractionResponse::Message(response))
-                .await;
+            let _ = command.edit_response(&ctx.http, response).await;
             return;
         }
         if command.data.name == "update" {
@@ -419,10 +424,7 @@ impl DeploymentBot {
     /// published, or, for an explicit commit without them, a notice naming the
     /// newest commit that has them. Without a SHA the card falls back to that
     /// commit directly, since deploying the tip would fail at the pull.
-    async fn deploy_card(
-        &self,
-        sha: Option<&str>,
-    ) -> anyhow::Result<CreateInteractionResponseMessage> {
+    async fn deploy_card(&self, sha: Option<&str>) -> anyhow::Result<EditInteractionResponse> {
         let (mut selected, recent) = match sha {
             Some(sha) => self.commits(sha).await?,
             None => (self.latest_branch_commit().await?, Vec::new()),
@@ -435,19 +437,16 @@ impl DeploymentBot {
                     selected = newest;
                 }
                 (Some(_), Some(newest)) => {
-                    return Ok(CreateInteractionResponseMessage::new()
-                        .content(unpublished_note(&selected, &newest))
-                        .ephemeral(true));
+                    return Ok(EditInteractionResponse::new()
+                        .content(unpublished_note(&selected, &newest)));
                 }
                 (_, None) => {
-                    return Ok(CreateInteractionResponseMessage::new()
-                        .content(format!(
+                    return Ok(EditInteractionResponse::new().content(format!(
                             "⏳ `{}` has no published images yet: its build is still running or failed. \
                              None of the last {PUBLISHED_COMMIT_SEARCH_DEPTH} commits on `{}` has images either.",
-                            short_sha(&selected.sha),
-                            self.github_branch
-                        ))
-                        .ephemeral(true));
+                        short_sha(&selected.sha),
+                        self.github_branch
+                    )));
                 }
             }
         }
@@ -464,7 +463,7 @@ impl DeploymentBot {
             description = format!("{note}\n\n{description}");
         }
         description.push_str(&format!("\n\n{changelog}"));
-        Ok(CreateInteractionResponseMessage::new()
+        Ok(EditInteractionResponse::new()
             .embed(
                 CreateEmbed::new()
                     .title("Confirm deployment")
@@ -477,8 +476,7 @@ impl DeploymentBot {
                 CreateButton::new("deploy_deny")
                     .label("Deny")
                     .style(ButtonStyle::Danger),
-            ])])
-            .ephemeral(true))
+            ])]))
     }
 }
 
