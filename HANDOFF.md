@@ -4,6 +4,43 @@ Read this together with [`docs/REDESIGN_PLAN.md`](docs/REDESIGN_PLAN.md), which
 is the authoritative scope document — this file covers state and gotchas, the
 plan covers what was built.
 
+## Open work: deployment bot (2026-09-30)
+
+Found while bringing the bot up on `server-sofia` with plain Docker Compose
+(`~/slopbot`: `.env` + `docker-compose.yml`, started with `docker compose up -d`).
+Not started yet.
+
+1. **`/deploy` offers commits that have no image.** The bot takes the newest
+   commit from the GitHub API (`latest_branch_commit` / `commits` in
+   `crates/deployment-bot/src/lib.rs`) and pulls
+   `ghcr.io/bushshrub/housebot:sha-<commit>`. That image exists only after the
+   "Post-merge Docker publish" workflow succeeds for that commit, which takes
+   several minutes and does not happen at all when the workflow fails (for
+   example on a clippy error). The confirm card still offers the commit, and the
+   deploy then fails at `pull_housebot_image` with `manifest unknown`. The
+   startup deploy (`No running housebot container at startup`) has the same
+   problem and does not retry.
+   - Fix: before showing the confirm card, check that all three images exist for
+     that commit (`housebot`, `housebot/sandboxd`, `housebot/sandbox`, tag
+     `sha-<full sha>`) with `docker manifest inspect`, or the GitHub commit
+     status for the publish workflow. If they don't, say the build is pending or
+     failed and name the newest commit that does have images.
+   - The startup deploy should use the same check, and retry or wait for the
+     image instead of giving up once.
+
+2. **Changelog fails when no chatbot is running.** The confirm card shows
+   "Changelog unavailable: docker command failed: Error: No such object:
+   house-chatbot". `current_running_sha` runs `docker inspect house-chatbot`,
+   which fails on a fresh host. When there is no running container, show "first
+   deployment" and skip the compare instead of an error.
+
+3. **Old images are never removed.** Every deploy pulls three new `sha-` tagged
+   images and nothing deletes the old ones, so disk use grows with every deploy.
+   After a successful deploy, remove `ghcr.io/bushshrub/housebot*` images that
+   no container uses, but keep the previous release's images so `/rollback`
+   still works without a pull. Do not run a blanket `docker image prune -a`:
+   the host runs other stacks.
+
 All seven phases have landed. The per-phase narrative that used to live here is
 in the commit history; what is kept below is the part that is still load-bearing
 for whoever touches this next.
