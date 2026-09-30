@@ -630,7 +630,7 @@ async fn dispatch_unknown_tool_returns_error() {
 
 #[tokio::test]
 async fn context_overflow_triggers_new_session() {
-    let client = Arc::new(MockChatClient::new());
+    let client = Arc::new(MockChatClient::new().with_once_reply("- Sent a long message"));
     client.push_text_with_usage(
         "ok",
         TokenUsage {
@@ -732,6 +732,23 @@ async fn disabled_memory_compaction_clears_history_without_writing_memory() {
 
     assert_eq!(agent.memory.load("u7").await, "Keep this memory");
     assert!(agent.history.load("u7").await.is_empty());
+}
+
+/// Regression test for issue #335: a failed or empty summary must not wipe the
+/// conversation it was meant to replace.
+#[tokio::test]
+async fn compaction_without_a_summary_keeps_the_history() {
+    let client = Arc::new(MockChatClient::new().with_once_reply("  "));
+    let (_t, agent) = test_agent(client);
+    let history = [
+        json!({"role": "user", "content": "I like tea"}),
+        json!({"role": "assistant", "content": "Noted"}),
+    ];
+    agent.history.save("u11", &history).await.unwrap();
+
+    assert!(!agent.compact_session("u11", true).await);
+
+    assert_eq!(agent.history.load("u11").await, history);
 }
 
 /// Regression test for issue #302: compaction must never write persistent

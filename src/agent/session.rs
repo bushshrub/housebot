@@ -14,18 +14,19 @@ impl Agent {
     }
 
     /// Summarize the current conversation, then start a fresh session.
-    pub async fn compact_session(&self, user_id: &str, deep_memory_enabled: bool) {
+    pub async fn compact_session(&self, user_id: &str, deep_memory_enabled: bool) -> bool {
         self.compact_session_with_hooks(user_id, deep_memory_enabled, &NoHooks)
-            .await;
+            .await
     }
 
     /// Summarize the current conversation, reporting coarse-grained progress to the caller.
+    /// Returns false when the history was kept because no summary could be made.
     pub async fn compact_session_with_hooks(
         &self,
         user_id: &str,
         deep_memory_enabled: bool,
         hooks: &dyn AgentHooks,
-    ) {
+    ) -> bool {
         tracing::info!(target: "housebot::agent", user_id, "Compacting session");
         hooks.on_progress("compact:10").await;
         self.session_stats.lock().await.remove(user_id);
@@ -33,7 +34,7 @@ impl Agent {
         if past.is_empty() {
             self.finish_active_conversation(user_id).await;
             hooks.on_progress("compact:100:Nothing to compact.").await;
-            return;
+            return true;
         }
         let conversation_id = self.current_conversation_id(user_id, user_id, 0).await;
         if !deep_memory_enabled {
@@ -42,7 +43,7 @@ impl Agent {
             hooks
                 .on_progress("compact:100:Conversation cleared without a carry-over summary.")
                 .await;
-            return;
+            return true;
         }
         hooks.on_progress("compact:25").await;
         let convo: String = past
@@ -63,7 +64,7 @@ impl Agent {
              user's memory for future reference. Be brief — 3-8 bullets max.\n\nCONVERSATION:\n{truncated}"
         );
         hooks.on_progress("compact:45").await;
-        let completion = self
+        let summary = match self
             .client
             .chat_once(
                 &self.model,
@@ -71,37 +72,53 @@ impl Agent {
                 512,
             )
             .await
-            .unwrap_or_default();
-        self.record_usage(user_id, &conversation_id, completion.usage)
-            .await;
+        {
+            Ok(completion) => {
+                self.record_usage(user_id, &conversation_id, completion.usage)
+                    .await;
+                completion.content.unwrap_or_default()
+            }
+            Err(error) => {
+                tracing::warn!(target: "housebot::agent", user_id, %error, "Compaction summary failed");
+                String::new()
+            }
+        };
         // Discard the compact summary's in-memory token stats so they don't
         // bleed into a newly auto-started session's counters.
         self.session_stats.lock().await.remove(user_id);
-        let summary = completion.content.unwrap_or_default();
+        // Clearing without a summary would silently lose the whole conversation.
+        if summary.trim().is_empty() {
+            hooks
+                .on_progress(
+                    "compact:100:Could not summarize the conversation, so it was kept. \
+                     Try again later, or use `/session new` to start over.",
+                )
+                .await;
+            return false;
+        }
 
         hooks.on_progress("compact:80").await;
         let _ = self.history.clear(user_id).await;
         // The summary carries the previous session forward as conversation
         // context only. Persistent memory is never written automatically —
         // it changes solely through an explicit update_memory tool call.
-        if !summary.trim().is_empty() {
-            let now = Local::now().format("%Y-%m-%d %H:%M");
-            let carry_over = vec![
-                json!({
-                    "role": "user",
-                    "content": format!("## Summary of our earlier conversation ({now})\n{summary}"),
-                }),
-                json!({
-                    "role": "assistant",
-                    "content": "Understood — I'll continue from that summary.",
-                }),
-            ];
-            let _ = self.history.save(user_id, &carry_over).await;
-        }
+        let now = Local::now().format("%Y-%m-%d %H:%M");
+        let carry_over = vec![
+            json!({
+                "role": "user",
+                "content": format!("## Summary of our earlier conversation ({now})\n{summary}"),
+            }),
+            json!({
+                "role": "assistant",
+                "content": "Understood — I'll continue from that summary.",
+            }),
+        ];
+        let _ = self.history.save(user_id, &carry_over).await;
         self.finish_active_conversation(user_id).await;
         hooks
             .on_progress("compact:100:Conversation compacted.")
             .await;
+        true
     }
 
     pub fn model_info(&self) -> String {
