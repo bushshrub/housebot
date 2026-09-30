@@ -112,7 +112,7 @@ jobs:
           cache-from: type=gha,scope=pr-${{ matrix.name }}
           cache-to: type=gha,mode=max,scope=pr-${{ matrix.name }}
 
-  sandbox-docker-tests:
+  sandbox-docker-runtime:
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -156,3 +156,13 @@ jobs:
         run: |
           cargo test --package housebot-sandbox \
             -- --include-ignored --test-threads=1
+
+  # Branch protection requires a check named sandbox-docker-tests; a matrix
+  # job only reports per-runtime names, so this one reports the combined result.
+  sandbox-docker-tests:
+    if: always()
+    needs: sandbox-docker-runtime
+    runs-on: ubuntu-latest
+    steps:
+      - name: Require every runtime to pass
+        run: test "${{ needs.sandbox-docker-runtime.result }}" = success
