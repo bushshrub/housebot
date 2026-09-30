@@ -48,11 +48,12 @@ impl ContainerConfig {
             memory_swap: "4g".to_string(),
             cpus: 2.0,
             ulimit: vec![("nofile".to_string(), "4096:4096".to_string())],
-            // `/workspace` deliberately omits `noexec`: skill scripts and
-            // compiled binaries have to run from it. `nosuid` stays, and the
-            // other mounts keep `noexec` so only the workspace is executable.
+            // `/workspace` sets `exec`: skill scripts and compiled binaries
+            // have to run from it, and Docker adds `noexec` to a tmpfs that
+            // does not ask for `exec`. `nosuid` stays, and the other mounts
+            // keep `noexec` so only the workspace is executable.
             tmpfs: vec![
-                "/workspace:size=2g,nosuid,uid=1000,gid=1000".to_string(),
+                "/workspace:size=2g,exec,nosuid,uid=1000,gid=1000".to_string(),
                 "/tmp:size=256m,noexec,nosuid".to_string(),
                 "/home/sandbox:size=32m,noexec,nosuid".to_string(),
             ],
@@ -390,7 +391,7 @@ mod tests {
             .find(|a| a.starts_with("/workspace:"))
             .expect("workspace tmpfs mount");
         assert!(
-            !workspace.contains("noexec"),
+            workspace.split(',').any(|option| option == "exec"),
             "skill scripts must be executable from /workspace: {workspace}"
         );
         assert!(workspace.contains("nosuid"));
