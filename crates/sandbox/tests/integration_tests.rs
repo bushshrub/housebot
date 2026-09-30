@@ -206,7 +206,7 @@ fn limits_are_sane() {
 // Requirements:
 //   - Docker daemon running and accessible
 //   - Sandbox image built and tagged as ghcr.io/bushshrub/housebot/sandbox:latest
-//   - In CI: set HOUSEBOT_SANDBOX_RUNTIME=runc (gVisor not available on hosted runners)
+//   - In CI: runs once with HOUSEBOT_SANDBOX_RUNTIME=runc and once with runsc
 //   - In production: leave HOUSEBOT_SANDBOX_RUNTIME unset to use runsc
 //
 // Run:
@@ -226,7 +226,7 @@ async fn spawn_sandboxd(socket: &str) {
 }
 
 #[tokio::test]
-#[ignore = "requires Docker daemon + sandbox image; set HOUSEBOT_SANDBOX_RUNTIME=runc in CI"]
+#[ignore = "requires Docker daemon + sandbox image"]
 async fn docker_sandbox_run_command() {
     let socket = test_socket("run");
     spawn_sandboxd(&socket).await;
@@ -252,7 +252,7 @@ async fn docker_sandbox_run_command() {
 }
 
 #[tokio::test]
-#[ignore = "requires Docker daemon + sandbox image; set HOUSEBOT_SANDBOX_RUNTIME=runc in CI"]
+#[ignore = "requires Docker daemon + sandbox image"]
 async fn docker_sandbox_runs_as_non_root() {
     let socket = test_socket("nonroot");
     spawn_sandboxd(&socket).await;
@@ -271,7 +271,7 @@ async fn docker_sandbox_runs_as_non_root() {
 }
 
 #[tokio::test]
-#[ignore = "requires Docker daemon + sandbox image; set HOUSEBOT_SANDBOX_RUNTIME=runc in CI"]
+#[ignore = "requires Docker daemon + sandbox image"]
 async fn docker_sandbox_no_docker_socket() {
     let socket = test_socket("nosock");
     spawn_sandboxd(&socket).await;
@@ -299,7 +299,7 @@ async fn docker_sandbox_no_docker_socket() {
 }
 
 #[tokio::test]
-#[ignore = "requires Docker daemon + sandbox image; set HOUSEBOT_SANDBOX_RUNTIME=runc in CI"]
+#[ignore = "requires Docker daemon + sandbox image"]
 async fn docker_sandbox_workspace_is_writable() {
     let socket = test_socket("workspace");
     spawn_sandboxd(&socket).await;
@@ -329,7 +329,7 @@ async fn docker_sandbox_workspace_is_writable() {
 }
 
 #[tokio::test]
-#[ignore = "requires Docker daemon + sandbox image; set HOUSEBOT_SANDBOX_RUNTIME=runc in CI"]
+#[ignore = "requires Docker daemon + sandbox image"]
 async fn docker_sandbox_list_and_read_file() {
     let socket = test_socket("listread");
     spawn_sandboxd(&socket).await;
@@ -360,7 +360,7 @@ async fn docker_sandbox_list_and_read_file() {
 }
 
 #[tokio::test]
-#[ignore = "requires Docker daemon + sandbox image; set HOUSEBOT_SANDBOX_RUNTIME=runc in CI"]
+#[ignore = "requires Docker daemon + sandbox image"]
 async fn docker_sandbox_nonzero_exit_returned_not_error() {
     let socket = test_socket("nonzero");
     spawn_sandboxd(&socket).await;
@@ -381,7 +381,7 @@ async fn docker_sandbox_nonzero_exit_returned_not_error() {
 }
 
 #[tokio::test]
-#[ignore = "requires Docker daemon + sandbox image; set HOUSEBOT_SANDBOX_RUNTIME=runc in CI"]
+#[ignore = "requires Docker daemon + sandbox image"]
 async fn docker_sandbox_close_removes_container() {
     let socket = test_socket("cleanup");
     spawn_sandboxd(&socket).await;
@@ -424,7 +424,7 @@ async fn run_ok(sandbox: &housebot_sandbox::Sandbox, command: &str, dir: Option<
 /// names, clone, write a project into new directories, build and test it with
 /// fetched dependencies, and load native Python extensions.
 #[tokio::test]
-#[ignore = "requires Docker daemon + sandbox image + internet; set HOUSEBOT_SANDBOX_RUNTIME=runc in CI"]
+#[ignore = "requires Docker daemon + sandbox image + internet"]
 async fn docker_sandbox_supports_software_development_tasks() {
     let socket = test_socket("e2e");
     spawn_sandboxd(&socket).await;

@@ -114,6 +114,12 @@ jobs:
 
   sandbox-docker-tests:
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # runsc is what production runs; runc separates gVisor-only failures
+        # (such as DNS) from failures in the image or sandboxd itself.
+        runtime: [runc, runsc]
     steps:
       - uses: actions/checkout@v4
         with:
@@ -127,17 +133,26 @@ jobs:
         with:
           key: sandbox-integ
 
+      - name: Install gVisor
+        if: matrix.runtime == 'runsc'
+        run: |
+          ARCH=$(uname -m)
+          URL=https://storage.googleapis.com/gvisor/releases/release/latest/${ARCH}
+          wget -q ${URL}/gvisor.tar.zstd ${URL}/gvisor.tar.zstd.sha512
+          sha512sum -c gvisor.tar.zstd.sha512
+          sudo tar --zstd -xf gvisor.tar.zstd -C /usr/local/bin
+          rm -f gvisor.tar.zstd gvisor.tar.zstd.sha512
+          sudo /usr/local/bin/runsc install
+          sudo systemctl reload docker
+
       - name: Build sandbox Docker image
         run: |
           docker build -t ghcr.io/bushshrub/housebot/sandbox:latest \
             crates/sandbox/docker
 
-      - name: Run sandbox Docker integration tests
-        # gVisor (runsc) is not available on GitHub-hosted runners.
-        # HOUSEBOT_SANDBOX_RUNTIME=runc exercises the full lifecycle with the
-        # standard OCI runtime.  The gVisor runtime flag is verified by unit tests.
+      - name: Run sandbox Docker integration tests (${{ matrix.runtime }})
         env:
-          HOUSEBOT_SANDBOX_RUNTIME: runc
+          HOUSEBOT_SANDBOX_RUNTIME: ${{ matrix.runtime }}
         run: |
           cargo test --package housebot-sandbox \
             -- --include-ignored --test-threads=1
