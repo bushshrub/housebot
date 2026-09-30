@@ -290,3 +290,37 @@ impl Sandbox {
         &self.id
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn touch_sends_the_session_key_and_accepts_the_reply() {
+        let socket = std::env::temp_dir().join(format!("touch-{}.sock", uuid::Uuid::new_v4()));
+        let listener = tokio::net::UnixListener::bind(&socket).expect("bind fake sandboxd");
+        let server = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.expect("accept");
+            let (reader, mut writer) = stream.into_split();
+            let mut line = String::new();
+            BufReader::new(reader)
+                .read_line(&mut line)
+                .await
+                .expect("read request");
+            let request: SandboxRequest = serde_json::from_str(&line).expect("request is JSON");
+            let reply = SandboxResponse::ok(request.id.clone(), serde_json::json!({"touched": 1}));
+            let mut bytes = serde_json::to_vec(&reply).expect("serialise reply");
+            bytes.push(b'\n');
+            writer.write_all(&bytes).await.expect("write reply");
+            request
+        });
+
+        let client = SandboxClient::new(socket.to_string_lossy().to_string());
+        client.touch("user-1").await.expect("touch succeeds");
+
+        let request = server.await.expect("server task");
+        assert_eq!(request.method, "touch");
+        assert_eq!(request.params["session_key"], "user-1");
+        let _ = std::fs::remove_file(&socket);
+    }
+}

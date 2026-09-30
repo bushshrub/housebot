@@ -313,6 +313,9 @@ async fn handle_touch(
         Ok(p) => p,
         Err(e) => return SandboxResponse::err(id.to_string(), format!("invalid params: {e}")),
     };
+    if let Err(e) = validation::validate_session_key(&touch_params.session_key) {
+        return SandboxResponse::err(id.to_string(), format!("invalid session key: {e}"));
+    }
     let mut map = containers.lock().await;
     let touched = map
         .values_mut()

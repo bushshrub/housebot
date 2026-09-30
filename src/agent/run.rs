@@ -34,7 +34,7 @@ impl Agent {
             media = media.len(),
             "Agent run started"
         );
-        self.touch_sandbox(user_id).await;
+        self.touch_sandbox(user_id);
         let mut user_memory = self.memory.load(user_id).await;
         let mut past = self.history.load(user_id).await;
         let mut session_notice = None;
@@ -268,7 +268,7 @@ impl Agent {
             }
         };
 
-        self.touch_sandbox(user_id).await;
+        self.touch_sandbox(user_id);
         if let Err(e) = self
             .history
             .append_turn(user_id, history_user_message, turn_messages)
@@ -303,11 +303,16 @@ impl Agent {
     }
 
     /// The sandbox idles out on inactivity, and a chat that never calls a
-    /// sandbox tool is still activity.
-    async fn touch_sandbox(&self, user_id: &str) {
-        if let Err(error) = self.sandbox_client.touch(user_id).await {
-            tracing::debug!(%error, user_id, "Could not defer the sandbox idle deadline");
-        }
+    /// sandbox tool is still activity. Detached so a wedged sandboxd cannot
+    /// delay the reply.
+    fn touch_sandbox(&self, user_id: &str) {
+        let client = self.sandbox_client.clone();
+        let user_id = user_id.to_string();
+        tokio::spawn(async move {
+            if let Err(error) = client.touch(&user_id).await {
+                tracing::debug!(%error, user_id, "Could not defer the sandbox idle deadline");
+            }
+        });
     }
 
     pub(crate) async fn build_tools(
