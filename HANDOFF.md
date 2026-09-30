@@ -41,6 +41,74 @@ Not started yet.
    still works without a pull. Do not run a blanket `docker image prune -a`:
    the host runs other stacks.
 
+4. **A changed `.env` does not reach the chatbot.** The deployment bot reads
+   `.env` only when its own container is created, and copies those values into
+   every chatbot it deploys, so `/deploy` keeps using stale values. Until this is
+   fixed, after editing `.env` run
+   `docker compose up -d --force-recreate deployment-bot`, then `docker rm -f
+   house-chatbot` so the startup deploy creates a fresh one. Also: Docker reads
+   `.env` literally, so a `# comment` after a value becomes part of the value
+   (this broke `LLM_API_KEY`). Keep comments on their own line.
+
+## Open work: chatbot (2026-09-30)
+
+1. **The bot does not answer the user hexagone.** Not solved. Checked so far:
+   - Hexagone writes in channel `1521175807941148763`, which is on the server's
+     allow-list (`allowed_channel_ids` in the `server:<guild>` row of the
+     `bot_config` table).
+   - `access_control.user_policies` is empty, so hexagone is not blocked.
+   - Other users (derp_z, teddio) get answers in the same channel, so the bot,
+     channel, and model work.
+   - Remaining suspect: the addressing check in `message()` in
+     `src/bot/handler.rs`. In a guild channel the bot answers only a direct
+     @-mention of the bot user (slopbot, ID `1514413259522838528`), a reply to
+     the bot, a reply to a message with attachments, or an active follow-up. A
+     role mention, a mention of an older bot app, or plain text "slopbot" is
+     ignored. Not yet confirmed with hexagone.
+   - Next step: ask hexagone to @-mention the bot user itself. If it still
+     fails, do item 2 and read the log.
+
+2. **Dropped messages are not logged.** Every early `return` in `message()`
+   (`src/bot/handler.rs`) drops the message without a log line, which is why
+   item 1 could not be diagnosed from logs. Add a `debug!` (or `info!` for the
+   non-trivial cases) with the reason: bot author, access policy, channel not
+   allowed, not addressed, duplicate.
+
+3. **Unexplained "Unexpected reasoning effort high".** Before commit `2b38ed0`
+   the bot sent `reasoning: {"enabled": true, "max_tokens": 8192}` for users on
+   the old `high` level, and the gateway answered 400 "Unexpected reasoning
+   effort high. Supported types are xhigh (default), medium, and low." That
+   exact field, and even `reasoning_effort: "high"`, did not fail when sent by
+   hand (with and without tools), so the cause was never found. `2b38ed0` sends
+   only `low` / `medium` / `xhigh` as `reasoning_effort`, and retries a
+   reasoning-related 400 once with a `reasoning.max_tokens` limit. Watch the
+   logs for "Model rejected reasoning_effort" to see whether the retry fires.
+
+4. **The gateway may route `slopbot` to another model.** `slopbot` is an alias
+   on the Bifrost gateway (`LLM_BASE_URL`), routed by its "Slopbot Routing" rule
+   to `vllm/swift-1.5-qwen3.8-27b-paro-mxfp6`, which supports only the effort
+   levels `low`, `medium`, `xhigh`. llama.cpp models ignore
+   `reasoning_effort`. The bot's `/props` probe always fails through Bifrost
+   (it is a llama.cpp endpoint), so set `MAX_CONTEXT_TOKENS` in `.env` to the
+   routed model's real context size.
+
+## Open work: CI build time (2026-09-30)
+
+The "Post-merge Docker publish" run takes about 6 minutes: `test` (~2.5 min),
+then `build (main)` (~3 min compile). cargo-chef would not help: the chatbot and
+`sandboxd` binaries are compiled outside Docker in the workflow, and the image
+build is ~18 s.
+
+- **The compile cache never hits.** Every job logged "No cache found". The
+  `main` and `sandboxd` build jobs in `.github/workflows/docker-publish.yml`
+  share the rust-cache key `musl-release`. `sandboxd` saves first with only its
+  own crates, then `main` fails to save ("Unable to reserve cache … another job
+  may be creating this cache"). Fix: key each job separately, for example
+  `musl-release-${{ matrix.name }}`.
+- **Build waits for test.** `build` has `needs: test`. Compile in parallel with
+  `test` and gate only the image push on `test` passing.
+- Expected result: about 2–3 minutes in total.
+
 All seven phases have landed. The per-phase narrative that used to live here is
 in the commit history; what is kept below is the part that is still load-bearing
 for whoever touches this next.
