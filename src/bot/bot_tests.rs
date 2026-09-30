@@ -1,6 +1,7 @@
 //! Unit tests for `bot` (split out to keep the module under 600 lines).
 
 use super::*;
+use crate::bot_formatting::tool_status;
 use serde_json::json;
 use tempfile::TempDir;
 
