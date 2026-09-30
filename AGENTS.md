@@ -85,7 +85,7 @@ src/
     catalog.json     # single source of truth for selectable agent/model combos
   workflows/
     opencode-dispatch.yml  # workflow_dispatch entry point for development jobs
-CLAUDE.md            # instructions for Claude Code when running as the automated agent
+CLAUDE.md            # instructions for Claude Code
 docs/
   automated-development.md # full dispatch flow documentation
 sandbox/             # legacy coding-sandbox image (migrated to crates/sandbox/docker/; kept for reference)
