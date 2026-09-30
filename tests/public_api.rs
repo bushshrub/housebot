@@ -98,7 +98,7 @@ async fn pull_request_merge_is_administrator_only_and_audited() {
 
 #[test]
 fn thinking_mode_is_publicly_parseable() {
-    assert_eq!("max".parse::<ThinkingMode>(), Ok(ThinkingMode::Max));
+    assert_eq!("xhigh".parse::<ThinkingMode>(), Ok(ThinkingMode::XHigh));
     assert!(ThinkingMode::Low.max_completion_tokens() > 0);
 }
 

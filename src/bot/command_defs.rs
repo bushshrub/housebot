@@ -132,7 +132,7 @@ pub(crate) fn effort_command_definition() -> CreateCommand {
         "Thinking effort level (omit to show the current setting)",
     );
     for mode in ThinkingMode::ALL {
-        level = level.add_string_choice(format!("{mode} ({})", mode.budget_label()), mode.as_str());
+        level = level.add_string_choice(format!("{mode} ({})", mode.description()), mode.as_str());
     }
     CreateCommand::new("effort")
         .description("Set how much thinking the model does before replying")

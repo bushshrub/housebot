@@ -58,10 +58,7 @@ fn effort_command_includes_instant_and_optional_user_target() {
         .iter()
         .map(|choice| choice["value"].as_str().unwrap())
         .collect::<Vec<_>>();
-    assert_eq!(
-        choices,
-        ["instant", "low", "medium", "high", "xhigh", "max"]
-    );
+    assert_eq!(choices, ["low", "medium", "xhigh"]);
     let user = options
         .iter()
         .find(|option| option["name"] == "user")
@@ -75,7 +72,7 @@ async fn effort_target_requires_admin_and_saves_target_config() {
     let temp = TempDir::new().unwrap();
     let user_config = UserConfigStore::new(temp.path().join("user_config"));
     let options: Vec<serenity::all::CommandDataOption> = serde_json::from_value(json!([
-        {"name": "level", "type": 3, "value": "instant"},
+        {"name": "level", "type": 3, "value": "low"},
         {"name": "user", "type": 6, "value": "99"}
     ]))
     .unwrap();
@@ -89,10 +86,7 @@ async fn effort_target_requires_admin_and_saves_target_config() {
 
     let saved = handle_effort_interaction(&user_config, &options, 42, true).await;
     assert!(saved.contains("user `99`"));
-    assert_eq!(
-        user_config.load(99).await.thinking_mode,
-        ThinkingMode::Instant
-    );
+    assert_eq!(user_config.load(99).await.thinking_mode, ThinkingMode::Low);
     assert_eq!(
         user_config.load(42).await.thinking_mode,
         ThinkingMode::Medium

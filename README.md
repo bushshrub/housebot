@@ -10,7 +10,7 @@ A Discord-based house assistant bot powered by a local LLM (llama.cpp). **Writte
 - **Multi-tier token leaderboards** — durable PostgreSQL daily, weekly, monthly, and all-time rankings that survive restarts, with cache-efficiency metrics and administrator-controlled visibility
 - **Web search** — SearXNG JSON API integration for live information retrieval
 - **Channel context** — an in-memory ring buffer per channel, gated on the requesting user's live Discord permissions
-- **Adjustable thinking effort** — `/effort low|medium|high|xhigh|max` sets the model's reasoning budget (2k/4k/8k/16k/unlimited thinking tokens)
+- **Adjustable thinking effort** — `/effort low|medium|xhigh` sets the model's reasoning effort; a model that rejects it gets a matching thinking-token limit instead (2k/4k/16k)
 - **Built-in tools** — reminders, web fetch, and GitHub feature-request filing
 - **Attachments and cancellation** — images and PDFs are read inline; an ❌ reaction stops an in-flight response
 - **Automated feature development** — owner-approved jobs can dispatch OpenCode to open reviewable pull requests

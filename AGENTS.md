@@ -146,7 +146,7 @@ Discord message
             ├─ build system prompt
             └─ agentic loop
                  ├─ ChatClient::chat_stream (streams partial text to the progress msg,
-                 │   reasoning budget from the user's /effort setting)
+                 │   reasoning effort from the user's /effort setting)
                  ├─ if tool_calls → dispatch_tool()
                  │    ├─ web_search → SearXNG / fetch_webpage → guarded HTTP fetch
                  │    ├─ update_memory → memory.save()
@@ -165,10 +165,11 @@ optional `TextSink`) and `chat_once` (non-streaming). `OpenAiClient` is the real
 `testing::MockChatClient` scripts completions for unit tests, so the whole agent loop is testable
 without a live model.
 
-`llm::ThinkingMode` (low / medium / high / xhigh / max → 2k / 4k / 8k / 16k / unlimited thinking
-tokens) is stored per user in `UserConfig`, changed with the `/effort` slash command, and sent to
-the backend as an OpenRouter-style `reasoning` request field alongside a matching `max_tokens`
-ceiling.
+`llm::ThinkingMode` (low / medium / xhigh, the levels the deployed model accepts) is stored per
+user in `UserConfig`, changed with the `/effort` slash command, and sent to the backend as
+`reasoning_effort` alongside a matching `max_tokens` ceiling. The gateway can route to another
+model; if it rejects the effort with a 400, the request is retried once with an OpenRouter-style
+`reasoning.max_tokens` limit for the same level (2k / 4k / 16k thinking tokens).
 
 ### Tool dispatch
 

@@ -8,100 +8,67 @@ use futures_util::StreamExt;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-/// How much reasoning ("thinking") budget the model gets before answering.
+/// How much reasoning ("thinking") effort the model spends before answering.
 ///
-/// Selected per user with the `/effort` slash command and forwarded to the
-/// OpenAI-compatible backend as a `reasoning` request field.
+/// Selected per user with the `/effort` slash command and sent to the
+/// OpenAI-compatible backend as `reasoning_effort`. The levels are the ones the
+/// deployed model accepts; the older levels are still read from stored configs
+/// and mapped onto the nearest one.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum ThinkingMode {
-    Instant,
+    #[serde(alias = "instant")]
     Low,
     #[default]
     Medium,
-    High,
+    #[serde(alias = "high", alias = "max")]
     XHigh,
-    Max,
 }
 
 impl ThinkingMode {
-    pub const ALL: [ThinkingMode; 6] = [
-        ThinkingMode::Instant,
-        ThinkingMode::Low,
-        ThinkingMode::Medium,
-        ThinkingMode::High,
-        ThinkingMode::XHigh,
-        ThinkingMode::Max,
-    ];
+    pub const ALL: [ThinkingMode; 3] =
+        [ThinkingMode::Low, ThinkingMode::Medium, ThinkingMode::XHigh];
 
-    /// Reserved for the visible answer, on top of any thinking budget.
+    /// Reserved for the visible answer, on top of the thinking allowance.
     const RESPONSE_TOKENS: u32 = 4096;
 
-    /// Thinking allowance for [`ThinkingMode::Max`], which has no budget of its
-    /// own — the request ceiling is all that bounds it.
-    const UNLIMITED_THINKING_TOKENS: u32 = 28_672;
-
-    /// Thinking-token budget; `None` means unlimited.
-    pub fn budget_tokens(self) -> Option<u32> {
+    /// Tokens the model may spend thinking before the request ceiling cuts it off.
+    fn thinking_tokens(self) -> u32 {
         match self {
-            ThinkingMode::Instant => Some(0),
-            ThinkingMode::Low => Some(2_048),
-            ThinkingMode::Medium => Some(4_096),
-            ThinkingMode::High => Some(8_192),
-            ThinkingMode::XHigh => Some(16_384),
-            ThinkingMode::Max => None,
+            ThinkingMode::Low => 2_048,
+            ThinkingMode::Medium => 4_096,
+            ThinkingMode::XHigh => 16_384,
         }
     }
 
-    /// Human-readable budget for command replies.
-    pub fn budget_label(self) -> &'static str {
+    /// Human-readable description for command replies.
+    pub fn description(self) -> &'static str {
         match self {
-            ThinkingMode::Instant => "no thinking",
-            ThinkingMode::Low => "2k thinking tokens",
-            ThinkingMode::Medium => "4k thinking tokens",
-            ThinkingMode::High => "8k thinking tokens",
-            ThinkingMode::XHigh => "16k thinking tokens",
-            ThinkingMode::Max => "unlimited thinking tokens",
+            ThinkingMode::Low => "quick answers, little thinking",
+            ThinkingMode::Medium => "balanced",
+            ThinkingMode::XHigh => "thinks longest",
         }
     }
 
-    /// `max_tokens` for a completion request: thinking budget plus room for the answer.
+    /// `max_tokens` for a completion request: thinking allowance plus room for the answer.
     pub fn max_completion_tokens(self) -> u32 {
         self.max_completion_tokens_capped(Self::RESPONSE_TOKENS)
     }
 
     /// `max_tokens` for a request whose visible answer is capped at
     /// `response_cap` tokens (a per-user output limit). The cap applies on top
-    /// of the thinking budget rather than to the request total: taking it out
-    /// of the budget would let reasoning consume the whole allowance and leave
-    /// the model no tokens to answer with.
+    /// of the thinking allowance rather than to the request total: taking it
+    /// out of the allowance would let reasoning consume the whole budget and
+    /// leave the model no tokens to answer with.
     pub fn max_completion_tokens_capped(self, response_cap: u32) -> u32 {
-        let response = response_cap.min(Self::RESPONSE_TOKENS);
-        self.budget_tokens()
-            .unwrap_or(Self::UNLIMITED_THINKING_TOKENS)
-            + response
-    }
-
-    /// The `reasoning` request field sent to the backend (OpenRouter-style;
-    /// servers that don't support it ignore unknown fields).
-    pub fn reasoning_field(self) -> Value {
-        if self == ThinkingMode::Instant {
-            return serde_json::json!({"enabled": false});
-        }
-        match self.budget_tokens() {
-            Some(budget) => serde_json::json!({"enabled": true, "max_tokens": budget}),
-            None => serde_json::json!({"enabled": true}),
-        }
+        self.thinking_tokens() + response_cap.min(Self::RESPONSE_TOKENS)
     }
 
     pub fn as_str(self) -> &'static str {
         match self {
-            ThinkingMode::Instant => "instant",
             ThinkingMode::Low => "low",
             ThinkingMode::Medium => "medium",
-            ThinkingMode::High => "high",
             ThinkingMode::XHigh => "xhigh",
-            ThinkingMode::Max => "max",
         }
     }
 }
@@ -169,7 +136,7 @@ pub trait ChatClient: Send + Sync {
     async fn context_window_tokens(&self) -> anyhow::Result<Option<u64>>;
 
     /// Stream a completion, forwarding each cumulative text snapshot to `sink`.
-    /// `thinking` sets the reasoning budget and the overall token ceiling;
+    /// `thinking` sets the reasoning effort and the overall token ceiling;
     /// `max_completion_tokens` caps the visible answer when set (per-user
     /// output caps), leaving that budget intact. `tool_choice` overrides the
     /// default `"auto"` tool selection; pass `Some(json!("required"))` to force a tool call or
@@ -221,6 +188,59 @@ impl OpenAiClient {
         let root = self.base_url.strip_suffix("/v1").unwrap_or(&self.base_url);
         format!("{root}/props")
     }
+
+    async fn post(&self, body: &Value) -> reqwest::Result<reqwest::Response> {
+        self.http
+            .post(self.endpoint())
+            .bearer_auth(&self.api_key)
+            .json(body)
+            .send()
+            .await
+    }
+
+    /// POST a completion request. The gateway can route to a model that
+    /// rejects `reasoning_effort` or the chosen level; that request is retried
+    /// once with a thinking-token limit instead, rather than failing the
+    /// user's turn. Models that ignore unknown fields never reach the retry.
+    async fn post_with_effort_fallback(
+        &self,
+        body: Value,
+        thinking: ThinkingMode,
+    ) -> anyhow::Result<reqwest::Response> {
+        let resp = self.post(&body).await?;
+        if resp.status() != reqwest::StatusCode::BAD_REQUEST {
+            return Ok(resp.error_for_status()?);
+        }
+        let error = resp.text().await.unwrap_or_default();
+        if !rejects_reasoning_effort(&error) {
+            anyhow::bail!("HTTP 400 Bad Request: {error}");
+        }
+        tracing::warn!(
+            target: "housebot::llm",
+            %error,
+            "Model rejected reasoning_effort; retrying with a thinking-token limit"
+        );
+        let body = thinking_budget_body(body, thinking);
+        Ok(self.post(&body).await?.error_for_status()?)
+    }
+}
+
+/// `body` with `reasoning_effort` swapped for an OpenRouter-style
+/// `reasoning.max_tokens` limit matching the same effort level.
+fn thinking_budget_body(mut body: Value, thinking: ThinkingMode) -> Value {
+    if let Some(fields) = body.as_object_mut() {
+        fields.remove("reasoning_effort");
+        fields.insert(
+            "reasoning".into(),
+            serde_json::json!({"enabled": true, "max_tokens": thinking.thinking_tokens()}),
+        );
+    }
+    body
+}
+
+/// Whether a 400 response body is about the reasoning effort field.
+fn rejects_reasoning_effort(error: &str) -> bool {
+    error.to_ascii_lowercase().contains("reasoning")
 }
 
 #[derive(Deserialize)]
@@ -408,7 +428,7 @@ impl ChatClient for OpenAiClient {
             "model": model,
             "messages": messages,
             "max_tokens": max_tokens,
-            "reasoning": thinking.reasoning_field(),
+            "reasoning_effort": thinking.as_str(),
             "stream": true,
             "stream_options": {"include_usage": true},
         });
@@ -426,14 +446,7 @@ impl ChatClient for OpenAiClient {
         );
         let started = std::time::Instant::now();
 
-        let resp = self
-            .http
-            .post(self.endpoint())
-            .bearer_auth(&self.api_key)
-            .json(&body)
-            .send()
-            .await?
-            .error_for_status()?;
+        let resp = self.post_with_effort_fallback(body, thinking).await?;
 
         let mut acc = Accumulator::default();
         let mut buf = String::new();
@@ -562,31 +575,19 @@ mod tests {
     }
 
     #[test]
-    fn thinking_mode_budgets_match_spec() {
-        assert_eq!(ThinkingMode::Instant.budget_tokens(), Some(0));
-        assert_eq!(ThinkingMode::Low.budget_tokens(), Some(2_048));
-        assert_eq!(ThinkingMode::Medium.budget_tokens(), Some(4_096));
-        assert_eq!(ThinkingMode::High.budget_tokens(), Some(8_192));
-        assert_eq!(ThinkingMode::XHigh.budget_tokens(), Some(16_384));
-        assert_eq!(ThinkingMode::Max.budget_tokens(), None);
-    }
-
-    #[test]
-    fn output_cap_limits_the_answer_without_eating_the_thinking_budget() {
-        // A 512-token user cap must still leave the reasoning budget intact,
+    fn output_cap_limits_the_answer_without_eating_the_thinking_allowance() {
+        // A 512-token user cap must still leave the thinking allowance intact,
         // otherwise thinking consumes the request and the answer comes back
         // empty.
         assert_eq!(
             ThinkingMode::Medium.max_completion_tokens_capped(512),
             4_096 + 512
         );
-        assert_eq!(ThinkingMode::Max.max_completion_tokens_capped(512), 29_184);
         // Caps above the reserved answer room leave the ceiling unchanged.
         assert_eq!(
-            ThinkingMode::High.max_completion_tokens_capped(100_000),
-            ThinkingMode::High.max_completion_tokens()
+            ThinkingMode::XHigh.max_completion_tokens_capped(100_000),
+            ThinkingMode::XHigh.max_completion_tokens()
         );
-        assert_eq!(ThinkingMode::Instant.max_completion_tokens_capped(256), 256);
     }
 
     #[test]
@@ -595,41 +596,43 @@ mod tests {
             assert_eq!(mode.as_str().parse::<ThinkingMode>(), Ok(mode));
         }
         assert_eq!("XHIGH".parse::<ThinkingMode>(), Ok(ThinkingMode::XHigh));
-        assert!("turbo".parse::<ThinkingMode>().is_err());
+        assert!("high".parse::<ThinkingMode>().is_err());
     }
 
     #[test]
-    fn thinking_mode_serde_roundtrip() {
+    fn stored_retired_levels_map_to_the_nearest_supported_one() {
+        for (stored, mode) in [
+            ("instant", ThinkingMode::Low),
+            ("high", ThinkingMode::XHigh),
+            ("max", ThinkingMode::XHigh),
+        ] {
+            assert_eq!(
+                serde_json::from_str::<ThinkingMode>(&format!("\"{stored}\"")).unwrap(),
+                mode
+            );
+        }
         assert_eq!(
             serde_json::to_string(&ThinkingMode::XHigh).unwrap(),
             "\"xhigh\""
         );
-        assert_eq!(
-            serde_json::from_str::<ThinkingMode>("\"max\"").unwrap(),
-            ThinkingMode::Max
-        );
     }
 
     #[test]
-    fn thinking_mode_max_tokens_leave_room_for_answer() {
-        assert_eq!(ThinkingMode::Instant.max_completion_tokens(), 4_096);
-        assert_eq!(ThinkingMode::Low.max_completion_tokens(), 2_048 + 4_096);
-        assert_eq!(ThinkingMode::Max.max_completion_tokens(), 32_768);
-    }
+    fn a_rejected_effort_is_retried_as_a_thinking_token_limit() {
+        assert!(rejects_reasoning_effort(
+            r#"{"error":{"message":"Unexpected reasoning effort high. Supported types are xhigh (default), medium, and low."}}"#
+        ));
+        assert!(!rejects_reasoning_effort(
+            r#"{"error":{"message":"model not found"}}"#
+        ));
 
-    #[test]
-    fn reasoning_field_caps_bounded_modes_only() {
+        let body = serde_json::json!({"model": "m", "reasoning_effort": "low"});
         assert_eq!(
-            ThinkingMode::Instant.reasoning_field(),
-            serde_json::json!({"enabled": false})
-        );
-        assert_eq!(
-            ThinkingMode::Medium.reasoning_field(),
-            serde_json::json!({"enabled": true, "max_tokens": 4096})
-        );
-        assert_eq!(
-            ThinkingMode::Max.reasoning_field(),
-            serde_json::json!({"enabled": true})
+            thinking_budget_body(body, ThinkingMode::Low),
+            serde_json::json!({
+                "model": "m",
+                "reasoning": {"enabled": true, "max_tokens": 2048}
+            })
         );
     }
 

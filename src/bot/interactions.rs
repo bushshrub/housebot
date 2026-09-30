@@ -41,13 +41,13 @@ pub(crate) async fn handle_effort_interaction(
                 } else {
                     ""
                 };
-                format!("• **{mode}** — {}{marker}", mode.budget_label())
+                format!("• **{mode}** — {}{marker}", mode.description())
             })
             .collect();
         return format!(
             "**{whose} thinking effort:** currently **{}** ({}).\n{}\nUse `/effort level:<mode>` to change it.",
             cfg.thinking_mode,
-            cfg.thinking_mode.budget_label(),
+            cfg.thinking_mode.description(),
             lines.join("\n")
         );
     };
@@ -65,12 +65,12 @@ pub(crate) async fn handle_effort_interaction(
     if target_id == author_id {
         format!(
             "✅ Thinking effort set to **{mode}** ({}).",
-            mode.budget_label()
+            mode.description()
         )
     } else {
         format!(
             "✅ Thinking effort for user `{target_id}` set to **{mode}** ({}).",
-            mode.budget_label()
+            mode.description()
         )
     }
 }
@@ -84,7 +84,7 @@ pub(crate) async fn handle_status_interaction(
     let effort = format!(
         "**{}** — {}",
         cfg.thinking_mode,
-        cfg.thinking_mode.budget_label()
+        cfg.thinking_mode.description()
     );
     let followup = if cfg.followup_enabled {
         format!("enabled (timeout: {}s)", cfg.followup_timeout_secs)
