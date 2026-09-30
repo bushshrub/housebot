@@ -288,6 +288,7 @@ impl Agent {
             )
             })?;
         let access_control = AccessControlStore::postgres(Arc::clone(&bot_config_client));
+        let firecrawl = tools::firecrawl::Firecrawl::new(Arc::clone(&bot_config_client));
         let scheduler_limits = SchedulerLimitsStore::postgres(bot_config_client);
         let limits = scheduler_limits.load().await.unwrap_or(SchedulerLimits {
             max_inflight: config::env_parse(
@@ -319,7 +320,7 @@ impl Agent {
             owner_dispatch_limiter: tools::feature_development::owner_dispatch_limiter(),
             pending_jobs: Arc::new(PendingJobStore::default()),
             searxng: Arc::new(SearxNg::from_env()),
-            web_fetch: WebFetch::default(),
+            web_fetch: WebFetch::new(Some(firecrawl)),
             session_stats: tokio::sync::Mutex::new(HashMap::new()),
             token_monitor,
             active_conversations: tokio::sync::Mutex::new(HashMap::new()),

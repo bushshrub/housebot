@@ -352,52 +352,8 @@ impl EventHandler for DeploymentBot {
                 }
                 None => None,
             };
-            let response = match match sha {
-                Some(sha) => self.commits(sha).await,
-                None => self
-                    .latest_branch_commit()
-                    .await
-                    .map(|latest| (latest, Vec::new())),
-            } {
-                Ok((selected, recent)) => {
-                    let description = match self.current_running_sha().await {
-                        Ok(current_sha) => {
-                            match self.changelog(&current_sha, &selected.sha).await {
-                                Ok(changelog) => format!(
-                                    "{}\n\n{}",
-                                    commit_summary(&selected, &recent),
-                                    changelog
-                                ),
-                                Err(error) => format!(
-                                    "{}\n\nChangelog unavailable: {error}",
-                                    commit_summary(&selected, &recent)
-                                ),
-                            }
-                        }
-                        Err(error) => format!(
-                            "{}\n\nChangelog unavailable: {error}",
-                            commit_summary(&selected, &recent)
-                        ),
-                    };
-                    CreateInteractionResponseMessage::new()
-                        .embed(
-                            CreateEmbed::new()
-                                .title("Confirm deployment")
-                                .description(description),
-                        )
-                        .components(vec![CreateActionRow::Buttons(vec![
-                            CreateButton::new(format!(
-                                "deploy_confirm:{}",
-                                sha.unwrap_or("latest")
-                            ))
-                            .label("Confirm")
-                            .style(ButtonStyle::Success),
-                            CreateButton::new("deploy_deny")
-                                .label("Deny")
-                                .style(ButtonStyle::Danger),
-                        ])])
-                        .ephemeral(true)
-                }
+            let response = match self.deploy_card(sha).await {
+                Ok(response) => response,
                 Err(error) => CreateInteractionResponseMessage::new()
                     .content(format!("Could not find that commit: {error}"))
                     .ephemeral(true),
@@ -455,6 +411,74 @@ impl EventHandler for DeploymentBot {
         if let Err(error) = command.create_response(&ctx.http, response).await {
             tracing::warn!("Failed to respond to /rollback: {error}");
         }
+    }
+}
+
+impl DeploymentBot {
+    /// The `/deploy` reply: a confirm card for a commit whose images are all
+    /// published, or, for an explicit commit without them, a notice naming the
+    /// newest commit that has them. Without a SHA the card falls back to that
+    /// commit directly, since deploying the tip would fail at the pull.
+    async fn deploy_card(
+        &self,
+        sha: Option<&str>,
+    ) -> anyhow::Result<CreateInteractionResponseMessage> {
+        let (mut selected, recent) = match sha {
+            Some(sha) => self.commits(sha).await?,
+            None => (self.latest_branch_commit().await?, Vec::new()),
+        };
+        let mut note = None;
+        if !images_published(&selected.sha).await {
+            match (sha, self.newest_published_commit().await?) {
+                (None, Some(newest)) => {
+                    note = Some(unpublished_note(&selected, &newest));
+                    selected = newest;
+                }
+                (Some(_), Some(newest)) => {
+                    return Ok(CreateInteractionResponseMessage::new()
+                        .content(unpublished_note(&selected, &newest))
+                        .ephemeral(true));
+                }
+                (_, None) => {
+                    return Ok(CreateInteractionResponseMessage::new()
+                        .content(format!(
+                            "⏳ `{}` has no published images yet: its build is still running or failed. \
+                             None of the last {PUBLISHED_COMMIT_SEARCH_DEPTH} commits on `{}` has images either.",
+                            short_sha(&selected.sha),
+                            self.github_branch
+                        ))
+                        .ephemeral(true));
+                }
+            }
+        }
+        let changelog = match self.current_running_sha().await {
+            Ok(current_sha) => self
+                .changelog(&current_sha, &selected.sha)
+                .await
+                .unwrap_or_else(|error| format!("Changelog unavailable: {error}")),
+            Err(error) if docker_object_missing(&error) => FIRST_DEPLOYMENT_CHANGELOG.to_string(),
+            Err(error) => format!("Changelog unavailable: {error}"),
+        };
+        let mut description = commit_summary(&selected, &recent);
+        if let Some(note) = note {
+            description = format!("{note}\n\n{description}");
+        }
+        description.push_str(&format!("\n\n{changelog}"));
+        Ok(CreateInteractionResponseMessage::new()
+            .embed(
+                CreateEmbed::new()
+                    .title("Confirm deployment")
+                    .description(description),
+            )
+            .components(vec![CreateActionRow::Buttons(vec![
+                CreateButton::new(format!("deploy_confirm:{}", selected.sha))
+                    .label("Confirm")
+                    .style(ButtonStyle::Success),
+                CreateButton::new("deploy_deny")
+                    .label("Deny")
+                    .style(ButtonStyle::Danger),
+            ])])
+            .ephemeral(true))
     }
 }
 

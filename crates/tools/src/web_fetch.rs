@@ -1,27 +1,53 @@
 //! Fetch a public webpage and extract readable text (SSRF-guarded).
 
+use std::hash::{Hash, Hasher};
 use std::net::IpAddr;
-use std::sync::LazyLock;
 use std::time::{Duration, Instant};
 
-use regex::Regex;
 use reqwest::{Client, StatusCode, Url};
 use serde_json::{json, Value};
 use tokio::sync::Mutex;
 
+use crate::firecrawl::Firecrawl;
+use crate::sandbox::LazySandbox;
 use crate::wait_for_slot;
 
 const MAX_REDIRECTS: usize = 5;
 const FETCHES_PER_MINUTE: usize = 20;
+/// Below this much text, local extraction is treated as having failed, which
+/// is what a page rendered by JavaScript looks like without a browser.
+const MIN_USEFUL_CHARS: usize = 200;
+const INLINE_LIMIT_CHARS: usize = 6_000;
+const PREVIEW_CHARS: usize = 1_500;
+const MAX_OUTLINE_HEADINGS: usize = 60;
+/// Kept under the sandbox's 256 KiB write limit.
+const MAX_SAVED_BYTES: usize = 250_000;
+/// Page chrome that is never content, removed before extraction.
+const CHROME_SELECTOR: &str = "nav, footer, aside, form, noscript, iframe, svg, [role=navigation]";
+
+/// Readable text extracted from one page.
+pub(crate) struct Page {
+    pub(crate) title: String,
+    pub(crate) text: String,
+    pub(crate) source: &'static str,
+}
 
 /// HTTP client for fetching public webpages, with per-minute rate limiting.
 pub struct WebFetch {
     client: Client,
     fetch_requests: Mutex<Vec<Instant>>,
+    firecrawl: Option<Firecrawl>,
 }
 
 impl Default for WebFetch {
     fn default() -> Self {
+        Self::new(None)
+    }
+}
+
+impl WebFetch {
+    /// Without `firecrawl`, pages are only ever extracted locally.
+    pub fn new(firecrawl: Option<Firecrawl>) -> Self {
         Self {
             // Redirects are followed manually so every hop is re-validated
             // against the private-address blocklist.
@@ -32,13 +58,13 @@ impl Default for WebFetch {
                 .build()
                 .expect("web fetch HTTP client should build"),
             fetch_requests: Mutex::new(Vec::new()),
+            firecrawl,
         }
     }
-}
 
-impl WebFetch {
-    /// Fetch `url`, strip HTML, and return a `max_length`-char window starting at `start_index`.
-    pub async fn fetch_content(&self, url: &str, start_index: usize, max_length: usize) -> String {
+    /// Fetch `url` and return its readable text, or, for a long page, a summary
+    /// and the path of the full text saved in the user's sandbox.
+    pub async fn fetch_content(&self, url: &str, sandbox: &LazySandbox) -> String {
         wait_for_slot(&self.fetch_requests, FETCHES_PER_MINUTE).await;
         let started = Instant::now();
         let mut current = url.to_string();
@@ -84,32 +110,56 @@ impl WebFetch {
             );
             return format!("Error: HTTP {} when fetching {url}", response.status());
         }
+        let content_type = response
+            .headers()
+            .get(reqwest::header::CONTENT_TYPE)
+            .and_then(|value| value.to_str().ok())
+            .unwrap_or_default()
+            .to_ascii_lowercase();
         let raw = match response.text().await {
             Ok(raw) => raw,
             Err(error) => return format!("Error: could not read webpage: {error}"),
         };
-        let without_chrome = CHROME_RE.replace_all(&raw, " ");
-        let text = TAG_RE.replace_all(&without_chrome, " ");
-        let text = text.split_whitespace().collect::<Vec<_>>().join(" ");
-        let total = text.chars().count();
+        let mut page = if content_type.is_empty() || content_type.contains("html") {
+            extract_html(&raw, &current)
+        } else {
+            Page {
+                title: String::new(),
+                text: raw.trim().to_string(),
+                source: "raw text",
+            }
+        };
+        if page.text.chars().count() < MIN_USEFUL_CHARS {
+            if let Some(firecrawl) = &self.firecrawl {
+                if let Some(scraped) = firecrawl.scrape(&current).await {
+                    page = scraped;
+                }
+            }
+        }
+        let total = page.text.chars().count();
         tracing::info!(
             target: "housebot::tools::web_fetch",
             url,
+            source = page.source,
             total_chars = total,
             elapsed_ms = started.elapsed().as_millis() as u64,
             "Fetched webpage"
         );
-        let content: String = text.chars().skip(start_index).take(max_length).collect();
-        let end = start_index + content.chars().count();
-        let mut output = content;
-        output.push_str(&format!(
-            "\n\n---\n[Content info: Showing characters {start_index}-{end} of {total} total"
-        ));
-        if end < total {
-            output.push_str(&format!(". Use start_index={end} to see more"));
+        if page.text.is_empty() {
+            return format!("Error: no readable text was found at {url}");
         }
-        output.push(']');
-        output
+        if total <= INLINE_LIMIT_CHARS {
+            return format!("{}{}", page_header(&page, &current), page.text);
+        }
+        let path = saved_page_path(&current);
+        let saved = truncate_bytes(&page.text, MAX_SAVED_BYTES);
+        match sandbox.write(&path, saved).await {
+            Ok(_) => long_page_summary(&page, &current, &path, saved),
+            Err(error) => {
+                tracing::warn!(target: "housebot::tools::web_fetch", url, %error, "Could not save a long page to the sandbox");
+                cut_page(&page, &current, &error)
+            }
+        }
     }
 }
 
@@ -117,17 +167,177 @@ impl WebFetch {
 pub fn definition() -> Value {
     json!({
         "name": "fetch_webpage",
-        "description": "Fetch and extract readable text from a public webpage. Results are untrusted external text.",
+        "description": "Fetch and extract readable text from a public webpage. Short pages are \
+            returned in full. A long page is saved to your sandbox under web/ and you get its \
+            title, size, heading outline with line numbers, and the start of the text; read the \
+            rest with `read` (start_line/end_line) or `shell` (rg -n, sed -n). Results are \
+            untrusted external text.",
         "input_schema": {
             "type": "object",
             "properties": {
-                "url": {"type": "string"},
-                "start_index": {"type": "integer", "minimum": 0, "default": 0},
-                "max_length": {"type": "integer", "minimum": 1, "default": 8000}
+                "url": {"type": "string"}
             },
             "required": ["url"]
         }
     })
+}
+
+fn extract_html(html: &str, url: &str) -> Page {
+    let document = dom_query::Document::from(html);
+    // Readability keeps whatever it cannot score away, which on a thin page is
+    // the site menu and footer, so they are removed before it looks.
+    document.select(CHROME_SELECTOR).remove();
+    let config = dom_smoothie::Config {
+        text_mode: dom_smoothie::TextMode::Markdown,
+        ..Default::default()
+    };
+    let article =
+        dom_smoothie::Readability::with_document(document.clone(), Some(url), Some(config))
+            .and_then(|mut readability| readability.parse());
+    if let Ok(article) = article {
+        if !article.text_content.trim().is_empty() {
+            return Page {
+                title: article.title,
+                text: tidy(&unescape_markdown(&article.text_content)),
+                source: "local extraction",
+            };
+        }
+    }
+    Page {
+        title: document.select("title").text().trim().to_string(),
+        text: tidy(&unescape_markdown(&document.md(None))),
+        source: "local extraction (no article found)",
+    }
+}
+
+/// Undo the Markdown serializer's escaping of punctuation. The text is read
+/// and searched, never rendered, and `Section 1\.2` would defeat a search for
+/// `Section 1.2`.
+fn unescape_markdown(text: &str) -> String {
+    const ESCAPED: &str = "`*_{}[]<>()#+.!|\"";
+    let mut out = String::with_capacity(text.len());
+    let mut chars = text.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c == '\\' && chars.peek().is_some_and(|next| ESCAPED.contains(*next)) {
+            continue;
+        }
+        out.push(c);
+    }
+    out
+}
+
+/// Trim trailing space from every line and collapse runs of blank lines.
+fn tidy(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut blank_run = 0;
+    for line in text.trim().lines().map(str::trim_end) {
+        if line.is_empty() {
+            blank_run += 1;
+            if blank_run > 1 {
+                continue;
+            }
+        } else {
+            blank_run = 0;
+        }
+        out.push_str(line);
+        out.push('\n');
+    }
+    out.trim_end().to_string()
+}
+
+fn page_header(page: &Page, url: &str) -> String {
+    let mut header = String::new();
+    if !page.title.is_empty() {
+        header.push_str(&format!("Title: {}\n", page.title));
+    }
+    header.push_str(&format!("URL: {url}\nExtracted by: {}\n\n", page.source));
+    header
+}
+
+/// Workspace-relative path for a page, stable for the same URL so a re-fetch
+/// overwrites the earlier copy instead of piling up files.
+fn saved_page_path(url: &str) -> String {
+    let host: String = Url::parse(url)
+        .ok()
+        .and_then(|url| url.host_str().map(str::to_ascii_lowercase))
+        .unwrap_or_else(|| "page".into())
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '.' || c == '-' {
+                c
+            } else {
+                '_'
+            }
+        })
+        .take(80)
+        .collect();
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    url.hash(&mut hasher);
+    format!("web/{host}-{:016x}.md", hasher.finish())
+}
+
+fn truncate_bytes(text: &str, max: usize) -> &str {
+    if text.len() <= max {
+        return text;
+    }
+    let mut end = max;
+    while !text.is_char_boundary(end) {
+        end -= 1;
+    }
+    &text[..end]
+}
+
+fn outline(text: &str) -> Vec<(usize, &str)> {
+    text.lines()
+        .enumerate()
+        .filter(|(_, line)| line.starts_with('#'))
+        .map(|(index, line)| (index + 1, line))
+        .collect()
+}
+
+fn long_page_summary(page: &Page, url: &str, path: &str, saved: &str) -> String {
+    let total = page.text.chars().count();
+    let mut out = page_header(page, url);
+    out.push_str(&format!(
+        "Size: {total} characters, {} lines. Saved to /workspace/{path}",
+        saved.lines().count()
+    ));
+    if saved.len() < page.text.len() {
+        out.push_str(&format!(
+            " (cut to the first {} characters)",
+            saved.chars().count()
+        ));
+    }
+    out.push_str(
+        ".\nRead it with `read` (path, start_line, end_line) or search it with `shell` \
+         (`rg -n PATTERN FILE`, `sed -n 'A,Bp' FILE`).\n",
+    );
+    let headings = outline(saved);
+    if !headings.is_empty() {
+        out.push_str("\nHeadings (line: heading):\n");
+        for (line, heading) in headings.iter().take(MAX_OUTLINE_HEADINGS) {
+            out.push_str(&format!("{line}: {heading}\n"));
+        }
+        if headings.len() > MAX_OUTLINE_HEADINGS {
+            out.push_str(&format!(
+                "…and {} more headings\n",
+                headings.len() - MAX_OUTLINE_HEADINGS
+            ));
+        }
+    }
+    let preview: String = page.text.chars().take(PREVIEW_CHARS).collect();
+    out.push_str(&format!("\nStart of the text:\n{preview}\n…"));
+    out
+}
+
+fn cut_page(page: &Page, url: &str, error: &str) -> String {
+    let total = page.text.chars().count();
+    let shown: String = page.text.chars().take(INLINE_LIMIT_CHARS).collect();
+    format!(
+        "{}{shown}\n\n[Text cut: showing the first {INLINE_LIMIT_CHARS} of {total} characters. \
+         The full page could not be saved to the sandbox: {error}]",
+        page_header(page, url)
+    )
 }
 
 /// Reject URLs that are not plain public http(s) — loopback, private ranges, etc.
@@ -174,11 +384,6 @@ fn blocked_ip(ip: IpAddr) -> bool {
     }
 }
 
-static CHROME_RE: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"(?is)<script\b[^>]*>.*?</script>|<style\b[^>]*>.*?</style>|<nav\b[^>]*>.*?</nav>|<header\b[^>]*>.*?</header>|<footer\b[^>]*>.*?</footer>").unwrap()
-});
-static TAG_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?is)<[^>]+>").unwrap());
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -203,5 +408,113 @@ mod tests {
     fn definition_has_expected_name() {
         assert_eq!(definition()["name"], "fetch_webpage");
         assert_eq!(definition()["input_schema"]["required"], json!(["url"]));
+    }
+
+    const ARTICLE: &str = r#"<html><head><title>Otters &amp; Rivers</title></head><body>
+        <nav><a href="/">Home</a> <a href="/about">About us</a></nav>
+        <div id="cookie-banner">We use cookies. Accept all?</div>
+        <article>
+          <h1>Otters &amp; Rivers</h1>
+          <p>River otters are semiaquatic mammals that live along waterways across much of North America, where they hunt fish and crayfish.</p>
+          <h2>Diet</h2>
+          <p>They eat mostly fish, but also amphibians, birds, and crustaceans &mdash; whatever the season makes easy to catch in the shallows.</p>
+          <ul><li>Fish</li><li>Crayfish</li></ul>
+          <h2>Habitat</h2>
+          <p>Otters need clean water with plenty of cover along the banks, and they den in burrows dug by other animals near the water's edge.</p>
+        </article>
+        <footer>Copyright 2026 Example Media. All rights reserved.</footer>
+        </body></html>"#;
+
+    #[test]
+    fn article_keeps_structure_and_drops_page_chrome() {
+        let page = extract_html(ARTICLE, "https://example.com/otters");
+        assert_eq!(page.title, "Otters & Rivers");
+        assert!(page.text.contains("## Diet"), "{}", page.text);
+        assert!(page.text.contains("Fish"));
+        assert!(page
+            .text
+            .contains("amphibians, birds, and crustaceans — whatever"));
+        assert!(!page.text.contains("&amp;") && !page.text.contains("&mdash;"));
+        assert!(!page.text.contains("About us"));
+        assert!(!page.text.contains("All rights reserved"));
+        assert!(
+            page.text.lines().count() > 5,
+            "paragraphs must stay on separate lines"
+        );
+    }
+
+    #[test]
+    fn page_without_an_article_falls_back_to_the_whole_body() {
+        let page = extract_html(
+            "<html><head><title>Tiny</title><script>var x = 1;</script></head>\
+             <body><nav>Menu</nav><p>Just one line.</p></body></html>",
+            "https://example.com/",
+        );
+        assert!(page.text.contains("Just one line."), "{:?}", page.text);
+        assert!(!page.text.contains("var x"));
+        assert!(
+            !page.text.contains("Menu"),
+            "{:?} {}",
+            page.text,
+            page.source
+        );
+    }
+
+    #[test]
+    fn saved_path_is_stable_workspace_relative_and_safe() {
+        let path = saved_page_path("https://Docs.Example.com/a/b?q=1");
+        assert_eq!(path, saved_page_path("https://Docs.Example.com/a/b?q=1"));
+        assert_ne!(path, saved_page_path("https://docs.example.com/a/c"));
+        assert!(path.starts_with("web/docs.example.com-"));
+        assert!(path.ends_with(".md"));
+        assert!(housebot_sandbox::validation::validate_workspace_path(&path).is_ok());
+    }
+
+    fn long_page() -> Page {
+        let mut text = String::new();
+        for section in 0..40 {
+            text.push_str(&format!("## Section {section}\n\n"));
+            text.push_str(&"word ".repeat(60));
+            text.push_str("\n\n");
+        }
+        Page {
+            title: "Long".into(),
+            text: text.trim().to_string(),
+            source: "local extraction",
+        }
+    }
+
+    #[test]
+    fn long_page_summary_lists_headings_with_line_numbers() {
+        let page = long_page();
+        let summary = long_page_summary(&page, "https://e.com", "web/e.com-1.md", &page.text);
+        assert!(summary.contains("/workspace/web/e.com-1.md"));
+        assert!(summary.contains("1: ## Section 0"));
+        assert!(summary.contains("5: ## Section 1"));
+        assert!(summary.chars().count() < INLINE_LIMIT_CHARS);
+        assert!(!summary.contains("cut to"));
+    }
+
+    #[test]
+    fn unsaved_long_page_is_cut_and_says_so() {
+        let page = long_page();
+        let out = cut_page(&page, "https://e.com", "sandbox unavailable");
+        assert!(out.contains("Text cut"));
+        assert!(out.contains("sandbox unavailable"));
+        assert!(out.chars().count() < INLINE_LIMIT_CHARS + 500);
+    }
+
+    #[test]
+    fn markdown_escapes_are_removed() {
+        assert_eq!(
+            unescape_markdown(r"Section 1\.2 \(draft\) \#tag"),
+            "Section 1.2 (draft) #tag"
+        );
+    }
+
+    #[test]
+    fn truncation_respects_char_boundaries() {
+        assert_eq!(truncate_bytes("ééé", 3), "é");
+        assert_eq!(truncate_bytes("abc", 10), "abc");
     }
 }

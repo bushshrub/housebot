@@ -9,6 +9,7 @@ pub mod edit_feature_request;
 pub mod feature_development;
 pub mod feature_request;
 pub mod features;
+pub mod firecrawl;
 pub mod github_api;
 pub mod manage_skills;
 pub mod remind;

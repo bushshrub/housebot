@@ -84,6 +84,11 @@ impl HouseBot {
             None => text,
         };
         if text.is_empty() && !message_has_attachments(msg) {
+            tracing::info!(
+                target: "housebot::message_flow",
+                message_id = msg.id.get(),
+                "Dropped message: no text or attachments after removing the mention"
+            );
             return;
         }
 
@@ -134,9 +139,17 @@ impl HouseBot {
         };
         if emoji_only_allowed && !message_has_attachments(msg) {
             if let Some(emoji) = self.agent.select_emoji(&text).await {
-                let reaction = serenity::all::ReactionType::Unicode(emoji);
+                let reaction = serenity::all::ReactionType::Unicode(emoji.clone());
                 match msg.react(&ctx.http, reaction).await {
-                    Ok(_) => return,
+                    Ok(_) => {
+                        tracing::info!(
+                            target: "housebot::emoji",
+                            message_id = msg.id.get(),
+                            emoji,
+                            "Answered with an emoji-only reaction"
+                        );
+                        return;
+                    }
                     Err(error) => tracing::warn!(
                         target: "housebot::emoji",
                         message_id = msg.id.get(),
@@ -147,6 +160,11 @@ impl HouseBot {
             }
         }
         if text.is_empty() && !message_has_attachments(msg) {
+            tracing::info!(
+                target: "housebot::message_flow",
+                message_id = msg.id.get(),
+                "Dropped message: no text or attachments"
+            );
             return;
         }
 

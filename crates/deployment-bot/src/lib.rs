@@ -77,6 +77,12 @@ struct DeploymentBot {
 }
 
 const HOUSE_CHATBOT_CONTAINER: &str = "house-chatbot";
+/// How far back `/deploy` and `/update` look for a commit whose images exist.
+const PUBLISHED_COMMIT_SEARCH_DEPTH: usize = 10;
+/// The publish workflow takes several minutes, so a fresh host started right
+/// after a merge keeps trying for about half an hour.
+const STARTUP_DEPLOY_ATTEMPTS: usize = 30;
+const STARTUP_DEPLOY_RETRY_DELAY: std::time::Duration = std::time::Duration::from_secs(60);
 const SANDBOXD_CONTAINER: &str = "housebot-sandboxd";
 /// Compose services this bot took over. Anything else in the project — postgres,
 /// the deployment bot itself — stays compose's to manage.
@@ -100,8 +106,9 @@ fn compose_duplicate_query(service: &str) -> Vec<String> {
 mod docker;
 mod handler;
 use docker::{
-    cleanup_old_images, container_commands_with_env, docker_object_missing, run_deployment_command,
-    run_docker, short_sha, valid_housebot_image, DeploymentRunSummary,
+    cleanup_old_images, container_commands_with_env, docker_object_missing, images_published,
+    release_images, run_deployment_command, run_docker, short_sha, valid_housebot_image,
+    DeploymentRunSummary,
 };
 pub use docker::{
     container_commands, deploy_commands, deploy_progress, valid_sha, DeploymentCommand,
@@ -141,20 +148,23 @@ impl DeploymentBot {
     }
 
     async fn cleanup_old_images(&self, sha: Option<&str>) {
-        let main = sha
-            .map(|sha| format!("ghcr.io/bushshrub/housebot:sha-{sha}"))
-            .unwrap_or_else(|| "ghcr.io/bushshrub/housebot:latest".into());
-        let sandboxd = sha
-            .map(|sha| format!("ghcr.io/bushshrub/housebot/sandboxd:sha-{sha}"))
-            .unwrap_or_else(|| "ghcr.io/bushshrub/housebot/sandboxd:latest".into());
-        let sandbox = sha
-            .map(|sha| format!("ghcr.io/bushshrub/housebot/sandbox:sha-{sha}"))
-            .unwrap_or_else(|| "ghcr.io/bushshrub/housebot/sandbox:latest".into());
-        let previous = self.previous_image.read().await.clone();
-        let mut keep = vec![main.as_str(), sandboxd.as_str(), sandbox.as_str()];
-        if let Some(previous) = previous.as_deref() {
-            keep.push(previous);
+        let mut keep = match sha {
+            Some(sha) => release_images(sha).to_vec(),
+            None => vec![
+                "ghcr.io/bushshrub/housebot:latest".into(),
+                "ghcr.io/bushshrub/housebot/sandboxd:latest".into(),
+                "ghcr.io/bushshrub/housebot/sandbox:latest".into(),
+            ],
+        };
+        // The previous release stays whole so `/rollback` needs no pull: the
+        // rollback plan pulls the sidecar images matching the chatbot's tag.
+        if let Some(previous) = self.previous_image.read().await.clone() {
+            match previous.strip_prefix("ghcr.io/bushshrub/housebot:sha-") {
+                Some(previous_sha) => keep.extend(release_images(previous_sha)),
+                None => keep.push(previous),
+            }
         }
+        let keep: Vec<&str> = keep.iter().map(String::as_str).collect();
         if let Err(error) = cleanup_old_images(&keep).await {
             tracing::warn!(%error, "Could not clean up old housebot images");
         }
@@ -244,16 +254,74 @@ impl DeploymentBot {
             }
         }
         tracing::info!("No running housebot container at startup; deploying the latest commit");
-        match self.update_to_latest().await {
-            Ok(message) => {
-                tracing::info!("Startup deployment completed");
-                Some(message)
+        let mut attempt = 1;
+        loop {
+            match self.update_to_latest().await {
+                Ok(message) => {
+                    tracing::info!(attempt, "Startup deployment completed");
+                    return Some(message);
+                }
+                Err(error) if attempt < STARTUP_DEPLOY_ATTEMPTS => {
+                    tracing::warn!(
+                        %error,
+                        attempt,
+                        attempts = STARTUP_DEPLOY_ATTEMPTS,
+                        "Startup deployment failed; retrying"
+                    );
+                }
+                Err(error) => {
+                    tracing::error!(%error, attempt, "Startup deployment failed");
+                    return Some(format!(
+                        "❌ Startup deployment failed after {attempt} attempts: {error}"
+                    ));
+                }
             }
-            Err(error) => {
-                tracing::error!(%error, "Startup deployment failed");
-                Some(format!("❌ Startup deployment failed: {error}"))
+            attempt += 1;
+            tokio::time::sleep(STARTUP_DEPLOY_RETRY_DELAY).await;
+        }
+    }
+
+    /// The newest of the branch's recent commits whose images are all
+    /// published, checked newest first.
+    async fn newest_published_commit(&self) -> anyhow::Result<Option<GitHubCommit>> {
+        let client = reqwest::Client::new();
+        let url = format!(
+            "https://api.github.com/repos/{}/commits?sha={}&per_page={PUBLISHED_COMMIT_SEARCH_DEPTH}",
+            self.github_repo, self.github_branch
+        );
+        let request = client
+            .get(url)
+            .header("User-Agent", "housebot-deployment-bot")
+            .header("Accept", "application/vnd.github+json");
+        let request = match &self.github_token {
+            Some(token) => request.bearer_auth(token),
+            None => request,
+        };
+        let commits: Vec<GitHubCommit> = request.send().await?.error_for_status()?.json().await?;
+        for commit in commits {
+            if images_published(&commit.sha).await {
+                return Ok(Some(commit));
             }
         }
+        Ok(None)
+    }
+
+    /// The commit `/update` and the startup deploy should run: the branch tip
+    /// when its images are published, otherwise the newest commit that has
+    /// them, with a note saying why the tip was passed over.
+    async fn deployable_branch_commit(&self) -> anyhow::Result<(GitHubCommit, Option<String>)> {
+        let tip = self.latest_branch_commit().await?;
+        if images_published(&tip.sha).await {
+            return Ok((tip, None));
+        }
+        let fallback = self.newest_published_commit().await?.ok_or_else(|| {
+            anyhow::anyhow!(
+                "none of the last {PUBLISHED_COMMIT_SEARCH_DEPTH} commits on `{}` has published images",
+                self.github_branch
+            )
+        })?;
+        let note = unpublished_note(&tip, &fallback);
+        Ok((fallback, Some(note)))
     }
 
     async fn commits(&self, sha: &str) -> anyhow::Result<(GitHubCommit, Vec<GitHubCommit>)> {
@@ -357,10 +425,11 @@ impl DeploymentBot {
             Err(error) if docker_object_missing(&error) => None,
             Err(error) => return Err(error),
         };
-        let latest = self.latest_branch_commit().await?;
+        let (latest, note) = self.deployable_branch_commit().await?;
+        let note = note.map(|note| format!("{note}\n\n")).unwrap_or_default();
         if current_sha.as_deref() == Some(latest.sha.as_str()) {
             return Ok(format!(
-                "✅ Already running the latest `{}` commit on `{}`.",
+                "{note}✅ Already running the latest deployable `{}` commit on `{}`.",
                 short_sha(current_sha.as_deref().expect("current SHA was checked")),
                 self.github_branch
             ));
@@ -368,8 +437,7 @@ impl DeploymentBot {
 
         let changelog = match current_sha.as_deref() {
             Some(current_sha) => self.changelog(current_sha, &latest.sha).await?,
-            None => "**Changelog**\nNo previous housebot container was found; deploying the latest commit."
-                .to_string(),
+            None => FIRST_DEPLOYMENT_CHANGELOG.to_string(),
         };
         self.checkpoint_current_image().await?;
         let commands = deploy_commands(Some(&latest.sha), &self.docker_network)?;
@@ -387,12 +455,13 @@ impl DeploymentBot {
                 "Update deployment stage completed"
             );
         }
+        self.cleanup_old_images(Some(&latest.sha)).await;
         let previous = current_sha
             .as_deref()
             .map(short_sha)
             .unwrap_or("no running container");
         Ok(format!(
-            "✅ Updated housebot from `{}` to latest `{}` on `{}`.\n\n{}",
+            "{note}✅ Updated housebot from `{}` to latest `{}` on `{}`.\n\n{}",
             previous,
             short_sha(&latest.sha),
             self.github_branch,
@@ -434,6 +503,27 @@ pub fn commit_summary(selected: &GitHubCommit, recent: &[GitHubCommit]) -> Strin
     }
     text
 }
+
+/// Why a commit other than the one asked for is being offered.
+pub fn unpublished_note(requested: &GitHubCommit, deployable: &GitHubCommit) -> String {
+    format!(
+        "⏳ [`{}`]({}) has no published images yet: its build is still running or failed. \
+         The newest commit with images is [`{}`]({}) — {}.",
+        short_sha(&requested.sha),
+        requested.html_url,
+        short_sha(&deployable.sha),
+        deployable.html_url,
+        deployable
+            .commit
+            .message
+            .lines()
+            .next()
+            .unwrap_or("No commit message")
+    )
+}
+
+pub const FIRST_DEPLOYMENT_CHANGELOG: &str =
+    "**Changelog**\nFirst deployment: no house-chatbot container is running, so there is nothing to compare against.";
 
 pub fn deployment_changelog(
     current_sha: &str,
@@ -567,10 +657,28 @@ fn parse_dotenv(contents: &str) -> Vec<(String, String)> {
             if name.is_empty() || name.starts_with('#') {
                 return None;
             }
-            let value = value.trim().trim_matches(|c| c == '"' || c == '\'');
-            Some((name.to_string(), value.to_string()))
+            Some((name.to_string(), dotenv_value(value).to_string()))
         })
         .collect()
+}
+
+/// A quoted value is taken as written; an unquoted one ends at ` #`. Docker
+/// keeps such a trailing comment as part of the value, which once turned an
+/// API key into `key # comment`, so this reader does not.
+fn dotenv_value(raw: &str) -> &str {
+    let raw = raw.trim();
+    for quote in ['"', '\''] {
+        if let Some(rest) = raw.strip_prefix(quote) {
+            if let Some(end) = rest.find(quote) {
+                return &rest[..end];
+            }
+        }
+    }
+    let value = match raw.find(" #").or_else(|| raw.find("\t#")) {
+        Some(comment) => &raw[..comment],
+        None => raw,
+    };
+    value.trim_end()
 }
 
 pub async fn run() -> anyhow::Result<()> {
