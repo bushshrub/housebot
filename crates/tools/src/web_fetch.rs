@@ -120,7 +120,8 @@ impl WebFetch {
             Ok(raw) => raw,
             Err(error) => return format!("Error: could not read webpage: {error}"),
         };
-        let mut page = if content_type.is_empty() || content_type.contains("html") {
+        let is_html = content_type.is_empty() || content_type.contains("html");
+        let mut page = if is_html {
             extract_html(&raw, &current)
         } else {
             Page {
@@ -129,7 +130,7 @@ impl WebFetch {
                 source: "raw text",
             }
         };
-        if page.text.chars().count() < MIN_USEFUL_CHARS {
+        if is_html && page.text.chars().count() < MIN_USEFUL_CHARS {
             if let Some(firecrawl) = &self.firecrawl {
                 if let Some(scraped) = firecrawl.scrape(&current).await {
                     page = scraped;
