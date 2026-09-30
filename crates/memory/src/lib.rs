@@ -164,15 +164,148 @@ pub fn update_memory_tool() -> Value {
 pub fn search_memory_tool() -> Value {
     json!({
         "name": "search_memory",
-        "description": "Search the persistent memory for entries matching a keyword or phrase. \
-            Use this when the user asks about something specific you might have remembered, \
+        "description": "Search the persistent memory for entries matching any of the given \
+            words, best matches first (at most 10). Use this when the user asks about something specific you might have remembered, \
             or when you want to check whether you already know something about a topic.",
         "input_schema": {
             "type": "object",
-            "properties": {"query": {"type": "string", "minLength": 1, "description": "Keyword or phrase to search for in memory."}},
+            "properties": {"query": {"type": "string", "minLength": 1, "description": "Words to search for in memory."}},
             "required": ["query"]
         }
     })
+}
+
+/// A memory entry: a top-level bullet or paragraph together with its wrapped
+/// or nested lines, and the heading it sits under.
+struct Entry<'a> {
+    heading: Option<&'a str>,
+    lines: Vec<&'a str>,
+}
+
+fn entries(content: &str) -> Vec<Entry<'_>> {
+    let mut entries: Vec<Entry> = Vec::new();
+    let mut heading = None;
+    let mut open = false;
+    for line in content.lines() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            open = false;
+        } else if trimmed.starts_with('#') {
+            heading = Some(trimmed);
+            open = false;
+        } else if open && !starts_item(line) {
+            if let Some(entry) = entries.last_mut() {
+                entry.lines.push(line);
+            }
+        } else {
+            entries.push(Entry {
+                heading,
+                lines: vec![line],
+            });
+            open = true;
+        }
+    }
+    entries
+}
+
+fn starts_item(line: &str) -> bool {
+    let rest = line.trim_start_matches(|c: char| c.is_ascii_digit());
+    line.starts_with("- ")
+        || line.starts_with("* ")
+        || line.starts_with("+ ")
+        || (rest.len() < line.len() && (rest.starts_with(". ") || rest.starts_with(") ")))
+}
+
+fn words(text: &str) -> Vec<String> {
+    text.split(|c: char| !c.is_alphanumeric())
+        .filter(|word| !word.is_empty())
+        .map(str::to_lowercase)
+        .collect()
+}
+
+/// Prefix matching lets "request" find "requests" without a stemmer; very short
+/// terms must match whole words or they would hit almost everything.
+fn term_matches(term: &str, word: &str) -> bool {
+    if term.chars().count() >= 3 {
+        word.starts_with(term)
+    } else {
+        word == term
+    }
+}
+
+/// Rank memory entries against `query` with BM25 over any of its terms, so
+/// a multi-word query finds entries that mention the terms separately.
+/// Returns at most `limit` entries, best first, each under its heading.
+pub fn search(content: &str, query: &str, limit: usize) -> Vec<String> {
+    const K1: f64 = 1.2;
+    const B: f64 = 0.75;
+
+    let mut terms = words(query);
+    terms.sort();
+    terms.dedup();
+    let entries = entries(content);
+    if terms.is_empty() || entries.is_empty() {
+        return Vec::new();
+    }
+    let entry_words: Vec<Vec<String>> = entries
+        .iter()
+        .map(|entry| {
+            let mut text = entry.heading.unwrap_or_default().to_string();
+            for line in &entry.lines {
+                text.push('\n');
+                text.push_str(line);
+            }
+            words(&text)
+        })
+        .collect();
+    let count = entries.len() as f64;
+    let average_len = entry_words.iter().map(Vec::len).sum::<usize>() as f64 / count;
+    let phrase = query.trim().to_lowercase();
+
+    let mut scored: Vec<(f64, usize)> = entry_words
+        .iter()
+        .enumerate()
+        .filter_map(|(index, words)| {
+            let len = words.len() as f64;
+            let mut score = 0.0;
+            for term in &terms {
+                let frequency = words.iter().filter(|w| term_matches(term, w)).count() as f64;
+                if frequency == 0.0 {
+                    continue;
+                }
+                let containing = entry_words
+                    .iter()
+                    .filter(|other| other.iter().any(|w| term_matches(term, w)))
+                    .count() as f64;
+                let idf = (1.0 + (count - containing + 0.5) / (containing + 0.5)).ln();
+                score += idf * frequency * (K1 + 1.0)
+                    / (frequency + K1 * (1.0 - B + B * len / average_len.max(1.0)));
+            }
+            if terms.len() > 1
+                && entries[index]
+                    .lines
+                    .join("\n")
+                    .to_lowercase()
+                    .contains(&phrase)
+            {
+                score *= 2.0;
+            }
+            (score > 0.0).then_some((score, index))
+        })
+        .collect();
+    scored.sort_by(|a, b| b.0.total_cmp(&a.0).then(a.1.cmp(&b.1)));
+    scored
+        .into_iter()
+        .take(limit)
+        .map(|(_, index)| {
+            let entry = &entries[index];
+            let body = entry.lines.join("\n");
+            match entry.heading {
+                Some(heading) => format!("{heading}\n{body}"),
+                None => body,
+            }
+        })
+        .collect()
 }
 
 pub async fn ensure_dir(dir: &Path) -> std::io::Result<()> {
@@ -229,5 +362,46 @@ mod tests {
         assert_eq!(mem.load("someuser").await, "");
         mem.save("someuser", "hello").await.unwrap();
         assert_eq!(mem.load("someuser").await, "hello");
+    }
+
+    #[test]
+    fn search_finds_terms_that_appear_separately() {
+        let memory =
+            "- Filed a feature request about the bot\n- Finds pings intrusive\n- Likes tea";
+        let hits = search(memory, "bot intrusive", 10);
+        assert_eq!(hits.len(), 2);
+        assert!(!hits.iter().any(|hit| hit.contains("tea")));
+    }
+
+    #[test]
+    fn search_ranks_entries_matching_more_terms_first() {
+        let memory = "- Drinks coffee\n- Drinks coffee every morning before work\n- Morning runs";
+        let hits = search(memory, "coffee morning", 10);
+        assert_eq!(hits[0], "- Drinks coffee every morning before work");
+    }
+
+    #[test]
+    fn search_returns_whole_entries_under_their_heading() {
+        let memory = "## Projects\n- Housebot: a Discord bot\n  written in Rust\n- Garden planner";
+        let hits = search(memory, "rust", 10);
+        assert_eq!(
+            hits,
+            ["## Projects\n- Housebot: a Discord bot\n  written in Rust"]
+        );
+    }
+
+    #[test]
+    fn search_matches_word_prefixes_but_not_short_fragments() {
+        let memory = "- Opened two feature requests\n- Lives in a big city";
+        assert_eq!(search(memory, "request", 10).len(), 1);
+        assert!(search(memory, "i", 10).is_empty());
+    }
+
+    #[test]
+    fn search_caps_the_number_of_results() {
+        let memory = (0..20)
+            .map(|i| format!("- tea note {i}\n"))
+            .collect::<String>();
+        assert_eq!(search(&memory, "tea", 10).len(), 10);
     }
 }

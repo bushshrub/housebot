@@ -45,15 +45,11 @@ impl Agent {
                 if content.trim().is_empty() {
                     ToolOutcome::Text("No memory stored for this user.".to_string())
                 } else {
-                    let query_lower = query.to_lowercase();
-                    let matching: Vec<&str> = content
-                        .lines()
-                        .filter(|line| line.to_lowercase().contains(&query_lower))
-                        .collect();
+                    let matching = crate::memory::search(&content, query, 10);
                     if matching.is_empty() {
                         ToolOutcome::Text(format!("No memory entries matching '{query}'."))
                     } else {
-                        ToolOutcome::Text(matching.join("\n"))
+                        ToolOutcome::Text(matching.join("\n\n"))
                     }
                 }
             }
