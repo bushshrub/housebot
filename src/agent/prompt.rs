@@ -175,7 +175,7 @@ struct ConfigSuffix {
 impl ConfigSuffix {
     fn new(deep_memory_enabled: bool) -> Self {
         let memory_tool_line = if deep_memory_enabled {
-            "- update_memory — Persist important facts about the current user for future conversations. Write the full memory each time.\n- search_memory — Search stored memory for a keyword or phrase. Use when the user refers to something you may have remembered.\n"
+            "- update_memory — Persist important facts about the current user for future conversations. Write the full memory each time.\n- search_memory — Search stored memory for entries matching any of the given words, best matches first. Use when the user refers to something you may have remembered.\n"
         } else {
             ""
         };

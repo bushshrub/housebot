@@ -223,11 +223,12 @@ fn words(text: &str) -> Vec<String> {
         .collect()
 }
 
-/// Prefix matching lets "request" find "requests" without a stemmer; very short
-/// terms must match whole words or they would hit almost everything.
+/// Matching inside words lets "request" find "requests" without a stemmer, and
+/// keeps the old substring hits such as "bot" in "housebot". Very short terms
+/// must match whole words or they would hit almost everything.
 fn term_matches(term: &str, word: &str) -> bool {
     if term.chars().count() >= 3 {
-        word.starts_with(term)
+        word.contains(term)
     } else {
         word == term
     }
@@ -262,22 +263,28 @@ pub fn search(content: &str, query: &str, limit: usize) -> Vec<String> {
     let average_len = entry_words.iter().map(Vec::len).sum::<usize>() as f64 / count;
     let phrase = query.trim().to_lowercase();
 
+    let idf: Vec<f64> = terms
+        .iter()
+        .map(|term| {
+            let containing = entry_words
+                .iter()
+                .filter(|words| words.iter().any(|w| term_matches(term, w)))
+                .count() as f64;
+            (1.0 + (count - containing + 0.5) / (containing + 0.5)).ln()
+        })
+        .collect();
+
     let mut scored: Vec<(f64, usize)> = entry_words
         .iter()
         .enumerate()
         .filter_map(|(index, words)| {
             let len = words.len() as f64;
             let mut score = 0.0;
-            for term in &terms {
+            for (term, idf) in terms.iter().zip(&idf) {
                 let frequency = words.iter().filter(|w| term_matches(term, w)).count() as f64;
                 if frequency == 0.0 {
                     continue;
                 }
-                let containing = entry_words
-                    .iter()
-                    .filter(|other| other.iter().any(|w| term_matches(term, w)))
-                    .count() as f64;
-                let idf = (1.0 + (count - containing + 0.5) / (containing + 0.5)).ln();
                 score += idf * frequency * (K1 + 1.0)
                     / (frequency + K1 * (1.0 - B + B * len / average_len.max(1.0)));
             }
@@ -391,9 +398,10 @@ mod tests {
     }
 
     #[test]
-    fn search_matches_word_prefixes_but_not_short_fragments() {
-        let memory = "- Opened two feature requests\n- Lives in a big city";
+    fn search_matches_inside_words_but_not_short_fragments() {
+        let memory = "- Opened two feature requests\n- Lives in a big city\n- Maintains housebot";
         assert_eq!(search(memory, "request", 10).len(), 1);
+        assert_eq!(search(memory, "bot", 10), ["- Maintains housebot"]);
         assert!(search(memory, "i", 10).is_empty());
     }
 

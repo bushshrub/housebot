@@ -17,6 +17,7 @@ pub struct MockChatClient {
     stream_script: Mutex<VecDeque<ChatCompletion>>,
     once_reply: Mutex<String>,
     once_usage: Mutex<TokenUsage>,
+    once_error: Mutex<Option<String>>,
     /// Messages passed to each `chat_stream` call, in order.
     pub stream_calls: Mutex<Vec<Vec<Value>>>,
     /// Messages passed to each `chat_once` call, in order.
@@ -37,6 +38,12 @@ impl MockChatClient {
 
     pub fn with_once_usage(self, usage: TokenUsage) -> Self {
         *self.once_usage.lock().unwrap() = usage;
+        self
+    }
+
+    /// Make [`ChatClient::chat_once`] fail with `message`.
+    pub fn with_once_error(self, message: &str) -> Self {
+        *self.once_error.lock().unwrap() = Some(message.to_string());
         self
     }
 
@@ -123,6 +130,9 @@ impl ChatClient for MockChatClient {
         _max_tokens: u32,
     ) -> anyhow::Result<ChatCompletion> {
         self.once_calls.lock().unwrap().push(messages.to_vec());
+        if let Some(message) = self.once_error.lock().unwrap().clone() {
+            anyhow::bail!(message);
+        }
         Ok(ChatCompletion {
             content: Some(self.once_reply.lock().unwrap().clone()),
             finish_reason: Some("stop".into()),

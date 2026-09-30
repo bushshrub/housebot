@@ -751,6 +751,27 @@ async fn compaction_without_a_summary_keeps_the_history() {
     assert_eq!(agent.history.load("u11").await, history);
 }
 
+#[tokio::test]
+async fn a_failed_summary_keeps_the_history_and_the_context_usage() {
+    let client = Arc::new(MockChatClient::new().with_once_error("gateway timeout"));
+    let (_t, agent) = test_agent(client);
+    let history = [
+        json!({"role": "user", "content": "I like tea"}),
+        json!({"role": "assistant", "content": "Noted"}),
+    ];
+    agent.history.save("u12", &history).await.unwrap();
+    let usage = TokenUsage {
+        prompt_tokens: 900,
+        ..Default::default()
+    };
+    agent.record_usage("u12", "c12", usage).await;
+
+    assert!(!agent.compact_session("u12", true).await);
+
+    assert_eq!(agent.history.load("u12").await, history);
+    assert_eq!(agent.last_context_tokens("u12").await, 900);
+}
+
 /// Regression test for issue #302: compaction must never write persistent
 /// memory on its own — memory changes only when the user asks for it via
 /// update_memory. The summary carries over in the new session's history.

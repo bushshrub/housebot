@@ -907,7 +907,9 @@ mod tests {
     #[test]
     fn sandbox_image_installs_gnu_realpath() {
         let dockerfile = include_str!("../docker/Dockerfile");
-        assert!(dockerfile.lines().any(|line| line.trim() == "coreutils \\"));
+        assert!(dockerfile
+            .split_whitespace()
+            .any(|word| word == "coreutils"));
     }
 
     fn state(
