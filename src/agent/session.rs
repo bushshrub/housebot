@@ -1,6 +1,7 @@
 //! Session lifecycle: reset, compaction, token accounting, and conversation bookkeeping.
 
 use super::*;
+use crate::bot_formatting::format_tokens;
 
 impl Agent {
     // ── session lifecycle ────────────────────────────────────────────────────
@@ -167,9 +168,9 @@ impl Agent {
         {
             Ok(Some(stats)) => format!(
                 "{} tokens across {} conversations ({} cached)",
-                stats.total_tokens(),
+                format_tokens(stats.total_tokens()),
                 stats.conversations,
-                stats.cached_tokens
+                format_tokens(stats.cached_tokens)
             ),
             Ok(None) => "no recorded usage yet".into(),
             Err(error) => {

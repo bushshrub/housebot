@@ -106,6 +106,11 @@ pub struct StartParams {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TouchParams {
+    pub session_key: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ReadFileParams {
     pub sandbox_id: String,
     pub path: String,

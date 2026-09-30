@@ -134,6 +134,7 @@ async fn process_request(request: &SandboxRequest, containers: &ContainerMap) ->
 
     match request.method.as_str() {
         "start" => handle_start(id, &request.params, containers).await,
+        "touch" => handle_touch(id, &request.params, containers).await,
         "read_file" => handle_read_file(id, &request.params, containers).await,
         "run" => handle_run(id, &request.params, containers).await,
         "write_file" => handle_write_file(id, &request.params, containers).await,
@@ -259,6 +260,26 @@ async fn handle_start(
         id.to_string(),
         serde_json::json!({"sandbox_id": sandbox_id}),
     )
+}
+
+/// Defer the idle deadline of a session's sandbox without provisioning one, so
+/// a user who is chatting keeps a workspace they have not touched this turn.
+async fn handle_touch(
+    id: &str,
+    params: &serde_json::Value,
+    containers: &ContainerMap,
+) -> SandboxResponse {
+    let touch_params: TouchParams = match serde_json::from_value(params.clone()) {
+        Ok(p) => p,
+        Err(e) => return SandboxResponse::err(id.to_string(), format!("invalid params: {e}")),
+    };
+    let mut map = containers.lock().await;
+    let touched = map
+        .values_mut()
+        .filter(|state| state.session_key == touch_params.session_key)
+        .map(|state| state.last_used_at = std::time::Instant::now())
+        .count();
+    SandboxResponse::ok(id.to_string(), serde_json::json!({"touched": touched}))
 }
 
 /// Hand back the session's existing sandbox when it has one. A container's
@@ -844,6 +865,50 @@ mod tests {
             map["sandbox-1"].last_used_at.elapsed() < std::time::Duration::from_secs(1),
             "an active session must not be reaped mid-use"
         );
+    }
+
+    #[tokio::test]
+    async fn touch_defers_the_idle_deadline_of_only_that_session() {
+        let containers: ContainerMap = Arc::new(Mutex::new(HashMap::new()));
+        let idle = std::time::Duration::from_secs(120);
+        {
+            let mut map = containers.lock().await;
+            map.insert(
+                "sandbox-1".to_string(),
+                state("user-1", NetworkAccess::None, idle),
+            );
+            map.insert(
+                "sandbox-2".to_string(),
+                state("user-2", NetworkAccess::None, idle),
+            );
+        }
+
+        let response = handle_touch(
+            "req",
+            &serde_json::json!({"session_key": "user-1"}),
+            &containers,
+        )
+        .await;
+
+        assert_eq!(response.result.unwrap()["touched"], 1);
+        let map = containers.lock().await;
+        assert!(map["sandbox-1"].last_used_at.elapsed() < std::time::Duration::from_secs(1));
+        assert!(map["sandbox-2"].last_used_at.elapsed() >= idle);
+    }
+
+    #[tokio::test]
+    async fn touch_does_not_provision_a_sandbox() {
+        let containers: ContainerMap = Arc::new(Mutex::new(HashMap::new()));
+
+        let response = handle_touch(
+            "req",
+            &serde_json::json!({"session_key": "user-1"}),
+            &containers,
+        )
+        .await;
+
+        assert_eq!(response.result.unwrap()["touched"], 0);
+        assert!(containers.lock().await.is_empty());
     }
 
     #[tokio::test]

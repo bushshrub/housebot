@@ -1,6 +1,7 @@
 //! Rendering the token leaderboard for Discord.
 
 use super::*;
+use crate::bot_formatting::format_tokens;
 
 pub(crate) fn format_token_leaderboard(leaderboard: &TokenLeaderboard) -> String {
     if leaderboard.users.is_empty() {
@@ -73,11 +74,13 @@ pub(crate) fn format_leaderboard_metric(
     metric: LeaderboardMetric,
 ) -> String {
     match metric {
-        LeaderboardMetric::TotalTokens => format!("{} tokens", entry.total_tokens()),
+        LeaderboardMetric::TotalTokens => {
+            format!("{} tokens", format_tokens(entry.total_tokens()))
+        }
         LeaderboardMetric::CacheEfficiency => format!(
             "{:.1}% cache efficiency ({} tokens)",
             entry.cache_efficiency(),
-            entry.total_tokens()
+            format_tokens(entry.total_tokens())
         ),
     }
 }

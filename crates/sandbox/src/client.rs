@@ -95,6 +95,20 @@ impl SandboxClient {
         Ok(response)
     }
 
+    /// Postpone the reaping of the session's sandbox, if it has one.
+    pub async fn touch(&self, session_key: &str) -> Result<(), String> {
+        validation::validate_session_key(session_key)?;
+        let req = SandboxRequest::new(
+            "touch",
+            serde_json::to_value(TouchParams {
+                session_key: session_key.to_string(),
+            })
+            .map_err(|e| format!("serialisation error: {e}"))?,
+        );
+        self.send_request(req).await?.into_result()?;
+        Ok(())
+    }
+
     /// Get the session's sandbox container, creating it if the session has none.
     ///
     /// The container outlives the request that created it and is destroyed by
