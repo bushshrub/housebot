@@ -158,7 +158,7 @@ async fn require_sandbox<'a>(
 ) -> Result<tokio::sync::MutexGuard<'a, HashMap<String, ContainerState>>, String> {
     let mut map = containers.lock().await;
     let Some(state) = map.get_mut(sandbox_id) else {
-        return Err(format!("unknown sandbox: {sandbox_id}"));
+        return Err(format!("{UNKNOWN_SANDBOX}: {sandbox_id}"));
     };
     state.last_used_at = std::time::Instant::now();
     Ok(map)
@@ -470,7 +470,7 @@ async fn handle_close(
             let _ = destroy_container(&s.container_name).await;
             SandboxResponse::ok(id.to_string(), serde_json::json!({"closed": true}))
         }
-        None => SandboxResponse::err(id.to_string(), format!("unknown sandbox: {sandbox_id}")),
+        None => SandboxResponse::err(id.to_string(), format!("{UNKNOWN_SANDBOX}: {sandbox_id}")),
     }
 }
 

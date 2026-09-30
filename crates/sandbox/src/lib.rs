@@ -23,4 +23,4 @@ pub mod server;
 pub mod validation;
 
 pub use client::{Sandbox, SandboxClient};
-pub use protocol::NetworkAccess;
+pub use protocol::{is_unknown_sandbox, NetworkAccess};
