@@ -138,6 +138,7 @@ async fn process_request(request: &SandboxRequest, containers: &ContainerMap) ->
         "read_file" => handle_read_file(id, &request.params, containers).await,
         "run" => handle_run(id, &request.params, containers).await,
         "write_file" => handle_write_file(id, &request.params, containers).await,
+        "edit_file" => handle_edit_file(id, &request.params, containers).await,
         "close" => handle_close(id, &request.params, containers).await,
         _ => SandboxResponse::err(id.clone(), format!("Unknown method: {}", request.method)),
     }
@@ -663,6 +664,158 @@ async fn handle_write_file(
     )
 }
 
+/// Replace `old` with `new` in `content`. The match must be unambiguous unless
+/// `replace_all` is set, so an edit never silently lands in the wrong place.
+fn apply_edit(
+    content: &str,
+    old: &str,
+    new: &str,
+    replace_all: bool,
+) -> Result<(String, usize), String> {
+    if old.is_empty() {
+        return Err("old_string must not be empty".to_string());
+    }
+    if old == new {
+        return Err("old_string and new_string are identical".to_string());
+    }
+    let matches = content.matches(old).count();
+    match matches {
+        0 => Err("old_string was not found in the file".to_string()),
+        1 => Ok((content.replacen(old, new, 1), 1)),
+        n if replace_all => Ok((content.replace(old, new), n)),
+        n => Err(format!(
+            "old_string matches {n} places; add surrounding context to make it unique, \
+             or set replace_all"
+        )),
+    }
+}
+
+async fn handle_edit_file(
+    id: &str,
+    params: &serde_json::Value,
+    containers: &ContainerMap,
+) -> SandboxResponse {
+    let edit_params: EditFileParams = match serde_json::from_value(params.clone()) {
+        Ok(p) => p,
+        Err(e) => return SandboxResponse::err(id.to_string(), format!("invalid params: {e}")),
+    };
+
+    if let Err(e) = validation::validate_workspace_path(&edit_params.path) {
+        return SandboxResponse::err(id.to_string(), format!("invalid path: {e}"));
+    }
+    if edit_params.new_string.len() > limits::MAX_WRITE_FILE_BYTES {
+        return SandboxResponse::err(
+            id.to_string(),
+            format!("new_string exceeds {} bytes", limits::MAX_WRITE_FILE_BYTES),
+        );
+    }
+
+    let sandbox_id = edit_params.sandbox_id.clone();
+    let container_name = {
+        let guard = match require_sandbox(containers, &sandbox_id).await {
+            Ok(s) => s,
+            Err(e) => return SandboxResponse::err(id.to_string(), e),
+        };
+        guard
+            .get(&sandbox_id)
+            .map(|s| s.container_name.clone())
+            .unwrap_or_default()
+    };
+
+    let resolve_cmd = format!(
+        "realpath -q /workspace/{} 2>/dev/null || true",
+        shell_escape_path(&edit_params.path)
+    );
+    let resolve_args = docker::build_exec_args(&container_name, &resolve_cmd, None);
+    let resolved = match run_docker_with_timeout(&resolve_args, 10).await {
+        Ok(out) => out.trim().to_string(),
+        Err(_) => {
+            return SandboxResponse::err(id.to_string(), "failed to resolve path".to_string())
+        }
+    };
+    if resolved.is_empty() || !resolved.starts_with("/workspace/") {
+        return SandboxResponse::err(
+            id.to_string(),
+            "file not found, or its path escapes /workspace".to_string(),
+        );
+    }
+
+    // One byte past the limit tells an oversized file from one that fits.
+    let head = vec![
+        "/usr/bin/head".to_string(),
+        "-c".to_string(),
+        (limits::MAX_WRITE_FILE_BYTES + 1).to_string(),
+        resolved.clone(),
+    ];
+    let args = docker::build_exec_argv(&container_name, &head, false);
+    let original = match run_docker_with_timeout_raw(&args, 10).await {
+        Ok((stdout, _, 0)) => stdout,
+        Ok((_, stderr, code)) => {
+            return SandboxResponse::err(
+                id.to_string(),
+                format!("could not read the file (exit {code}): {stderr}"),
+            )
+        }
+        Err(e) => return SandboxResponse::err(id.to_string(), e),
+    };
+    if original.len() > limits::MAX_WRITE_FILE_BYTES {
+        return SandboxResponse::err(
+            id.to_string(),
+            format!(
+                "file exceeds {} bytes; edit it with the shell tool instead",
+                limits::MAX_WRITE_FILE_BYTES
+            ),
+        );
+    }
+    if original.contains('\u{FFFD}') {
+        return SandboxResponse::err(
+            id.to_string(),
+            "file is not valid UTF-8; edit it with the shell tool instead".to_string(),
+        );
+    }
+
+    let (edited, replacements) = match apply_edit(
+        &original,
+        &edit_params.old_string,
+        &edit_params.new_string,
+        edit_params.replace_all,
+    ) {
+        Ok(result) => result,
+        Err(e) => return SandboxResponse::err(id.to_string(), e),
+    };
+    if edited.len() > limits::MAX_WRITE_FILE_BYTES {
+        return SandboxResponse::err(
+            id.to_string(),
+            format!(
+                "edited file would exceed {} bytes",
+                limits::MAX_WRITE_FILE_BYTES
+            ),
+        );
+    }
+
+    let tee = vec!["/usr/bin/tee".to_string(), resolved.clone()];
+    let args = docker::build_exec_argv(&container_name, &tee, true);
+    match run_docker_with_stdin(&args, edited.as_bytes(), 30).await {
+        Ok((_, 0)) => {}
+        Ok((stderr, code)) => {
+            return SandboxResponse::err(
+                id.to_string(),
+                format!("write failed with code {code}: {stderr}"),
+            )
+        }
+        Err(e) => return SandboxResponse::err(id.to_string(), e),
+    }
+
+    SandboxResponse::ok(
+        id.to_string(),
+        serde_json::to_value(EditFileResult {
+            path: resolved,
+            replacements,
+        })
+        .unwrap_or_default(),
+    )
+}
+
 async fn run_docker_with_timeout_raw(
     args: &[String],
     timeout_secs: u64,
@@ -865,6 +1018,33 @@ mod tests {
             map["sandbox-1"].last_used_at.elapsed() < std::time::Duration::from_secs(1),
             "an active session must not be reaped mid-use"
         );
+    }
+
+    #[test]
+    fn apply_edit_replaces_a_unique_match() {
+        let (edited, count) = apply_edit("a b c", "b", "X", false).unwrap();
+        assert_eq!((edited.as_str(), count), ("a X c", 1));
+    }
+
+    #[test]
+    fn apply_edit_refuses_an_ambiguous_match_without_replace_all() {
+        let error = apply_edit("x x", "x", "y", false).unwrap_err();
+        assert!(error.contains("matches 2 places"), "{error}");
+    }
+
+    #[test]
+    fn apply_edit_replaces_every_match_when_asked() {
+        let (edited, count) = apply_edit("x x", "x", "y", true).unwrap();
+        assert_eq!((edited.as_str(), count), ("y y", 2));
+    }
+
+    #[test]
+    fn apply_edit_rejects_a_missing_empty_or_noop_match() {
+        assert!(apply_edit("abc", "z", "y", false)
+            .unwrap_err()
+            .contains("not found"));
+        assert!(apply_edit("abc", "", "y", false).is_err());
+        assert!(apply_edit("abc", "a", "a", false).is_err());
     }
 
     #[tokio::test]

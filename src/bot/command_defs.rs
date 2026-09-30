@@ -516,6 +516,22 @@ pub(crate) async fn register_slash_commands(ctx: &Context, guild_ids: &[GuildId]
                 )
                 .required(true),
             ),
+        )
+        .add_option(
+            CreateCommandOption::new(
+                CommandOptionType::SubCommand,
+                "tool_rounds",
+                "Set how many tool calls in a row the bot may make in one reply",
+            )
+            .add_sub_option(
+                CreateCommandOption::new(
+                    CommandOptionType::Integer,
+                    "limit",
+                    "Tool calls allowed per reply (omit to show the current limit)",
+                )
+                .min_int_value(1)
+                .max_int_value(u64::from(crate::bot_config::MAX_TOOL_ROUNDS_LIMIT)),
+            ),
         );
     global_commands.push(effort_command_definition());
     global_commands.extend([

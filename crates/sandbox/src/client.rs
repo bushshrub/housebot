@@ -248,6 +248,29 @@ impl Sandbox {
         serde_json::from_value(result).map_err(|e| format!("failed to parse write result: {e}"))
     }
 
+    /// Replace text in an existing workspace file.
+    pub async fn edit_file(
+        &self,
+        path: &str,
+        old_string: &str,
+        new_string: &str,
+        replace_all: bool,
+    ) -> Result<EditFileResult, String> {
+        validation::validate_workspace_path(path)?;
+
+        let params = serde_json::to_value(EditFileParams {
+            sandbox_id: self.id.clone(),
+            path: path.to_string(),
+            old_string: old_string.to_string(),
+            new_string: new_string.to_string(),
+            replace_all,
+        })
+        .map_err(|e| format!("serialisation error: {e}"))?;
+
+        let result = self.send("edit_file", params).await?;
+        serde_json::from_value(result).map_err(|e| format!("failed to parse edit result: {e}"))
+    }
+
     /// Destroy the sandbox container.
     pub async fn close(self) -> Result<(), String> {
         let params = serde_json::to_value(CloseParams {
