@@ -898,6 +898,15 @@ pub async fn cleanup_stale_containers() {
 mod tests {
     use super::*;
 
+    /// BusyBox `realpath` has no `-m`: it cannot resolve a path whose parent
+    /// does not exist yet, so every write into a new directory was refused as
+    /// escaping /workspace (#334).
+    #[test]
+    fn sandbox_image_installs_gnu_realpath() {
+        let dockerfile = include_str!("../docker/Dockerfile");
+        assert!(dockerfile.lines().any(|line| line.trim() == "coreutils \\"));
+    }
+
     fn state(
         session_key: &str,
         network: NetworkAccess,

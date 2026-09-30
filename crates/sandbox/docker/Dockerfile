@@ -10,6 +10,7 @@ FROM alpine:3.20
 
 RUN apk add --no-cache \
     bash \
+    coreutils \
     python3 \
     py3-pip \
     git \
@@ -18,8 +19,7 @@ RUN apk add --no-cache \
     build-base \
     findutils \
     ripgrep \
-    tzdata \
-    dnsmasq
+    tzdata
 
 # Install Node.js (LTS) for JavaScript/TypeScript projects
 RUN apk add --no-cache nodejs npm
