@@ -20,18 +20,14 @@ impl Agent {
                 self.searxng
                     .search(
                         str_arg(args, "query"),
-                        u64_arg(args, "max_results", 10) as usize,
+                        u64_arg(args, "max_results", 5) as usize,
                         str_arg(args, "language"),
                     )
                     .await,
             ),
             "fetch_webpage" => ToolOutcome::Text(
                 self.web_fetch
-                    .fetch_content(
-                        str_arg(args, "url"),
-                        u64_arg(args, "start_index", 0) as usize,
-                        u64_arg(args, "max_length", 8000) as usize,
-                    )
+                    .fetch_content(str_arg(args, "url"), sandbox)
                     .await,
             ),
             "update_memory" => {

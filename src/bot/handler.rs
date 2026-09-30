@@ -294,6 +294,12 @@ impl EventHandler for HouseBot {
             // Other bots must explicitly @-mention us; unmentioned bot
             // messages are always ignored regardless of configuration.
             if !is_mentioned {
+                tracing::debug!(
+                    target: "housebot::message_flow",
+                    message_id = msg.id.get(),
+                    author_id = msg.author.id.get(),
+                    "Dropped message: bot author did not mention us"
+                );
                 return;
             }
             let respond = if let Some(gid) = msg.guild_id {
@@ -302,6 +308,12 @@ impl EventHandler for HouseBot {
                 false
             };
             if !respond {
+                tracing::info!(
+                    target: "housebot::message_flow",
+                    message_id = msg.id.get(),
+                    author_id = msg.author.id.get(),
+                    "Dropped message: bot mentions are disabled for this server"
+                );
                 return;
             }
             tracing::info!(
@@ -322,6 +334,12 @@ impl EventHandler for HouseBot {
         // silenced entirely by a configurer-set policy.
         let access = self.access.load().await;
         if !access.should_respond(user_id, config::owner_id()) {
+            tracing::info!(
+                target: "housebot::message_flow",
+                message_id = msg.id.get(),
+                user_id,
+                "Dropped message: access policy silences this user"
+            );
             return;
         }
 
@@ -356,6 +374,22 @@ impl EventHandler for HouseBot {
             .is_channel_allowed(guild_id, channel_id)
             .await
         {
+            if is_mentioned {
+                tracing::info!(
+                    target: "housebot::message_flow",
+                    message_id = msg.id.get(),
+                    user_id,
+                    channel_id,
+                    "Dropped message: channel is not allowed"
+                );
+            } else {
+                tracing::debug!(
+                    target: "housebot::message_flow",
+                    message_id = msg.id.get(),
+                    channel_id,
+                    "Dropped message: channel is not allowed"
+                );
+            }
             return;
         }
 
@@ -403,10 +437,20 @@ impl EventHandler for HouseBot {
         };
 
         if !(is_dm || is_mentioned || is_reply_to_bot || is_reply_to_attachment || is_active) {
+            tracing::debug!(
+                target: "housebot::message_flow",
+                message_id = msg.id.get(),
+                channel_id,
+                "Dropped message: not addressed to the bot"
+            );
             return;
         }
         if self.already_seen(msg.id.get()).await {
-            tracing::warn!("Duplicate message {} — skipping", msg.id.get());
+            tracing::warn!(
+                target: "housebot::message_flow",
+                message_id = msg.id.get(),
+                "Dropped message: duplicate"
+            );
             return;
         }
 

@@ -4,51 +4,31 @@ Read this together with [`docs/REDESIGN_PLAN.md`](docs/REDESIGN_PLAN.md), which
 is the authoritative scope document — this file covers state and gotchas, the
 plan covers what was built.
 
-## Open work: deployment bot (2026-09-30)
+## Deployment bot (2026-09-30)
 
-Found while bringing the bot up on `server-sofia` with plain Docker Compose
-(`~/slopbot`: `.env` + `docker-compose.yml`, started with `docker compose up -d`).
-Not started yet.
+Done on branch `claude/handoff-open-work`, never run against a live Docker host:
 
-1. **`/deploy` offers commits that have no image.** The bot takes the newest
-   commit from the GitHub API (`latest_branch_commit` / `commits` in
-   `crates/deployment-bot/src/lib.rs`) and pulls
-   `ghcr.io/bushshrub/housebot:sha-<commit>`. That image exists only after the
-   "Post-merge Docker publish" workflow succeeds for that commit, which takes
-   several minutes and does not happen at all when the workflow fails (for
-   example on a clippy error). The confirm card still offers the commit, and the
-   deploy then fails at `pull_housebot_image` with `manifest unknown`. The
-   startup deploy (`No running housebot container at startup`) has the same
-   problem and does not retry.
-   - Fix: before showing the confirm card, check that all three images exist for
-     that commit (`housebot`, `housebot/sandboxd`, `housebot/sandbox`, tag
-     `sha-<full sha>`) with `docker manifest inspect`, or the GitHub commit
-     status for the publish workflow. If they don't, say the build is pending or
-     failed and name the newest commit that does have images.
-   - The startup deploy should use the same check, and retry or wait for the
-     image instead of giving up once.
-
-2. **Changelog fails when no chatbot is running.** The confirm card shows
-   "Changelog unavailable: docker command failed: Error: No such object:
-   house-chatbot". `current_running_sha` runs `docker inspect house-chatbot`,
-   which fails on a fresh host. When there is no running container, show "first
-   deployment" and skip the compare instead of an error.
-
-3. **Old images are never removed.** Every deploy pulls three new `sha-` tagged
-   images and nothing deletes the old ones, so disk use grows with every deploy.
-   After a successful deploy, remove `ghcr.io/bushshrub/housebot*` images that
-   no container uses, but keep the previous release's images so `/rollback`
-   still works without a pull. Do not run a blanket `docker image prune -a`:
-   the host runs other stacks.
-
-4. **A changed `.env` does not reach the chatbot.** The deployment bot reads
-   `.env` only when its own container is created, and copies those values into
-   every chatbot it deploys, so `/deploy` keeps using stale values. Until this is
-   fixed, after editing `.env` run
-   `docker compose up -d --force-recreate deployment-bot`, then `docker rm -f
-   house-chatbot` so the startup deploy creates a fresh one. Also: Docker reads
-   `.env` literally, so a `# comment` after a value becomes part of the value
-   (this broke `LLM_API_KEY`). Keep comments on their own line.
+- **Image readiness.** `/deploy`, `/update`, and the startup deploy check the
+  three `sha-<full sha>` images with `docker manifest inspect` (`images_published`
+  in `docker.rs`). Only a "manifest unknown" / "no such manifest" answer counts as
+  unpublished; any other error lets the deploy go ahead. `/deploy <sha>` without
+  images refuses and names the newest commit that has them (last 10 commits on the
+  branch). `/deploy` with no SHA and `/update` fall back to that commit, with a
+  note. The confirm button now carries the real SHA, never `latest`. The startup
+  deploy retries every 60 s, 30 times.
+- **First deployment changelog.** With no `house-chatbot` container, the card says
+  "First deployment" instead of an error.
+- **Image cleanup.** `cleanup_old_images` existed but never saw the sandbox images:
+  `docker images 'ghcr.io/bushshrub/housebot*'` is a Go `path.Match` pattern and `*`
+  does not cross `/`. It now lists all images and filters in Rust, keeps the new
+  release and all three images of the previous one, skips images still in use
+  instead of aborting, and also runs after `/update`.
+- **`.env`.** `parse_dotenv` now drops an unquoted ` # comment`. The deployment bot
+  already re-reads `/app/.env` (or `./.env`) on every deploy, but only if the host
+  mounts it there. **Still open:** the host compose file must bind the `.env` into
+  the deployment-bot container. Mount the directory rather than the single file
+  (for example `./:/app/config:ro`, and add that path to `configured_env`),
+  because editors replace the file and a single-file bind mount keeps the old one.
 
 ## Open work: chatbot (2026-09-30)
 
@@ -64,12 +44,12 @@ Not started yet.
    call has a 15 s timeout that logs a `warn`, and a saturated scheduler shows
    "You are #N in line". Do item 2 first, then check again.
 
-2. **Dropped messages are not logged.** Also log the emoji-only reaction path
-   in `handle_message()` at `info`. Every early `return` in `message()`
-   (`src/bot/handler.rs`) drops the message without a log line, which is why
-   item 1 could not be diagnosed from logs. Add a `debug!` (or `info!` for the
-   non-trivial cases) with the reason: bot author, access policy, channel not
-   allowed, not addressed, duplicate.
+2. **Dropped messages are logged (done).** Every early `return` in `message()`
+   and `handle_message()` logs its reason under target `housebot::message_flow`:
+   `info` for access policy, disabled bot pings, a mentioned message in a channel
+   that is not allowed, and an empty message; `debug` for unaddressed messages and
+   unmentioned bots. An emoji-only answer logs `Answered with an emoji-only
+   reaction` (target `housebot::emoji`). Check item 1 again with these.
 
 3. **Unexplained "Unexpected reasoning effort high".** Before commit `2b38ed0`
    the bot sent `reasoning: {"enabled": true, "max_tokens": 8192}` for users on
@@ -122,54 +102,38 @@ continue. All checks pass: `cargo test --workspace` (521),
   - The test `each_turn_extends_the_previous_request_so_the_cache_hits` guards
     this. It must keep passing.
 
-## Open work: web fetch (2026-09-29)
+## Web fetch and search (done 2026-09-30)
 
-`fetch_webpage` returns poor text. `web_fetch.rs` strips tags with a regex
-only. It does not decode entities, and it keeps menus, sidebars, and cookie
-banners. It also joins the whole page into one line. Pages rendered by
-JavaScript come back almost empty. Plan (agreed, not started):
-
-1. **Local extraction first.** Use a Readability port (for example
-   `dom_smoothie`) and keep headings, paragraphs, and lists on separate lines.
-   Fall back to plain HTML-to-text when no article is found.
-2. **Firecrawl only as a fallback**, when the local result is empty or broken.
-   Use the keyless Firecrawl tier (1,000 credits a month, no signup; see
-   github.com/liustack/modsearch for how it is used). **Call only the scrape
-   endpoint** (1 credit per page). Never use search, crawl, map, extract, or
-   agent. SearXNG stays the search backend.
-3. **Limit: 200 Firecrawl credits a month for the bot.** Store a monthly
-   counter in the database (new table and migration, then add it to
-   `every_store_the_bot_needs_has_a_migration`). When the limit is reached,
-   use local extraction only, and log it.
-4. **Long pages go to the sandbox.** If the clean text is longer than about
-   6,000 characters, write it to `/workspace/web/<host>-<hash>.md` with the
-   existing `write_file` path (content goes through stdin, not a shell). The
-   tool returns only the title, size, path, a list of headings with line
-   numbers, and the first ~1,500 characters. The model then uses `shell` with
-   `rg -n` / `sed -n`, or `read`, to look inside. If the sandbox cannot start,
-   return the first ~6,000 characters inline and say that the text was cut.
-5. **`web_search`:** 5 results by default (at most 10), remove the
-   `(via engine)` tag, and cut snippets to about 300 characters.
+- `fetch_webpage` takes only `url`. Chrome (`nav`, `footer`, `aside`, `form`, …) is
+  removed, then `dom_smoothie` extracts the article as Markdown; with no article,
+  the whole page is converted by `dom_query`. The Markdown escaping of punctuation
+  is undone so the text can be searched.
+- Under 200 characters of text, the keyless Firecrawl `/v2/scrape` is tried
+  (`crates/tools/src/firecrawl.rs`), limited to 200 credits per UTC month by the
+  `firecrawl_usage` table (migration `006`). The check and increment are one
+  statement. Without the database (tests), Firecrawl is off.
+- Text over 6,000 characters is written to `web/<host>-<hash>.md` in the sandbox
+  through `LazySandbox::write`; the tool returns title, size, heading outline with
+  line numbers, and the first 1,500 characters. If the sandbox fails, the first
+  6,000 characters are returned inline with a note that the text was cut.
+- `web_search`: 5 results by default, at most 10, no `(via engine)` tag, snippets
+  cut at 300 characters.
 
 Do not remove old tool results from history to save context. That breaks the
 cache (see above).
 
-## Open work: CI build time (2026-09-30)
+## CI build time (done 2026-09-30, unverified)
 
-The "Post-merge Docker publish" run takes about 6 minutes: `test` (~2.5 min),
-then `build (main)` (~3 min compile). cargo-chef would not help: the chatbot and
-`sandboxd` binaries are compiled outside Docker in the workflow, and the image
-build is ~18 s.
+`docker-publish.yml` now has a `compile` matrix job (`main`, `sandboxd`) that runs in
+parallel with `test`, with rust-cache keys `musl-release-<name>`, and uploads the
+binaries as artifacts. `build` needs `test` and `compile`, downloads the binary,
+and only builds and pushes the images. The first run after merge will still miss
+the cache.
 
-- **The compile cache never hits.** Every job logged "No cache found". The
-  `main` and `sandboxd` build jobs in `.github/workflows/docker-publish.yml`
-  share the rust-cache key `musl-release`. `sandboxd` saves first with only its
-  own crates, then `main` fails to save ("Unable to reserve cache … another job
-  may be creating this cache"). Fix: key each job separately, for example
-  `musl-release-${{ matrix.name }}`.
-- **Build waits for test.** `build` has `needs: test`. Compile in parallel with
-  `test` and gate only the image push on `test` passing.
-- Expected result: about 2–3 minutes in total.
+Unrelated and pre-existing: `cargo clippy --workspace --all-targets` fails on
+`crates/deployment-bot/src/lib_tests.rs` (`manual_pattern_char_comparison`) and
+`crates/token-monitor/src/tests.rs` (unused import). CI runs clippy on the root
+package only, so it does not see them.
 
 All seven phases have landed. The per-phase narrative that used to live here is
 in the commit history; what is kept below is the part that is still load-bearing
@@ -259,6 +223,7 @@ recreated with a new shape.
 | `bot_config` | `crates/bot-config` | `003` |
 | `conversations`, `token_usage_events` | `crates/token-monitor` | `004` |
 | `deployment_permissions` | `crates/deployment-bot` | `005` |
+| `firecrawl_usage` | `crates/tools` (`firecrawl.rs`) | `006` |
 
 `every_store_the_bot_needs_has_a_migration` asserts each one is created by some
 migration. Add to it when you add a store.

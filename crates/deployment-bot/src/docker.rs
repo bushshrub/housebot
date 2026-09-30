@@ -355,21 +355,64 @@ where
     Err(last_error.expect("operation attempted at least once"))
 }
 
+/// The three images one release is published as, all tagged with the commit.
+pub(crate) fn release_images(sha: &str) -> [String; 3] {
+    [
+        format!("ghcr.io/bushshrub/housebot:sha-{sha}"),
+        format!("ghcr.io/bushshrub/housebot/sandboxd:sha-{sha}"),
+        format!("ghcr.io/bushshrub/housebot/sandbox:sha-{sha}"),
+    ]
+}
+
+fn manifest_missing(error: &anyhow::Error) -> bool {
+    let message = error.to_string().to_ascii_lowercase();
+    message.contains("manifest unknown") || message.contains("no such manifest")
+}
+
+/// Whether the publish workflow has pushed every image for `sha`. Only a
+/// registry answer that a manifest does not exist counts as unpublished; any
+/// other failure lets the deploy go ahead, since its pull stage reports the
+/// same problem anyway.
+pub(crate) async fn images_published(sha: &str) -> bool {
+    for image in release_images(sha) {
+        match run_docker(&["manifest", "inspect", &image]).await {
+            Ok(_) => {}
+            Err(error) if manifest_missing(&error) => {
+                tracing::info!(image, "Release image is not published");
+                return false;
+            }
+            Err(error) => {
+                tracing::warn!(%error, image, "Could not check whether a release image is published");
+            }
+        }
+    }
+    true
+}
+
+pub(crate) fn removable_images<'a>(images: &'a str, keep: &[&str]) -> Vec<&'a str> {
+    images
+        .lines()
+        .filter(|image| {
+            (*image == "ghcr.io/bushshrub/housebot:latest"
+                || image.starts_with("ghcr.io/bushshrub/housebot:sha-")
+                || image.starts_with("ghcr.io/bushshrub/housebot/sandboxd:sha-")
+                || image.starts_with("ghcr.io/bushshrub/housebot/sandbox:sha-"))
+                && !keep.contains(image)
+        })
+        .collect()
+}
+
 pub(crate) async fn cleanup_old_images(keep: &[&str]) -> anyhow::Result<()> {
-    let images = run_docker(&[
-        "images",
-        "--format={{.Repository}}:{{.Tag}}",
-        "ghcr.io/bushshrub/housebot*",
-    ])
-    .await?;
-    for image in images.lines().filter(|image| {
-        (*image == "ghcr.io/bushshrub/housebot:latest"
-            || image.starts_with("ghcr.io/bushshrub/housebot:sha-")
-            || image.starts_with("ghcr.io/bushshrub/housebot/sandboxd:sha-")
-            || image.starts_with("ghcr.io/bushshrub/housebot/sandbox:sha-"))
-            && !keep.contains(image)
-    }) {
-        run_docker(&["image", "rm", image]).await?;
+    // Listed unfiltered: a `reference` filter's `*` stops at `/`, so
+    // `ghcr.io/bushshrub/housebot*` never matched the sandbox images.
+    let images = run_docker(&["images", "--format={{.Repository}}:{{.Tag}}"]).await?;
+    for image in removable_images(&images, keep) {
+        // An image a container still uses is refused by `image rm`; skipping it
+        // is right, and must not stop the rest being removed.
+        match run_docker(&["image", "rm", image]).await {
+            Ok(_) => tracing::info!(image, "Removed an old housebot image"),
+            Err(error) => tracing::info!(%error, image, "Kept an old housebot image"),
+        }
     }
     Ok(())
 }

@@ -436,6 +436,84 @@ fn deployment_changelog_lists_commits_since_previous_deployment() {
     assert!(changelog.contains("https://github.com/example/repo/commit/2222222"));
 }
 
+#[test]
+fn unpublished_note_names_both_commits() {
+    let commit = |sha: &str, message: &str| GitHubCommit {
+        sha: sha.into(),
+        html_url: format!("https://github.com/example/repo/commit/{sha}"),
+        commit: GitHubCommitDetails {
+            message: message.into(),
+        },
+    };
+    let note = unpublished_note(
+        &commit("aaaaaaa111", "Tip"),
+        &commit("bbbbbbb222", "Built commit\nbody"),
+    );
+    assert!(note.contains("`aaaaaaa`"));
+    assert!(note.contains("still running or failed"));
+    assert!(note.contains("`bbbbbbb`"));
+    assert!(note.contains("Built commit"));
+    assert!(!note.contains("body"));
+}
+
+#[test]
+fn release_images_cover_the_bot_and_both_sandbox_images() {
+    assert_eq!(
+        release_images("abc1234"),
+        [
+            "ghcr.io/bushshrub/housebot:sha-abc1234".to_string(),
+            "ghcr.io/bushshrub/housebot/sandboxd:sha-abc1234".to_string(),
+            "ghcr.io/bushshrub/housebot/sandbox:sha-abc1234".to_string(),
+        ]
+    );
+}
+
+#[test]
+fn cleanup_removes_old_release_images_but_keeps_the_kept_ones_and_other_stacks() {
+    let images = "ghcr.io/bushshrub/housebot:sha-new
+ghcr.io/bushshrub/housebot/sandboxd:sha-new
+ghcr.io/bushshrub/housebot/sandbox:sha-new
+ghcr.io/bushshrub/housebot:sha-prev
+ghcr.io/bushshrub/housebot/sandboxd:sha-prev
+ghcr.io/bushshrub/housebot/sandbox:sha-prev
+ghcr.io/bushshrub/housebot:sha-old
+ghcr.io/bushshrub/housebot/sandboxd:sha-old
+ghcr.io/bushshrub/housebot/sandbox:sha-old
+ghcr.io/bushshrub/housebot-deployment-bot:latest
+postgres:16
+jellyfin/jellyfin:latest";
+    let mut keep = release_images("new").to_vec();
+    keep.extend(release_images("prev"));
+    let keep: Vec<&str> = keep.iter().map(String::as_str).collect();
+    assert_eq!(
+        docker::removable_images(images, &keep),
+        vec![
+            "ghcr.io/bushshrub/housebot:sha-old",
+            "ghcr.io/bushshrub/housebot/sandboxd:sha-old",
+            "ghcr.io/bushshrub/housebot/sandbox:sha-old",
+        ]
+    );
+}
+
+#[test]
+fn dotenv_values_drop_trailing_comments_and_quotes() {
+    let parsed = parse_dotenv(
+        "# heading\nLLM_API_KEY=sk-123 # the gateway key\nQUOTED=\"a # b\" # note\n\
+         SINGLE='x'\nexport PLAIN=value\nHASH=abc#def\nEMPTY=\n",
+    );
+    assert_eq!(
+        parsed,
+        vec![
+            ("LLM_API_KEY".to_string(), "sk-123".to_string()),
+            ("QUOTED".to_string(), "a # b".to_string()),
+            ("SINGLE".to_string(), "x".to_string()),
+            ("PLAIN".to_string(), "value".to_string()),
+            ("HASH".to_string(), "abc#def".to_string()),
+            ("EMPTY".to_string(), String::new()),
+        ]
+    );
+}
+
 /// The Dockerfile lists every workspace manifest by hand so the dependency
 /// layer caches. Nothing checks that list against reality: a crate deleted from
 /// the workspace leaves a `COPY` of a path that no longer exists, and the image

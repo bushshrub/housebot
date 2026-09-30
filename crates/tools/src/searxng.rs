@@ -14,6 +14,8 @@ use housebot_config as config;
 
 const DEFAULT_URL: &str = "http://searxng:8080";
 const SEARCHES_PER_MINUTE: usize = 30;
+const MAX_RESULTS: usize = 10;
+const SNIPPET_CHARS: usize = 300;
 
 /// Client for one SearXNG instance.
 pub struct SearxNg {
@@ -41,8 +43,6 @@ struct SearchResult {
     url: String,
     #[serde(default)]
     content: Option<String>,
-    #[serde(default)]
-    engine: Option<String>,
 }
 
 impl SearxNg {
@@ -77,7 +77,7 @@ impl SearxNg {
             return "Error: search query cannot be empty".to_string();
         }
         match self.search_response(query, language).await {
-            Ok(parsed) => format_results(&parsed, max_results.clamp(1, 20)),
+            Ok(parsed) => format_results(&parsed, max_results.clamp(1, MAX_RESULTS)),
             Err(error) => error,
         }
     }
@@ -158,19 +158,24 @@ fn format_results(response: &SearchResponse, limit: usize) -> String {
     output.push_str(&format!("Found {} search results:\n\n", results.len()));
     for (index, result) in results.iter().enumerate() {
         output.push_str(&format!(
-            "{}. {}\n URL: {}\n Summary: {}{}\n\n",
+            "{}. {}\n URL: {}\n Summary: {}\n\n",
             index + 1,
             result.title,
             result.url,
-            result.content.as_deref().unwrap_or(""),
-            result
-                .engine
-                .as_deref()
-                .map(|engine| format!(" (via {engine})"))
-                .unwrap_or_default(),
+            snippet(result.content.as_deref().unwrap_or("")),
         ));
     }
     output
+}
+
+fn snippet(content: &str) -> String {
+    let content = content.trim();
+    if content.chars().count() <= SNIPPET_CHARS {
+        return content.to_string();
+    }
+    let mut cut: String = content.chars().take(SNIPPET_CHARS).collect();
+    cut.push('…');
+    cut
 }
 
 /// Extract the text of one entry in `answers`, whatever its shape.
@@ -194,7 +199,7 @@ pub fn definition() -> Value {
             "type": "object",
             "properties": {
                 "query": {"type": "string"},
-                "max_results": {"type": "integer", "minimum": 1, "maximum": 20, "default": 10},
+                "max_results": {"type": "integer", "minimum": 1, "maximum": 10, "default": 5},
                 "language": {"type": "string", "description": "Search language code such as en or de-DE"}
             },
             "required": ["query"]
@@ -220,7 +225,18 @@ mod tests {
         assert!(out.contains("Rust"));
         assert!(out.contains("https://rust-lang.org"));
         assert!(out.contains("A language"));
-        assert!(out.contains("(via brave)"));
+        assert!(!out.contains("brave"));
+    }
+
+    #[test]
+    fn long_snippets_are_cut() {
+        let long = "x".repeat(SNIPPET_CHARS + 50);
+        let parsed = response(&format!(
+            r#"{{"results":[{{"title":"t","url":"https://t.example","content":"{long}"}}]}}"#
+        ));
+        let out = format_results(&parsed, 10);
+        assert!(out.contains(&format!("{}…", "x".repeat(SNIPPET_CHARS))));
+        assert!(!out.contains(&long));
     }
 
     #[test]
