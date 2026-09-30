@@ -53,14 +53,18 @@ impl Agent {
             / self.context_window_tokens.max(1) as f64;
         if !past.is_empty() && previous_usage >= 0.9 {
             tracing::info!("Context at 90% for {user_id} — auto-compacting session");
-            self.compact_session_with_hooks(user_id, deep_memory_enabled, hooks)
+            let compacted = self
+                .compact_session_with_hooks(user_id, deep_memory_enabled, hooks)
                 .await;
             past = self.history.load(user_id).await;
             user_memory = self.memory.load(user_id).await;
-            session_notice = Some(
+            session_notice = Some(if compacted {
                 "⚠️ The context window reached 90%, so I compacted the conversation and started a new session. Use /session to check your current context usage."
-                    .into(),
-            );
+                    .into()
+            } else {
+                "⚠️ The context window reached 90%, but compacting the conversation failed, so it was kept. I'll try again on your next message, or use `/session new` to start over."
+                    .into()
+            });
         }
         let conversation_id = self
             .current_conversation_id(user_id, display_name, channel_id)
