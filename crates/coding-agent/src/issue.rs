@@ -181,7 +181,7 @@ mod tests {
             .filter(|l| l.starts_with("      ") && l.trim_end().ends_with(':'))
             .map(|l| l.trim().trim_end_matches(':'))
             .collect();
-        for key in dispatch_inputs(1, "opencode/deepseek-v4-flash-free", 2).keys() {
+        for key in dispatch_inputs(1, "opencode/mimo-v2.6-flash-free", 2).keys() {
             assert!(
                 declared.contains(&key.as_str()),
                 "input '{key}' is not declared in opencode-dispatch.yml"

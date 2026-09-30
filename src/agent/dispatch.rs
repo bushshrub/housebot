@@ -179,7 +179,7 @@ impl Agent {
                     let agent_str = config::env_or("DEVELOPMENT_DEFAULT_AGENT", "opencode");
                     let model = config::env_or(
                         "DEVELOPMENT_DEFAULT_MODEL",
-                        "opencode/deepseek-v4-flash-free",
+                        "opencode/mimo-v2.6-flash-free",
                     );
                     PartialAgentSelection {
                         agent: CodingAgent::from_str(&agent_str).ok(),
