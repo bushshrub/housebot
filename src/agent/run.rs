@@ -231,6 +231,13 @@ impl Agent {
             // call in this batch has received a tool message, so the persisted
             // history never contains a tool call without its result.
             let mut rate_limited = false;
+            if let Some(text) = completion
+                .content
+                .as_deref()
+                .filter(|t| !t.trim().is_empty())
+            {
+                hooks.on_assistant_text(text.trim()).await;
+            }
             for tc in &completion.tool_calls {
                 let args: Value = serde_json::from_str(&tc.arguments).unwrap_or(json!({}));
                 tools_called.push(tc.name.clone());

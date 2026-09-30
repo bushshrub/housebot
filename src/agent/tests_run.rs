@@ -88,6 +88,43 @@ impl AgentHooks for StreamLifecycleHooks {
     }
 }
 
+#[derive(Default)]
+struct AssistantTextHooks {
+    texts: std::sync::Mutex<Vec<String>>,
+}
+
+#[async_trait]
+impl AgentHooks for AssistantTextHooks {
+    async fn on_assistant_text(&self, text: &str) {
+        self.texts.lock().unwrap().push(text.to_string());
+    }
+}
+
+#[tokio::test]
+async fn run_surfaces_text_written_alongside_tool_calls() {
+    let client = Arc::new(MockChatClient::new());
+    client.push_completion(ChatCompletion {
+        content: Some("  Checking the docs first.\n".into()),
+        tool_calls: vec![crate::llm::ToolCall {
+            id: "c1".into(),
+            name: "get_lua_docs".into(),
+            arguments: "{}".into(),
+        }],
+        finish_reason: Some("tool_calls".into()),
+        usage: Default::default(),
+    });
+    client.push_text("Here are the docs.");
+    let (_t, agent) = test_agent(client);
+    let hooks = AssistantTextHooks::default();
+
+    let result = agent
+        .run(AgentRequest::text("u1", "Alice", "hi"), &hooks)
+        .await;
+
+    assert_eq!(result.text, "Here are the docs.");
+    assert_eq!(*hooks.texts.lock().unwrap(), ["Checking the docs first."]);
+}
+
 #[tokio::test]
 async fn cancellation_drops_the_active_llm_stream() {
     let started = Arc::new(Notify::new());

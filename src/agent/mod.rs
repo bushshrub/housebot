@@ -163,6 +163,8 @@ pub trait AgentHooks: Send + Sync {
     async fn on_text_stream(&self, _partial: &str) {}
     /// The current assistant text stream has ended.
     async fn on_text_stream_end(&self) {}
+    /// Text the model wrote alongside tool calls, before those tools run.
+    async fn on_assistant_text(&self, _text: &str) {}
     /// A tool is about to run.
     async fn on_tool_called(&self, _tool: &str, _args: &Value) {}
     /// A progress update from a long-running operation.
