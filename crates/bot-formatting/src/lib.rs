@@ -107,6 +107,50 @@ pub fn tool_hint(tool_name: &str, args: &Value) -> String {
     }
 }
 
+/// Longest shell command shown in full; a Discord message holds 2,000 characters.
+const SHELL_COMMAND_DISPLAY_LIMIT: usize = 1500;
+
+/// The message announcing one tool call. A shell command is shown verbatim in a
+/// code fence so it can be read and copied; other tools get a one-line status.
+pub fn tool_message(tool_name: &str, args: &Value) -> String {
+    let status = tool_status(tool_name);
+    let command = args.get("command").and_then(Value::as_str).unwrap_or("");
+    if tool_name == "shell" {
+        if command.trim().is_empty() {
+            return status;
+        }
+        let base = status.strip_suffix("...**").unwrap_or(&status);
+        let mut shown = truncate(command.trim_end(), SHELL_COMMAND_DISPLAY_LIMIT);
+        if command.trim_end().chars().count() > SHELL_COMMAND_DISPLAY_LIMIT {
+            shown.push('…');
+        }
+        let fence = fence_for(&shown);
+        return format!("{base}:**\n{fence}sh\n{shown}\n{fence}");
+    }
+    let hint = tool_hint(tool_name, args);
+    if hint.is_empty() {
+        status
+    } else {
+        let base = status.strip_suffix("...**").unwrap_or(&status);
+        format!("{base}{hint}...**")
+    }
+}
+
+/// A backtick fence longer than any run inside `text`, so the text cannot close it early.
+fn fence_for(text: &str) -> String {
+    let mut longest = 0;
+    let mut run = 0;
+    for c in text.chars() {
+        if c == '`' {
+            run += 1;
+            longest = longest.max(run);
+        } else {
+            run = 0;
+        }
+    }
+    "`".repeat((longest + 1).max(3))
+}
+
 fn display_tool_name(name: &str) -> String {
     const MAX: usize = 80;
     let sanitized: String = name.chars().filter(|c| !c.is_control()).collect();
@@ -220,6 +264,50 @@ pub fn format_tokens(count: u64) -> String {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn tool_message_shows_a_shell_command_in_a_code_fence() {
+        let message = tool_message("shell", &json!({"command": "ls -la\npwd"}));
+        assert_eq!(
+            message,
+            "📦 **Running a command:**\n```sh\nls -la\npwd\n```"
+        );
+    }
+
+    #[test]
+    fn tool_message_fence_outlasts_backticks_in_the_command() {
+        let message = tool_message("shell", &json!({"command": "echo '```'"}));
+        assert!(message.contains("````sh\necho '```'\n````"), "{message}");
+    }
+
+    #[test]
+    fn tool_message_truncates_a_long_shell_command_within_discords_limit() {
+        let message = tool_message("shell", &json!({"command": "x".repeat(5000)}));
+        assert!(
+            message.chars().count() < 2000,
+            "{}",
+            message.chars().count()
+        );
+        assert!(message.contains("…\n```"));
+    }
+
+    #[test]
+    fn tool_message_keeps_the_one_line_hint_for_other_tools() {
+        let message = tool_message("web_search", &json!({"query": "rust"}));
+        assert_eq!(message, "🔎 **Searching the web — rust...**");
+        assert_eq!(
+            tool_message("get_bot_features", &json!({})),
+            "🤖 **Checking my features...**"
+        );
+    }
+
+    #[test]
+    fn tool_message_falls_back_to_the_status_for_an_empty_shell_command() {
+        assert_eq!(
+            tool_message("shell", &json!({"command": "  "})),
+            "📦 **Running a command...**"
+        );
+    }
 
     #[test]
     fn format_tokens_leaves_sub_thousand_counts_exact() {
