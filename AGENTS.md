@@ -211,7 +211,8 @@ Housebot  →  Unix socket  →  sandboxd  →  docker run --runtime=runsc  → 
   syscalls, preventing container escape without requiring hardware virtualization.
 - Container is `--read-only`, `--cap-drop=ALL`, `--no-new-privileges`,
   `--user=sandbox`, with tmpfs mounts only on `/workspace`, `/tmp`,
-  `/home/sandbox`.
+  `/home/sandbox`. Only `/workspace` allows execution, so the image puts the Rust
+  toolchain in `/opt` and points cargo, pip, and npm installs at `/workspace`.
 - One sandbox per user session, shared across turns; `sandboxd` destroys it after
   `SANDBOX_IDLE_TIMEOUT_SECS` of inactivity. Everything in it is tmpfs, so reaping
   discards the workspace.

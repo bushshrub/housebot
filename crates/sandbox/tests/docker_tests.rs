@@ -13,9 +13,9 @@ fn run_args_have_all_required_security_features() {
         arg_str.contains("--security-opt"),
         "must have security opts"
     );
-    assert!(arg_str.contains("--pids-limit=128"), "must limit pids");
-    assert!(arg_str.contains("--memory=2g"), "must limit memory");
-    assert!(arg_str.contains("--cpus=1"), "must limit cpus");
+    assert!(arg_str.contains("--pids-limit=512"), "must limit pids");
+    assert!(arg_str.contains("--memory=4g"), "must limit memory");
+    assert!(arg_str.contains("--cpus=2"), "must limit cpus");
     assert!(arg_str.contains("--ulimit"), "must set ulimit");
     assert!(
         arg_str.contains("--network=none"),

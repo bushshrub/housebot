@@ -43,17 +43,17 @@ impl ContainerConfig {
             user: "sandbox".to_string(),
             cap_drop: vec!["ALL".to_string()],
             security_opt: vec!["no-new-privileges:true".to_string()],
-            pids_limit: 128,
-            memory: "2g".to_string(),
-            memory_swap: "2g".to_string(),
-            cpus: 1.0,
-            ulimit: vec![("nofile".to_string(), "512:512".to_string())],
+            pids_limit: 512,
+            memory: "4g".to_string(),
+            memory_swap: "4g".to_string(),
+            cpus: 2.0,
+            ulimit: vec![("nofile".to_string(), "4096:4096".to_string())],
             // `/workspace` deliberately omits `noexec`: skill scripts and
             // compiled binaries have to run from it. `nosuid` stays, and the
             // other mounts keep `noexec` so only the workspace is executable.
             tmpfs: vec![
-                "/workspace:size=256m,nosuid,uid=1000,gid=1000".to_string(),
-                "/tmp:size=64m,noexec,nosuid".to_string(),
+                "/workspace:size=2g,nosuid,uid=1000,gid=1000".to_string(),
+                "/tmp:size=256m,noexec,nosuid".to_string(),
                 "/home/sandbox:size=32m,noexec,nosuid".to_string(),
             ],
             network,
@@ -251,19 +251,19 @@ mod tests {
     #[test]
     fn run_args_contain_cpu_limit() {
         let args = build_run_args("test-1", NetworkAccess::None);
-        assert!(args.contains(&"--cpus=1".to_string()));
+        assert!(args.contains(&"--cpus=2".to_string()));
     }
 
     #[test]
     fn run_args_contain_memory_limit() {
         let args = build_run_args("test-1", NetworkAccess::None);
-        assert!(args.contains(&"--memory=2g".to_string()));
+        assert!(args.contains(&"--memory=4g".to_string()));
     }
 
     #[test]
     fn run_args_contain_pids_limit() {
         let args = build_run_args("test-1", NetworkAccess::None);
-        assert!(args.contains(&"--pids-limit=128".to_string()));
+        assert!(args.contains(&"--pids-limit=512".to_string()));
     }
 
     #[test]

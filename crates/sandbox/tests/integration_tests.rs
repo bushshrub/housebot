@@ -81,9 +81,9 @@ fn docker_args_all_security_options_present() {
         joined.contains("no-new-privileges"),
         "no-new-privileges required"
     );
-    assert!(joined.contains("--pids-limit=128"), "pids limit required");
-    assert!(joined.contains("--memory=2g"), "memory limit required");
-    assert!(joined.contains("--cpus=1"), "cpus limit required");
+    assert!(joined.contains("--pids-limit=512"), "pids limit required");
+    assert!(joined.contains("--memory=4g"), "memory limit required");
+    assert!(joined.contains("--cpus=2"), "cpus limit required");
     assert!(joined.contains("--ulimit"), "ulimit required");
     assert!(
         joined.contains("--runtime="),

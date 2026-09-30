@@ -335,8 +335,9 @@ pub fn shell_definition() -> Value {
         "description": "Run a Bash command in your sandbox. The sandbox has internet access, \
             git, Python, Node, and Rust. Use it to clone repositories, list and search files \
             (ls, rg), run tests, and run skill scripts. The working directory defaults to \
-            /workspace. Files persist between turns until the sandbox has been idle for 5 \
-            minutes. Output is limited to 64 KiB. Timeout defaults to 30 seconds (max 300). \
+            /workspace, which holds 2 GiB and is the only place programs can run from; pip, \
+            npm, and cargo already install there. Files persist between turns until the \
+            sandbox has been idle for 5 minutes. Output is limited to 64 KiB. Timeout defaults to 30 seconds (max 300). \
             A non-zero exit code is NOT an error — it is returned to you so you can explain it.",
         "input_schema": {
             "type": "object",
