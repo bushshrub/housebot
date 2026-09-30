@@ -65,14 +65,15 @@ impl SandboxClient {
             .map_err(|e| format!("failed to write request: {e}"))?;
         writer.shutdown().await.ok();
 
+        let response_wait = response_timeout(&request);
         let mut buf_reader = BufReader::new(reader);
         let mut response_line = String::with_capacity(4096);
-        timeout(timeout_dur, buf_reader.read_line(&mut response_line))
+        timeout(response_wait, buf_reader.read_line(&mut response_line))
             .await
             .map_err(|_| {
                 format!(
                     "timed out reading response after {}s",
-                    limits::SOCKET_TIMEOUT_SECS
+                    response_wait.as_secs()
                 )
             })?
             .map_err(|e| format!("failed to read response: {e}"))?;
@@ -291,6 +292,17 @@ impl Sandbox {
     }
 }
 
+/// sandboxd answers a command only once it has finished, so the reply may
+/// legitimately take as long as the command's own timeout.
+fn response_timeout(request: &SandboxRequest) -> Duration {
+    let command_secs = request
+        .params
+        .get("timeout_secs")
+        .and_then(serde_json::Value::as_u64)
+        .unwrap_or(0);
+    Duration::from_secs(limits::SOCKET_TIMEOUT_SECS + command_secs)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -322,5 +334,19 @@ mod tests {
         assert_eq!(request.method, "touch");
         assert_eq!(request.params["session_key"], "user-1");
         let _ = std::fs::remove_file(&socket);
+    }
+
+    #[test]
+    fn a_command_reply_is_awaited_for_the_command_timeout_plus_the_socket_timeout() {
+        let run = SandboxRequest::new("run", serde_json::json!({"timeout_secs": 300}));
+        let read = SandboxRequest::new("read_file", serde_json::json!({}));
+        assert_eq!(
+            response_timeout(&run),
+            Duration::from_secs(300 + limits::SOCKET_TIMEOUT_SECS)
+        );
+        assert_eq!(
+            response_timeout(&read),
+            Duration::from_secs(limits::SOCKET_TIMEOUT_SECS)
+        );
     }
 }
