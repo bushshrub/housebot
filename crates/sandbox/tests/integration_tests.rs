@@ -142,10 +142,8 @@ fn docker_args_network_isolation() {
 
     let pub_net = docker::build_run_args("test", NetworkAccess::PublicInternet);
     assert!(
-        pub_net
-            .iter()
-            .any(|a| a == "--network=housebot-sandbox-net"),
-        "public internet mode must use sandbox network"
+        pub_net.iter().any(|a| a == "--network=bridge"),
+        "public internet mode must use the default bridge"
     );
 }
 

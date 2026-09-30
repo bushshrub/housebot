@@ -30,6 +30,17 @@ Done on branch `claude/handoff-open-work`, never run against a live Docker host:
   (for example `./:/app/config:ro`, and add that path to `configured_env`),
   because editors replace the file and a single-file bind mount keeps the old one.
 
+## Sandbox DNS (2026-09-30)
+
+The dnsmasq forwarder from `b3048b4` never worked: dnsmasq exited on the
+read-only root because it could not write its pidfile, and `--read-only` also
+makes the sandbox's `/etc/resolv.conf` read-only, so it could not be repointed.
+Public-internet sandboxes now run on Docker's default `bridge` network with
+`--dns=1.1.1.1 --dns=8.8.8.8`, which Docker writes straight into resolv.conf.
+A user-defined network always forces `127.0.0.11`, which gVisor cannot reach.
+The old `housebot-sandbox-dns` container and `housebot-sandbox-net` network are
+no longer used and must be removed by hand on the host.
+
 ## Open work: chatbot (2026-09-30)
 
 1. **Hexagone got no answer for some messages.** Not explained. The bot did
