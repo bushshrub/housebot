@@ -12,7 +12,7 @@ fn test_agent(client: Arc<dyn ChatClient>) -> (TempDir, Agent) {
     let tmp = TempDir::new().unwrap();
     let agent = Agent::for_test(
         client,
-        History::new(tmp.path().join("history"), 30),
+        History::new(tmp.path().join("history")),
         Memory::new(tmp.path().join("memories")),
         Skills::new(tmp.path().join("skills.json")),
         Reminders::new(tmp.path().join("reminders.json")),
@@ -180,8 +180,31 @@ async fn run_persists_history() {
         .run(AgentRequest::text("u2", "Bob", "remember this"), &NoHooks)
         .await;
     let hist = agent.history.load("u2").await;
-    assert_eq!(hist.len(), 2); // user + assistant
-    assert_eq!(hist[0]["content"], "remember this");
+    assert_eq!(hist.len(), 3); // session context + user + assistant
+    assert!(is_session_context(&hist[0]));
+    assert_eq!(hist[1]["content"], "remember this");
+}
+
+#[tokio::test]
+async fn each_turn_extends_the_previous_request_so_the_cache_hits() {
+    let client = Arc::new(MockChatClient::new());
+    client.push_text("first reply");
+    client.push_text("second reply");
+    let (_t, agent) = test_agent(client.clone());
+    agent
+        .run(AgentRequest::text("u9", "Bob", "one"), &NoHooks)
+        .await;
+    agent
+        .run(AgentRequest::text("u9", "Bob", "two"), &NoHooks)
+        .await;
+
+    let calls = client.stream_calls.lock().unwrap().clone();
+    let (first, second) = (&calls[0], &calls[1]);
+    assert_eq!(
+        &second[..first.len()],
+        &first[..],
+        "the second request must start with the whole first request"
+    );
 }
 
 #[tokio::test]
@@ -511,7 +534,7 @@ async fn run_sends_the_skill_list_as_a_user_message() {
         .await;
 
     let messages = client.stream_calls.lock().unwrap()[0].clone();
-    let skills_message = &messages[messages.len() - 2];
+    let skills_message = &messages[1];
     assert_eq!(skills_message["role"], "user");
     assert!(skills_message["content"]
         .as_str()
@@ -563,7 +586,7 @@ async fn context_overflow_triggers_new_session() {
     let tmp = TempDir::new().unwrap();
     let mut agent = Agent::for_test(
         client,
-        History::new(tmp.path().join("history"), 30),
+        History::new(tmp.path().join("history")),
         Memory::new(tmp.path().join("memories")),
         Skills::new(tmp.path().join("skills.json")),
         Reminders::new(tmp.path().join("reminders.json")),
@@ -758,14 +781,14 @@ async fn history_turn_contains_discord_context_metadata() {
     agent.run(request, &NoHooks).await;
 
     let history = agent.history.load("u8").await;
-    assert_eq!(history[0]["discord_context"]["guild_id"], 7);
-    assert_eq!(history[0]["discord_context"]["channel_id"], 42);
-    assert_eq!(history[0]["discord_context"]["username"], "alice");
+    assert_eq!(history[1]["discord_context"]["guild_id"], 7);
+    assert_eq!(history[1]["discord_context"]["channel_id"], 42);
+    assert_eq!(history[1]["discord_context"]["username"], "alice");
     assert_eq!(
-        history[0]["discord_context"]["avatar_url"],
+        history[1]["discord_context"]["avatar_url"],
         "https://cdn.discordapp.com/avatars/u8/avatar.png"
     );
-    assert!(history[0]["discord_context"]["timestamp"].is_string());
+    assert!(history[1]["discord_context"]["timestamp"].is_string());
 }
 
 /// The channel buffer holds every channel the bot can see, so reading one the

@@ -331,6 +331,9 @@ impl Agent {
                     }
                 })
             }
+            "get_current_time" => {
+                ToolOutcome::Text(current_time_text(str_arg(args, "timezone"), Utc::now()))
+            }
             // Offered only to configurers at the tool-definition layer, but
             // re-checked here as a defence-in-depth measure.
             "configure_bot" => {

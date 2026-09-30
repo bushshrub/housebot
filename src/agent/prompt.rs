@@ -33,30 +33,6 @@ pub(crate) fn build_user_message(text: &str, media_data: &[MediaData]) -> Value 
     json!({"role": "user", "content": content})
 }
 
-/// Build the system prompt for a turn.
-#[allow(clippy::too_many_arguments)]
-pub fn build_system_prompt(
-    username: &str,
-    user_id: &str,
-    display_name: &str,
-    nickname: &str,
-    user_memory: &str,
-    personality: Option<&str>,
-    deep_memory_enabled: bool,
-) -> String {
-    build_system_prompt_with_profile(
-        username,
-        user_id,
-        display_name,
-        nickname,
-        "",
-        user_memory,
-        personality,
-        deep_memory_enabled,
-        &Local::now().format("%Y-%m-%d %H:%M").to_string(),
-    )
-}
-
 /// The stable prefix shared across all users and turns.  This is the portion
 /// of the system prompt that never changes — assistant identity, tool
 /// descriptions, and behavioural guidelines.  It does *not* include
@@ -168,7 +144,8 @@ are at all not confident about information — whether it may have changed, may
 be post-cutoff, or you lack specific knowledge. Search before answering
 current-role questions, binary events, or anything that could have changed. Do
 not make overconfident claims about search results; present findings
-evenhandedly.
+evenhandedly. You do not know the current date or time; call get_current_time
+whenever an answer depends on it.
 
 ## Memory guidelines
 You maintain memory about users. Apply personal knowledge naturally without \
@@ -206,85 +183,14 @@ impl ConfigSuffix {
     }
 }
 
-/// Per-user / per-turn data appended after the stable prefix and config
-/// suffix.  Everything in here changes with each request.
-struct DynamicSuffix<'a> {
-    username: &'a str,
-    user_id: &'a str,
-    now: &'a str,
-    profile_section: String,
-    memory_section: String,
-    personality_section: String,
-}
-
-impl<'a> DynamicSuffix<'a> {
-    #[allow(clippy::too_many_arguments)]
-    fn new(
-        username: &'a str,
-        user_id: &'a str,
-        display_name: &'a str,
-        nickname: &'a str,
-        avatar_url: &'a str,
-        user_memory: &'a str,
-        personality: Option<&'a str>,
-        now: &'a str,
-    ) -> Self {
-        let memory_section = if user_memory.trim().is_empty() {
-            String::new()
-        } else {
-            format!("\n\n## Your memory about {username}\n{user_memory}")
-        };
-        let personality_section = match personality {
-            Some(p) if !p.trim().is_empty() => {
-                format!("\n\n## Personality / tone for this user\n{}", p.trim())
-            }
-            _ => String::new(),
-        };
-        let profile_section = if display_name != username
-            || !nickname.is_empty()
-            || !avatar_url.is_empty()
-        {
-            let name_line = if !nickname.is_empty() {
-                format!("Display name: {display_name}, Nickname: {nickname}")
-            } else {
-                format!("Display name: {display_name}")
-            };
-            let avatar_line = if avatar_url.is_empty() {
-                String::new()
-            } else {
-                format!("\nAvatar URL: {avatar_url}")
-            };
-            format!(
-                "\n\n## User profile\n{name_line}{avatar_line}\n\
-                 Personalization guidance:\n\
-                 - If the user greets you, naturally address them by their nickname or display name.\n\
-                 - Never infer sensitive traits or make unsolicited personal claims about the user."
-            )
-        } else {
-            String::new()
-        };
-        Self {
-            username,
-            user_id,
-            now,
-            profile_section,
-            memory_section,
-            personality_section,
-        }
-    }
-}
-
-#[allow(clippy::too_many_arguments)]
-pub(crate) fn build_system_prompt_with_profile(
+/// Build the system prompt for a turn. It holds only what stays the same for
+/// a user across sessions, so the prompt cache keeps hitting; profile and
+/// memory go in [`build_session_context_message`] instead.
+pub fn build_system_prompt(
     username: &str,
     user_id: &str,
-    display_name: &str,
-    nickname: &str,
-    avatar_url: &str,
-    user_memory: &str,
     personality: Option<&str>,
     deep_memory_enabled: bool,
-    now: &str,
 ) -> String {
     let memory_guidance = if deep_memory_enabled {
         "Actively use memory: when the user says 'remember', 'don't forget', 'keep in mind', \
@@ -299,16 +205,12 @@ pub(crate) fn build_system_prompt_with_profile(
     };
 
     let config = ConfigSuffix::new(deep_memory_enabled);
-    let dynamic = DynamicSuffix::new(
-        username,
-        user_id,
-        display_name,
-        nickname,
-        avatar_url,
-        user_memory,
-        personality,
-        now,
-    );
+    let personality_section = match personality {
+        Some(p) if !p.trim().is_empty() => {
+            format!("\n\n## Personality / tone for this user\n{}", p.trim())
+        }
+        _ => String::new(),
+    };
 
     format!(
         "{STATIC_BASE}\n\n\
@@ -340,20 +242,57 @@ mode=before/after/around with that message's ID.\n\n\
 ## Session information\n\
 {memory_tool_line}\
 - {memory_guidance}\n\
-{profile_section}\
-{memory_section}\
 {personality_section}\n\n\
-Current date/time: {now}\n\
 Current user: {username} (ID: {user_id})\n",
         memory_tool_line = config.memory_tool_line,
-        profile_section = dynamic.profile_section,
-        memory_section = dynamic.memory_section,
-        personality_section = dynamic.personality_section,
-        memory_guidance = memory_guidance,
-        now = dynamic.now,
-        username = dynamic.username,
-        user_id = dynamic.user_id,
     )
+}
+
+const SESSION_CONTEXT_HEADER: &str = "[Session context: a snapshot taken when this session \
+started. Memory changes made later in the conversation replace it.]";
+
+/// The first message of every session: the user's profile and memory as they
+/// were when the session started. It is saved into history, so it never
+/// changes the prompt prefix mid-session; memory updates reach the model
+/// through the update_memory calls that follow it in history.
+pub(crate) fn build_session_context_message(
+    username: &str,
+    display_name: &str,
+    nickname: &str,
+    avatar_url: &str,
+    user_memory: &str,
+) -> Value {
+    let mut content = SESSION_CONTEXT_HEADER.to_string();
+    if display_name != username || !nickname.is_empty() || !avatar_url.is_empty() {
+        let name_line = if !nickname.is_empty() {
+            format!("Display name: {display_name}, Nickname: {nickname}")
+        } else {
+            format!("Display name: {display_name}")
+        };
+        let avatar_line = if avatar_url.is_empty() {
+            String::new()
+        } else {
+            format!("\nAvatar URL: {avatar_url}")
+        };
+        content.push_str(&format!(
+            "\n\n## User profile\n{name_line}{avatar_line}\n\
+             Personalization guidance:\n\
+             - If the user greets you, naturally address them by their nickname or display name.\n\
+             - Never infer sensitive traits or make unsolicited personal claims about the user."
+        ));
+    }
+    if !user_memory.trim().is_empty() {
+        content.push_str(&format!(
+            "\n\n## Your memory about {username}\n{user_memory}"
+        ));
+    }
+    json!({"role": "user", "content": content})
+}
+
+pub(crate) fn is_session_context(message: &Value) -> bool {
+    message["content"]
+        .as_str()
+        .is_some_and(|content| content.starts_with(SESSION_CONTEXT_HEADER))
 }
 
 /// The user message that lists every skill before the user's request.

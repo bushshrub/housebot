@@ -88,6 +88,48 @@ pub(crate) fn get_messages_tool() -> Value {
     })
 }
 
+pub(crate) fn get_current_time_tool() -> Value {
+    json!({
+        "name": "get_current_time",
+        "description": "Get the current date, time, and weekday. Call this whenever an answer \
+            depends on the current date or time; you do not otherwise know it.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "timezone": {
+                    "type": "string",
+                    "description": "IANA time zone name, e.g. 'America/New_York' or 'Europe/Paris'. Defaults to UTC."
+                }
+            },
+            "required": []
+        }
+    })
+}
+
+/// Current time in `timezone` (an IANA name, empty for UTC). The zone data is
+/// compiled in, so this does not depend on tzdata files in any container.
+pub(crate) fn current_time_text(timezone: &str, now: DateTime<Utc>) -> String {
+    let zone = if timezone.trim().is_empty() {
+        chrono_tz::UTC
+    } else {
+        match timezone.trim().parse::<chrono_tz::Tz>() {
+            Ok(zone) => zone,
+            Err(_) => {
+                return format!(
+                    "Error: unknown time zone '{timezone}'. Use an IANA name such as 'America/New_York'."
+                )
+            }
+        }
+    };
+    let local = now.with_timezone(&zone);
+    format!(
+        "{} ({}, UTC{})",
+        local.format("%A %Y-%m-%d %H:%M:%S"),
+        zone.name(),
+        local.format("%:z")
+    )
+}
+
 pub(crate) fn configure_bot_tool() -> Value {
     json!({
         "name": "configure_bot",

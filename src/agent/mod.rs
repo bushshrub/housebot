@@ -6,7 +6,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use chrono::{Local, Utc};
+use chrono::{DateTime, Local, Utc};
 use serde_json::{json, Value};
 use tokio::sync::Notify;
 

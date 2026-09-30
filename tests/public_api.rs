@@ -15,7 +15,7 @@ use tempfile::TempDir;
 async fn storage_layer_round_trips_across_modules() {
     let dir = TempDir::new().unwrap();
     let memory = Memory::new(dir.path().join("memory"));
-    let history = History::new(dir.path().join("history"), 30);
+    let history = History::new(dir.path().join("history"));
     let skills = Skills::new(dir.path().join("skills.json"));
 
     memory.save("42", "Likes strong tea").await.unwrap();
@@ -52,18 +52,9 @@ async fn storage_layer_round_trips_across_modules() {
 }
 
 #[test]
-fn system_prompt_reflects_memory_and_personality() {
-    let prompt = build_system_prompt(
-        "alice",
-        "7",
-        "Alice",
-        "Ali",
-        "Prefers metric units",
-        Some("Be terse"),
-        true,
-    );
-    assert!(prompt.contains("Alice"));
-    assert!(prompt.contains("Prefers metric units"));
+fn system_prompt_reflects_personality() {
+    let prompt = build_system_prompt("alice", "7", Some("Be terse"), true);
+    assert!(prompt.contains("alice"));
     assert!(prompt.contains("Be terse"));
 }
 
@@ -99,7 +90,7 @@ async fn pull_request_merge_is_administrator_only_and_audited() {
 #[test]
 fn thinking_mode_is_publicly_parseable() {
     assert_eq!("xhigh".parse::<ThinkingMode>(), Ok(ThinkingMode::XHigh));
-    assert!(ThinkingMode::Low.max_completion_tokens() > 0);
+    assert!(ThinkingMode::Low.max_completion_tokens_capped(0) > 0);
 }
 
 #[test]

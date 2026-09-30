@@ -52,23 +52,20 @@ Not started yet.
 
 ## Open work: chatbot (2026-09-30)
 
-1. **The bot does not answer the user hexagone.** Not solved. Checked so far:
-   - Hexagone writes in channel `1521175807941148763`, which is on the server's
-     allow-list (`allowed_channel_ids` in the `server:<guild>` row of the
-     `bot_config` table).
-   - `access_control.user_policies` is empty, so hexagone is not blocked.
-   - Other users (derp_z, teddio) get answers in the same channel, so the bot,
-     channel, and model work.
-   - Remaining suspect: the addressing check in `message()` in
-     `src/bot/handler.rs`. In a guild channel the bot answers only a direct
-     @-mention of the bot user (slopbot, ID `1514413259522838528`), a reply to
-     the bot, a reply to a message with attachments, or an active follow-up. A
-     role mention, a mention of an older bot app, or plain text "slopbot" is
-     ignored. Not yet confirmed with hexagone.
-   - Next step: ask hexagone to @-mention the bot user itself. If it still
-     fails, do item 2 and read the log.
+1. **Hexagone got no answer for some messages.** Not explained. The bot did
+   answer hexagone later (2026-09-29, about 9 PM). Hexagone used a real
+   @-mention of the bot user. There was no reaction and nothing in the log for
+   the message that got no answer. At `info` level, every answered message logs
+   `Agent run started` (`src/agent/run.rs`). So that message stopped at one of
+   the silent `return`s in `message()` (`src/bot/handler.rs`) or
+   `handle_message()` (`src/bot/message_flow.rs`). A successful emoji-only
+   reaction also returns without an `info` line. The owner suspects the LLM
+   concurrency limit. That does not fully match the code: the emoji-selection
+   call has a 15 s timeout that logs a `warn`, and a saturated scheduler shows
+   "You are #N in line". Do item 2 first, then check again.
 
-2. **Dropped messages are not logged.** Every early `return` in `message()`
+2. **Dropped messages are not logged.** Also log the emoji-only reaction path
+   in `handle_message()` at `info`. Every early `return` in `message()`
    (`src/bot/handler.rs`) drops the message without a log line, which is why
    item 1 could not be diagnosed from logs. Add a `debug!` (or `info!` for the
    non-trivial cases) with the reason: bot author, access policy, channel not
@@ -91,6 +88,71 @@ Not started yet.
    `reasoning_effort`. The bot's `/props` probe always fails through Bifrost
    (it is a llama.cpp endpoint), so set `MAX_CONTEXT_TOKENS` in `.env` to the
    routed model's real context size.
+
+## Done in the working tree, not committed (2026-09-29)
+
+Made on local `master`, with no commit yet. Commit it to a branch before you
+continue. All checks pass: `cargo test --workspace` (521),
+`cargo clippy --all-targets -- -D warnings`, and `cargo fmt --check`.
+
+- **No time in the system prompt.** A new native tool, `get_current_time`
+  (optional IANA `timezone`, UTC by default), replaces it. The zone data comes
+  from `chrono-tz`, which is built into the binary. The sandbox image
+  (`crates/sandbox/docker/Dockerfile`) now installs `tzdata` for scripts. The
+  image must be rebuilt.
+- **No default output-token cap.** Normal requests send only
+  `reasoning_effort` and no `max_tokens`. The per-level thinking limit
+  (`thinking_tokens`) is sent only in the fallback retry, when the model
+  rejects `reasoning_effort`. The per-user `max_output_tokens` policy still
+  applies when it is set. The cause was an xhigh request that used all 20,480
+  tokens thinking and never answered.
+- **Prompt cache fixes.** A very high cache hit rate is the top priority.
+  **Never rewrite or delete history, and never put per-turn data before the
+  history.**
+  - History is never trimmed. The 60-message sliding window is gone, and
+    `MAX_HISTORY_TURNS` is removed. The 90% compaction limits the size.
+  - The request order is: system prompt → skills list → history → new message.
+  - Memory and profile are out of the system prompt. They go in a "session
+    context" message (`build_session_context_message`), saved as the first
+    history message of each session.
+  - `discord_context` is removed from history messages before they are sent,
+    so each message is sent again byte for byte.
+  - Each LLM round logs `Prompt cache usage` (target `housebot::cache`) with
+    `prompt_tokens`, `cached_tokens`, and `hit_percent`.
+  - The test `each_turn_extends_the_previous_request_so_the_cache_hits` guards
+    this. It must keep passing.
+
+## Open work: web fetch (2026-09-29)
+
+`fetch_webpage` returns poor text. `web_fetch.rs` strips tags with a regex
+only. It does not decode entities, and it keeps menus, sidebars, and cookie
+banners. It also joins the whole page into one line. Pages rendered by
+JavaScript come back almost empty. Plan (agreed, not started):
+
+1. **Local extraction first.** Use a Readability port (for example
+   `dom_smoothie`) and keep headings, paragraphs, and lists on separate lines.
+   Fall back to plain HTML-to-text when no article is found.
+2. **Firecrawl only as a fallback**, when the local result is empty or broken.
+   Use the keyless Firecrawl tier (1,000 credits a month, no signup; see
+   github.com/liustack/modsearch for how it is used). **Call only the scrape
+   endpoint** (1 credit per page). Never use search, crawl, map, extract, or
+   agent. SearXNG stays the search backend.
+3. **Limit: 200 Firecrawl credits a month for the bot.** Store a monthly
+   counter in the database (new table and migration, then add it to
+   `every_store_the_bot_needs_has_a_migration`). When the limit is reached,
+   use local extraction only, and log it.
+4. **Long pages go to the sandbox.** If the clean text is longer than about
+   6,000 characters, write it to `/workspace/web/<host>-<hash>.md` with the
+   existing `write_file` path (content goes through stdin, not a shell). The
+   tool returns only the title, size, path, a list of headings with line
+   numbers, and the first ~1,500 characters. The model then uses `shell` with
+   `rg -n` / `sed -n`, or `read`, to look inside. If the sandbox cannot start,
+   return the first ~6,000 characters inline and say that the text was cut.
+5. **`web_search`:** 5 results by default (at most 10), remove the
+   `(via engine)` tag, and cut snippets to about 300 characters.
+
+Do not remove old tool results from history to save context. That breaks the
+cache (see above).
 
 ## Open work: CI build time (2026-09-30)
 

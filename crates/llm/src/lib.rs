@@ -29,10 +29,8 @@ impl ThinkingMode {
     pub const ALL: [ThinkingMode; 3] =
         [ThinkingMode::Low, ThinkingMode::Medium, ThinkingMode::XHigh];
 
-    /// Reserved for the visible answer, on top of the thinking allowance.
-    const RESPONSE_TOKENS: u32 = 4096;
-
-    /// Tokens the model may spend thinking before the request ceiling cuts it off.
+    /// Thinking-token limit sent only when the model rejects `reasoning_effort`;
+    /// otherwise the effort level alone controls how long the model thinks.
     fn thinking_tokens(self) -> u32 {
         match self {
             ThinkingMode::Low => 2_048,
@@ -50,18 +48,13 @@ impl ThinkingMode {
         }
     }
 
-    /// `max_tokens` for a completion request: thinking allowance plus room for the answer.
-    pub fn max_completion_tokens(self) -> u32 {
-        self.max_completion_tokens_capped(Self::RESPONSE_TOKENS)
-    }
-
     /// `max_tokens` for a request whose visible answer is capped at
     /// `response_cap` tokens (a per-user output limit). The cap applies on top
     /// of the thinking allowance rather than to the request total: taking it
     /// out of the allowance would let reasoning consume the whole budget and
     /// leave the model no tokens to answer with.
     pub fn max_completion_tokens_capped(self, response_cap: u32) -> u32 {
-        self.thinking_tokens() + response_cap.min(Self::RESPONSE_TOKENS)
+        self.thinking_tokens() + response_cap
     }
 
     pub fn as_str(self) -> &'static str {
@@ -136,9 +129,9 @@ pub trait ChatClient: Send + Sync {
     async fn context_window_tokens(&self) -> anyhow::Result<Option<u64>>;
 
     /// Stream a completion, forwarding each cumulative text snapshot to `sink`.
-    /// `thinking` sets the reasoning effort and the overall token ceiling;
-    /// `max_completion_tokens` caps the visible answer when set (per-user
-    /// output caps), leaving that budget intact. `tool_choice` overrides the
+    /// `thinking` sets the reasoning effort. No `max_tokens` is sent unless
+    /// `max_completion_tokens` is set (per-user output caps), which caps the
+    /// visible answer on top of the thinking allowance. `tool_choice` overrides the
     /// default `"auto"` tool selection; pass `Some(json!("required"))` to force a tool call or
     /// `Some(json!({"type":"function","function":{"name":"…"}}))` to force a
     /// specific function. `None` keeps the default `"auto"` behavior.
@@ -420,14 +413,9 @@ impl ChatClient for OpenAiClient {
         max_completion_tokens: Option<u32>,
         sink: Option<&dyn TextSink>,
     ) -> anyhow::Result<ChatCompletion> {
-        let max_tokens = max_completion_tokens.map_or_else(
-            || thinking.max_completion_tokens(),
-            |cap| thinking.max_completion_tokens_capped(cap),
-        );
         let mut body = serde_json::json!({
             "model": model,
             "messages": messages,
-            "max_tokens": max_tokens,
             "reasoning_effort": thinking.as_str(),
             "stream": true,
             "stream_options": {"include_usage": true},
@@ -435,6 +423,9 @@ impl ChatClient for OpenAiClient {
         if !tools.is_empty() {
             body["tools"] = Value::Array(tools.to_vec());
             body["tool_choice"] = tool_choice.unwrap_or_else(|| Value::String("auto".into()));
+        }
+        if let Some(cap) = max_completion_tokens {
+            body["max_tokens"] = thinking.max_completion_tokens_capped(cap).into();
         }
         tracing::debug!(
             target: "housebot::llm",
@@ -582,11 +573,6 @@ mod tests {
         assert_eq!(
             ThinkingMode::Medium.max_completion_tokens_capped(512),
             4_096 + 512
-        );
-        // Caps above the reserved answer room leave the ceiling unchanged.
-        assert_eq!(
-            ThinkingMode::XHigh.max_completion_tokens_capped(100_000),
-            ThinkingMode::XHigh.max_completion_tokens()
         );
     }
 

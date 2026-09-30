@@ -550,7 +550,7 @@ fn stores() -> (TempDir, Skills, Memory, History) {
         TempDir::new().unwrap(),
         Skills::new(tmp.path().join("skills.json")),
         Memory::new(tmp.path().join("memories")),
-        History::new(tmp.path().join("history"), 30),
+        History::new(tmp.path().join("history")),
     )
 }
 

@@ -108,7 +108,6 @@ data/                # runtime — gitignored
 | `LLM_MODEL` | yes | `gemma-4-26b-a4b-qat` | Model name |
 | `LLM_API_KEY` | no | `not-required` | API key (llama.cpp ignores it) |
 | `MAX_INFLIGHT_LLM` | no | `4` | Total concurrent LLM requests |
-| `MAX_HISTORY_TURNS` | no | `30` | Conversation turn pairs kept |
 | `CHANNEL_CONTEXT_CAPACITY` | no | `2000` | Messages buffered in RAM per channel |
 | `CHANNEL_CONTEXT_RETENTION_SECS` | no | `2592000` | Age at which a buffered message is dropped (30 days) |
 | `MAX_CONTEXT_TOKENS` | no | `10000` | Fallback context window (tokens) when the LLM server's `/props` probe fails |
@@ -353,7 +352,7 @@ Its tools appear as `prefix__tool_name` automatically.
 
 ## Data
 
-- **History** (`data/history/<user_id>.jsonl`): one JSON message per line, trimmed to `MAX_HISTORY_TURNS` pairs.
+- **History** (`data/history/<user_id>.jsonl`): one JSON message per line, never trimmed (trimming would miss the prompt cache); compaction at 90% of the context bounds it.
 - **Memory** (PostgreSQL `user_memories`): per-user markdown, rewritten in full on each `update_memory`. Only an explicit `update_memory` call writes it — compaction never does.
 - **PR merge audit** (`data/pr_merge_audit.jsonl`): one JSON record per `github_api` `merge_pull_request` attempt (admin ID/name, PR number, timestamp, authorization, result).
 - **Notes** (`data/notes/<user_id>.json`), **skills** (`data/skills.json`), **reminders** (`data/reminders.json`).

@@ -357,7 +357,7 @@ mod tests {
         ChannelContext,
     ) {
         let tmp = TempDir::new().unwrap();
-        let history = History::new(tmp.path().join("history"), 30);
+        let history = History::new(tmp.path().join("history"));
         let memory = Memory::new(tmp.path().join("memories"));
         let user_config = UserConfigStore::new(tmp.path().join("user_config"));
         let reminders = Reminders::new(tmp.path().join("reminders.json"));

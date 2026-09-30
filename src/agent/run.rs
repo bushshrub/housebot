@@ -53,7 +53,7 @@ impl Agent {
             tracing::info!("Context at 90% for {user_id} — auto-compacting session");
             self.compact_session_with_hooks(user_id, deep_memory_enabled, hooks)
                 .await;
-            past.clear();
+            past = self.history.load(user_id).await;
             user_memory = self.memory.load(user_id).await;
             session_notice = Some(
                 "⚠️ The context window reached 90%, so I compacted the conversation and started a new session. Use /session to check your current context usage."
@@ -64,25 +64,39 @@ impl Agent {
             .current_conversation_id(user_id, display_name, channel_id)
             .await;
 
-        let now = Local::now().format("%Y-%m-%d %H:%M").to_string();
+        if !past.first().is_some_and(is_session_context) {
+            past.insert(
+                0,
+                build_session_context_message(
+                    username,
+                    display_name,
+                    nickname,
+                    avatar_url,
+                    &user_memory,
+                ),
+            );
+            if let Err(e) = self.history.save(user_id, &past).await {
+                tracing::error!("Failed to save session context for {user_id}: {e}");
+            }
+        }
+
+        // Only content that stays the same for the whole session may come
+        // before the history, or every turn misses the prompt cache.
         let system = json!({
             "role": "system",
-            "content": build_system_prompt_with_profile(
-                username,
-                user_id,
-                display_name,
-                nickname,
-                avatar_url,
-                &user_memory,
-                personality,
-                deep_memory_enabled,
-                        &now,
-            ),
+            "content": build_system_prompt(username, user_id, personality, deep_memory_enabled),
         });
         let mut messages: Vec<Value> = Vec::with_capacity(past.len() + 3);
         messages.push(system);
-        messages.extend(past);
         messages.push(build_skills_message(&self.skills.load_all().await));
+        // History keeps Discord metadata for /history views; the model got
+        // each message without it, and must get it again byte for byte.
+        messages.extend(past.into_iter().map(|mut message| {
+            if let Some(fields) = message.as_object_mut() {
+                fields.remove("discord_context");
+            }
+            message
+        }));
         messages.push(new_user_message.clone());
 
         let is_configurer = self
@@ -158,6 +172,16 @@ impl Agent {
                 }
             };
             let context_tokens = completion.usage.prompt_tokens;
+            let cached_tokens = completion.usage.prompt_tokens_details.cached_tokens;
+            tracing::info!(
+                target: "housebot::cache",
+                user_id,
+                round = rounds,
+                prompt_tokens = context_tokens,
+                cached_tokens,
+                hit_percent = cached_tokens * 100 / context_tokens.max(1),
+                "Prompt cache usage"
+            );
             self.record_usage(user_id, &conversation_id, completion.usage)
                 .await;
             let usage = context_tokens as f64 / self.context_window_tokens.max(1) as f64;
@@ -293,6 +317,7 @@ impl Agent {
             tools::remind::definition(),
             tools::features::definition(),
             get_messages_tool(),
+            get_current_time_tool(),
         ];
         defs.extend(tools::sandbox::all_definitions());
         // Configuration control is only offered to authorized configurers

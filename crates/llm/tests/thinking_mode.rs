@@ -16,13 +16,3 @@ fn only_the_supported_effort_levels_exist() {
     assert_eq!(levels, ["low", "medium", "xhigh"]);
     assert!("blazing".parse::<ThinkingMode>().is_err());
 }
-
-#[test]
-fn completion_ceiling_always_reserves_room_for_the_answer() {
-    for mode in ThinkingMode::ALL {
-        assert!(
-            mode.max_completion_tokens() > mode.max_completion_tokens_capped(0),
-            "{mode} leaves no room for a reply"
-        );
-    }
-}

@@ -31,6 +31,7 @@ pub fn all_tool_names() -> &'static [&'static str] {
         "set_reminder",
         "get_bot_features",
         "get_messages",
+        "get_current_time",
         "update_memory",
         "search_memory",
         "read",

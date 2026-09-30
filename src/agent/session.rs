@@ -46,6 +46,7 @@ impl Agent {
         hooks.on_progress("compact:25").await;
         let convo: String = past
             .iter()
+            .filter(|m| !is_session_context(m))
             .filter_map(|m| {
                 let role = m.get("role").and_then(|r| r.as_str())?;
                 let content = m.get("content").and_then(|c| c.as_str())?;
