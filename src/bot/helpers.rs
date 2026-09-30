@@ -85,6 +85,8 @@ pub(crate) async fn handle_storage_interaction(
     }
 }
 
+// serenity::Error is serenity's own type; boxing it would only move the lint to every caller.
+#[allow(clippy::result_large_err)]
 pub(crate) async fn reply_no_ping(
     ctx: &Context,
     msg: &Message,
@@ -97,6 +99,8 @@ pub(crate) async fn reply_no_ping(
     msg.channel_id.send_message(&ctx.http, builder).await
 }
 
+// serenity::Error is serenity's own type; boxing it would only move the lint to every caller.
+#[allow(clippy::result_large_err)]
 pub(crate) async fn reply_with_mentions(
     ctx: &Context,
     msg: &Message,
