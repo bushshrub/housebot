@@ -406,3 +406,101 @@ async fn docker_sandbox_close_removes_container() {
         "container must be removed after close"
     );
 }
+
+async fn run_ok(sandbox: &housebot_sandbox::Sandbox, command: &str, dir: Option<&str>) -> String {
+    let result = sandbox
+        .run(command, dir, Some(300))
+        .await
+        .unwrap_or_else(|e| panic!("`{command}` could not run: {e}"));
+    assert_eq!(
+        result.exit_code, 0,
+        "`{command}` failed\nstdout: {}\nstderr: {}",
+        result.stdout, result.stderr
+    );
+    result.stdout
+}
+
+/// The work the bot is asked to do, through the calls its tools make: resolve
+/// names, clone, write a project into new directories, build and test it with
+/// fetched dependencies, and load native Python extensions.
+#[tokio::test]
+#[ignore = "requires Docker daemon + sandbox image + internet; set HOUSEBOT_SANDBOX_RUNTIME=runc in CI"]
+async fn docker_sandbox_supports_software_development_tasks() {
+    let socket = test_socket("e2e");
+    spawn_sandboxd(&socket).await;
+
+    let client = SandboxClient::new(&socket);
+    let sandbox = client
+        .start("integration-e2e", NetworkAccess::PublicInternet)
+        .await
+        .expect("start failed");
+
+    run_ok(
+        &sandbox,
+        "python3 -c \"import socket; socket.getaddrinfo('github.com', 443)\"",
+        None,
+    )
+    .await;
+    run_ok(
+        &sandbox,
+        "git clone --depth 1 https://github.com/octocat/Hello-World.git",
+        None,
+    )
+    .await;
+    assert!(run_ok(&sandbox, "ls", Some("Hello-World"))
+        .await
+        .contains("README"));
+
+    sandbox
+        .write_file(
+            "calc/Cargo.toml",
+            "[package]\nname = \"calc\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n\
+             [dependencies]\nitoa = \"1\"\n",
+            false,
+        )
+        .await
+        .expect("write into a new directory");
+    sandbox
+        .write_file(
+            "calc/src/lib.rs",
+            "pub fn render(n: u32) -> String {\n    itoa::Buffer::new().format(n + 1).to_string()\n}\n\n\
+             #[test]\nfn renders() {\n    assert_eq!(render(41), \"42\");\n}\n",
+            false,
+        )
+        .await
+        .expect("write into a new nested directory");
+    sandbox
+        .edit_file("calc/src/lib.rs", "n + 1", "n + 2", false)
+        .await
+        .expect("edit");
+    let failed = sandbox
+        .run("cargo test 2>&1", Some("calc"), Some(300))
+        .await
+        .expect("cargo test could not run");
+    assert_ne!(failed.exit_code, 0, "the edit must break the test");
+    sandbox
+        .edit_file("calc/src/lib.rs", "n + 2", "n + 1", false)
+        .await
+        .expect("edit back");
+    run_ok(&sandbox, "cargo test 2>&1", Some("calc")).await;
+
+    run_ok(&sandbox, "pip install --quiet markupsafe 2>&1", None).await;
+    run_ok(
+        &sandbox,
+        "python3 -c 'from markupsafe import _speedups'",
+        None,
+    )
+    .await;
+    run_ok(&sandbox, "python3 -m venv venv", None).await;
+    run_ok(&sandbox, "venv/bin/pip install --quiet six 2>&1", None).await;
+
+    run_ok(
+        &sandbox,
+        "npm init -y >/dev/null && npm install --silent is-number 2>&1",
+        Some("calc"),
+    )
+    .await;
+    run_ok(&sandbox, "node -e \"require('is-number')\"", Some("calc")).await;
+
+    sandbox.close().await.expect("close failed");
+}
