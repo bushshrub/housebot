@@ -435,6 +435,12 @@ async fn docker_sandbox_supports_software_development_tasks() {
         .await
         .expect("start failed");
 
+    // Docker's embedded resolver (127.0.0.11) is unreachable from gVisor.
+    let resolv = run_ok(&sandbox, "cat /etc/resolv.conf", None).await;
+    assert!(
+        resolv.contains("nameserver 1.1.1.1") && !resolv.contains("127.0.0.11"),
+        "{resolv}"
+    );
     run_ok(
         &sandbox,
         "python3 -c \"import socket; socket.getaddrinfo('github.com', 443)\"",

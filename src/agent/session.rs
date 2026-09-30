@@ -29,7 +29,7 @@ impl Agent {
     ) -> bool {
         tracing::info!(target: "housebot::agent", user_id, "Compacting session");
         hooks.on_progress("compact:10").await;
-        self.session_stats.lock().await.remove(user_id);
+        let previous_stats = self.session_stats.lock().await.remove(user_id);
         let past = self.history.load(user_id).await;
         if past.is_empty() {
             self.finish_active_conversation(user_id).await;
@@ -88,6 +88,13 @@ impl Agent {
         self.session_stats.lock().await.remove(user_id);
         // Clearing without a summary would silently lose the whole conversation.
         if summary.trim().is_empty() {
+            // Auto-compaction retries only while the stats still show a full context.
+            if let Some(stats) = previous_stats {
+                self.session_stats
+                    .lock()
+                    .await
+                    .insert(user_id.to_string(), stats);
+            }
             hooks
                 .on_progress(
                     "compact:100:Could not summarize the conversation, so it was kept. \

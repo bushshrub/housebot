@@ -69,13 +69,16 @@ impl EventHandler for HouseBot {
                 return;
             }
             let hooks = CompactProgressHooks::new(ctx.clone(), Box::new(cmd.clone()));
-            self.agent
+            let compacted = self
+                .agent
                 .compact_session_with_hooks(&user_id.to_string(), deep_memory_enabled, &hooks)
                 .await;
-            self.conversations
-                .lock()
-                .await
-                .remove(cmd.channel_id.get(), user_id);
+            if compacted {
+                self.conversations
+                    .lock()
+                    .await
+                    .remove(cmd.channel_id.get(), user_id);
+            }
             return;
         }
         if cmd.data.name == "token_leaderboard" {

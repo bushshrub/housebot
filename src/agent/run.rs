@@ -49,6 +49,7 @@ impl Agent {
             "avatar_url": avatar_url,
         });
 
+        let mut compaction_failed = false;
         let previous_usage = self.last_context_tokens(user_id).await as f64
             / self.context_window_tokens.max(1) as f64;
         if !past.is_empty() && previous_usage >= 0.9 {
@@ -56,6 +57,7 @@ impl Agent {
             let compacted = self
                 .compact_session_with_hooks(user_id, deep_memory_enabled, hooks)
                 .await;
+            compaction_failed = !compacted;
             past = self.history.load(user_id).await;
             user_memory = self.memory.load(user_id).await;
             session_notice = Some(if compacted {
@@ -190,7 +192,7 @@ impl Agent {
             self.record_usage(user_id, &conversation_id, completion.usage)
                 .await;
             let usage = context_tokens as f64 / self.context_window_tokens.max(1) as f64;
-            if usage >= 0.8 {
+            if usage >= 0.8 && !compaction_failed {
                 session_notice = Some(if usage >= 0.9 {
                     "⚠️ The context window reached 90% based on the model's reported usage. It will be compacted automatically before the next message. Use /session to check your current context usage.".into()
                 } else {
