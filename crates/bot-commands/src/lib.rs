@@ -291,16 +291,12 @@ pub async fn memory_command(memory: &Memory, first_line: &str, author_id: u64) -
             if content.trim().is_empty() {
                 return "No memories stored yet.".into();
             }
-            let query_lower = query.to_lowercase();
-            let matching: Vec<&str> = content
-                .lines()
-                .filter(|line| line.to_lowercase().contains(&query_lower))
-                .collect();
+            let matching = housebot_memory::search(&content, &query, 10);
             if matching.is_empty() {
                 truncate_discord("", &format!("No memories matching `{query}`."))
             } else {
                 let header = format!("**Memories matching `{query}`:**\n");
-                truncate_discord(&header, &matching.join("\n"))
+                truncate_discord(&header, &matching.join("\n\n"))
             }
         }
         other => format!("Unknown subcommand `{other}`. Use `/storage memory show|clear|search`."),
