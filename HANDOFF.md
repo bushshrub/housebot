@@ -57,7 +57,9 @@ an empty ping now uses the replied-to message, or goes to the model as
 - A silenced user who addresses the bot gets a public reply saying so, at most
   once per 5 minutes per user. It cannot be ephemeral: Discord allows that
   only on interaction responses.
-- A failed reply send logs `Failed to send reply` at `warn`.
+- When the first chunk of a non-paginated reply fails to send, it logs
+  `Failed to send reply` at `warn`. Paginated replies and later chunks still
+  fail silently.
 
 ## Open work: chatbot (2026-09-30)
 
