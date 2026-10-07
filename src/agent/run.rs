@@ -92,13 +92,7 @@ impl Agent {
         // before the history, or every turn misses the prompt cache.
         let system = json!({
             "role": "system",
-            "content": build_system_prompt(
-                username,
-                user_id,
-                personality,
-                deep_memory_enabled,
-                &self.model,
-            ),
+            "content": build_system_prompt(username, user_id, personality, deep_memory_enabled),
         });
         let mut messages: Vec<Value> = Vec::with_capacity(past.len() + 3);
         messages.push(system);

@@ -604,11 +604,10 @@ async fn run_sends_the_skill_list_as_a_user_message() {
     assert_eq!(messages[messages.len() - 1]["content"], "hello");
 }
 
-/// The system prompt's model identity line is fed from the agent's configured
-/// model — the same value sent with each LLM request — so it cannot drift
-/// from what actually serves the reply.
+/// The system prompt the agent actually sends carries the hardcoded model
+/// identity, so the bot's self-report never drifts from what is deployed.
 #[tokio::test]
-async fn run_system_prompt_identity_uses_the_agent_model() {
+async fn run_system_prompt_carries_the_hardcoded_model_identity() {
     let client = Arc::new(MockChatClient::new());
     client.push_text("hi");
     let (_t, agent) = test_agent(client.clone());
@@ -622,7 +621,7 @@ async fn run_system_prompt_identity_uses_the_agent_model() {
     assert_eq!(system["role"], "system");
     let content = system["content"].as_str().unwrap();
     assert!(
-        content.contains("This iteration runs on the `test-model` model."),
+        content.contains("This iteration is Claude Sonnet 6."),
         "{content}"
     );
 }

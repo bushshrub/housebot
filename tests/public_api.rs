@@ -53,7 +53,7 @@ async fn storage_layer_round_trips_across_modules() {
 
 #[test]
 fn system_prompt_reflects_personality() {
-    let prompt = build_system_prompt("alice", "7", Some("Be terse"), true, "test-model");
+    let prompt = build_system_prompt("alice", "7", Some("Be terse"), true);
     assert!(prompt.contains("alice"));
     assert!(prompt.contains("Be terse"));
 }
