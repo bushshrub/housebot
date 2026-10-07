@@ -310,6 +310,30 @@ pub(crate) fn message_attachment_context(msg: &Message) -> Option<String> {
     )
 }
 
+pub(crate) fn forwarded_message_context(msg: &Message) -> Option<String> {
+    let parts: Vec<String> = msg
+        .message_snapshots
+        .iter()
+        .filter_map(|snapshot| {
+            let content = snapshot.content.trim();
+            let attachments = attachment_context(
+                snapshot
+                    .attachments
+                    .iter()
+                    .map(|attachment| (attachment.filename.as_str(), attachment.url.as_str())),
+            );
+            let body = match (content.is_empty(), attachments) {
+                (true, None) => return None,
+                (true, Some(attachments)) => attachments,
+                (false, None) => content.to_string(),
+                (false, Some(attachments)) => format!("{content}\n\n{attachments}"),
+            };
+            Some(format!("[Forwarded message]\n{body}"))
+        })
+        .collect();
+    (!parts.is_empty()).then(|| parts.join("\n\n"))
+}
+
 pub(crate) fn attachment_context<'a>(
     attachments: impl Iterator<Item = (&'a str, &'a str)>,
 ) -> Option<String> {
@@ -374,8 +398,8 @@ pub(crate) fn unix_now() -> f64 {
 #[cfg(test)]
 mod media_tests {
     use super::{
-        attachment_context, convert_gif_to_video, extract_gif_from_text, is_pdf, is_safe_url,
-        media_type, pdf_render_arguments, referenced_message_context,
+        attachment_context, convert_gif_to_video, extract_gif_from_text, forwarded_message_context,
+        is_pdf, is_safe_url, media_type, pdf_render_arguments, referenced_message_context,
     };
     use serenity::all::Message;
 
@@ -428,6 +452,38 @@ mod media_tests {
         assert!(context.contains("already available"));
         assert!(context.contains("midterm.pdf"));
         assert!(context.contains("https://cdn.discordapp.com/files/midterm.pdf"));
+    }
+
+    #[test]
+    fn forwarded_message_context_includes_text_and_attachments() {
+        let mut forward = serde_json::to_value(msg("")).unwrap();
+        forward["message_snapshots"] = serde_json::json!([{
+            "message": {
+                "content": "look at this",
+                "timestamp": "2026-01-01T00:00:00+00:00",
+                "edited_timestamp": null,
+                "mentions": [],
+                "attachments": [{
+                    "id": "12",
+                    "filename": "photo.png",
+                    "url": "https://cdn.discord.com/photo.png",
+                    "proxy_url": "https://media.discord.com/photo.png",
+                    "size": 2048,
+                    "width": null,
+                    "height": null,
+                    "content_type": null
+                }],
+                "embeds": [],
+                "type": 0,
+                "flags": null
+            }
+        }]);
+        let forward: Message = serde_json::from_value(forward).unwrap();
+        let context = forwarded_message_context(&forward).unwrap();
+        assert!(context.starts_with("[Forwarded message]\nlook at this"));
+        assert!(context.contains("photo.png"));
+        assert!(context.contains("https://cdn.discord.com/photo.png"));
+        assert!(forwarded_message_context(&msg("hi")).is_none());
     }
 
     #[test]

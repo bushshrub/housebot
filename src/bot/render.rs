@@ -55,16 +55,23 @@ pub(crate) async fn send_final_message(
                         None
                     }
                 };
-            } else {
-                let _ = msg
-                    .channel_id
-                    .send_message(
-                        &ctx.http,
-                        CreateMessage::new()
-                            .content(chunk)
-                            .allowed_mentions(mentions.clone()),
-                    )
-                    .await;
+            } else if let Err(error) = msg
+                .channel_id
+                .send_message(
+                    &ctx.http,
+                    CreateMessage::new()
+                        .content(chunk)
+                        .allowed_mentions(mentions.clone()),
+                )
+                .await
+            {
+                tracing::warn!(
+                    target: "housebot::message_flow",
+                    message_id = msg.id.get(),
+                    chunk = i,
+                    %error,
+                    "Failed to send reply"
+                );
             }
         }
         return first_id;
@@ -87,8 +94,18 @@ pub(crate) async fn send_final_message(
         .components(pagination_components(&token, 0, pages.len()))
         .reference_message(msg)
         .allowed_mentions(mentions);
-    let sent = msg.channel_id.send_message(&ctx.http, builder).await;
-    sent.ok().map(|m| m.id)
+    match msg.channel_id.send_message(&ctx.http, builder).await {
+        Ok(sent) => Some(sent.id),
+        Err(error) => {
+            tracing::warn!(
+                target: "housebot::message_flow",
+                message_id = msg.id.get(),
+                %error,
+                "Failed to send reply"
+            );
+            None
+        }
+    }
 }
 
 pub(crate) fn pagination_embed(pages: &[String], page: usize) -> CreateEmbed {
