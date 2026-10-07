@@ -41,6 +41,24 @@ A user-defined network always forces `127.0.0.11`, which gVisor cannot reach.
 The old `housebot-sandbox-dns` container and `housebot-sandbox-net` network are
 no longer used and must be removed by hand on the host.
 
+## Pings always get an answer (2026-10-07)
+
+The 2026-10-06 log showed a ping dropped as "no text or attachments after
+removing the mention". Both empty-message drops in `handle_message()` are gone:
+an empty ping now uses the replied-to message, or goes to the model as
+`(no text)`. Also:
+
+- A mention of the bot's managed role (`<@&id>`, which Discord's @ autocomplete
+  offers) counts as a ping.
+- Forwarded messages (`message_snapshots`) are read.
+- A thread follows its parent channel for the channel allowlist and follow-ups
+  (`allowed_config_channel`). Pings in channels not on the allowlist are still
+  ignored without a reply.
+- A silenced user who addresses the bot gets a public reply saying so, at most
+  once per 5 minutes per user. It cannot be ephemeral: Discord allows that
+  only on interaction responses.
+- A failed reply send logs `Failed to send reply` at `warn`.
+
 ## Open work: chatbot (2026-09-30)
 
 1. **Hexagone got no answer for some messages.** Not explained. The bot did

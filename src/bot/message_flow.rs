@@ -73,24 +73,30 @@ impl HouseBot {
     ) {
         let emoji_only_allowed = matches!(response_mode, ResponseMode::EmojiOrFull);
         let mut text = msg.content.clone();
-        for token in [format!("<@{bot_id}>"), format!("<@!{bot_id}>")] {
+        let role_tokens = bot_role_mentions(ctx, msg, bot_id)
+            .into_iter()
+            .map(|role_id| format!("<@&{role_id}>"));
+        for token in [format!("<@{bot_id}>"), format!("<@!{bot_id}>")]
+            .into_iter()
+            .chain(role_tokens)
+        {
             text = text.replace(&token, "");
         }
-        let text = text.trim().to_string();
+        let mut text = text.trim().to_string();
+        for snapshot in &msg.message_snapshots {
+            let forwarded = snapshot.content.trim();
+            if !forwarded.is_empty() {
+                text = format!("{text}\n\n[Forwarded message]\n{forwarded}")
+                    .trim()
+                    .to_string();
+            }
+        }
         let attachment_text = message_attachment_context(msg);
         let text = match attachment_text {
             Some(attachments) if text.is_empty() => attachments,
             Some(attachments) => format!("{text}\n\n{attachments}"),
             None => text,
         };
-        if text.is_empty() && !message_has_attachments(msg) {
-            tracing::info!(
-                target: "housebot::message_flow",
-                message_id = msg.id.get(),
-                "Dropped message: no text or attachments after removing the mention"
-            );
-            return;
-        }
 
         if self
             .chat_rate_limiter
@@ -159,15 +165,6 @@ impl HouseBot {
                 }
             }
         }
-        if text.is_empty() && !message_has_attachments(msg) {
-            tracing::info!(
-                target: "housebot::message_flow",
-                message_id = msg.id.get(),
-                "Dropped message: no text or attachments"
-            );
-            return;
-        }
-
         if session_expired {
             self.agent
                 .compact_session(

@@ -13,7 +13,8 @@ use serenity::all::{
     Context, CreateActionRow, CreateAllowedMentions, CreateAttachment, CreateButton, CreateCommand,
     CreateCommandOption, CreateEmbed, CreateInteractionResponse, CreateInteractionResponseMessage,
     CreateSelectMenu, CreateSelectMenuKind, CreateSelectMenuOption, EditInteractionResponse,
-    EditMessage, EventHandler, GatewayIntents, GuildId, Interaction, Message, Ready, UserId,
+    EditMessage, EventHandler, GatewayIntents, GuildId, Interaction, Message, Ready, RoleId,
+    UserId,
 };
 use serenity::builder::CreateMessage;
 use serenity::Client;
@@ -54,6 +55,8 @@ const MAX_MESSAGE_LENGTH: usize = 2000;
 const EMBED_DESCRIPTION_LIMIT: usize = 4096;
 const PAGINATION_PREFIX: &str = "housebot_labs_page:";
 const DEVELOP_PREFIX: &str = "develop:";
+const BLOCKED_USER_NOTICE: &str = "🚫 You are not allowed to talk to this bot.";
+const BLOCKED_NOTICE_COOLDOWN: Duration = Duration::from_secs(300);
 
 struct PaginatedResponse {
     owner_id: u64,
@@ -164,6 +167,7 @@ pub struct HouseBot {
     paginated: Mutex<HashMap<String, PaginatedResponse>>,
     reminder_started: AtomicBool,
     chat_rate_limiter: RateLimiter,
+    blocked_notice_limiter: RateLimiter,
     /// Shared with `Agent` — holds pending coding-agent dispatch jobs.
     pending_jobs: Arc<PendingJobStore>,
     /// Catalog of agents and models.
@@ -212,6 +216,7 @@ impl HouseBot {
             paginated: Mutex::new(HashMap::new()),
             reminder_started: AtomicBool::new(false),
             chat_rate_limiter: RateLimiter::new(chat_rate_max, chat_rate_window),
+            blocked_notice_limiter: RateLimiter::new(1, BLOCKED_NOTICE_COOLDOWN),
             pending_jobs,
             catalog: AgentCatalog::load_embedded(),
             discord,
@@ -245,6 +250,25 @@ impl HouseBot {
         self.agent.reset_session(&user_id.to_string()).await;
         self.conversations.lock().await.remove(channel_id, user_id);
         "New conversation started. Your previous conversation history has been cleared.".to_string()
+    }
+
+    /// The channel whose server settings govern `msg`, or `None` when the
+    /// allowlist excludes it. A thread is governed by its parent channel.
+    pub(crate) async fn allowed_config_channel(&self, ctx: &Context, msg: &Message) -> Option<u64> {
+        let guild_id = msg.guild_id.map(|g| g.get());
+        let channel_id = msg.channel_id.get();
+        if self
+            .server_cfg
+            .is_channel_allowed(guild_id, channel_id)
+            .await
+        {
+            return Some(channel_id);
+        }
+        let parent_id = thread_parent_id(ctx, msg).await?;
+        self.server_cfg
+            .is_channel_allowed(guild_id, parent_id)
+            .await
+            .then_some(parent_id)
     }
 
     pub(crate) async fn respond(&self, ctx: &Context, msg: &Message, content: &str) {

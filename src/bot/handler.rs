@@ -298,7 +298,8 @@ impl EventHandler for HouseBot {
         }
         let structured_mention = msg.mentions.iter().any(|u| u.id == bot_id);
         let raw_mention = content_mentions_user(&msg.content, bot_id.get());
-        let is_mentioned = structured_mention || raw_mention;
+        let role_mention = !bot_role_mentions(&ctx, &msg, bot_id).is_empty();
+        let is_mentioned = structured_mention || raw_mention || role_mention;
         if msg.author.bot {
             // Other bots must explicitly @-mention us; unmentioned bot
             // messages are always ignored regardless of configuration.
@@ -338,11 +339,26 @@ impl EventHandler for HouseBot {
         let content = msg.content.trim().to_string();
         let channel_id = msg.channel_id.get();
         let user_id = msg.author.id.get();
+        let is_dm = msg.guild_id.is_none();
+        let guild_id = msg.guild_id.map(|g| g.get());
+        let is_reply_to_bot = msg
+            .referenced_message
+            .as_ref()
+            .map(|m| m.author.id == bot_id)
+            .unwrap_or(false);
 
         // Configurers (and the owner) always get through; other users can be
         // silenced entirely by a configurer-set policy.
         let access = self.access.load().await;
         if !access.should_respond(user_id, config::owner_id()) {
+            // The notice is public (only interactions can be ephemeral), so the
+            // cooldown keeps a blocked user from using it to spam the channel.
+            if (is_dm || is_mentioned || is_reply_to_bot)
+                && self.allowed_config_channel(&ctx, &msg).await.is_some()
+                && !self.blocked_notice_limiter.check(&user_id.to_string())
+            {
+                self.respond(&ctx, &msg, BLOCKED_USER_NOTICE).await;
+            }
             tracing::info!(
                 target: "housebot::message_flow",
                 message_id = msg.id.get(),
@@ -374,15 +390,8 @@ impl EventHandler for HouseBot {
             return;
         }
         // ── routing ──
-        let is_dm = msg.guild_id.is_none();
-        let guild_id = msg.guild_id.map(|g| g.get());
-
         // Check channel allowlist before doing anything else.
-        if !self
-            .server_cfg
-            .is_channel_allowed(guild_id, channel_id)
-            .await
-        {
+        let Some(config_channel_id) = self.allowed_config_channel(&ctx, &msg).await else {
             if is_mentioned {
                 tracing::info!(
                     target: "housebot::message_flow",
@@ -400,7 +409,7 @@ impl EventHandler for HouseBot {
                 );
             }
             return;
-        }
+        };
 
         if !is_dm {
             // Prefer server nickname, then global display name, over the raw username.
@@ -414,11 +423,6 @@ impl EventHandler for HouseBot {
                 .append(channel_id, user_id, &msg.author.name, nick, &content);
         }
 
-        let is_reply_to_bot = msg
-            .referenced_message
-            .as_ref()
-            .map(|m| m.author.id == bot_id)
-            .unwrap_or(false);
         let is_reply_to_attachment = msg
             .referenced_message
             .as_deref()
@@ -431,7 +435,7 @@ impl EventHandler for HouseBot {
         let followup_timeout = Duration::from_secs(user_config.followup_timeout_secs);
         let followup_channel_allowed = self
             .server_cfg
-            .is_followup_channel_allowed(guild_id, channel_id)
+            .is_followup_channel_allowed(guild_id, config_channel_id)
             .await;
         let followup_channel_allowed = is_dm || followup_channel_allowed;
 
