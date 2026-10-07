@@ -43,26 +43,17 @@ fn token_leaderboard_format_shows_period_metric_and_requester_rank() {
 
 #[test]
 fn system_prompt_includes_username_and_id() {
-    let p = build_system_prompt("Alice", "123", None, true, "test-model");
+    let p = build_system_prompt("Alice", "123", None, true);
     assert!(p.contains("Alice"));
     assert!(p.contains("123"));
 }
 
 #[test]
-fn system_prompt_identity_comes_from_the_configured_model() {
-    let p = build_system_prompt("Alice", "123", None, true, "test-model");
+fn system_prompt_names_the_hardcoded_model_identity() {
+    let p = build_system_prompt("Alice", "123", None, true);
     assert!(
-        p.contains("This iteration runs on the `test-model` model."),
-        "identity line must name the configured model: {p}"
-    );
-    assert!(
-        !p.contains("Sonnet"),
-        "the prompt must not carry a hardcoded model name: {p}"
-    );
-    let other = build_system_prompt("Alice", "123", None, true, "other-model");
-    assert!(
-        other.contains("This iteration runs on the `other-model` model."),
-        "the identity line must follow the model argument: {other}"
+        p.contains("This iteration is Claude Sonnet 6."),
+        "identity line must name Claude Sonnet 6: {p}"
     );
 }
 
@@ -89,7 +80,7 @@ fn session_context_omits_blank_memory() {
 fn system_prompt_holds_no_per_session_data() {
     // Memory and profile change between sessions; in the system prompt they
     // would miss the prompt cache for the whole conversation.
-    let p = build_system_prompt("alice", "7", None, true, "test-model");
+    let p = build_system_prompt("alice", "7", None, true);
     assert!(!p.contains("Your memory"), "{p}");
     assert!(!p.contains("User profile"), "{p}");
 }
@@ -112,14 +103,14 @@ fn skill_descriptions_arrive_as_a_user_message_not_the_system_prompt() {
     assert!(content.contains("**greet**: Say hello"), "{content}");
     assert!(content.contains("skills/<name>/SKILL.md"), "{content}");
 
-    let p = build_system_prompt("Alice", "123", None, true, "test-model");
+    let p = build_system_prompt("Alice", "123", None, true);
     assert!(!p.contains("Say hello"));
 }
 
 #[test]
 fn system_prompt_does_not_contain_the_time() {
     // A timestamp in the prompt would break the prompt cache on every turn.
-    let p = build_system_prompt("Alice", "123", None, true, "test-model");
+    let p = build_system_prompt("Alice", "123", None, true);
     assert!(!p.contains("Current date/time"), "{p}");
     assert!(p.contains("get_current_time"), "{p}");
 }
