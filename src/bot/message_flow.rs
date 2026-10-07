@@ -82,15 +82,12 @@ impl HouseBot {
         {
             text = text.replace(&token, "");
         }
-        let mut text = text.trim().to_string();
-        for snapshot in &msg.message_snapshots {
-            let forwarded = snapshot.content.trim();
-            if !forwarded.is_empty() {
-                text = format!("{text}\n\n[Forwarded message]\n{forwarded}")
-                    .trim()
-                    .to_string();
-            }
-        }
+        let text = text.trim().to_string();
+        let text = match forwarded_message_context(msg) {
+            Some(forwarded) if text.is_empty() => forwarded,
+            Some(forwarded) => format!("{text}\n\n{forwarded}"),
+            None => text,
+        };
         let attachment_text = message_attachment_context(msg);
         let text = match attachment_text {
             Some(attachments) if text.is_empty() => attachments,
@@ -143,7 +140,9 @@ impl HouseBot {
             Some(referenced) => format!("{text}\n\n{referenced}"),
             None => text,
         };
-        if emoji_only_allowed && !message_has_attachments(msg) {
+        // A bare ping gives the emoji model nothing to judge, and the user
+        // expects a reply.
+        if emoji_only_allowed && !text.is_empty() && !message_has_attachments(msg) {
             if let Some(emoji) = self.agent.select_emoji(&text).await {
                 let reaction = serenity::all::ReactionType::Unicode(emoji.clone());
                 match msg.react(&ctx.http, reaction).await {
@@ -244,7 +243,7 @@ impl HouseBot {
             .map(|progress| ResponseProgressHooks::new(ctx, progress, self.redactor.clone()));
 
         let user_text = if text.is_empty() {
-            "(no text)".to_string()
+            "(The user pinged you without any text.)".to_string()
         } else {
             text
         };

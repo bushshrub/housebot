@@ -50,16 +50,17 @@ an empty ping now uses the replied-to message, or goes to the model as
 
 - A mention of the bot's managed role (`<@&id>`, which Discord's @ autocomplete
   offers) counts as a ping.
-- Forwarded messages (`message_snapshots`) are read.
+- Forwarded messages (`message_snapshots`) are read, text and attachments.
 - A thread follows its parent channel for the channel allowlist and follow-ups
   (`allowed_config_channel`). Pings in channels not on the allowlist are still
   ignored without a reply.
 - A silenced user who addresses the bot gets a public reply saying so, at most
   once per 5 minutes per user. It cannot be ephemeral: Discord allows that
   only on interaction responses.
-- When the first chunk of a non-paginated reply fails to send, it logs
-  `Failed to send reply` at `warn`. Paginated replies and later chunks still
-  fail silently.
+- A reply that fails to send (any chunk, or the paginated embed) logs
+  `Failed to send reply` at `warn`.
+- A bare ping skips the emoji-only check and reaches the model as
+  `(The user pinged you without any text.)`.
 
 ## Open work: chatbot (2026-09-30)
 
