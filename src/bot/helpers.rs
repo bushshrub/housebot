@@ -207,6 +207,55 @@ pub(crate) fn content_mentions_user(text: &str, user_id: u64) -> bool {
     mentioned_user_ids(text).any(|id| id == user_id)
 }
 
+/// Roles in `msg`'s mentions that belong to the bot. Discord's @ autocomplete
+/// often offers the bot's managed role next to the bot user, and users mean
+/// the bot either way.
+pub(crate) fn bot_role_mentions(ctx: &Context, msg: &Message, bot_id: UserId) -> Vec<RoleId> {
+    if msg.mention_roles.is_empty() {
+        return Vec::new();
+    }
+    msg.guild(&ctx.cache)
+        .map(|guild| {
+            msg.mention_roles
+                .iter()
+                .copied()
+                .filter(|id| {
+                    guild
+                        .roles
+                        .get(id)
+                        .is_some_and(|role| role.tags.bot_id == Some(bot_id))
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+pub(crate) async fn thread_parent_id(ctx: &Context, msg: &Message) -> Option<u64> {
+    msg.guild_id?;
+    // `Some(None)`: a cached regular channel. `None`: not cached, so ask Discord.
+    let cached = msg.guild(&ctx.cache).and_then(|guild| {
+        if guild.channels.contains_key(&msg.channel_id) {
+            Some(None)
+        } else {
+            guild
+                .threads
+                .iter()
+                .find(|thread| thread.id == msg.channel_id)
+                .map(|thread| thread.parent_id)
+        }
+    });
+    let parent_id = match cached {
+        Some(parent_id) => parent_id,
+        None => match msg.channel_id.to_channel(ctx).await {
+            Ok(serenity::all::Channel::Guild(channel)) if channel.thread_metadata.is_some() => {
+                channel.parent_id
+            }
+            _ => None,
+        },
+    };
+    parent_id.map(|id| id.get())
+}
+
 fn mentioned_user_ids(text: &str) -> impl Iterator<Item = u64> + '_ {
     text.split('<').filter_map(|part| {
         let remaining = if let Some(stripped) = part.strip_prefix("@!") {

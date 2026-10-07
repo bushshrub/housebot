@@ -43,7 +43,18 @@ pub(crate) async fn send_final_message(
                 } else {
                     reply_no_ping(ctx, msg, chunk).await
                 };
-                first_id = sent.ok().map(|m| m.id);
+                first_id = match sent {
+                    Ok(sent) => Some(sent.id),
+                    Err(error) => {
+                        tracing::warn!(
+                            target: "housebot::message_flow",
+                            message_id = msg.id.get(),
+                            %error,
+                            "Failed to send reply"
+                        );
+                        None
+                    }
+                };
             } else {
                 let _ = msg
                     .channel_id
