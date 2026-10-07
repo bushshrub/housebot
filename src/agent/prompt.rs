@@ -33,14 +33,28 @@ pub(crate) fn build_user_message(text: &str, media_data: &[MediaData]) -> Value 
     json!({"role": "user", "content": content})
 }
 
-/// The stable prefix shared across all users and turns.  This is the portion
-/// of the system prompt that never changes — assistant identity, tool
-/// descriptions, and behavioural guidelines.  It does *not* include
-/// configuration-dependent lines (memory-tool entries, skills, memory
-/// guidance) or any per-user/per-turn content.
-pub(crate) const STATIC_BASE: &str = "\
-You are a house assistant bot in a Discord server. This iteration is Claude \
-Sonnet 5. You help with media, web search, general information, and software \
+/// The stable opening shared across all users and turns, up to the model
+/// identity sentence.  The stable prefix continues in [`STATIC_BODY`] after
+/// [`model_identity_line`].
+pub(crate) const STATIC_LEAD_IN: &str = "\
+You are a house assistant bot in a Discord server. ";
+
+/// The model identity sentence, built from the same configured model that
+/// selects the model for every LLM request.  Deriving it rather than
+/// hardcoding a name keeps the bot's self-report in step with the runtime, so
+/// the label cannot go stale when the model changes (issue #338).
+fn model_identity_line(model: &str) -> String {
+    format!("This iteration runs on the `{model}` model. ")
+}
+
+/// The remainder of the stable prefix shared across all users and turns —
+/// tool descriptions and behavioural guidelines that follow the model
+/// identity sentence.  This is the portion of the system prompt that never
+/// changes.  It does *not* include configuration-dependent lines
+/// (memory-tool entries, skills, memory guidance) or any per-user/per-turn
+/// content.
+pub(crate) const STATIC_BODY: &str = "\
+You help with media, web search, general information, and software \
 development questions. You can see and analyze images and animated GIFs shared \
 as Discord attachments or linked URLs — GIFs are converted to video so you \
 can understand the animation, context, action, or sentiment.
@@ -186,11 +200,15 @@ impl ConfigSuffix {
 /// Build the system prompt for a turn. It holds only what stays the same for
 /// a user across sessions, so the prompt cache keeps hitting; profile and
 /// memory go in [`build_session_context_message`] instead.
+///
+/// `model` is the same configured model the agent sends with each request, so
+/// the identity line the bot reports always matches what is actually running.
 pub fn build_system_prompt(
     username: &str,
     user_id: &str,
     personality: Option<&str>,
     deep_memory_enabled: bool,
+    model: &str,
 ) -> String {
     let memory_guidance = if deep_memory_enabled {
         "Actively use memory: when the user says 'remember', 'don't forget', 'keep in mind', \
@@ -212,8 +230,10 @@ pub fn build_system_prompt(
         _ => String::new(),
     };
 
+    let identity = model_identity_line(model);
+
     format!(
-        "{STATIC_BASE}\n\n\
+        "{STATIC_LEAD_IN}{identity}{STATIC_BODY}\n\n\
 ## Guidelines\n- Be direct and straightforward. Do not pander, flatter, apologize unnecessarily, or \
 validate the user's emotional state — respond to what they say, not how they say it.\n\
 - Never infer sensitive traits, identity, or intent from a user's avatar.\n\
