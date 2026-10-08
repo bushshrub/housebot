@@ -111,7 +111,7 @@ data/                # runtime — gitignored
 | `CHANNEL_CONTEXT_CAPACITY` | no | `2000` | Messages buffered in RAM per channel |
 | `CHANNEL_CONTEXT_RETENTION_SECS` | no | `2592000` | Age at which a buffered message is dropped (30 days) |
 | `MAX_CONTEXT_TOKENS` | no | `10000` | Fallback context window (tokens) when the LLM server's `/props` probe fails |
-| `CONVERSATION_IDLE_TIMEOUT` | no | `300` | Seconds a channel conversation stays "active" |
+| `CONVERSATION_IDLE_TIMEOUT` | no | `300` | Seconds a DM conversation takes unpinged follow-ups, and the idle time before a session is compacted |
 | `CHAT_RATE_LIMIT_MAX` | no | `20` | Max chat messages per user per window |
 | `CHAT_RATE_LIMIT_WINDOW_SECS` | no | `60` | Sliding window size for chat rate limiting (seconds) |
 | `SEARXNG_URL` | no | `http://searxng:8080` | SearXNG instance for the `web_search` tool (JSON format must be enabled) |
@@ -136,7 +136,9 @@ data/                # runtime — gitignored
 Discord message
   └─ HouseBot::message()
        ├─ commands (/session, /storage, /data; !session / !storage / !skill / !stats)
-       ├─ filter (DM / mention / reply-to-bot / active conversation)
+       ├─ filter (DM / mention / reply-to-bot / active DM conversation)
+       ├─ proactive channel, not addressed → classifier: ignore / react / full answer
+       ├─ ping → classifier: emoji reaction or full answer
        ├─ extract media attachments (base64)
        ├─ post "⚙️ Generating..." progress message
        └─ Agent::run()

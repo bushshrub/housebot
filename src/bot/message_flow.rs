@@ -14,17 +14,6 @@ impl HouseBot {
         cmd: &serenity::all::CommandInteraction,
     ) {
         let user_id = cmd.user.id.get();
-        let member_roles = cmd
-            .member
-            .as_deref()
-            .map(|member| {
-                member
-                    .roles
-                    .iter()
-                    .map(|role| role.get())
-                    .collect::<Vec<_>>()
-            })
-            .unwrap_or_default();
         let is_admin = (config::owner_id() != 0 && config::owner_id() == user_id)
             || cmd
                 .member
@@ -35,14 +24,9 @@ impl HouseBot {
             Some(guild_id) => self.server_cfg.load(guild_id.get()).await,
             None => ServerConfig::default(),
         };
-        let access = leaderboard_access(
-            &server_config,
-            cmd.guild_id.is_some(),
-            &member_roles,
-            is_admin,
-        );
+        let access = leaderboard_access(&server_config, cmd.guild_id.is_some(), is_admin);
         let reply = if access == LeaderboardAccess::Denied {
-            "This server restricts the token leaderboard to configured roles.".into()
+            "This server restricts the token leaderboard to administrators.".into()
         } else {
             let (period, metric) = leaderboard_options(&cmd.data.options);
             self.agent
@@ -59,6 +43,107 @@ impl HouseBot {
         );
         if let Err(error) = cmd.create_response(&ctx.http, response).await {
             tracing::warn!(%error, "Failed to send /token_leaderboard response");
+        }
+    }
+
+    /// The classifier's state document for `msg`, and the bot's name. In a
+    /// DM nothing is stored, so the state is the message alone.
+    pub(crate) fn classifier_input(&self, ctx: &Context, msg: &Message) -> (String, String) {
+        let (bot_id, bot_name) = {
+            let bot = ctx.cache.current_user();
+            (bot.id.get(), bot.name.clone())
+        };
+        let mut messages = self
+            .channel_context
+            .recent(msg.channel_id.get(), CLASSIFIER_CONTEXT_MESSAGES);
+        if messages.is_empty() {
+            messages.push(crate::channel_context::Message {
+                at: chrono::Utc::now(),
+                user_id: msg.author.id.get().to_string(),
+                username: msg.author.name.clone(),
+                nick: None,
+                content: msg.content.clone(),
+            });
+        }
+        (classifier_state(&messages, bot_id, &bot_name), bot_name)
+    }
+
+    /// React to `msg` with `emoji`; `false` when Discord refused it.
+    pub(crate) async fn react_with(&self, ctx: &Context, msg: &Message, emoji: String) -> bool {
+        let reaction = serenity::all::ReactionType::Unicode(emoji.clone());
+        match msg.react(&ctx.http, reaction).await {
+            Ok(_) => {
+                tracing::info!(
+                    target: "housebot::emoji",
+                    message_id = msg.id.get(),
+                    emoji,
+                    "Answered with an emoji-only reaction"
+                );
+                true
+            }
+            Err(error) => {
+                tracing::warn!(
+                    target: "housebot::emoji",
+                    message_id = msg.id.get(),
+                    %error,
+                    "Failed to send emoji-only response"
+                );
+                false
+            }
+        }
+    }
+
+    /// A message in a proactive channel that does not address the bot: the
+    /// classifier picks nothing, a reaction, or a full answer to its author.
+    pub(crate) async fn handle_proactive(
+        &self,
+        ctx: &Context,
+        msg: &Message,
+        bot_id: UserId,
+        session_expired: bool,
+        followup_timeout: Duration,
+    ) {
+        let (state, _) = self.classifier_input(ctx, msg);
+        match self.agent.classify_proactive(&state).await {
+            ProactiveAction::Ignore => tracing::debug!(
+                target: "housebot::message_flow",
+                message_id = msg.id.get(),
+                "Proactive classifier ignored the message"
+            ),
+            ProactiveAction::React(emoji) => {
+                self.react_with(ctx, msg, emoji).await;
+            }
+            ProactiveAction::Escalate => {
+                // Answers nobody asked for are the costly and noisy outcome,
+                // so each channel gets at most one per cooldown.
+                if self
+                    .proactive_limiter
+                    .check(&msg.channel_id.get().to_string())
+                {
+                    tracing::info!(
+                        target: "housebot::message_flow",
+                        message_id = msg.id.get(),
+                        channel_id = msg.channel_id.get(),
+                        "Proactive answer skipped: channel is in cooldown"
+                    );
+                    return;
+                }
+                tracing::info!(
+                    target: "housebot::message_flow",
+                    message_id = msg.id.get(),
+                    channel_id = msg.channel_id.get(),
+                    "Proactive classifier escalated the message"
+                );
+                self.handle_message(
+                    ctx,
+                    msg,
+                    bot_id,
+                    session_expired,
+                    followup_timeout,
+                    ResponseMode::Full,
+                )
+                .await;
+            }
         }
     }
 
@@ -140,36 +225,19 @@ impl HouseBot {
             Some(referenced) => format!("{text}\n\n{referenced}"),
             None => text,
         };
-        // A bare ping gives the emoji model nothing to judge, and the user
+        // A bare ping gives the classifier nothing to judge, and the user
         // expects a reply.
         if emoji_only_allowed && !text.is_empty() && !message_has_attachments(msg) {
-            if let Some(emoji) = self.agent.select_emoji(&text).await {
-                let reaction = serenity::all::ReactionType::Unicode(emoji.clone());
-                match msg.react(&ctx.http, reaction).await {
-                    Ok(_) => {
-                        tracing::info!(
-                            target: "housebot::emoji",
-                            message_id = msg.id.get(),
-                            emoji,
-                            "Answered with an emoji-only reaction"
-                        );
-                        return;
-                    }
-                    Err(error) => tracing::warn!(
-                        target: "housebot::emoji",
-                        message_id = msg.id.get(),
-                        %error,
-                        "Failed to send emoji-only response"
-                    ),
+            let (state, bot_name) = self.classifier_input(ctx, msg);
+            if let Some(emoji) = self.agent.classify_ping(&state, &bot_name).await {
+                if self.react_with(ctx, msg, emoji).await {
+                    return;
                 }
             }
         }
         if session_expired {
             self.agent
-                .compact_session(
-                    &msg.author.id.get().to_string(),
-                    user_config.deep_memory_enabled,
-                )
+                .compact_session(&msg.author.id.get().to_string())
                 .await;
         }
 
@@ -182,7 +250,7 @@ impl HouseBot {
             media.extend(extract_gif_from_text(&referenced.content).await);
         }
 
-        // Load per-user settings (personality, thinking effort, and privacy).
+        // Load per-user settings (personality and thinking effort).
         let personality = user_config.personality.clone();
         let thinking = user_config.thinking_mode;
         let max_output_tokens = self
@@ -212,23 +280,19 @@ impl HouseBot {
             .unwrap_or_default();
 
         // Held until the reply is posted, so the channel shows the bot typing
-        // for every part of the turn regardless of the progress-update setting.
+        // for every part of the turn, even when the progress message fails to send.
         let _typing = TypingIndicator::start(ctx, msg.channel_id);
 
-        let progress = if user_config.progress_updates_enabled {
-            // Check LLM scheduler utilization so we can show the user their
-            // position when every slot is occupied.
-            let scheduler_info = self.agent.llm_scheduler_info();
-            let progress_msg = if scheduler_info.is_saturated() {
-                let position = scheduler_info.pending + 1;
-                format!("⏳ **You are #{position} in line. Waiting for an LLM slot to open up...**")
-            } else {
-                "🧠 **Thinking...**".to_string()
-            };
-            reply_no_ping(ctx, msg, &progress_msg).await.ok()
+        // Check LLM scheduler utilization so we can show the user their
+        // position when every slot is occupied.
+        let scheduler_info = self.agent.llm_scheduler_info();
+        let progress_msg = if scheduler_info.is_saturated() {
+            let position = scheduler_info.pending + 1;
+            format!("⏳ **You are #{position} in line. Waiting for an LLM slot to open up...**")
         } else {
-            None
+            "🧠 **Thinking...**".to_string()
         };
+        let progress = reply_no_ping(ctx, msg, &progress_msg).await.ok();
         let cancel_token = CancelToken::default();
         if let Some(ref progress) = progress {
             let _ = progress.react(&ctx.http, '❌').await;
@@ -259,13 +323,12 @@ impl HouseBot {
                     personality: personality.as_deref(),
                     thinking,
                     channel_id: msg.channel_id.get(),
-                    deep_memory_enabled: user_config.deep_memory_enabled,
                     display_name: &display_name,
                     nickname: &nickname,
                     avatar_url: &avatar_url,
                     guild_id: msg.guild_id.map(|guild| guild.get()),
                     max_output_tokens,
-                    max_tool_rounds: user_config.max_tool_rounds as usize,
+                    max_tool_rounds: MAX_TOOL_ROUNDS,
                     cancel: Some(cancel_token),
                 },
                 response_hooks
@@ -329,29 +392,13 @@ impl HouseBot {
         }
 
         let safe = self.redactor.redact(&result.text);
-        if user_config.progress_updates_enabled {
-            if let Some(notice) = &result.session_notice {
-                let _ = reply_no_ping(ctx, msg, notice).await;
-            }
+        if let Some(notice) = &result.session_notice {
+            let _ = reply_no_ping(ctx, msg, notice).await;
         }
         let allowed_pings = extract_mentioned_users(&safe, bot_id.get());
-        let with_tool_summary = if user_config.progress_updates_enabled {
-            append_tool_summary(&safe, &result.tools_called)
-        } else {
-            safe
-        };
+        let with_tool_summary = append_tool_summary(&safe, &result.tools_called);
         let (display, code_files) = extract_code_files(&with_tool_summary);
-        send_final_message(
-            ctx,
-            msg,
-            &display,
-            user_config.labs_pagination_enabled,
-            msg.author.id.get(),
-            &self.paginated,
-            progress.as_ref(),
-            &allowed_pings,
-        )
-        .await;
+        send_final_message(ctx, msg, &display, &allowed_pings).await;
         // Upload extracted code blocks.
         for (filename, content) in code_files {
             let safe = self.redactor.redact(&String::from_utf8_lossy(&content));

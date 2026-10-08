@@ -15,7 +15,6 @@ impl Agent {
             personality,
             thinking,
             channel_id,
-            deep_memory_enabled,
             display_name,
             nickname,
             avatar_url,
@@ -54,9 +53,7 @@ impl Agent {
             / self.context_window_tokens.max(1) as f64;
         if !past.is_empty() && previous_usage >= 0.9 {
             tracing::info!("Context at 90% for {user_id} — auto-compacting session");
-            let compacted = self
-                .compact_session_with_hooks(user_id, deep_memory_enabled, hooks)
-                .await;
+            let compacted = self.compact_session_with_hooks(user_id, hooks).await;
             compaction_failed = !compacted;
             past = self.history.load(user_id).await;
             user_memory = self.memory.load(user_id).await;
@@ -92,7 +89,7 @@ impl Agent {
         // before the history, or every turn misses the prompt cache.
         let system = json!({
             "role": "system",
-            "content": build_system_prompt(username, user_id, personality, deep_memory_enabled),
+            "content": build_system_prompt(username, user_id, personality),
         });
         let mut messages: Vec<Value> = Vec::with_capacity(past.len() + 3);
         messages.push(system);
@@ -112,7 +109,7 @@ impl Agent {
             .load()
             .await
             .is_configurer(user_id.parse::<u64>().unwrap_or(0), config::owner_id());
-        let tools = self.build_tools(deep_memory_enabled, is_configurer).await;
+        let tools = self.build_tools(is_configurer).await;
         let sandbox = LazySandbox::new(self.sandbox_client.clone(), user_id, self.skills.clone());
         let mut turn_messages: Vec<Value> = Vec::new();
         let mut tools_called = Vec::new();
@@ -128,7 +125,7 @@ impl Agent {
             rounds += 1;
             if rounds > max_tool_rounds {
                 tracing::warn!(target: "housebot::agent", user_id, "Tool loop exceeded {max_tool_rounds} rounds — stopping");
-                break format!("I had to stop because this request required more than {max_tool_rounds} tool calls in a row. Try a more specific request, or raise the limit with `/labs tool_rounds`.");
+                break format!("I had to stop because this request required more than {max_tool_rounds} tool calls in a row. Try a more specific request.");
             }
 
             // Honour cancellation — checked before each LLM call so the user
@@ -328,11 +325,7 @@ impl Agent {
         });
     }
 
-    pub(crate) async fn build_tools(
-        &self,
-        deep_memory_enabled: bool,
-        configurer: bool,
-    ) -> Vec<Value> {
+    pub(crate) async fn build_tools(&self, configurer: bool) -> Vec<Value> {
         let mut tools = Vec::new();
         let mut defs: Vec<Value> = vec![
             tools::searxng::definition(),
@@ -346,17 +339,14 @@ impl Agent {
             tools::features::definition(),
             get_messages_tool(),
             get_current_time_tool(),
+            crate::memory::update_memory_tool(),
+            crate::memory::search_memory_tool(),
         ];
         defs.extend(tools::sandbox::all_definitions());
         // Configuration control is only offered to authorized configurers
         // (re-checked at dispatch as a defence-in-depth measure).
         if configurer {
             defs.push(configure_bot_tool());
-        }
-        // Conditionally include memory tools based on user's privacy setting.
-        if deep_memory_enabled {
-            defs.push(crate::memory::update_memory_tool());
-            defs.push(crate::memory::search_memory_tool());
         }
         for def in defs {
             let (name, desc, params) = flatten_tool(&def);

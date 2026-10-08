@@ -143,13 +143,14 @@ pub struct ServerConfig {
     /// Who can view the server token leaderboard and whether the response is public.
     #[serde(default)]
     pub leaderboard_visibility: LeaderboardVisibility,
-    /// Roles allowed to view the leaderboard when visibility is restricted.
-    #[serde(default)]
-    pub leaderboard_role_ids: HashSet<u64>,
     /// Whether to respond to @-mentions from other bots in this server.
     /// The bot always ignores its own pings regardless.
     #[serde(default)]
     pub respond_to_bot_pings: bool,
+    /// Channels where the classifier may react to or answer messages that do
+    /// not address the bot.
+    #[serde(default)]
+    pub proactive_channel_ids: HashSet<u64>,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -223,90 +224,19 @@ impl ServerConfigStore {
         let cfg = self.load(gid).await;
         cfg.allowed_channel_ids.is_empty() || cfg.allowed_channel_ids.contains(&channel_id)
     }
-
-    /// Follow-ups require an explicitly configured server channel.
-    pub async fn is_followup_channel_allowed(
-        &self,
-        guild_id: Option<u64>,
-        channel_id: u64,
-    ) -> bool {
-        let Some(gid) = guild_id else {
-            return false;
-        };
-        self.load(gid)
-            .await
-            .allowed_channel_ids
-            .contains(&channel_id)
-    }
 }
 
 // ── user config ───────────────────────────────────────────────────────────────
 
 /// Configuration scoped to an individual Discord user.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct UserConfig {
     /// Optional personality/tone override injected into the system prompt.
     #[serde(default)]
     pub personality: Option<String>,
-    /// Whether the bot should reply to follow-up messages without a ping/mention
-    /// in guild channels. DMs enable follow-ups by default.
-    #[serde(default)]
-    pub followup_enabled: bool,
-    /// How many seconds the bot will reply without a ping after the last interaction.
-    #[serde(default = "default_followup_timeout")]
-    pub followup_timeout_secs: u64,
-    /// Whether LLM responses are rendered as paginated embeds.
-    #[serde(default)]
-    pub labs_pagination_enabled: bool,
     /// Reasoning budget used for this user's requests (set with `/effort`).
     #[serde(default)]
     pub thinking_mode: ThinkingMode,
-    /// Whether intermediate reasoning, queue, and tool progress is shown in Discord.
-    #[serde(default = "default_progress_updates_enabled")]
-    pub progress_updates_enabled: bool,
-    /// Whether the bot may use `update_memory` and auto-save conversation summaries.
-    /// When disabled, short-term conversation history still works normally.
-    #[serde(default = "default_deep_memory_enabled")]
-    pub deep_memory_enabled: bool,
-    /// How many tool calls in a row the model may make in one reply (set with `/labs tool_rounds`).
-    #[serde(default = "default_max_tool_rounds")]
-    pub max_tool_rounds: u32,
-}
-
-/// Default and ceiling for [`UserConfig::max_tool_rounds`]. Every round is a
-/// full LLM round trip, so the ceiling keeps a runaway loop bounded.
-pub const DEFAULT_MAX_TOOL_ROUNDS: u32 = 50;
-pub const MAX_TOOL_ROUNDS_LIMIT: u32 = 200;
-
-fn default_max_tool_rounds() -> u32 {
-    DEFAULT_MAX_TOOL_ROUNDS
-}
-
-fn default_followup_timeout() -> u64 {
-    housebot_config::env_parse("CONVERSATION_IDLE_TIMEOUT", 300)
-}
-
-fn default_deep_memory_enabled() -> bool {
-    true
-}
-
-fn default_progress_updates_enabled() -> bool {
-    true
-}
-
-impl Default for UserConfig {
-    fn default() -> Self {
-        Self {
-            personality: None,
-            followup_enabled: false,
-            followup_timeout_secs: default_followup_timeout(),
-            labs_pagination_enabled: false,
-            thinking_mode: ThinkingMode::default(),
-            progress_updates_enabled: true,
-            deep_memory_enabled: true,
-            max_tool_rounds: DEFAULT_MAX_TOOL_ROUNDS,
-        }
-    }
 }
 
 #[derive(Clone)]
@@ -420,6 +350,65 @@ impl SchedulerLimitsStore {
     }
 }
 
+// ── classifier ────────────────────────────────────────────────────────────────
+
+/// The System One decision endpoint that picks between an emoji reaction and
+/// a full answer. With no stored record the classifier is off.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ClassifierSettings {
+    pub url: String,
+    pub model: String,
+}
+
+const CLASSIFIER_KEY: &str = "classifier";
+
+#[derive(Clone)]
+pub struct ClassifierStore {
+    backend: Backend,
+}
+
+impl Default for ClassifierStore {
+    fn default() -> Self {
+        Self::new(data_dir().join("bot_config"))
+    }
+}
+
+impl ClassifierStore {
+    pub fn new(dir: PathBuf) -> Self {
+        Self {
+            backend: Backend::Files(dir),
+        }
+    }
+
+    pub fn postgres(client: Arc<tokio_postgres::Client>) -> Self {
+        Self {
+            backend: Backend::Postgres(client),
+        }
+    }
+
+    pub async fn load(&self) -> Option<ClassifierSettings> {
+        let bytes = self
+            .backend
+            .load(CLASSIFIER_KEY, CLASSIFIER_KEY)
+            .await
+            .ok()
+            .flatten()?;
+        serde_json::from_slice(&bytes).ok()
+    }
+
+    pub async fn save(&self, settings: Option<&ClassifierSettings>) -> anyhow::Result<()> {
+        match settings {
+            Some(settings) => {
+                let data = serde_json::to_string_pretty(settings)?;
+                self.backend
+                    .save(CLASSIFIER_KEY, CLASSIFIER_KEY, data)
+                    .await
+            }
+            None => Ok(self.backend.delete(CLASSIFIER_KEY, CLASSIFIER_KEY).await?),
+        }
+    }
+}
+
 // ── access control ────────────────────────────────────────────────────────────
 
 /// Per-user policy set by the bot's configurers.
@@ -458,10 +447,6 @@ pub struct AccessControl {
     /// Per-user output-token caps and respond flags, keyed by Discord user ID.
     #[serde(default)]
     pub user_policies: HashMap<u64, UserPolicy>,
-    /// Channel the bot watches for the feature-development completion webhook
-    /// (`/config dev_notify_channel`). `None` disables the watch.
-    #[serde(default)]
-    pub dev_notify_channel_id: Option<u64>,
 }
 
 impl AccessControl {
@@ -583,30 +568,12 @@ mod tests {
     use super::*;
 
     #[test]
-    fn labs_pagination_is_off_by_default() {
-        assert!(!UserConfig::default().labs_pagination_enabled);
-    }
-
-    #[test]
     fn old_server_config_defaults_to_public_leaderboard() {
         let config: ServerConfig =
             serde_json::from_str(r#"{"allowed_channel_ids":[123]}"#).unwrap();
         assert_eq!(config.leaderboard_visibility, LeaderboardVisibility::Public);
-        assert!(config.leaderboard_role_ids.is_empty());
         assert!(!config.respond_to_bot_pings);
-    }
-
-    #[test]
-    fn followup_is_off_by_default() {
-        assert!(!UserConfig::default().followup_enabled);
-    }
-
-    #[test]
-    fn old_user_config_defaults_labs_pagination_to_off() {
-        let config: UserConfig =
-            serde_json::from_str(r#"{"personality":null,"followup_timeout_secs":300}"#).unwrap();
-        assert!(!config.labs_pagination_enabled);
-        assert!(!config.followup_enabled);
+        assert!(config.proactive_channel_ids.is_empty());
     }
 
     #[test]
@@ -614,42 +581,6 @@ mod tests {
         let config: UserConfig =
             serde_json::from_str(r#"{"personality":null,"followup_timeout_secs":300}"#).unwrap();
         assert_eq!(config.thinking_mode, ThinkingMode::Medium);
-    }
-
-    #[test]
-    fn old_user_config_defaults_progress_updates_to_enabled() {
-        let config: UserConfig =
-            serde_json::from_str(r#"{"personality":null,"followup_timeout_secs":300}"#).unwrap();
-        assert!(config.progress_updates_enabled);
-    }
-
-    #[test]
-    fn disabled_progress_updates_persist_through_serde() {
-        let config = UserConfig {
-            progress_updates_enabled: false,
-            ..UserConfig::default()
-        };
-        let json = serde_json::to_string(&config).unwrap();
-        let restored: UserConfig = serde_json::from_str(&json).unwrap();
-        assert!(!restored.progress_updates_enabled);
-    }
-
-    #[test]
-    fn old_user_config_defaults_tool_rounds_to_fifty() {
-        let config: UserConfig =
-            serde_json::from_str(r#"{"personality":null,"followup_timeout_secs":300}"#).unwrap();
-        assert_eq!(config.max_tool_rounds, 50);
-    }
-
-    #[test]
-    fn tool_rounds_persist_through_serde() {
-        let config = UserConfig {
-            max_tool_rounds: 120,
-            ..UserConfig::default()
-        };
-        let json = serde_json::to_string(&config).unwrap();
-        let restored: UserConfig = serde_json::from_str(&json).unwrap();
-        assert_eq!(restored.max_tool_rounds, 120);
     }
 
     #[test]
@@ -661,29 +592,6 @@ mod tests {
         let json = serde_json::to_string(&config).unwrap();
         let restored: UserConfig = serde_json::from_str(&json).unwrap();
         assert_eq!(restored.thinking_mode, ThinkingMode::XHigh);
-    }
-
-    #[test]
-    fn deep_memory_is_on_by_default() {
-        assert!(UserConfig::default().deep_memory_enabled);
-    }
-
-    #[test]
-    fn old_user_config_enables_memory() {
-        let config: UserConfig =
-            serde_json::from_str(r#"{"personality":null,"followup_timeout_secs":300}"#).unwrap();
-        assert!(config.deep_memory_enabled);
-    }
-
-    #[test]
-    fn privacy_fields_persist_through_serde() {
-        let config = UserConfig {
-            deep_memory_enabled: true,
-            ..UserConfig::default()
-        };
-        let json = serde_json::to_string(&config).unwrap();
-        let restored: UserConfig = serde_json::from_str(&json).unwrap();
-        assert!(restored.deep_memory_enabled);
     }
 
     #[test]
@@ -803,5 +711,20 @@ mod tests {
             .unwrap();
         assert!(!inserted);
         assert!(store.load().await.configurer_ids.contains(&7));
+    }
+
+    #[tokio::test]
+    async fn classifier_settings_save_load_and_clear() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let store = ClassifierStore::new(tmp.path().join("bot_config"));
+        assert_eq!(store.load().await, None);
+        let settings = ClassifierSettings {
+            url: "https://llm.example.net/typesafe".into(),
+            model: "kev".into(),
+        };
+        store.save(Some(&settings)).await.unwrap();
+        assert_eq!(store.load().await, Some(settings));
+        store.save(None).await.unwrap();
+        assert_eq!(store.load().await, None);
     }
 }

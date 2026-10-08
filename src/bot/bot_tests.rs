@@ -147,30 +147,6 @@ async fn scheduler_show_reports_the_ceiling() {
     assert!(shown.contains("0 of 4 slots busy"));
 }
 
-#[tokio::test]
-async fn progress_target_requires_admin_and_enables_final_only_mode() {
-    let temp = TempDir::new().unwrap();
-    let user_config = UserConfigStore::new(temp.path().join("user_config"));
-    let options: Vec<serenity::all::CommandDataOption> = serde_json::from_value(json!([{
-        "name": "progress",
-        "type": 1,
-        "options": [
-            {"name": "enabled", "type": 5, "value": false},
-            {"name": "user", "type": 6, "value": "99"}
-        ]
-    }]))
-    .unwrap();
-
-    let denied = handle_personalize_interaction(&user_config, &options, 42, false).await;
-    assert!(denied.contains("Only server administrators and bot configurers"));
-    assert!(user_config.load(99).await.progress_updates_enabled);
-
-    let saved = handle_personalize_interaction(&user_config, &options, 42, true).await;
-    assert!(saved.contains("only final responses"));
-    assert!(!user_config.load(99).await.progress_updates_enabled);
-    assert!(user_config.load(42).await.progress_updates_enabled);
-}
-
 #[test]
 fn the_feature_reference_is_sent_whole_as_an_embed() {
     let reply = help_response();
@@ -185,32 +161,27 @@ fn the_feature_reference_is_sent_whole_as_an_embed() {
 fn leaderboard_visibility_controls_access_and_response_scope() {
     let mut config = ServerConfig::default();
     assert_eq!(
-        leaderboard_access(&config, true, &[], false),
+        leaderboard_access(&config, true, false),
         LeaderboardAccess::Public
     );
 
     config.leaderboard_visibility = LeaderboardVisibility::Private;
     assert_eq!(
-        leaderboard_access(&config, true, &[], false),
+        leaderboard_access(&config, true, false),
         LeaderboardAccess::Private
     );
 
     config.leaderboard_visibility = LeaderboardVisibility::Restricted;
-    config.leaderboard_role_ids.insert(42);
     assert_eq!(
-        leaderboard_access(&config, true, &[], false),
+        leaderboard_access(&config, true, false),
         LeaderboardAccess::Denied
     );
     assert_eq!(
-        leaderboard_access(&config, true, &[42], false),
+        leaderboard_access(&config, true, true),
         LeaderboardAccess::Private
     );
     assert_eq!(
-        leaderboard_access(&config, true, &[], true),
-        LeaderboardAccess::Private
-    );
-    assert_eq!(
-        leaderboard_access(&config, false, &[], false),
+        leaderboard_access(&config, false, false),
         LeaderboardAccess::Private
     );
 }
@@ -647,67 +618,4 @@ async fn stats_reports_counts() {
     let out = stats_command(&history, &memory, &skills, 5, "Alice").await;
     assert!(out.contains("Stats for Alice"));
     assert!(out.contains("Memory size:"));
-}
-
-#[test]
-fn dev_notify_footer_parses_valid_text() {
-    let footer = "housebot-dev-notify requester_id=123456789 issue=42 status=success sig=ab12";
-    assert_eq!(
-        parse_dev_notify_footer(footer),
-        Some((123456789, 42, "success".to_string(), "ab12".to_string()))
-    );
-}
-
-#[test]
-fn dev_notify_footer_rejects_unrelated_text() {
-    assert_eq!(parse_dev_notify_footer("some other footer text"), None);
-    assert_eq!(
-        parse_dev_notify_footer("housebot-dev-notify issue=42"),
-        None
-    );
-}
-
-#[test]
-fn dev_notify_footer_rejects_missing_requester_id() {
-    // requester_id absent even though issue and status are present.
-    assert_eq!(
-        parse_dev_notify_footer("housebot-dev-notify issue=42 status=success sig=ab12"),
-        None
-    );
-}
-
-#[test]
-fn dev_notify_footer_rejects_empty_status() {
-    assert_eq!(
-        parse_dev_notify_footer("housebot-dev-notify requester_id=1 issue=42 status= sig=ab12"),
-        None
-    );
-}
-
-#[test]
-fn dev_notify_footer_rejects_zero_requester_id() {
-    assert_eq!(
-        parse_dev_notify_footer(
-            "housebot-dev-notify requester_id=0 issue=42 status=success sig=ab12"
-        ),
-        None
-    );
-}
-
-#[test]
-fn dev_notify_footer_rejects_missing_sig() {
-    assert_eq!(
-        parse_dev_notify_footer("housebot-dev-notify requester_id=1 issue=42 status=success"),
-        None
-    );
-}
-
-#[test]
-fn dev_notify_footer_allows_equals_in_value() {
-    // split_once splits on the *first* '=', so values may safely contain '='.
-    let footer = "housebot-dev-notify requester_id=1 issue=42 status=error=timeout sig=ab12";
-    assert_eq!(
-        parse_dev_notify_footer(footer),
-        Some((1, 42, "error=timeout".to_string(), "ab12".to_string()))
-    );
 }

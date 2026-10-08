@@ -5,18 +5,6 @@ use crate::token_monitor::LeaderboardRank;
 use std::collections::BTreeSet;
 
 #[test]
-fn emoji_selection_accepts_only_an_emoji_or_none() {
-    assert_eq!(parse_emoji_selection("👍"), Some("👍".into()));
-    assert_eq!(parse_emoji_selection("👍🏽"), Some("👍🏽".into()));
-    assert_eq!(parse_emoji_selection("🇨🇦"), Some("🇨🇦".into()));
-    assert_eq!(parse_emoji_selection("❤️"), Some("❤️".into()));
-    assert_eq!(parse_emoji_selection("👍👍"), None);
-    assert_eq!(parse_emoji_selection("NONE"), None);
-    assert_eq!(parse_emoji_selection("👍 sounds good"), None);
-    assert_eq!(parse_emoji_selection("sure"), None);
-}
-
-#[test]
 fn token_leaderboard_format_shows_period_metric_and_requester_rank() {
     let entry = LeaderboardEntry {
         user_id: Some("u1".into()),
@@ -43,14 +31,14 @@ fn token_leaderboard_format_shows_period_metric_and_requester_rank() {
 
 #[test]
 fn system_prompt_includes_username_and_id() {
-    let p = build_system_prompt("Alice", "123", None, true);
+    let p = build_system_prompt("Alice", "123", None);
     assert!(p.contains("Alice"));
     assert!(p.contains("123"));
 }
 
 #[test]
 fn system_prompt_names_the_hardcoded_model_identity() {
-    let p = build_system_prompt("Alice", "123", None, true);
+    let p = build_system_prompt("Alice", "123", None);
     assert!(
         p.contains("This iteration is Claude Sonnet 6."),
         "identity line must name Claude Sonnet 6: {p}"
@@ -80,7 +68,7 @@ fn session_context_omits_blank_memory() {
 fn system_prompt_holds_no_per_session_data() {
     // Memory and profile change between sessions; in the system prompt they
     // would miss the prompt cache for the whole conversation.
-    let p = build_system_prompt("alice", "7", None, true);
+    let p = build_system_prompt("alice", "7", None);
     assert!(!p.contains("Your memory"), "{p}");
     assert!(!p.contains("User profile"), "{p}");
 }
@@ -103,14 +91,14 @@ fn skill_descriptions_arrive_as_a_user_message_not_the_system_prompt() {
     assert!(content.contains("**greet**: Say hello"), "{content}");
     assert!(content.contains("skills/<name>/SKILL.md"), "{content}");
 
-    let p = build_system_prompt("Alice", "123", None, true);
+    let p = build_system_prompt("Alice", "123", None);
     assert!(!p.contains("Say hello"));
 }
 
 #[test]
 fn system_prompt_does_not_contain_the_time() {
     // A timestamp in the prompt would break the prompt cache on every turn.
-    let p = build_system_prompt("Alice", "123", None, true);
+    let p = build_system_prompt("Alice", "123", None);
     assert!(!p.contains("Current date/time"), "{p}");
     assert!(p.contains("get_current_time"), "{p}");
 }

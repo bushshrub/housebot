@@ -166,19 +166,6 @@ pub(crate) async fn register_slash_commands(ctx: &Context, guild_ids: &[GuildId]
     // The /config global slash command (bot configuration, configurers only).
     let config_cmd = CreateCommand::new("config")
         .description("Configure the bot (authorized configurers only)")
-        // ── dev_notify_channel subcommand (feature-development completion) ─
-        .add_option(
-            CreateCommandOption::new(
-                CommandOptionType::SubCommand,
-                "dev_notify_channel",
-                "Set which channel to watch for feature-development completion notices (omit to disable)",
-            )
-            .add_sub_option(CreateCommandOption::new(
-                CommandOptionType::Channel,
-                "channel",
-                "Channel receiving the dispatch workflows' completion webhook",
-            )),
-        )
         // ── access subcommand group ──────────────────────────────────────
         .add_option(
             CreateCommandOption::new(
@@ -373,36 +360,9 @@ pub(crate) async fn register_slash_commands(ctx: &Context, guild_ids: &[GuildId]
                     .required(true)
                     .add_string_choice("Public channel response", "public")
                     .add_string_choice("Private response", "private")
-                    .add_string_choice("Restricted to roles", "restricted"),
+                    .add_string_choice("Administrators only", "restricted"),
                 ),
-            )
-            .add_sub_option(
-                CreateCommandOption::new(
-                    CommandOptionType::SubCommand,
-                    "role_add",
-                    "Allow a role to use the leaderboard in restricted mode",
-                )
-                .add_sub_option(
-                    CreateCommandOption::new(CommandOptionType::Role, "role", "Role to allow")
-                        .required(true),
-                ),
-            )
-            .add_sub_option(
-                CreateCommandOption::new(
-                    CommandOptionType::SubCommand,
-                    "role_remove",
-                    "Remove a role from restricted leaderboard access",
-                )
-                .add_sub_option(
-                    CreateCommandOption::new(CommandOptionType::Role, "role", "Role to remove")
-                        .required(true),
-                ),
-            )
-            .add_sub_option(CreateCommandOption::new(
-                CommandOptionType::SubCommand,
-                "role_list",
-                "List roles allowed to use the leaderboard",
-            )),
+            ),
         )
         // ── bot_pings subcommand ─────────────────────────────────────────
         .add_option(
@@ -416,22 +376,6 @@ pub(crate) async fn register_slash_commands(ctx: &Context, guild_ids: &[GuildId]
                     CommandOptionType::Boolean,
                     "enabled",
                     "Enable or disable responses to other bots",
-                )
-                .required(true),
-            ),
-        )
-        // ── proactive subcommand ─────────────────────────────────────────
-        .add_option(
-            CreateCommandOption::new(
-                CommandOptionType::SubCommand,
-                "proactive",
-                "Control whether proactive assistance is allowed in this server",
-            )
-            .add_sub_option(
-                CreateCommandOption::new(
-                    CommandOptionType::Boolean,
-                    "enabled",
-                    "Whether users may enable proactive assistance here",
                 )
                 .required(true),
             ),
@@ -450,46 +394,6 @@ pub(crate) async fn register_slash_commands(ctx: &Context, guild_ids: &[GuildId]
                 "text",
                 "Personality description (omit to clear your override)",
             )),
-        )
-        .add_option(
-            CreateCommandOption::new(
-                CommandOptionType::SubCommand,
-                "followup",
-                "Control whether the bot replies without a ping during active conversations",
-            )
-            .add_sub_option(
-                CreateCommandOption::new(
-                    CommandOptionType::Boolean,
-                    "enabled",
-                    "Enable or disable follow-up replies",
-                )
-                .required(true),
-            )
-            .add_sub_option(CreateCommandOption::new(
-                CommandOptionType::Integer,
-                "timeout",
-                "Seconds to keep the conversation open without a ping (default 300)",
-            )),
-        )
-        .add_option(
-            CreateCommandOption::new(
-                CommandOptionType::SubCommand,
-                "progress",
-                "Control whether intermediate progress updates are shown",
-            )
-            .add_sub_option(
-                CreateCommandOption::new(
-                    CommandOptionType::Boolean,
-                    "enabled",
-                    "Show reasoning, queue, generating, and tool progress",
-                )
-                .required(true),
-            )
-            .add_sub_option(CreateCommandOption::new(
-                CommandOptionType::User,
-                "user",
-                "User to configure (server administrators and bot configurers only)",
-            )),
         );
     global_commands.push(personalize_cmd);
     // /labs: every new experimental feature lands here first (see AGENTS.md),
@@ -505,14 +409,22 @@ pub(crate) async fn register_slash_commands(ctx: &Context, guild_ids: &[GuildId]
         .add_option(
             CreateCommandOption::new(
                 CommandOptionType::SubCommand,
-                "pagination",
-                "Toggle paginated LLM responses",
+                "proactive",
+                "Let the bot join conversations in a channel without a ping (server administrators)",
+            )
+            .add_sub_option(
+                CreateCommandOption::new(
+                    CommandOptionType::Channel,
+                    "channel",
+                    "Channel to change",
+                )
+                .required(true),
             )
             .add_sub_option(
                 CreateCommandOption::new(
                     CommandOptionType::Boolean,
                     "enabled",
-                    "Enable or disable paginated responses",
+                    "Enable or disable proactive mode in the channel",
                 )
                 .required(true),
             ),
@@ -520,18 +432,24 @@ pub(crate) async fn register_slash_commands(ctx: &Context, guild_ids: &[GuildId]
         .add_option(
             CreateCommandOption::new(
                 CommandOptionType::SubCommand,
-                "tool_rounds",
-                "Set how many tool calls in a row the bot may make in one reply",
+                "classifier",
+                "Set the System One endpoint that decides when to react or answer (configurers)",
             )
-            .add_sub_option(
-                CreateCommandOption::new(
-                    CommandOptionType::Integer,
-                    "limit",
-                    "Tool calls allowed per reply (omit to show the current limit)",
-                )
-                .min_int_value(1)
-                .max_int_value(u64::from(crate::bot_config::MAX_TOOL_ROUNDS_LIMIT)),
-            ),
+            .add_sub_option(CreateCommandOption::new(
+                CommandOptionType::String,
+                "url",
+                "Base URL, e.g. https://llm.example.net/typesafe (omit both options to show)",
+            ))
+            .add_sub_option(CreateCommandOption::new(
+                CommandOptionType::String,
+                "model",
+                "Decision model name, e.g. kev",
+            ))
+            .add_sub_option(CreateCommandOption::new(
+                CommandOptionType::Boolean,
+                "disable",
+                "Turn the classifier off",
+            )),
         );
     global_commands.push(effort_command_definition());
     global_commands.extend([
@@ -562,32 +480,10 @@ pub(crate) async fn register_slash_commands(ctx: &Context, guild_ids: &[GuildId]
                 .add_string_choice("Cache efficiency", "efficiency"),
             ),
         CreateCommand::new("status")
-            .description("Show your current settings (effort level, follow-up, personality)"),
+            .description("Show your current settings (effort level, personality)"),
         skill_command_definition(),
         CreateCommand::new("stats").description("Show your conversation and memory statistics"),
         data_command_definition(),
-        CreateCommand::new("privacy")
-            .description("View or change your privacy settings")
-            .add_option(CreateCommandOption::new(
-                CommandOptionType::SubCommand,
-                "status",
-                "Show current privacy settings",
-            ))
-            .add_option(
-                CreateCommandOption::new(
-                    CommandOptionType::SubCommand,
-                    "deep_memory",
-                    "Toggle deep memory",
-                )
-                .add_sub_option(
-                    CreateCommandOption::new(
-                        CommandOptionType::Boolean,
-                        "enabled",
-                        "Enable or disable deep memory",
-                    )
-                    .required(true),
-                ),
-            ),
         storage_command_definition(),
     ]);
 

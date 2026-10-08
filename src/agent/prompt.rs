@@ -68,8 +68,7 @@ specific topic, keyword, or person, e.g. 'what did hexagone say about X'. mode=b
 return messages positioned relative to a specific message_id — use these when the user replies to \
 a message and you need the conversation near it.\n\
 - configure_bot — View or change the bot's core settings: manage configurers, set per-user \
-output token caps, toggle per-user responses, control global proactive assistance, and configure \
-the development-completion notification channel. Collective batch operations (set_user_limit_all, \
+output token caps, and toggle per-user responses. Collective batch operations (set_user_limit_all, \
 set_user_respond_all) apply to all users with existing policies. Only available to authorized \
 configurers (the bot owner plus users granted access).\n\
 - read, write, edit, shell — Read, write and edit files and run Bash commands in the user's own \
@@ -166,45 +165,19 @@ remember\", \"I recall\", or \"From memory...\". Do not assume overfamiliarity \
 from the presence of memories — you are not a substitute for human connection, \
 and interactions are limited in duration.";
 
-/// Configuration-dependent additions that sit after all stable guideline
-/// bullets and before the memory-guidance bullet and dynamic content.
-struct ConfigSuffix {
-    memory_tool_line: &'static str,
-}
+const MEMORY_TOOL_LINE: &str = "- update_memory — Persist important facts about the current user for future conversations. Write the full memory each time.\n- search_memory — Search stored memory for entries matching any of the given words, best matches first. Use when the user refers to something you may have remembered.\n";
 
-impl ConfigSuffix {
-    fn new(deep_memory_enabled: bool) -> Self {
-        let memory_tool_line = if deep_memory_enabled {
-            "- update_memory — Persist important facts about the current user for future conversations. Write the full memory each time.\n- search_memory — Search stored memory for entries matching any of the given words, best matches first. Use when the user refers to something you may have remembered.\n"
-        } else {
-            ""
-        };
-        Self { memory_tool_line }
-    }
-}
+const MEMORY_GUIDANCE: &str =
+    "Actively use memory: when the user says 'remember', 'don't forget', 'keep in mind', \
+     'note that', or expresses a preference, fact, or ongoing project, call update_memory \
+     immediately to persist it. Use search_memory when the user asks about something you \
+     might have remembered, or to check whether a topic is already in memory before asking \
+     them to repeat themselves. Use the saved memory to personalize responses naturally.";
 
 /// Build the system prompt for a turn. It holds only what stays the same for
 /// a user across sessions, so the prompt cache keeps hitting; profile and
 /// memory go in [`build_session_context_message`] instead.
-pub fn build_system_prompt(
-    username: &str,
-    user_id: &str,
-    personality: Option<&str>,
-    deep_memory_enabled: bool,
-) -> String {
-    let memory_guidance = if deep_memory_enabled {
-        "Actively use memory: when the user says 'remember', 'don't forget', 'keep in mind', \
-         'note that', or expresses a preference, fact, or ongoing project, call update_memory \
-         immediately to persist it. Use search_memory when the user asks about something you \
-         might have remembered, or to check whether a topic is already in memory before asking \
-         them to repeat themselves. Use the saved memory to personalize responses naturally."
-    } else {
-        "Deep memory is disabled for this user. Do NOT call update_memory or search_memory and \
-         do NOT suggest persisting facts. Short-term conversation history within this session \
-         still works normally."
-    };
-
-    let config = ConfigSuffix::new(deep_memory_enabled);
+pub fn build_system_prompt(username: &str, user_id: &str, personality: Option<&str>) -> String {
     let personality_section = match personality {
         Some(p) if !p.trim().is_empty() => {
             format!("\n\n## Personality / tone for this user\n{}", p.trim())
@@ -244,7 +217,8 @@ mode=before/after/around with that message's ID.\n\n\
 - {memory_guidance}\n\
 {personality_section}\n\n\
 Current user: {username} (ID: {user_id})\n",
-        memory_tool_line = config.memory_tool_line,
+        memory_tool_line = MEMORY_TOOL_LINE,
+        memory_guidance = MEMORY_GUIDANCE,
     )
 }
 

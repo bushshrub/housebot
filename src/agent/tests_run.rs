@@ -724,36 +724,13 @@ async fn compaction_records_summary_token_usage() {
         .await
         .unwrap();
 
-    agent.compact_session("u6", true).await;
+    agent.compact_session("u6").await;
 
     let info = agent.session_info("u6").await;
     assert_eq!(info.context_tokens, 0);
     assert_eq!(info.requests, 0);
     assert_eq!(info.input_tokens, 0);
     assert_eq!(info.output_tokens, 0);
-}
-
-#[tokio::test]
-async fn disabled_memory_compaction_clears_history_without_writing_memory() {
-    let client = Arc::new(MockChatClient::new().with_once_reply("should not be called"));
-    let (_t, agent) = test_agent(client);
-    agent.memory.save("u7", "Keep this memory").await.unwrap();
-    agent
-        .history
-        .save(
-            "u7",
-            &[
-                json!({"role": "user", "content": "private conversation"}),
-                json!({"role": "assistant", "content": "reply"}),
-            ],
-        )
-        .await
-        .unwrap();
-
-    agent.compact_session("u7", false).await;
-
-    assert_eq!(agent.memory.load("u7").await, "Keep this memory");
-    assert!(agent.history.load("u7").await.is_empty());
 }
 
 /// Regression test for issue #335: a failed or empty summary must not wipe the
@@ -768,7 +745,7 @@ async fn compaction_without_a_summary_keeps_the_history() {
     ];
     agent.history.save("u11", &history).await.unwrap();
 
-    assert!(!agent.compact_session("u11", true).await);
+    assert!(!agent.compact_session("u11").await);
 
     assert_eq!(agent.history.load("u11").await, history);
 }
@@ -788,7 +765,7 @@ async fn a_failed_summary_keeps_the_history_and_the_context_usage() {
     };
     agent.record_usage("u12", "c12", usage).await;
 
-    assert!(!agent.compact_session("u12", true).await);
+    assert!(!agent.compact_session("u12").await);
 
     assert_eq!(agent.history.load("u12").await, history);
     assert_eq!(agent.last_context_tokens("u12").await, 900);
@@ -814,7 +791,7 @@ async fn compaction_never_writes_persistent_memory() {
         .await
         .unwrap();
 
-    agent.compact_session("u8", true).await;
+    agent.compact_session("u8").await;
 
     assert_eq!(agent.memory.load("u8").await, "Existing memory");
     let history = agent.history.load("u8").await;
@@ -845,7 +822,7 @@ async fn compaction_leaves_empty_memory_empty() {
         .await
         .unwrap();
 
-    agent.compact_session("u9", true).await;
+    agent.compact_session("u9").await;
 
     assert_eq!(agent.memory.load("u9").await, "");
 }
@@ -881,7 +858,7 @@ async fn explicit_memory_update_survives_compaction() {
         .await
         .unwrap();
 
-    agent.compact_session("u10", true).await;
+    agent.compact_session("u10").await;
 
     assert_eq!(agent.memory.load("u10").await, "Prefers ribeye");
 }
@@ -1083,7 +1060,7 @@ async fn dispatch_github_api_merge_allows_configurers_and_audits_the_attempt() {
 async fn build_tools_excludes_code_execution() {
     let client = Arc::new(MockChatClient::new());
     let (_t, agent) = test_agent(client);
-    let tools = agent.build_tools(true, false).await;
+    let tools = agent.build_tools(false).await;
     let names: Vec<&str> = tools
         .iter()
         .filter_map(|t| t["function"]["name"].as_str())
@@ -1098,7 +1075,7 @@ async fn build_tools_excludes_code_execution() {
 async fn build_tools_includes_sandbox_tools() {
     let client = Arc::new(MockChatClient::new());
     let (_t, agent) = test_agent(client);
-    let tools = agent.build_tools(true, false).await;
+    let tools = agent.build_tools(false).await;
     let names: Vec<&str> = tools
         .iter()
         .filter_map(|t| t["function"]["name"].as_str())
@@ -1113,7 +1090,7 @@ async fn build_tools_includes_sandbox_tools() {
 async fn build_tools_includes_configure_bot_only_for_configurers() {
     let client = Arc::new(MockChatClient::new());
     let (_t, agent) = test_agent(client);
-    let tools = agent.build_tools(true, true).await;
+    let tools = agent.build_tools(true).await;
     let names: Vec<&str> = tools
         .iter()
         .filter_map(|t| t["function"]["name"].as_str())

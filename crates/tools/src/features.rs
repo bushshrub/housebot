@@ -11,7 +11,7 @@ pub fn features_text() -> &'static str {
 **Slash commands**
 `/help` — show this reference
 `/session status|new|compact` — inspect the current session, start fresh, or summarise it into a carry-over note before starting fresh (persistent memory is only changed when you ask)
-`/status` — show your current settings at a glance (effort, follow-up, personality)
+`/status` — show your current settings at a glance (effort, personality)
 `/stats` — show your conversation, memory, and token statistics
 `/token_leaderboard [timeframe] [metric]` — rank token usage daily, weekly, monthly, or all-time by total tokens or cache efficiency; also shows your rank
 `/effort [level] [user]` — set how much thinking the model does before replying
@@ -19,19 +19,17 @@ pub fn features_text() -> &'static str {
 `/storage memory show|search|clear` — inspect or clear persistent memory about you
 `/data history show|clear` — inspect or clear your conversation history
 `/data erase confirm:true` — permanently delete all your stored data, including token statistics
-`/privacy status|deep_memory` — view or change privacy settings
 `/personalize personality [text]` — set (or clear) a personal tone/personality override
-`/personalize followup enabled [timeout]` — toggle unpinged follow-up replies in a server channel
-`/personalize progress enabled` — toggle intermediate progress updates
-`/labs list|pagination` — experimental features
+`/labs list` — experimental features and their status
+`/labs proactive channel enabled` — let the bot react to or answer messages in a channel without a ping (server admins and configurers)
+`/labs classifier [url] [model] [disable]` — the decision model that picks between an emoji reaction and a full answer (configurers only)
 `/commit` — show the running commit hash
 `/model` — show the current model name and context size
 `/config access allow|revoke|list` — manage who may configure the bot (configurers only; the owner is always allowed)
 `/config user limit|respond|show` — per-user output-token caps and respond policies (configurers only)
 `/config scheduler show|max_inflight` — LLM concurrency ceilings (configurers only)
-`/config dev_notify_channel [channel]` — watch a channel for feature-development completion notices (configurers only)
 `/server-config channel add|remove|list|clear` — restrict which channels the bot responds in (server admins and configurers)
-`/server-config leaderboard visibility|role_add|role_remove|role_list` — make leaderboard responses public, private, or role-restricted
+`/server-config leaderboard visibility` — make leaderboard responses public, private, or administrators-only
 `/server-config bot_pings enabled` — toggle responses to other bots' @-mentions
 
 **Capabilities**
@@ -77,7 +75,12 @@ mod tests {
             "/data profile",
             "!grocery",
             "notes",
-            "proactive",
+            "/privacy",
+            "followup",
+            "pagination",
+            "tool_rounds",
+            "dev_notify",
+            "role_add",
             "Jellyfin",
             "deep research",
             "translat",

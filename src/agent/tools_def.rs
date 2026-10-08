@@ -145,8 +145,6 @@ pub(crate) fn configure_bot_tool() -> Value {
               Requires user_id. Omit max_output_tokens to remove the cap.\n\
             - 'set_user_respond' — control whether the bot responds to a user. \
               Requires user_id and respond (boolean).\n\
-            - 'set_dev_notify_channel' — set the Discord channel for development \
-              completion webhooks. Requires channel_id. Omit channel_id to disable.\n\
             - 'set_user_limit_all' — cap max_output_tokens for every user who already \
               has a policy. Omit max_output_tokens to remove all caps.\n\
             - 'set_user_respond_all' — set the respond flag for every user who already \
@@ -162,7 +160,6 @@ pub(crate) fn configure_bot_tool() -> Value {
                         "revoke_configurer",
                         "set_user_limit",
                         "set_user_respond",
-                        "set_dev_notify_channel",
                         "set_user_limit_all",
                         "set_user_respond_all"
                     ],
@@ -179,10 +176,6 @@ pub(crate) fn configure_bot_tool() -> Value {
                 "respond": {
                     "type": "boolean",
                     "description": "Whether the bot responds to the user, for set_user_respond / set_user_respond_all."
-                },
-                "channel_id": {
-                    "type": "string",
-                    "description": "Discord channel ID for development webhook notifications, for set_dev_notify_channel. Omit to disable."
                 }
             },
             "required": ["action"]

@@ -39,8 +39,6 @@ impl EventHandler for HouseBot {
         if let Interaction::Component(component) = &interaction {
             if component.data.custom_id.starts_with(DEVELOP_PREFIX) {
                 self.handle_develop_component(&ctx, component).await;
-            } else {
-                self.handle_pagination_component(&ctx, component).await;
             }
             return;
         }
@@ -60,7 +58,6 @@ impl EventHandler for HouseBot {
         );
         let session_action = cmd.data.options.first().map(|option| option.name.as_str());
         if cmd.data.name == "session" && session_action == Some("compact") {
-            let deep_memory_enabled = self.user_cfg.load(user_id).await.deep_memory_enabled;
             let response = CreateInteractionResponse::Defer(
                 CreateInteractionResponseMessage::new().ephemeral(false),
             );
@@ -71,7 +68,7 @@ impl EventHandler for HouseBot {
             let hooks = CompactProgressHooks::new(ctx.clone(), Box::new(cmd.clone()));
             let compacted = self
                 .agent
-                .compact_session_with_hooks(&user_id.to_string(), deep_memory_enabled, &hooks)
+                .compact_session_with_hooks(&user_id.to_string(), &hooks)
                 .await;
             if compacted {
                 self.conversations
@@ -117,25 +114,25 @@ impl EventHandler for HouseBot {
                 .await
             }
             "personalize" => {
-                let is_server_admin = cmd
-                    .member
-                    .as_deref()
-                    .and_then(|member| member.permissions)
-                    .is_some_and(|permissions| permissions.administrator());
-                let is_configurer = self
-                    .access
-                    .load()
-                    .await
-                    .is_configurer(user_id, config::owner_id());
-                handle_personalize_interaction(
-                    &self.user_cfg,
-                    &cmd.data.options,
-                    user_id,
-                    is_server_admin || is_configurer,
-                )
-                .await
+                handle_personalize_interaction(&self.user_cfg, &cmd.data.options, user_id).await
             }
-            "labs" => handle_labs_interaction(&self.user_cfg, &cmd.data.options, user_id).await,
+            "labs" => {
+                let caller = LabsCaller {
+                    guild_id,
+                    is_server_admin: cmd
+                        .member
+                        .as_deref()
+                        .and_then(|member| member.permissions)
+                        .is_some_and(|permissions| permissions.administrator()),
+                    is_configurer: self
+                        .access
+                        .load()
+                        .await
+                        .is_configurer(user_id, config::owner_id()),
+                };
+                handle_labs_interaction(&self.agent, &self.server_cfg, &cmd.data.options, caller)
+                    .await
+            }
             "effort" => {
                 let is_server_admin = cmd
                     .member
@@ -243,10 +240,6 @@ impl EventHandler for HouseBot {
                     _ => return,
                 }
             }
-            "privacy" => {
-                handle_privacy_interaction(&self.user_cfg, &self.memory, &cmd.data.options, user_id)
-                    .await
-            }
             "storage" => handle_storage_interaction(&self.memory, &cmd.data.options, user_id).await,
             "skill" => handle_skill_interaction(&self.skills, &cmd.data.options, user_id).await,
             "stats" => {
@@ -290,42 +283,40 @@ impl EventHandler for HouseBot {
             // own "Thinking..." progress updates would otherwise loop forever.
             return;
         }
-        if msg.webhook_id.is_some() && self.handle_dev_notify_webhook(&ctx, &msg).await {
-            // Only short-circuit for the configured dev-notify channel; other
-            // webhook messages (e.g. from other bots) still flow through the
-            // normal pipeline below, same as before this feature existed.
-            return;
-        }
         let structured_mention = msg.mentions.iter().any(|u| u.id == bot_id);
         let raw_mention = content_mentions_user(&msg.content, bot_id.get());
         let role_mention = !bot_role_mentions(&ctx, &msg, bot_id).is_empty();
         let is_mentioned = structured_mention || raw_mention || role_mention;
         if msg.author.bot {
-            // Other bots must explicitly @-mention us; unmentioned bot
-            // messages are always ignored regardless of configuration.
-            if !is_mentioned {
-                tracing::debug!(
-                    target: "housebot::message_flow",
-                    message_id = msg.id.get(),
-                    author_id = msg.author.id.get(),
-                    "Dropped message: bot author did not mention us"
-                );
-                return;
-            }
+            // Other bots get through only where the server allows bot
+            // interactions. An unmentioned bot message then reaches only the
+            // proactive classifier, never a reply or follow-up, so two bots
+            // cannot answer each other in a loop.
             let respond = if let Some(gid) = msg.guild_id {
                 self.server_cfg.load(gid.get()).await.respond_to_bot_pings
             } else {
                 false
             };
             if !respond {
-                tracing::info!(
-                    target: "housebot::message_flow",
-                    message_id = msg.id.get(),
-                    author_id = msg.author.id.get(),
-                    "Dropped message: bot mentions are disabled for this server"
-                );
+                if is_mentioned {
+                    tracing::info!(
+                        target: "housebot::message_flow",
+                        message_id = msg.id.get(),
+                        author_id = msg.author.id.get(),
+                        "Dropped message: bot mentions are disabled for this server"
+                    );
+                } else {
+                    tracing::debug!(
+                        target: "housebot::message_flow",
+                        message_id = msg.id.get(),
+                        author_id = msg.author.id.get(),
+                        "Dropped message: bot author did not mention us"
+                    );
+                }
                 return;
             }
+        }
+        if msg.author.bot && is_mentioned {
             tracing::info!(
                 target: "housebot::bot_mentions",
                 author_id = msg.author.id.get(),
@@ -428,28 +419,31 @@ impl EventHandler for HouseBot {
             .as_deref()
             .is_some_and(message_has_attachments);
 
-        // Follow-ups are on by default in DMs. In guild channels, users must
-        // opt in and the channel must be explicitly configured by the server.
-        let user_config = self.user_cfg.load(user_id).await;
-        let followup_enabled = is_dm || user_config.followup_enabled;
-        let followup_timeout = Duration::from_secs(user_config.followup_timeout_secs);
-        let followup_channel_allowed = self
-            .server_cfg
-            .is_followup_channel_allowed(guild_id, config_channel_id)
-            .await;
-        let followup_channel_allowed = is_dm || followup_channel_allowed;
+        // Unpinged follow-ups only happen in DMs.
+        let followup_timeout =
+            Duration::from_secs(config::env_parse("CONVERSATION_IDLE_TIMEOUT", 300));
 
         let now = Instant::now();
         let (is_active, session_expired) = {
             let mut convos = self.conversations.lock().await;
-            let active = followup_enabled
-                && followup_channel_allowed
-                && convos.is_active(channel_id, user_id, now);
+            let active = is_dm && convos.is_active(channel_id, user_id, now);
             let expired = !active && convos.pop_timed_out(channel_id, user_id, now);
             (active, expired)
         };
 
-        if !(is_dm || is_mentioned || is_reply_to_bot || is_reply_to_attachment || is_active) {
+        let addressed = (!msg.author.bot || is_mentioned)
+            && (is_dm || is_mentioned || is_reply_to_bot || is_reply_to_attachment || is_active);
+        let proactive = !addressed
+            && match guild_id {
+                Some(gid) => self
+                    .server_cfg
+                    .load(gid)
+                    .await
+                    .proactive_channel_ids
+                    .contains(&config_channel_id),
+                None => false,
+            };
+        if !addressed && !proactive {
             tracing::debug!(
                 target: "housebot::message_flow",
                 message_id = msg.id.get(),
@@ -467,20 +461,25 @@ impl EventHandler for HouseBot {
             return;
         }
 
-        let response_mode = if is_mentioned && !is_reply_to_bot && !is_reply_to_attachment {
-            ResponseMode::EmojiOrFull
+        if proactive {
+            self.handle_proactive(&ctx, &msg, bot_id, session_expired, followup_timeout)
+                .await;
         } else {
-            ResponseMode::Full
-        };
-        self.handle_message(
-            &ctx,
-            &msg,
-            bot_id,
-            session_expired,
-            followup_timeout,
-            response_mode,
-        )
-        .await;
+            let response_mode = if is_mentioned && !is_reply_to_bot && !is_reply_to_attachment {
+                ResponseMode::EmojiOrFull
+            } else {
+                ResponseMode::Full
+            };
+            self.handle_message(
+                &ctx,
+                &msg,
+                bot_id,
+                session_expired,
+                followup_timeout,
+                response_mode,
+            )
+            .await;
+        }
         self.mark_done(msg.id.get()).await;
     }
 

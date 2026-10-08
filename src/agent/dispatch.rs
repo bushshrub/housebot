@@ -445,13 +445,6 @@ impl Agent {
                     id => format!("<@{id}>"),
                 }
             )];
-            lines.push(format!(
-                "Dev notification channel: {}",
-                access
-                    .dev_notify_channel_id
-                    .map(|id| format!("<#{id}>"))
-                    .unwrap_or_else(|| "not set".to_string())
-            ));
             if access.configurer_ids.is_empty() {
                 lines.push("Additional configurers: none".to_string());
             } else {
@@ -482,29 +475,6 @@ impl Agent {
                 }
             }
             return lines.join("\n");
-        }
-
-        if action == "set_dev_notify_channel" {
-            let channel_id = match optional_nonzero_u64_string(args, "channel_id") {
-                Ok(channel_id) => channel_id,
-                Err(error) => return error,
-            };
-            let updated = self
-                .access_control
-                .update(|access| {
-                    access.dev_notify_channel_id = channel_id;
-                })
-                .await;
-            return match updated {
-                Ok(_) => match channel_id {
-                    Some(id) => format!("Dev notification channel set to <#{id}>."),
-                    None => "Dev notification channel disabled.".to_string(),
-                },
-                Err(error) => {
-                    tracing::error!(%error, "failed to save bot access control");
-                    "Error: failed to save the bot configuration.".to_string()
-                }
-            };
         }
 
         if action == "set_user_limit_all" {
@@ -681,45 +651,18 @@ fn optional_nonzero_u32(args: &Value, key: &str) -> Result<Option<u32>, String> 
     Ok(Some(parsed))
 }
 
-fn optional_nonzero_u64_string(args: &Value, key: &str) -> Result<Option<u64>, String> {
-    let Some(value) = args.get(key) else {
-        return Ok(None);
-    };
-    let Some(value) = value.as_str() else {
-        return Err(format!("Error: '{key}' must be a non-zero numeric string."));
-    };
-    let parsed = value
-        .parse::<u64>()
-        .ok()
-        .filter(|parsed| *parsed > 0)
-        .ok_or_else(|| format!("Error: '{key}' must be a non-zero numeric string."))?;
-    Ok(Some(parsed))
-}
-
 #[cfg(test)]
 mod configure_bot_argument_tests {
-    use super::{optional_nonzero_u32, optional_nonzero_u64_string};
+    use super::optional_nonzero_u32;
     use serde_json::json;
 
     #[test]
     fn optional_values_only_clear_when_omitted() {
         assert_eq!(
-            optional_nonzero_u64_string(&json!({}), "channel_id"),
-            Ok(None)
-        );
-        assert_eq!(
             optional_nonzero_u32(&json!({}), "max_output_tokens"),
             Ok(None)
         );
 
-        for args in [
-            json!({"channel_id": null}),
-            json!({"channel_id": ""}),
-            json!({"channel_id": "0"}),
-            json!({"channel_id": 123}),
-        ] {
-            assert!(optional_nonzero_u64_string(&args, "channel_id").is_err());
-        }
         for args in [
             json!({"max_output_tokens": null}),
             json!({"max_output_tokens": 0}),
