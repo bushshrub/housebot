@@ -12,7 +12,8 @@ Branch `claude/proactive-mode`. Never run against live Discord.
   model is called. Client: `crates/llm/src/system_one.rs`; questions and
   thresholds: `src/agent/classify.rs`. Through the Bifrost gateway the path is
   `<base>/typesafe/v1/systemone` (plain `/v1/systemone` returns 405), with the
-  usual `LLM_API_KEY` as Bearer. Set it with
+  usual `LLM_API_KEY` as Bearer. The key is sent only when the classifier URL
+  has the same origin as `LLM_BASE_URL`, because configurers can set the URL. Set it with
   `/labs classifier url:https://llm.robertx.net/typesafe model:kev`; it is
   stored under the `classifier` key in `bot_config`. With no setting it is off.
 - **Pings.** The classifier replaces the old `select_emoji` main-model call:

@@ -269,4 +269,5 @@ pub(crate) const RETIRED_SLASH_COMMANDS: &[&str] = &[
     "profile",
     "erase_my_data",
     "lua",
+    "privacy",
 ];

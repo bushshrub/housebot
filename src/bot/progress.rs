@@ -198,10 +198,11 @@ impl ResponseProgressHooks {
                 .await;
             return;
         }
-        let mut summary = tool_summary(tools);
-        if let Some(id) = thread {
-            summary.push_str(&format!(" · <#{id}>"));
-        }
+        let summary = match (tools.is_empty(), thread) {
+            (true, Some(id)) => format!("🧵 <#{id}>"),
+            (false, Some(id)) => format!("{} · <#{id}>", tool_summary(tools)),
+            (_, None) => tool_summary(tools),
+        };
         self.set_status(&mut state, summary).await;
         if let Some(id) = thread {
             let archive = serenity::all::EditThread::new().archived(true);

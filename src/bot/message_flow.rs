@@ -4,7 +4,11 @@ use super::*;
 
 pub(crate) enum ResponseMode {
     Full,
-    EmojiOrFull,
+    /// A ping: the classifier may answer it with one reaction. `recent` is
+    /// the channel context taken when the message arrived.
+    EmojiOrFull {
+        recent: Vec<ChannelMessage>,
+    },
     /// A full answer nobody asked for: no progress message and no work
     /// thread, so only the reply reaches the channel.
     Unprompted,
@@ -49,18 +53,22 @@ impl HouseBot {
         }
     }
 
-    /// The classifier's state document for `msg`, and the bot's name. In a
-    /// DM nothing is stored, so the state is the message alone.
-    pub(crate) fn classifier_input(&self, ctx: &Context, msg: &Message) -> (String, String) {
+    /// The classifier's state document for `msg`, and the bot's name.
+    /// `recent` must be taken when `msg` arrived, so the classifier judges
+    /// `msg` and not a later message. In a DM nothing is stored, so the state
+    /// is the message alone.
+    pub(crate) fn classifier_input(
+        &self,
+        ctx: &Context,
+        msg: &Message,
+        mut messages: Vec<ChannelMessage>,
+    ) -> (String, String) {
         let (bot_id, bot_name) = {
             let bot = ctx.cache.current_user();
             (bot.id.get(), bot.name.clone())
         };
-        let mut messages = self
-            .channel_context
-            .recent(msg.channel_id.get(), CLASSIFIER_CONTEXT_MESSAGES);
         if messages.is_empty() {
-            messages.push(crate::channel_context::Message {
+            messages.push(ChannelMessage {
                 at: chrono::Utc::now(),
                 user_id: msg.author.id.get().to_string(),
                 username: msg.author.name.clone(),
@@ -105,8 +113,9 @@ impl HouseBot {
         bot_id: UserId,
         session_expired: bool,
         followup_timeout: Duration,
+        recent: Vec<ChannelMessage>,
     ) {
-        let (state, _) = self.classifier_input(ctx, msg);
+        let (state, _) = self.classifier_input(ctx, msg, recent);
         match self.agent.classify_proactive(&state).await {
             ProactiveAction::Ignore => tracing::debug!(
                 target: "housebot::message_flow",
@@ -116,6 +125,13 @@ impl HouseBot {
             ProactiveAction::React(emoji) => {
                 self.react_with(ctx, msg, emoji).await;
             }
+            // Another bot answers our reply, which would be escalated again:
+            // two bots talking to each other forever.
+            ProactiveAction::Escalate if msg.author.bot => tracing::debug!(
+                target: "housebot::message_flow",
+                message_id = msg.id.get(),
+                "Proactive answer skipped: the author is a bot"
+            ),
             ProactiveAction::Escalate => {
                 // Answers nobody asked for are the costly and noisy outcome,
                 // so each channel gets at most one per cooldown.
@@ -159,7 +175,6 @@ impl HouseBot {
         followup_timeout: Duration,
         response_mode: ResponseMode,
     ) {
-        let emoji_only_allowed = matches!(response_mode, ResponseMode::EmojiOrFull);
         let show_progress = !matches!(response_mode, ResponseMode::Unprompted);
         let mut text = msg.content.clone();
         let role_tokens = bot_role_mentions(ctx, msg, bot_id)
@@ -231,11 +246,13 @@ impl HouseBot {
         };
         // A bare ping gives the classifier nothing to judge, and the user
         // expects a reply.
-        if emoji_only_allowed && !text.is_empty() && !message_has_attachments(msg) {
-            let (state, bot_name) = self.classifier_input(ctx, msg);
-            if let Some(emoji) = self.agent.classify_ping(&state, &bot_name).await {
-                if self.react_with(ctx, msg, emoji).await {
-                    return;
+        if let ResponseMode::EmojiOrFull { recent } = response_mode {
+            if !text.is_empty() && !message_has_attachments(msg) {
+                let (state, bot_name) = self.classifier_input(ctx, msg, recent);
+                if let Some(emoji) = self.agent.classify_ping(&state, &bot_name).await {
+                    if self.react_with(ctx, msg, emoji).await {
+                        return;
+                    }
                 }
             }
         }

@@ -402,6 +402,9 @@ impl EventHandler for HouseBot {
             return;
         };
 
+        // Taken in the same step as the append, so a message that arrives
+        // during the awaits below cannot become the one the classifier judges.
+        let mut recent = Vec::new();
         if !is_dm {
             // Prefer server nickname, then global display name, over the raw username.
             let nick = msg
@@ -412,6 +415,9 @@ impl EventHandler for HouseBot {
                 .filter(|n| *n != msg.author.name);
             self.channel_context
                 .append(channel_id, user_id, &msg.author.name, nick, &content);
+            recent = self
+                .channel_context
+                .recent(channel_id, CLASSIFIER_CONTEXT_MESSAGES);
         }
 
         let is_reply_to_attachment = msg
@@ -433,16 +439,19 @@ impl EventHandler for HouseBot {
 
         let addressed = (!msg.author.bot || is_mentioned)
             && (is_dm || is_mentioned || is_reply_to_bot || is_reply_to_attachment || is_active);
-        let proactive = !addressed
-            && match guild_id {
-                Some(gid) => self
-                    .server_cfg
-                    .load(gid)
-                    .await
-                    .proactive_channel_ids
-                    .contains(&config_channel_id),
-                None => false,
-            };
+        let proactive = match guild_id {
+            Some(gid) if !addressed => {
+                let channels = self.server_cfg.load(gid).await.proactive_channel_ids;
+                // With no allowlist, `config_channel_id` is the thread itself,
+                // so a thread is also matched through its parent.
+                channels.contains(&config_channel_id)
+                    || !channels.is_empty()
+                        && thread_parent_id(&ctx, &msg)
+                            .await
+                            .is_some_and(|parent| channels.contains(&parent))
+            }
+            _ => false,
+        };
         if !addressed && !proactive {
             tracing::debug!(
                 target: "housebot::message_flow",
@@ -462,11 +471,18 @@ impl EventHandler for HouseBot {
         }
 
         if proactive {
-            self.handle_proactive(&ctx, &msg, bot_id, session_expired, followup_timeout)
-                .await;
+            self.handle_proactive(
+                &ctx,
+                &msg,
+                bot_id,
+                session_expired,
+                followup_timeout,
+                recent,
+            )
+            .await;
         } else {
             let response_mode = if is_mentioned && !is_reply_to_bot && !is_reply_to_attachment {
-                ResponseMode::EmojiOrFull
+                ResponseMode::EmojiOrFull { recent }
             } else {
                 ResponseMode::Full
             };

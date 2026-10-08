@@ -30,7 +30,7 @@ use crate::bot_config::{
     ServerConfigStore, UserConfigStore,
 };
 pub use crate::bot_response::SecretRedactor;
-use crate::channel_context::ChannelContext;
+use crate::channel_context::{ChannelContext, Message as ChannelMessage};
 use crate::coding_agent::catalog::{AgentCatalog, CodingAgent};
 use crate::coding_agent::issue::{dispatch_inputs, dispatch_workflow_file};
 use crate::coding_agent::pending::{DiscordMessageRef, DispatchStage, PendingJobStore};
