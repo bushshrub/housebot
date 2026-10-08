@@ -14,19 +14,13 @@ impl Agent {
     }
 
     /// Summarize the current conversation, then start a fresh session.
-    pub async fn compact_session(&self, user_id: &str, deep_memory_enabled: bool) -> bool {
-        self.compact_session_with_hooks(user_id, deep_memory_enabled, &NoHooks)
-            .await
+    pub async fn compact_session(&self, user_id: &str) -> bool {
+        self.compact_session_with_hooks(user_id, &NoHooks).await
     }
 
     /// Summarize the current conversation, reporting coarse-grained progress to the caller.
     /// Returns false when the history was kept because no summary could be made.
-    pub async fn compact_session_with_hooks(
-        &self,
-        user_id: &str,
-        deep_memory_enabled: bool,
-        hooks: &dyn AgentHooks,
-    ) -> bool {
+    pub async fn compact_session_with_hooks(&self, user_id: &str, hooks: &dyn AgentHooks) -> bool {
         tracing::info!(target: "housebot::agent", user_id, "Compacting session");
         hooks.on_progress("compact:10").await;
         let previous_stats = self.session_stats.lock().await.remove(user_id);
@@ -37,14 +31,6 @@ impl Agent {
             return true;
         }
         let conversation_id = self.current_conversation_id(user_id, user_id, 0).await;
-        if !deep_memory_enabled {
-            let _ = self.history.clear(user_id).await;
-            self.finish_active_conversation(user_id).await;
-            hooks
-                .on_progress("compact:100:Conversation cleared without a carry-over summary.")
-                .await;
-            return true;
-        }
         hooks.on_progress("compact:25").await;
         let convo: String = past
             .iter()

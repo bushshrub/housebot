@@ -630,7 +630,6 @@ const HOUSEBOT_ENV_VARS: &[&str] = &[
     "DEVELOPMENT_PENDING_GLOBAL_MAX",
     "DEVELOPMENT_REQUEST_RATE_LIMIT_MAX",
     "DEVELOPMENT_REQUEST_RATE_LIMIT_WINDOW_SECS",
-    "DEV_NOTIFY_SIGNING_KEY",
 ];
 
 fn configured_env(names: &[&str]) -> HashMap<String, String> {

@@ -22,8 +22,8 @@ use tokio::sync::Mutex;
 use uuid::Uuid;
 
 use crate::agent::{
-    Agent, AgentControlAction, AgentHooks, AgentRequest, AgentResult, CancelToken, MediaData,
-    NoHooks,
+    classifier_state, Agent, AgentControlAction, AgentHooks, AgentRequest, AgentResult,
+    CancelToken, MediaData, NoHooks, ProactiveAction, CLASSIFIER_CONTEXT_MESSAGES, MAX_TOOL_ROUNDS,
 };
 use crate::bot_config::{
     AccessControlStore, LeaderboardVisibility, SchedulerLimits, SchedulerLimitsStore, ServerConfig,
@@ -53,15 +53,10 @@ pub use crate::bot_formatting::{extract_code_files, lang_ext, split_text, tool_h
 
 const MAX_MESSAGE_LENGTH: usize = 2000;
 const EMBED_DESCRIPTION_LIMIT: usize = 4096;
-const PAGINATION_PREFIX: &str = "housebot_labs_page:";
 const DEVELOP_PREFIX: &str = "develop:";
 const BLOCKED_USER_NOTICE: &str = "🚫 You are not allowed to talk to this bot.";
 const BLOCKED_NOTICE_COOLDOWN: Duration = Duration::from_secs(300);
-
-struct PaginatedResponse {
-    owner_id: u64,
-    pages: Vec<String>,
-}
+const PROACTIVE_ANSWER_COOLDOWN: Duration = Duration::from_secs(120);
 
 mod command_defs;
 mod config_cmd;
@@ -164,10 +159,10 @@ pub struct HouseBot {
     conversations: Mutex<ConversationTracker>,
     processing: Mutex<HashSet<u64>>,
     responded: Mutex<VecDeque<u64>>,
-    paginated: Mutex<HashMap<String, PaginatedResponse>>,
     reminder_started: AtomicBool,
     chat_rate_limiter: RateLimiter,
     blocked_notice_limiter: RateLimiter,
+    proactive_limiter: RateLimiter,
     /// Shared with `Agent` — holds pending coding-agent dispatch jobs.
     pending_jobs: Arc<PendingJobStore>,
     /// Catalog of agents and models.
@@ -213,10 +208,10 @@ impl HouseBot {
             conversations: Mutex::new(ConversationTracker::new(idle)),
             processing: Mutex::new(HashSet::new()),
             responded: Mutex::new(VecDeque::with_capacity(200)),
-            paginated: Mutex::new(HashMap::new()),
             reminder_started: AtomicBool::new(false),
             chat_rate_limiter: RateLimiter::new(chat_rate_max, chat_rate_window),
             blocked_notice_limiter: RateLimiter::new(1, BLOCKED_NOTICE_COOLDOWN),
+            proactive_limiter: RateLimiter::new(1, PROACTIVE_ANSWER_COOLDOWN),
             pending_jobs,
             catalog: AgentCatalog::load_embedded(),
             discord,

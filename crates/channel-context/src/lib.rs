@@ -122,6 +122,18 @@ impl ChannelContext {
         Ok(recent.into())
     }
 
+    /// The last `count` messages in `channel_id`, oldest first.
+    pub fn recent(&self, channel_id: u64, count: usize) -> Vec<Message> {
+        let cutoff = Utc::now() - self.retention;
+        let mut channels = self.lock();
+        let Some(buffer) = channels.get_mut(&channel_id) else {
+            return Vec::new();
+        };
+        expire(buffer, cutoff);
+        let skip = buffer.len().saturating_sub(count);
+        buffer.iter().skip(skip).cloned().collect()
+    }
+
     /// Forget everything a user has said, across every channel.
     pub fn remove_user_entries(&self, user_id: &str) {
         let mut channels = self.lock();
@@ -191,6 +203,22 @@ mod tests {
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].username, "Alice");
         assert_eq!(results[0].content, "hello world");
+    }
+
+    #[test]
+    fn recent_returns_the_last_messages_oldest_first() {
+        let context = context();
+        for content in ["one", "two", "three"] {
+            context.append(1, 10, "Alice", None, content);
+        }
+        let recent: Vec<_> = context
+            .recent(1, 2)
+            .into_iter()
+            .map(|message| message.content)
+            .collect();
+        assert_eq!(recent, ["two", "three"]);
+        assert_eq!(context.recent(1, 10).len(), 3);
+        assert!(context.recent(2, 10).is_empty());
     }
 
     #[test]

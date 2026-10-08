@@ -25,30 +25,6 @@ pub(crate) async fn handle_config_interaction(
     }
 
     match top.name.as_str() {
-        "dev_notify_channel" => {
-            let sub_opts = match &top.value {
-                CommandDataOptionValue::SubCommand(opts) => opts,
-                _ => return "Unexpected option structure.".into(),
-            };
-            let channel_id = sub_opts.iter().find_map(|option| match option.value {
-                CommandDataOptionValue::Channel(c) if option.name == "channel" => Some(c.get()),
-                _ => None,
-            });
-            if access_store
-                .update(|access| access.dev_notify_channel_id = channel_id)
-                .await
-                .is_err()
-            {
-                return "Error: failed to save config.".into();
-            }
-            match channel_id {
-                Some(cid) => {
-                    format!("✅ Now watching <#{cid}> for feature-development completion notices.")
-                }
-                None => "✅ Feature-development completion watching disabled.".into(),
-            }
-        }
-
         "access" => {
             let sub_opts = match &top.value {
                 CommandDataOptionValue::SubCommandGroup(opts) => opts,
@@ -327,53 +303,6 @@ pub(crate) async fn handle_server_config_interaction(
                         cfg.leaderboard_visibility.as_str()
                     )
                 }
-                action @ ("role_add" | "role_remove") => {
-                    let options = match &sub.value {
-                        CommandDataOptionValue::SubCommand(options) => options,
-                        _ => return "Unexpected option structure.".into(),
-                    };
-                    let role_id = options.iter().find_map(|option| match option.value {
-                        CommandDataOptionValue::Role(role) if option.name == "role" => {
-                            Some(role.get())
-                        }
-                        _ => None,
-                    });
-                    let Some(role_id) = role_id else {
-                        return "Please provide a valid role.".into();
-                    };
-                    let changed = if action == "role_add" {
-                        cfg.leaderboard_role_ids.insert(role_id)
-                    } else {
-                        cfg.leaderboard_role_ids.remove(&role_id)
-                    };
-                    if server_cfg.save(gid, &cfg).await.is_err() {
-                        return "Error: failed to save config.".into();
-                    }
-                    match (action, changed) {
-                        ("role_add", true) => format!("✅ <@&{role_id}> can view the leaderboard."),
-                        ("role_remove", true) => {
-                            format!("✅ <@&{role_id}> removed from leaderboard access.")
-                        }
-                        ("role_add", false) => {
-                            format!("<@&{role_id}> already has leaderboard access.")
-                        }
-                        _ => format!("<@&{role_id}> did not have leaderboard access."),
-                    }
-                }
-                "role_list" => {
-                    if cfg.leaderboard_role_ids.is_empty() {
-                        "No roles are allowed in restricted mode. Administrators retain access."
-                            .into()
-                    } else {
-                        let roles = cfg
-                            .leaderboard_role_ids
-                            .iter()
-                            .map(|role| format!("<@&{role}>"))
-                            .collect::<Vec<_>>()
-                            .join(", ");
-                        format!("Leaderboard roles: {roles}")
-                    }
-                }
                 other => format!("Unknown leaderboard subcommand `{other}`."),
             }
         }
@@ -390,7 +319,7 @@ pub(crate) async fn handle_server_config_interaction(
                 "list" => {
                     let cfg = server_cfg.load(gid).await;
                     if cfg.allowed_channel_ids.is_empty() {
-                        "I'm allowed to respond in **all channels** (no restriction set). Follow-up replies are disabled until you add explicit reply channels.".into()
+                        "I'm allowed to respond in **all channels** (no restriction set).".into()
                     } else {
                         let ids: Vec<String> = cfg
                             .allowed_channel_ids
@@ -406,7 +335,7 @@ pub(crate) async fn handle_server_config_interaction(
                     if server_cfg.save(gid, &cfg).await.is_err() {
                         return "Error: failed to save config.".into();
                     }
-                    "✅ Channel restriction cleared — I'll respond in all channels, but follow-up replies are disabled until you add explicit reply channels.".into()
+                    "✅ Channel restriction cleared — I'll respond in all channels.".into()
                 }
                 action @ ("add" | "remove") => {
                     let channel_opts = match &sub.value {
@@ -483,7 +412,6 @@ pub(crate) async fn handle_personalize_interaction(
     user_cfg: &UserConfigStore,
     options: &[serenity::all::CommandDataOption],
     author_id: u64,
-    can_manage_other_users: bool,
 ) -> String {
     let Some(top) = options.first() else {
         return "No subcommand provided.".into();
@@ -492,17 +420,7 @@ pub(crate) async fn handle_personalize_interaction(
         CommandDataOptionValue::SubCommand(opts) => opts,
         _ => return "Unexpected option structure.".into(),
     };
-    let target_id = sub_opts
-        .iter()
-        .find_map(|option| match option.value {
-            CommandDataOptionValue::User(user) if option.name == "user" => Some(user.get()),
-            _ => None,
-        })
-        .unwrap_or(author_id);
-    if target_id != author_id && !can_manage_other_users {
-        return "Only server administrators and bot configurers can configure another user's settings.".into();
-    }
-    let mut cfg = user_cfg.load(target_id).await;
+    let mut cfg = user_cfg.load(author_id).await;
 
     match top.name.as_str() {
         "personality" => {
@@ -515,75 +433,12 @@ pub(crate) async fn handle_personalize_interaction(
                 })
                 .filter(|s| !s.trim().is_empty());
             cfg.personality = text.clone();
-            if user_cfg.save(target_id, &cfg).await.is_err() {
+            if user_cfg.save(author_id, &cfg).await.is_err() {
                 return "Error: failed to save config.".into();
             }
             match text {
                 None => "✅ Personality cleared — I'll use my default behaviour.".into(),
                 Some(s) => format!("✅ Personality set:\n> {}", s.replace('\n', "\n> ")),
-            }
-        }
-
-        "followup" => {
-            let enabled =
-                sub_opts
-                    .iter()
-                    .find(|o| o.name == "enabled")
-                    .and_then(|o| match &o.value {
-                        CommandDataOptionValue::Boolean(b) => Some(*b),
-                        _ => None,
-                    });
-            let timeout =
-                sub_opts
-                    .iter()
-                    .find(|o| o.name == "timeout")
-                    .and_then(|o| match &o.value {
-                        CommandDataOptionValue::Integer(n) => Some(*n),
-                        _ => None,
-                    });
-            let Some(enabled) = enabled else {
-                return "Please specify `enabled`.".into();
-            };
-            cfg.followup_enabled = enabled;
-            if let Some(secs) = timeout {
-                if secs < 1 {
-                    return "Timeout must be at least 1 second.".into();
-                }
-                cfg.followup_timeout_secs = secs as u64;
-            }
-            if user_cfg.save(target_id, &cfg).await.is_err() {
-                return "Error: failed to save config.".into();
-            }
-            let status = if enabled { "enabled" } else { "disabled" };
-            format!(
-                "✅ Follow-up replies {status} (timeout: {}s).",
-                cfg.followup_timeout_secs
-            )
-        }
-
-        "progress" => {
-            let enabled = sub_opts.iter().find_map(|option| match option.value {
-                CommandDataOptionValue::Boolean(value) if option.name == "enabled" => Some(value),
-                _ => None,
-            });
-            let Some(enabled) = enabled else {
-                return "Please specify `enabled`.".into();
-            };
-            cfg.progress_updates_enabled = enabled;
-            if user_cfg.save(target_id, &cfg).await.is_err() {
-                return "Error: failed to save config.".into();
-            }
-            let target = if target_id == author_id {
-                "Your".to_string()
-            } else {
-                format!("User `{target_id}`'s")
-            };
-            if enabled {
-                format!("✅ {target} progress updates are enabled.")
-            } else {
-                format!(
-                    "✅ {target} progress updates are disabled; only final responses will be sent."
-                )
             }
         }
 

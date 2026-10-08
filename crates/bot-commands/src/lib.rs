@@ -273,7 +273,7 @@ pub async fn memory_command(memory: &Memory, first_line: &str, author_id: u64) -
         "show" => {
             let content = memory.load(author_id.to_string()).await;
             if content.trim().is_empty() {
-                "No memories stored yet. Enable deep memory with `/privacy deep_memory enabled:true`.".into()
+                "No memories stored yet.".into()
             } else {
                 truncate_discord("**What I remember about you:**\n", &content)
             }
@@ -389,7 +389,7 @@ mod tests {
             .save(
                 user_id,
                 &housebot_bot_config::UserConfig {
-                    deep_memory_enabled: true,
+                    personality: Some("terse".into()),
                     ..Default::default()
                 },
             )
@@ -426,7 +426,7 @@ mod tests {
         // Verify stores are cleared
         assert!(history.load(user_id.to_string()).await.is_empty());
         assert_eq!(memory.load(user_id.to_string()).await, "");
-        assert!(user_config.load(user_id).await.deep_memory_enabled);
+        assert_eq!(user_config.load(user_id).await.personality, None);
         assert!(reminders.load().await.is_empty());
     }
 

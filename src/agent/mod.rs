@@ -10,7 +10,9 @@ use chrono::{DateTime, Local, Utc};
 use serde_json::{json, Value};
 use tokio::sync::Notify;
 
-use crate::bot_config::{AccessControl, AccessControlStore, SchedulerLimits, SchedulerLimitsStore};
+use crate::bot_config::{
+    AccessControl, AccessControlStore, ClassifierStore, SchedulerLimits, SchedulerLimitsStore,
+};
 use crate::channel_context::ChannelContext;
 use crate::coding_agent::pending::PendingJobStore;
 use crate::config;
@@ -70,6 +72,10 @@ impl CancelToken {
     }
 }
 
+/// How many tool calls in a row the model may make before a turn is stopped.
+/// Every round is a full LLM round trip, so this keeps a runaway loop bounded.
+pub const MAX_TOOL_ROUNDS: usize = 50;
+
 /// One user turn to run through the agent.
 #[derive(Debug, Clone)]
 pub struct AgentRequest<'a> {
@@ -83,8 +89,6 @@ pub struct AgentRequest<'a> {
     pub thinking: ThinkingMode,
     /// Discord channel ID (0 if unknown). Used by the `prepare_feature_development` tool.
     pub channel_id: u64,
-    /// Whether deep memory (update_memory tool + auto-summary) is enabled for this user.
-    pub deep_memory_enabled: bool,
     /// User's display name from their profile (for personalized greetings).
     pub display_name: &'a str,
     /// User's guild nickname from their profile (empty if none).
@@ -112,13 +116,12 @@ impl<'a> AgentRequest<'a> {
             personality: None,
             thinking: ThinkingMode::default(),
             channel_id: 0,
-            deep_memory_enabled: true,
             display_name: username,
             nickname: "",
             avatar_url: "",
             guild_id: None,
             max_output_tokens: None,
-            max_tool_rounds: crate::bot_config::DEFAULT_MAX_TOOL_ROUNDS as usize,
+            max_tool_rounds: MAX_TOOL_ROUNDS,
             cancel: None,
         }
     }
@@ -221,6 +224,8 @@ pub struct Agent {
     active_conversations: tokio::sync::Mutex<HashMap<String, String>>,
     access_control: AccessControlStore,
     scheduler_limits: SchedulerLimitsStore,
+    classifier_store: ClassifierStore,
+    classifier: std::sync::RwLock<Option<Arc<classify::Classifier>>>,
     discord: Arc<DiscordBridge>,
     channel_context: ChannelContext,
     sandbox_client: housebot_sandbox::SandboxClient,
@@ -228,6 +233,7 @@ pub struct Agent {
     merge_audit: tools::github_api::MergeAuditLog,
 }
 
+mod classify;
 mod dispatch;
 mod leaderboard_fmt;
 mod prompt;
@@ -235,6 +241,7 @@ mod run;
 mod session;
 mod tools_def;
 
+pub use classify::{classifier_state, ProactiveAction, CLASSIFIER_CONTEXT_MESSAGES};
 #[allow(unused_imports)]
 use leaderboard_fmt::*;
 pub use prompt::build_system_prompt;
@@ -294,6 +301,11 @@ impl Agent {
             })?;
         let access_control = AccessControlStore::postgres(Arc::clone(&bot_config_client));
         let firecrawl = tools::firecrawl::Firecrawl::new(Arc::clone(&bot_config_client));
+        let classifier_store = ClassifierStore::postgres(Arc::clone(&bot_config_client));
+        let classifier = classifier_store
+            .load()
+            .await
+            .map(|settings| Arc::new(classify::Classifier::new(settings)));
         let scheduler_limits = SchedulerLimitsStore::postgres(bot_config_client);
         let limits = scheduler_limits.load().await.unwrap_or(SchedulerLimits {
             max_inflight: config::env_parse(
@@ -331,6 +343,8 @@ impl Agent {
             active_conversations: tokio::sync::Mutex::new(HashMap::new()),
             access_control,
             scheduler_limits,
+            classifier_store,
+            classifier: std::sync::RwLock::new(classifier),
             discord,
             channel_context: ChannelContext::default(),
             sandbox_client: housebot_sandbox::SandboxClient::from_env(),
@@ -378,110 +392,6 @@ impl Agent {
     pub fn reporter(&self) -> &GitHubIssueReporter {
         &self.reporter
     }
-
-    /// Ask the model whether an incoming mention should receive a single emoji
-    /// instead of a full agent response.
-    /// Returns `None` when the model is unreachable or the response is empty.
-    pub async fn select_emoji(&self, text: &str) -> Option<String> {
-        let prompt = format!(
-            "Decide whether this message can be fully answered by one emoji reaction. \
-             Use an emoji only for lightweight greetings, thanks, jokes, social \
-             acknowledgements, or similarly low-stakes messages requiring no information \
-             or action. For questions, requests, commands, ambiguous messages, or anything \
-             needing a substantive response, return NONE. Respond with exactly one emoji \
-             or NONE.\n\nMessage:\n{text}"
-        );
-        let messages = vec![
-            json!({"role": "system", "content": "Choose one emoji-only response or NONE. Never add explanation."}),
-            json!({"role": "user", "content": prompt}),
-        ];
-        let start = std::time::Instant::now();
-        let result = tokio::time::timeout(
-            std::time::Duration::from_secs(15),
-            self.scheduled_client.chat_once(&self.model, &messages, 128),
-        )
-        .await
-        .unwrap_or_else(|_| Err(anyhow::anyhow!("emoji selection timed out")));
-        match result {
-            Ok(completion) => {
-                let elapsed = start.elapsed();
-                let emoji = completion
-                    .content
-                    .as_deref()
-                    .and_then(parse_emoji_selection);
-                tracing::debug!(
-                    target: "housebot::emoji",
-                    text_chars = text.chars().count(),
-                    selected = ?emoji,
-                    elapsed_ms = elapsed.as_millis() as u64,
-                    "Emoji selection complete"
-                );
-                emoji
-            }
-            Err(error) => {
-                tracing::warn!(
-                    target: "housebot::emoji",
-                    %error,
-                    "Emoji selection LLM call failed"
-                );
-                None
-            }
-        }
-    }
-}
-
-/// Heuristic: returns true for characters in the Unicode emoji ranges.
-fn is_emoji(c: char) -> bool {
-    let code = c as u32;
-    matches!(code,
-        0x231A..=0x23FA |
-        0x25AA..=0x25FE |
-        0x2600..=0x27BF |
-        0x2934..=0x2935 |
-        0x2B05..=0x2B55 |
-        0x3030 | 0x303D | 0x3297 | 0x3299 |
-        0x1F000..=0x1FFFF |
-        0xFE00..=0xFE0F   // variation selectors (applied after emoji)
-    )
-}
-
-fn is_emoji_modifier(c: char) -> bool {
-    matches!(c as u32, 0x1F3FB..=0x1F3FF)
-}
-
-fn is_regional_indicator(c: char) -> bool {
-    matches!(c as u32, 0x1F1E6..=0x1F1FF)
-}
-
-fn parse_emoji_selection(value: &str) -> Option<String> {
-    let value = value.trim();
-    if value.eq_ignore_ascii_case("none") || value.is_empty() {
-        return None;
-    }
-    let mut chars = value.chars();
-    let first = chars.next()?;
-    if !is_emoji(first) {
-        return None;
-    }
-    let mut after_joiner = false;
-    let mut regional_pair = false;
-    for c in chars {
-        if c == '\u{200D}' {
-            after_joiner = true;
-        } else if c == '\u{FE0F}' || is_emoji_modifier(c) {
-            continue;
-        } else if is_regional_indicator(first) && is_regional_indicator(c) && !regional_pair {
-            regional_pair = true;
-        } else if !is_emoji(c) || !after_joiner {
-            return None;
-        } else {
-            after_joiner = false;
-        }
-    }
-    if after_joiner {
-        return None;
-    }
-    Some(value.to_string())
 }
 
 #[cfg(test)]
@@ -523,6 +433,8 @@ impl Agent {
             active_conversations: tokio::sync::Mutex::new(HashMap::new()),
             access_control: AccessControlStore::default(),
             scheduler_limits: SchedulerLimitsStore::default(),
+            classifier_store: ClassifierStore::default(),
+            classifier: std::sync::RwLock::new(None),
             discord: Arc::new(DiscordBridge::default()),
             channel_context: ChannelContext::default(),
             sandbox_client: housebot_sandbox::SandboxClient::new("/dev/null"),

@@ -3,6 +3,9 @@
 //! The [`ChatClient`] trait abstracts the LLM so the agent loop can be exercised in
 //! tests with a scripted fake; [`OpenAiClient`] is the real streaming implementation.
 
+mod system_one;
+pub use system_one::{Answer, SystemOneClient};
+
 use async_trait::async_trait;
 use futures_util::StreamExt;
 use serde::{Deserialize, Serialize};

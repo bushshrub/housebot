@@ -144,7 +144,6 @@ pub(crate) enum LeaderboardAccess {
 pub(crate) fn leaderboard_access(
     config: &ServerConfig,
     in_guild: bool,
-    member_roles: &[u64],
     is_admin: bool,
 ) -> LeaderboardAccess {
     if !in_guild {
@@ -153,14 +152,7 @@ pub(crate) fn leaderboard_access(
     match config.leaderboard_visibility {
         LeaderboardVisibility::Public => LeaderboardAccess::Public,
         LeaderboardVisibility::Private => LeaderboardAccess::Private,
-        LeaderboardVisibility::Restricted
-            if is_admin
-                || member_roles
-                    .iter()
-                    .any(|role| config.leaderboard_role_ids.contains(role)) =>
-        {
-            LeaderboardAccess::Private
-        }
+        LeaderboardVisibility::Restricted if is_admin => LeaderboardAccess::Private,
         LeaderboardVisibility::Restricted => LeaderboardAccess::Denied,
     }
 }

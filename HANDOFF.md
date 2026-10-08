@@ -4,6 +4,44 @@ Read this together with [`docs/REDESIGN_PLAN.md`](docs/REDESIGN_PLAN.md), which
 is the authoritative scope document — this file covers state and gotchas, the
 plan covers what was built.
 
+## Classifier and proactive mode (2026-10-07)
+
+Branch `claude/proactive-mode`. Never run against live Discord.
+
+- **Classifier.** A System One decision model (`kev`) decides before the main
+  model is called. Client: `crates/llm/src/system_one.rs`; questions and
+  thresholds: `src/agent/classify.rs`. Through the Bifrost gateway the path is
+  `<base>/typesafe/v1/systemone` (plain `/v1/systemone` returns 405), with the
+  usual `LLM_API_KEY` as Bearer. Set it with
+  `/labs classifier url:https://llm.robertx.net/typesafe model:kev`; it is
+  stored under the `classifier` key in `bot_config`. With no setting it is off.
+- **Pings.** The classifier replaces the old `select_emoji` main-model call:
+  one request picks react or a full answer, plus the emoji from a fixed set
+  (👍 ❤️ 😂 🎉 👋 🙏). Off or failing means a full answer.
+- **Proactive mode.** `/labs proactive channel enabled` (server admins and
+  configurers), off by default. An unaddressed message in that channel (or its
+  threads) asks "open question or request?" and "good news or thanks?". Answer
+  ≥ 0.5 escalates to a full reply to the author; else react ≥ 0.5 reacts; else
+  nothing. Escalations are limited to one per channel per 120 s. The state is
+  the last 10 messages from `ChannelContext::recent`.
+- **Who reaches it.** Silenced users and channels off the allowlist never do.
+  Another bot's unmentioned message reaches only the proactive classifier, and
+  only when `/server-config bot_pings` is on.
+- **Tested by hand on 2026-10-07** with 24 written cases: pings 8/8, proactive
+  15/16 (the miss: "grab milk pls", a request to a person, escalates), emoji
+  12/12, about 200 ms per call. Check real channel logs before trusting the
+  0.5 thresholds.
+- **Settings removed:** `/personalize followup` and `progress`, `/labs
+  pagination` and `tool_rounds`, `/privacy` (deep memory), `/config
+  dev_notify_channel` with the whole completion-notice feature, and the
+  leaderboard roles. Their defaults are now fixed: follow-ups in DMs only,
+  progress shown, memory on, 50 tool rounds, no pagination, `restricted`
+  leaderboard means administrators only. Old stored JSON keeps the dropped
+  keys until the next save; serde ignores them.
+- **Dev notices never worked:** the GitHub secret `DEV_NOTIFY_SIGNING_KEY` was
+  never set, so `opencode-dispatch.yml` skips its notify step. That step is now
+  dead; it was left in place because CI workflows are off-limits.
+
 ## Deployment bot (2026-09-30)
 
 Done on branch `claude/handoff-open-work`, never run against a live Docker host:
@@ -57,9 +95,9 @@ an empty ping now uses the replied-to message, or goes to the model as
 - A silenced user who addresses the bot gets a public reply saying so, at most
   once per 5 minutes per user. It cannot be ephemeral: Discord allows that
   only on interaction responses.
-- A reply that fails to send (any chunk, or the paginated embed) logs
+- A reply that fails to send (any chunk) logs
   `Failed to send reply` at `warn`.
-- A bare ping skips the emoji-only check and reaches the model as
+- A bare ping skips the classifier and reaches the model as
   `(The user pinged you without any text.)`.
 
 ## Open work: chatbot (2026-09-30)
@@ -411,8 +449,8 @@ bug, not a config choice.
   each turn.
 - **`/personalize` survives**, despite the plan's cut list pairing it with
   `message-log`. What was cut was the profile-learning behind it; the command
-  still carries personality, follow-up, and progress toggles that have no other
-  home. Raise it before removing it.
+  still carries the personality override, which has no other home. Raise it
+  before removing it.
 - **`rate-limit` and `bot-commands` are keepers**, despite earlier drafts.
 
 ## House rules that bite

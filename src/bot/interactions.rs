@@ -1,7 +1,6 @@
-//! Slash-command interaction handlers (effort, tool bans, status, data, privacy, skill, stats).
+//! Slash-command interaction handlers (effort, status, labs, data, skill, stats).
 
 use super::*;
-use crate::bot_config::MAX_TOOL_ROUNDS_LIMIT;
 
 pub(crate) async fn handle_effort_interaction(
     user_cfg: &UserConfigStore,
@@ -76,7 +75,7 @@ pub(crate) async fn handle_effort_interaction(
     }
 }
 
-/// Handle `/status`: the caller's own effort, follow-up, and personality settings.
+/// Handle `/status`: the caller's own effort and personality settings.
 pub(crate) async fn handle_status_interaction(
     user_cfg: &UserConfigStore,
     author_id: u64,
@@ -87,100 +86,150 @@ pub(crate) async fn handle_status_interaction(
         cfg.thinking_mode,
         cfg.thinking_mode.description()
     );
-    let followup = if cfg.followup_enabled {
-        format!("enabled (timeout: {}s)", cfg.followup_timeout_secs)
-    } else {
-        "disabled".to_string()
-    };
     let personality = match &cfg.personality {
         Some(p) if !p.trim().is_empty() => format!("> {}", p.trim().replace('\n', "\n> ")),
         _ => "default".to_string(),
     };
-    let progress = if cfg.progress_updates_enabled {
-        "enabled"
-    } else {
-        "disabled (final responses only)"
-    };
     format!(
-        "**Your current settings:**\n• Effort level: {effort}\n• Progress updates: {progress}\n• Follow-up replies: {followup}\n• Personality: {personality}\n\nUse `/effort` to change the thinking effort level."
+        "**Your current settings:**\n• Effort level: {effort}\n• Personality: {personality}\n\nUse `/effort` to change the thinking effort level."
     )
 }
 
+/// Who is running a `/labs` command, for the per-subcommand permission checks.
+pub(crate) struct LabsCaller {
+    pub(crate) guild_id: Option<u64>,
+    pub(crate) is_server_admin: bool,
+    pub(crate) is_configurer: bool,
+}
+
 pub(crate) async fn handle_labs_interaction(
-    user_cfg: &UserConfigStore,
+    agent: &Agent,
+    server_cfg: &ServerConfigStore,
     options: &[serenity::all::CommandDataOption],
-    author_id: u64,
+    caller: LabsCaller,
 ) -> String {
-    let mut cfg = user_cfg.load(author_id).await;
     let Some(top) = options.first() else {
         return "Choose a labs feature. Use `/labs list` to see available features.".into();
     };
+    let sub_opts = match &top.value {
+        CommandDataOptionValue::SubCommand(opts) => opts.as_slice(),
+        _ => &[],
+    };
     match top.name.as_str() {
-        "list" => format!(
-            "**Labs features**\n• Pagination: {}\n• Tool rounds: {} per reply",
-            if cfg.labs_pagination_enabled {
-                "enabled"
-            } else {
-                "disabled"
-            },
-            cfg.max_tool_rounds
-        ),
-        "tool_rounds" => {
-            let CommandDataOptionValue::SubCommand(sub_opts) = &top.value else {
-                return "Unexpected option structure.".into();
+        "list" => {
+            let classifier = match agent.classifier_settings() {
+                Some(settings) => format!("`{}` at <{}>", settings.model, settings.url),
+                None => "off".to_string(),
             };
-            let Some(limit) =
-                sub_opts
-                    .iter()
-                    .find(|o| o.name == "limit")
-                    .and_then(|o| match &o.value {
-                        CommandDataOptionValue::Integer(value) => Some(*value),
-                        _ => None,
-                    })
-            else {
-                return format!(
-                    "Tool calls allowed per reply: {}. Set it with `/labs tool_rounds limit:<1-{}>`.",
-                    cfg.max_tool_rounds, MAX_TOOL_ROUNDS_LIMIT
-                );
+            let proactive = match caller.guild_id {
+                Some(gid) => {
+                    let mut ids: Vec<_> = server_cfg
+                        .load(gid)
+                        .await
+                        .proactive_channel_ids
+                        .into_iter()
+                        .collect();
+                    ids.sort_unstable();
+                    if ids.is_empty() {
+                        "no channels".to_string()
+                    } else {
+                        ids.iter()
+                            .map(|id| format!("<#{id}>"))
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    }
+                }
+                None => "only available in servers".to_string(),
             };
-            let Some(limit) = u32::try_from(limit)
-                .ok()
-                .filter(|limit| (1..=MAX_TOOL_ROUNDS_LIMIT).contains(limit))
-            else {
-                return format!("The limit must be between 1 and {MAX_TOOL_ROUNDS_LIMIT}.");
-            };
-            cfg.max_tool_rounds = limit;
-            if let Err(error) = user_cfg.save(author_id, &cfg).await {
-                tracing::error!(target: "housebot::labs::tool_rounds", user_id = author_id, %error, "Failed to save tool round limit");
-                return "Error: failed to save labs configuration.".into();
-            }
-            tracing::info!(target: "housebot::labs::tool_rounds", user_id = author_id, limit, "Updated tool round limit");
-            format!("✅ The bot may now make up to {limit} tool calls in a row per reply.")
+            format!("**Labs features**\n• Classifier: {classifier}\n• Proactive mode: {proactive}")
         }
-        "pagination" => {
-            let CommandDataOptionValue::SubCommand(sub_opts) = &top.value else {
-                return "Unexpected option structure.".into();
+        "proactive" => {
+            let Some(gid) = caller.guild_id else {
+                return "Proactive mode is only available in servers, not DMs.".into();
             };
-            let Some(enabled) =
-                sub_opts
-                    .iter()
-                    .find(|o| o.name == "enabled")
-                    .and_then(|o| match &o.value {
-                        CommandDataOptionValue::Boolean(value) => Some(*value),
-                        _ => None,
-                    })
-            else {
-                return "Please specify `enabled`.".into();
-            };
-            cfg.labs_pagination_enabled = enabled;
-            if let Err(error) = user_cfg.save(author_id, &cfg).await {
-                tracing::error!(target: "housebot::labs::pagination", user_id = author_id, %error, "Failed to save pagination setting");
-                return "Error: failed to save labs configuration.".into();
+            if !(caller.is_server_admin || caller.is_configurer) {
+                return "Only server administrators and users authorized to configure the bot can change this setting.".into();
             }
-            tracing::info!(target: "housebot::labs::pagination", user_id = author_id, enabled, "Updated pagination setting");
+            let channel_id = sub_opts.iter().find_map(|option| match option.value {
+                CommandDataOptionValue::Channel(channel) if option.name == "channel" => {
+                    Some(channel.get())
+                }
+                _ => None,
+            });
+            let enabled = sub_opts.iter().find_map(|option| match option.value {
+                CommandDataOptionValue::Boolean(value) if option.name == "enabled" => Some(value),
+                _ => None,
+            });
+            let (Some(channel_id), Some(enabled)) = (channel_id, enabled) else {
+                return "Please specify `channel` and `enabled`.".into();
+            };
+            let mut cfg = server_cfg.load(gid).await;
+            if enabled {
+                cfg.proactive_channel_ids.insert(channel_id);
+            } else {
+                cfg.proactive_channel_ids.remove(&channel_id);
+            }
+            if server_cfg.save(gid, &cfg).await.is_err() {
+                return "Error: failed to save config.".into();
+            }
+            match (enabled, agent.classifier_settings().is_some()) {
+                (false, _) => format!("✅ Proactive mode disabled in <#{channel_id}>."),
+                (true, true) => format!("✅ Proactive mode enabled in <#{channel_id}>."),
+                (true, false) => format!(
+                    "✅ Proactive mode enabled in <#{channel_id}>, but the classifier is off, so nothing will happen until a configurer sets it with `/labs classifier`."
+                ),
+            }
+        }
+        "classifier" => {
+            if !caller.is_configurer {
+                return "Only users authorized to configure the bot can change the classifier."
+                    .into();
+            }
+            let string_option = |name: &str| {
+                sub_opts.iter().find_map(|option| match &option.value {
+                    CommandDataOptionValue::String(value) if option.name == name => {
+                        Some(value.trim().to_string())
+                    }
+                    _ => None,
+                })
+            };
+            let disable = sub_opts.iter().any(|option| {
+                option.name == "disable" && option.value == CommandDataOptionValue::Boolean(true)
+            });
+            let url = string_option("url");
+            let model = string_option("model");
+            let current = agent.classifier_settings();
+            if disable {
+                if agent.set_classifier(None).await.is_err() {
+                    return "Error: failed to save config.".into();
+                }
+                return "✅ Classifier disabled. Pings get a full answer, and proactive mode does nothing.".into();
+            }
+            if url.is_none() && model.is_none() {
+                return match current {
+                    Some(settings) => format!(
+                        "Classifier: `{}` at <{}>.",
+                        settings.model, settings.url
+                    ),
+                    None => "The classifier is off. Set it with `/labs classifier url:<base URL> model:<name>`.".into(),
+                };
+            }
+            let Some(url) = url.or_else(|| current.as_ref().map(|c| c.url.clone())) else {
+                return "Please specify `url` the first time you set the classifier.".into();
+            };
+            if !(url.starts_with("https://") || url.starts_with("http://")) {
+                return "The URL must start with `https://` or `http://`.".into();
+            }
+            let model = model
+                .or_else(|| current.map(|c| c.model))
+                .unwrap_or_else(|| "kev".to_string());
+            let settings = crate::bot_config::ClassifierSettings { url, model };
+            if agent.set_classifier(Some(settings.clone())).await.is_err() {
+                return "Error: failed to save config.".into();
+            }
             format!(
-                "✅ Paginated responses {}.",
-                if enabled { "enabled" } else { "disabled" }
+                "✅ Classifier set to `{}` at <{}>.",
+                settings.model, settings.url
             )
         }
         other => format!("Unknown labs feature `{other}`. Use `/labs list`."),
@@ -260,67 +309,6 @@ pub(crate) fn render_history(display_name: &str, hist: &[serde_json::Value]) -> 
         lines.push(format!("... and {} more messages", hist.len() - 10));
     }
     lines.join("\n")
-}
-
-/// Handle a `/privacy` interaction: view or change privacy settings.
-pub(crate) async fn handle_privacy_interaction(
-    user_cfg: &UserConfigStore,
-    memory: &Memory,
-    options: &[serenity::all::CommandDataOption],
-    author_id: u64,
-) -> String {
-    let subcommand = options.first().map(|o| o.name.as_str());
-    match subcommand {
-        None | Some("status") => {
-            let cfg = user_cfg.load(author_id).await;
-            let mem_content = memory.load(author_id.to_string()).await;
-            let deep_memory = if cfg.deep_memory_enabled {
-                if mem_content.trim().is_empty() {
-                    "enabled (no memories stored yet)".to_string()
-                } else {
-                    format!(
-                        "enabled ({} bytes stored — use `/storage memory show` to view)",
-                        mem_content.len()
-                    )
-                }
-            } else {
-                "disabled".to_string()
-            };
-            format!(
-                "**Privacy settings:**\n• Deep memory: {deep_memory} (persistent facts across sessions)\n\nUse `/privacy deep_memory enabled:true` to change."
-            )
-        }
-        Some("deep_memory") => {
-            let sub_opts = match &options[0].value {
-                serenity::all::CommandDataOptionValue::SubCommand(opts) => opts,
-                _ => return "Unexpected option structure.".into(),
-            };
-            let enabled =
-                sub_opts
-                    .iter()
-                    .find(|o| o.name == "enabled")
-                    .and_then(|o| match &o.value {
-                        serenity::all::CommandDataOptionValue::Boolean(b) => Some(*b),
-                        _ => None,
-                    });
-            let Some(enabled) = enabled else {
-                return "Please specify `enabled`.".into();
-            };
-            let mut cfg = user_cfg.load(author_id).await;
-            cfg.deep_memory_enabled = enabled;
-            if user_cfg.save(author_id, &cfg).await.is_err() {
-                return "Error: failed to save config.".into();
-            }
-            if enabled {
-                "✅ Deep memory enabled. I will now remember important facts about you across conversations. Use `/storage memory show` to see what I currently remember.".into()
-            } else {
-                "✅ Deep memory disabled. I will no longer save facts between sessions (your current memories are kept but won't be updated).".into()
-            }
-        }
-        other => {
-            format!("Unknown privacy option `{other:?}`. Use `/privacy` to see available options.")
-        }
-    }
 }
 
 pub(crate) async fn handle_skill_interaction(
