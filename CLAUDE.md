@@ -1,7 +1,7 @@
-# Housebot — Claude Code Instructions
+# Housebot
 
-Architecture and conventions are in `AGENTS.md`. Current state, open work, and
-gotchas are in `HANDOFF.md`.
+Architecture and conventions: `AGENTS.md`. Current state, open work, and
+gotchas: `HANDOFF.md`.
 
 ## Checks
 
@@ -14,17 +14,25 @@ cargo clippy --all-targets -- -D warnings     # the lint CI runs
 cargo fmt --check
 ```
 
-## Code conventions
+## House rules
 
-- No comments that describe what the code does — only the WHY, when it is non-obvious.
-- Match the style of the surrounding code.
-- No dead code, no `#[allow(unused)]` without a real reason.
-- Prefer editing existing files over creating new ones.
-- No abstractions or features beyond what the task requires.
-- Keep changes scoped to the task: no unrelated refactors, no dependency bumps unless required.
+- Comments say why, never what, and only when the why is not obvious.
+- No dead code. `#[allow(unused)]` needs a real reason.
+
+## Commits and pull requests
+
+- Author every commit as the Claude identity from the `Co-Authored-By` line
+  (for example `--author="Claude Opus 5.5 <noreply@anthropic.com>"`), never
+  as the repo owner.
+- After opening a PR, post `/oc review` and `@coderabbitai review` as
+  comments. Wait for both reviews, then fix what is valid.
+- PRs merge by rebase: enable it with `gh pr merge <number> --auto --rebase`.
 
 ## Hard limits
 
 - Never read, print, or log credentials or secrets, including `.env` and `docker-compose.yml`.
-- Never connect to production infrastructure (Discord, the LLM gateway, the deployment host).
-- Never push to `main` or `master`, force-push, merge into `master`, or deploy.
+- Never connect to production infrastructure (Discord, the deployment host).
+  The one exception: test requests to the LLM gateway are allowed, with free
+  models only. Never call a paid model.
+- Never push to `main` or `master`, force-push, or deploy. Never merge into
+  `master` by hand; enabling rebase auto-merge on a PR is allowed.
