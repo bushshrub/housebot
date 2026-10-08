@@ -23,7 +23,12 @@ pub struct Answer {
 }
 
 impl Answer {
+    /// The probability of `option`. An endpoint that sends only `choice`
+    /// counts as certain of it, so thresholds still follow its decision.
     pub fn probability(&self, option: &str) -> f64 {
+        if self.probabilities.is_empty() {
+            return if option == self.choice { 1.0 } else { 0.0 };
+        }
         self.probabilities.get(option).copied().unwrap_or(0.0)
     }
 }
@@ -99,5 +104,12 @@ mod tests {
         assert_eq!(answer.choice, "billing");
         assert_eq!(answer.probability("returns"), 0.06);
         assert_eq!(answer.probability("missing"), 0.0);
+    }
+
+    #[test]
+    fn an_answer_without_probabilities_follows_its_choice() {
+        let answer: Answer = serde_json::from_str(r#"{"choice":"yes"}"#).unwrap();
+        assert_eq!(answer.probability("yes"), 1.0);
+        assert_eq!(answer.probability("no"), 0.0);
     }
 }

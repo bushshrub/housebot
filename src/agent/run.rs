@@ -134,9 +134,6 @@ impl Agent {
                 cancelled = true;
                 break String::new();
             }
-            // Marks the start of a round: until text arrives the model is
-            // reasoning, and a round of only tool calls sends no text at all.
-            hooks.on_text_stream("").await;
             let text_sink = TextStreamAdapter(hooks);
             let completion = self.client.chat_stream(
                 &self.model,
@@ -296,6 +293,7 @@ impl Agent {
             "Agent run finished"
         );
         AgentResult {
+            answered: !final_text.is_empty(),
             text: if cancelled {
                 String::new()
             } else if final_text.is_empty() && out_of_tokens {

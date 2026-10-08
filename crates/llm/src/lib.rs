@@ -120,6 +120,8 @@ pub struct PromptTokenDetails {
 }
 
 /// Async sink for incremental assistant text (used to stream into Discord).
+/// The scheduler pushes an empty string once a slot is granted, before the
+/// model starts.
 #[async_trait]
 pub trait TextSink: Send + Sync {
     async fn push(&self, partial: &str);

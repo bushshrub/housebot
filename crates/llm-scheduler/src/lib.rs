@@ -274,6 +274,11 @@ impl ChatClient for ScheduledChatClient {
         let tools = tools.to_vec();
         self.scheduler
             .execute(self.priority, move || async move {
+                // Only now does the model start; until here the caller is
+                // still waiting in the queue.
+                if let Some(sink) = sink {
+                    sink.push("").await;
+                }
                 inner
                     .chat_stream(
                         &model,

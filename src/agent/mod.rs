@@ -142,6 +142,8 @@ pub struct AgentResult {
     pub text: String,
     pub session_notice: Option<String>,
     pub tools_called: Vec<String>,
+    /// The model wrote a reply; `text` is otherwise a failure notice.
+    pub answered: bool,
     /// Set when a `prepare_feature_development` tool call produces a structured outcome.
     pub control_action: Option<AgentControlAction>,
     /// Set when the user cancelled this request mid-generation.
@@ -163,7 +165,7 @@ pub struct SessionInfo {
 #[async_trait]
 pub trait AgentHooks: Send + Sync {
     /// Cumulative assistant text as it streams in. An empty string marks the
-    /// start of a model round, before any text.
+    /// start of a model round, once the scheduler grants it a slot.
     async fn on_text_stream(&self, _partial: &str) {}
     /// The current assistant text stream has ended.
     async fn on_text_stream_end(&self) {}
