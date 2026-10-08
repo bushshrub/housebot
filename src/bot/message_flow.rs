@@ -9,8 +9,8 @@ pub(crate) enum ResponseMode {
     EmojiOrFull {
         recent: Vec<ChannelMessage>,
     },
-    /// A full answer nobody asked for: no progress message and no work
-    /// thread, so only the reply reaches the channel.
+    /// A full answer nobody asked for: shown like any other turn, but it
+    /// sends no warnings or notices about a request the user never made.
     Unprompted,
 }
 
@@ -175,7 +175,7 @@ impl HouseBot {
         followup_timeout: Duration,
         response_mode: ResponseMode,
     ) {
-        let show_progress = !matches!(response_mode, ResponseMode::Unprompted);
+        let prompted = !matches!(response_mode, ResponseMode::Unprompted);
         let mut text = msg.content.clone();
         let role_tokens = bot_role_mentions(ctx, msg, bot_id)
             .into_iter()
@@ -210,7 +210,7 @@ impl HouseBot {
             );
             // An unprompted answer is the bot's idea, so it is never a
             // reason to tell the user off.
-            if show_progress {
+            if prompted {
                 self.respond(ctx, msg, "⏱️ You're sending messages too quickly. Please slow down and try again in a moment.").await;
             }
             return;
@@ -317,11 +317,7 @@ impl HouseBot {
         } else {
             "🧠 **Thinking...**".to_string()
         };
-        let progress = if show_progress {
-            reply_no_ping(ctx, msg, &progress_msg).await.ok()
-        } else {
-            None
-        };
+        let progress = reply_no_ping(ctx, msg, &progress_msg).await.ok();
         let cancel_token = CancelToken::default();
         if let Some(ref progress) = progress {
             let _ = progress.react(&ctx.http, '❌').await;
@@ -398,7 +394,7 @@ impl HouseBot {
         }
         // Nobody asked for this answer, so a failure notice or a development
         // flow would only be noise.
-        if !show_progress && (!result.answered || result.control_action.is_some()) {
+        if !prompted && (!result.answered || result.control_action.is_some()) {
             return;
         }
 
@@ -437,7 +433,7 @@ impl HouseBot {
         }
 
         let safe = self.redactor.redact(&result.text);
-        if let Some(notice) = result.session_notice.as_ref().filter(|_| show_progress) {
+        if let Some(notice) = result.session_notice.as_ref().filter(|_| prompted) {
             let _ = reply_no_ping(ctx, msg, notice).await;
         }
         let allowed_pings = extract_mentioned_users(&safe, bot_id.get());

@@ -49,9 +49,9 @@ Branch `claude/proactive-mode`. Never run against live Discord.
   no thread can be made (DMs, inside a thread, no permission), tool lines are
   posted in the channel. "Thinking" is signalled by `ScheduledChatClient`
   once a slot is granted, so the queue-position message stays until then.
-  Proactive answers (`ResponseMode::Unprompted`) get no progress message, and
-  no rate-limit warning, context warning, failure notice, or development
-  flow. Needs the "Create Public Threads" permission; not yet seen in a live
+  Proactive answers (`ResponseMode::Unprompted`) show progress like any turn,
+  so their tool calls are visible and can be cancelled, but send no
+  rate-limit warning, context warning, failure notice, or development flow. Needs the "Create Public Threads" permission; not yet seen in a live
   server.
 - **Dev notices never worked:** the GitHub secret `DEV_NOTIFY_SIGNING_KEY` was
   never set, so `opencode-dispatch.yml` skips its notify step. That step is now
