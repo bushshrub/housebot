@@ -358,17 +358,6 @@ fn hint_multiline_flattened() {
     assert!(!h.contains('\n'));
 }
 
-#[test]
-fn tool_summary_lists_tools_in_call_order() {
-    let summary = append_tool_summary("answer", &["web_search".into(), "translate".into()]);
-    assert!(summary.ends_with("🛠️ **Tools used:** `web_search`, `translate`"));
-}
-
-#[test]
-fn tool_summary_shows_none_when_no_tools_were_called() {
-    assert!(append_tool_summary("answer", &[]).ends_with("🛠️ **Tools used:** none"));
-}
-
 // ── extract_code_files ──
 #[test]
 fn code_short_block_not_extracted() {
@@ -618,4 +607,16 @@ async fn stats_reports_counts() {
     let out = stats_command(&history, &memory, &skills, 5, "Alice").await;
     assert!(out.contains("Stats for Alice"));
     assert!(out.contains("Memory size:"));
+}
+
+#[test]
+fn work_thread_name_uses_the_first_line_and_fits_discord() {
+    assert_eq!(
+        work_thread_name("\n  find cheap flights\nto Tokyo"),
+        "🛠️ find cheap flights"
+    );
+    assert_eq!(work_thread_name(""), "🛠️ Tool calls");
+    let long = work_thread_name(&"x".repeat(300));
+    assert!(long.chars().count() <= 100);
+    assert!(long.ends_with('…'));
 }

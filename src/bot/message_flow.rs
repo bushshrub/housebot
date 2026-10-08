@@ -5,6 +5,9 @@ use super::*;
 pub(crate) enum ResponseMode {
     Full,
     EmojiOrFull,
+    /// A full answer nobody asked for: no progress message and no work
+    /// thread, so only the reply reaches the channel.
+    Unprompted,
 }
 
 impl HouseBot {
@@ -140,7 +143,7 @@ impl HouseBot {
                     bot_id,
                     session_expired,
                     followup_timeout,
-                    ResponseMode::Full,
+                    ResponseMode::Unprompted,
                 )
                 .await;
             }
@@ -157,6 +160,7 @@ impl HouseBot {
         response_mode: ResponseMode,
     ) {
         let emoji_only_allowed = matches!(response_mode, ResponseMode::EmojiOrFull);
+        let show_progress = !matches!(response_mode, ResponseMode::Unprompted);
         let mut text = msg.content.clone();
         let role_tokens = bot_role_mentions(ctx, msg, bot_id)
             .into_iter()
@@ -292,7 +296,11 @@ impl HouseBot {
         } else {
             "🧠 **Thinking...**".to_string()
         };
-        let progress = reply_no_ping(ctx, msg, &progress_msg).await.ok();
+        let progress = if show_progress {
+            reply_no_ping(ctx, msg, &progress_msg).await.ok()
+        } else {
+            None
+        };
         let cancel_token = CancelToken::default();
         if let Some(ref progress) = progress {
             let _ = progress.react(&ctx.http, '❌').await;
@@ -302,15 +310,19 @@ impl HouseBot {
             );
         }
 
-        let response_hooks = progress
-            .as_ref()
-            .map(|progress| ResponseProgressHooks::new(ctx, progress, self.redactor.clone()));
-
         let user_text = if text.is_empty() {
             "(The user pinged you without any text.)".to_string()
         } else {
             text
         };
+        let response_hooks = progress.as_ref().map(|progress| {
+            ResponseProgressHooks::new(
+                ctx,
+                progress,
+                work_thread_name(&user_text),
+                self.redactor.clone(),
+            )
+        });
         let user_id_string = msg.author.id.get().to_string();
         let result: AgentResult = self
             .agent
@@ -350,10 +362,15 @@ impl HouseBot {
             let _ = progress
                 .delete_reaction(&ctx.http, Some(msg.author.id), '❌')
                 .await;
+            let _ = progress.delete_reaction(&ctx.http, None, '❌').await;
             result.cancelled || token_cancelled
         } else {
             result.cancelled
         };
+
+        if let Some(hooks) = &response_hooks {
+            hooks.finish(&result.tools_called).await;
+        }
 
         // If the user cancelled this request, stop here — no final message.
         if cancelled {
@@ -396,8 +413,7 @@ impl HouseBot {
             let _ = reply_no_ping(ctx, msg, notice).await;
         }
         let allowed_pings = extract_mentioned_users(&safe, bot_id.get());
-        let with_tool_summary = append_tool_summary(&safe, &result.tools_called);
-        let (display, code_files) = extract_code_files(&with_tool_summary);
+        let (display, code_files) = extract_code_files(&safe);
         send_final_message(ctx, msg, &display, &allowed_pings).await;
         // Upload extracted code blocks.
         for (filename, content) in code_files {
