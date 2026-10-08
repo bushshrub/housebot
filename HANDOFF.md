@@ -45,10 +45,14 @@ Branch `claude/proactive-mode`. Never run against live Discord.
   runs. The first tool call (or text written beside it) opens a thread from
   that message; tool calls go there. At the end the status line becomes a
   grouped `tool_summary` with a link and the thread is archived; with no tools
-  the progress message is deleted. Where no thread can be made (DMs, inside a
-  thread, no permission), tool calls only change the status line. Proactive
-  answers (`ResponseMode::Unprompted`) get no progress message at all. Needs
-  the "Create Public Threads" permission; not yet seen in a live server.
+  the progress message is deleted; a cancelled turn keeps "Cancelled". Where
+  no thread can be made (DMs, inside a thread, no permission), tool lines are
+  posted in the channel. "Thinking" is signalled by `ScheduledChatClient`
+  once a slot is granted, so the queue-position message stays until then.
+  Proactive answers (`ResponseMode::Unprompted`) get no progress message, and
+  no rate-limit warning, context warning, failure notice, or development
+  flow. Needs the "Create Public Threads" permission; not yet seen in a live
+  server.
 - **Dev notices never worked:** the GitHub secret `DEV_NOTIFY_SIGNING_KEY` was
   never set, so `opencode-dispatch.yml` skips its notify step. That step is now
   dead; it was left in place because CI workflows are off-limits.

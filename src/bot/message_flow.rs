@@ -208,7 +208,11 @@ impl HouseBot {
                 user_id = msg.author.id.get(),
                 "Chat rate limit exceeded"
             );
-            self.respond(ctx, msg, "⏱️ You're sending messages too quickly. Please slow down and try again in a moment.").await;
+            // An unprompted answer is the bot's idea, so it is never a
+            // reason to tell the user off.
+            if show_progress {
+                self.respond(ctx, msg, "⏱️ You're sending messages too quickly. Please slow down and try again in a moment.").await;
+            }
             return;
         }
 
@@ -336,7 +340,7 @@ impl HouseBot {
             ResponseProgressHooks::new(
                 ctx,
                 progress,
-                work_thread_name(&user_text),
+                work_thread_name(&self.redactor.redact(&user_text)),
                 self.redactor.clone(),
             )
         });
@@ -385,12 +389,16 @@ impl HouseBot {
             result.cancelled
         };
 
-        if let Some(hooks) = &response_hooks {
-            hooks.finish(&result.tools_called).await;
-        }
-
         // If the user cancelled this request, stop here — no final message.
         if cancelled {
+            if let Some(hooks) = &response_hooks {
+                hooks.finish(&result.tools_called, true).await;
+            }
+            return;
+        }
+        // Nobody asked for this answer, so a failure notice or a development
+        // flow would only be noise.
+        if !show_progress && (!result.answered || result.control_action.is_some()) {
             return;
         }
 
@@ -422,16 +430,22 @@ impl HouseBot {
                     self.notify_owner_for_approval(ctx, msg, job_id).await;
                 }
             }
+            if let Some(hooks) = &response_hooks {
+                hooks.finish(&result.tools_called, false).await;
+            }
             return;
         }
 
         let safe = self.redactor.redact(&result.text);
-        if let Some(notice) = &result.session_notice {
+        if let Some(notice) = result.session_notice.as_ref().filter(|_| show_progress) {
             let _ = reply_no_ping(ctx, msg, notice).await;
         }
         let allowed_pings = extract_mentioned_users(&safe, bot_id.get());
         let (display, code_files) = extract_code_files(&safe);
         send_final_message(ctx, msg, &display, &allowed_pings).await;
+        if let Some(hooks) = &response_hooks {
+            hooks.finish(&result.tools_called, false).await;
+        }
         // Upload extracted code blocks.
         for (filename, content) in code_files {
             let safe = self.redactor.redact(&String::from_utf8_lossy(&content));

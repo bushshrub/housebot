@@ -69,6 +69,7 @@ impl Drop for TypingIndicator {
 }
 
 const THINKING: &str = "🧠 **Thinking...**";
+const CANCELLED: &str = "❌ **Cancelled**";
 const GENERATING: &str = "⚙️ **Generating...**";
 /// Discord's limit on a thread name.
 const THREAD_NAME_LIMIT: usize = 100;
@@ -98,7 +99,8 @@ enum WorkThread {
     #[default]
     NotOpened,
     Open(serenity::all::ChannelId),
-    /// No thread can be made here: a DM, a thread already, or no permission.
+    /// No thread can be made here (a DM, a thread already, or no permission),
+    /// so work is posted in the channel.
     Unavailable,
 }
 
@@ -139,14 +141,16 @@ impl ResponseProgressHooks {
             return;
         }
         let edit = EditMessage::new().content(&status);
-        if let Err(error) = self
+        match self
             .channel_id
             .edit_message(&self.ctx.http, self.message_id, edit)
             .await
         {
-            tracing::warn!(%error, "Failed to update the progress message");
+            // Recorded only on success, so a failed edit is retried by the
+            // next status change instead of being skipped as already shown.
+            Ok(_) => state.shown = status,
+            Err(error) => tracing::warn!(%error, "Failed to update the progress message"),
         }
-        state.shown = status;
     }
 
     /// The thread for this turn's work, opened on first use.
@@ -161,7 +165,7 @@ impl ResponseProgressHooks {
             {
                 Ok(thread) => WorkThread::Open(thread.id),
                 Err(error) => {
-                    tracing::debug!(%error, "No work thread here; tool calls stay in the status line");
+                    tracing::debug!(%error, "No work thread here; tool calls go to the channel");
                     WorkThread::Unavailable
                 }
             };
@@ -178,32 +182,43 @@ impl ResponseProgressHooks {
                 .content(chunk)
                 .allowed_mentions(CreateAllowedMentions::new());
             if let Err(error) = channel_id.send_message(&self.ctx.http, message).await {
-                tracing::warn!(%error, "Failed to post to the work thread");
+                tracing::warn!(%error, "Failed to post tool progress");
             }
         }
     }
 
     /// End the turn: with tool calls, the status line becomes their summary and
-    /// the thread is archived; without, the progress message is deleted.
-    pub(crate) async fn finish(&self, tools: &[String]) {
+    /// the thread is archived; without, the progress message is deleted. A
+    /// cancelled turn keeps saying so. Call it after the reply is sent, so a
+    /// failed send never leaves the channel with neither.
+    pub(crate) async fn finish(&self, tools: &[String], cancelled: bool) {
         let mut state = self.state.lock().await;
         let thread = match state.thread {
             WorkThread::Open(id) => Some(id),
             _ => None,
         };
-        if tools.is_empty() && thread.is_none() {
+        if cancelled {
+            // The cancel handler already wrote this text; `shown` does not know.
+            state.shown.clear();
+            let status = match thread {
+                Some(id) => format!("{CANCELLED} · <#{id}>"),
+                None => CANCELLED.to_string(),
+            };
+            self.set_status(&mut state, status).await;
+        } else if tools.is_empty() && thread.is_none() {
             let _ = self
                 .channel_id
                 .delete_message(&self.ctx.http, self.message_id)
                 .await;
             return;
+        } else {
+            let summary = match (tools.is_empty(), thread) {
+                (true, Some(id)) => format!("🧵 <#{id}>"),
+                (false, Some(id)) => format!("{} · <#{id}>", tool_summary(tools)),
+                (_, None) => tool_summary(tools),
+            };
+            self.set_status(&mut state, summary).await;
         }
-        let summary = match (tools.is_empty(), thread) {
-            (true, Some(id)) => format!("🧵 <#{id}>"),
-            (false, Some(id)) => format!("{} · <#{id}>", tool_summary(tools)),
-            (_, None) => tool_summary(tools),
-        };
-        self.set_status(&mut state, summary).await;
         if let Some(id) = thread {
             let archive = serenity::all::EditThread::new().archived(true);
             if let Err(error) = id.edit_thread(&self.ctx.http, archive).await {
@@ -240,10 +255,13 @@ impl AgentHooks for ResponseProgressHooks {
     async fn on_tool_called(&self, tool: &str, args: &serde_json::Value) {
         let mut state = self.state.lock().await;
         let mut status = tool_status(tool);
-        if let Some(thread) = self.work_thread(&mut state).await {
-            let content = self.redactor.redact(&tool_message(tool, args));
-            self.post(thread, &content).await;
-            status.push_str(&format!("\n-# Details in <#{thread}>"));
+        let content = self.redactor.redact(&tool_message(tool, args));
+        match self.work_thread(&mut state).await {
+            Some(thread) => {
+                self.post(thread, &content).await;
+                status.push_str(&format!("\n-# Details in <#{thread}>"));
+            }
+            None => self.post(self.channel_id, &content).await,
         }
         self.set_status(&mut state, status).await;
     }
