@@ -83,6 +83,7 @@ impl Backend {
                     .await
                 {
                     tracing::error!(%error, key, "failed to delete bot config");
+                    return Err(std::io::Error::other(error));
                 }
                 Ok(())
             }

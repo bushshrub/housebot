@@ -39,9 +39,30 @@ pub(crate) struct Classifier {
 
 impl Classifier {
     pub(crate) fn new(settings: ClassifierSettings) -> Self {
-        let client =
-            SystemOneClient::new(&settings.url, config::env_or("LLM_API_KEY", "not-required"));
+        let llm_base_url = config::env_or("LLM_BASE_URL", "http://server-slop:8080/v1");
+        // A configurer, not only the owner, can set the URL, so the key goes
+        // only to the gateway it was issued for.
+        let api_key = if same_origin(&settings.url, &llm_base_url) {
+            config::env_or("LLM_API_KEY", "not-required")
+        } else {
+            tracing::warn!(
+                target: "housebot::classifier",
+                url = settings.url,
+                "Classifier URL is not on the LLM gateway; sending no API key"
+            );
+            "not-required".to_string()
+        };
+        let client = SystemOneClient::new(&settings.url, api_key);
         Self { settings, client }
+    }
+}
+
+/// Same scheme, host, and port, so a key never leaves its host or drops to
+/// plain HTTP.
+fn same_origin(a: &str, b: &str) -> bool {
+    match (reqwest::Url::parse(a), reqwest::Url::parse(b)) {
+        (Ok(a), Ok(b)) => a.origin().is_tuple() && a.origin() == b.origin(),
+        _ => false,
     }
 }
 
@@ -225,6 +246,19 @@ mod tests {
             .into_iter()
             .map(|(question, answer)| (question.to_string(), answer))
             .collect()
+    }
+
+    #[test]
+    fn the_api_key_only_goes_to_the_llm_gateway() {
+        let gateway = "https://llm.example.net/v1";
+        assert!(same_origin("https://llm.example.net/typesafe", gateway));
+        assert!(!same_origin("https://attacker.example/typesafe", gateway));
+        assert!(!same_origin("http://llm.example.net/typesafe", gateway));
+        assert!(!same_origin(
+            "https://llm.example.net:8443/typesafe",
+            gateway
+        ));
+        assert!(!same_origin("not a url", gateway));
     }
 
     #[test]
