@@ -134,8 +134,8 @@ impl Agent {
                 cancelled = true;
                 break String::new();
             }
-            // Start the typing indicator proactively so it appears even when
-            // the model responds with only tool calls (no text deltas).
+            // Marks the start of a round: until text arrives the model is
+            // reasoning, and a round of only tool calls sends no text at all.
             hooks.on_text_stream("").await;
             let text_sink = TextStreamAdapter(hooks);
             let completion = self.client.chat_stream(

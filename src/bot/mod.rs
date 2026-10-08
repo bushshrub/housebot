@@ -48,8 +48,8 @@ pub use crate::bot_commands::{
     erase_data_command, memory_command, skill_command, skill_delete, skill_info, skill_list,
     stats_command,
 };
-use crate::bot_formatting::{append_tool_summary, tool_message};
 pub use crate::bot_formatting::{extract_code_files, lang_ext, split_text, tool_hint};
+use crate::bot_formatting::{tool_message, tool_status, tool_summary};
 
 const MAX_MESSAGE_LENGTH: usize = 2000;
 const EMBED_DESCRIPTION_LIMIT: usize = 4096;

@@ -111,15 +111,18 @@ pub fn tool_hint(tool_name: &str, args: &Value) -> String {
 const SHELL_COMMAND_DISPLAY_LIMIT: usize = 1500;
 
 /// The message announcing one tool call. A shell command is shown verbatim in a
-/// code fence so it can be read and copied; other tools get a one-line status.
+/// code fence so it can be read and copied; other tools get the label and, when
+/// there is one, the detail in inline code. A URL is wrapped in `<>` so Discord
+/// does not add a link preview.
 pub fn tool_message(tool_name: &str, args: &Value) -> String {
     let status = tool_status(tool_name);
+    let base = status.strip_suffix("...**").unwrap_or(&status);
+    let label = format!("{base}**");
     let command = args.get("command").and_then(Value::as_str).unwrap_or("");
     if tool_name == "shell" {
         if command.trim().is_empty() {
-            return status;
+            return label;
         }
-        let base = status.strip_suffix("...**").unwrap_or(&status);
         let mut shown = truncate(command.trim_end(), SHELL_COMMAND_DISPLAY_LIMIT);
         if command.trim_end().chars().count() > SHELL_COMMAND_DISPLAY_LIMIT {
             shown.push('…');
@@ -128,11 +131,12 @@ pub fn tool_message(tool_name: &str, args: &Value) -> String {
         return format!("{base}:**\n{fence}sh\n{shown}\n{fence}");
     }
     let hint = tool_hint(tool_name, args);
-    if hint.is_empty() {
-        status
-    } else {
-        let base = status.strip_suffix("...**").unwrap_or(&status);
-        format!("{base}{hint}...**")
+    match hint.strip_prefix(" — ") {
+        None => label,
+        Some(detail) if detail.starts_with("http://") || detail.starts_with("https://") => {
+            format!("{label} · <{detail}>")
+        }
+        Some(detail) => format!("{label} · `{}`", detail.replace('`', "'")),
     }
 }
 
@@ -163,37 +167,64 @@ fn display_tool_name(name: &str) -> String {
     }
 }
 
-/// Human-readable icon and label for a tool, or `None` for tools without one.
-fn tool_label(tool_name: &str) -> Option<(&'static str, &'static str)> {
-    let pair = match tool_name {
-        "web_search" => ("🔎", "Searching the web"),
-        "fetch_webpage" => ("🌐", "Reading a webpage"),
-        "manage_skill" => ("🧩", "Updating skills"),
-        "set_reminder" => ("⏰", "Setting a reminder"),
-        "get_messages" => ("💬", "Reading conversations"),
-        "get_bot_features" => ("🤖", "Checking my features"),
-        "configure_bot" => ("⚙️", "Changing bot settings"),
-        "update_memory" => ("📓", "Updating memory"),
-        "search_memory" => ("📓", "Searching memory"),
-        "github_api" => ("🐙", "Checking GitHub"),
-        "create_feature_request" => ("📝", "Filing a feature request"),
-        "edit_feature_request" => ("📝", "Updating a feature request"),
-        "prepare_feature_development" => ("🛠️", "Preparing feature development"),
-        "read" => ("📦", "Reading a file"),
-        "write" => ("📦", "Writing a file"),
-        "edit" => ("📦", "Editing a file"),
-        "shell" => ("📦", "Running a command"),
+/// Icon, status label, and short noun for a tool, or `None` for tools without one.
+fn tool_label(tool_name: &str) -> Option<(&'static str, &'static str, &'static str)> {
+    let labels = match tool_name {
+        "web_search" => ("🔎", "Searching the web", "web search"),
+        "fetch_webpage" => ("🌐", "Reading a webpage", "webpage"),
+        "manage_skill" => ("🧩", "Updating skills", "skill"),
+        "set_reminder" => ("⏰", "Setting a reminder", "reminder"),
+        "get_messages" => ("💬", "Reading conversations", "chat history"),
+        "get_bot_features" => ("🤖", "Checking my features", "features"),
+        "configure_bot" => ("⚙️", "Changing bot settings", "bot settings"),
+        "update_memory" => ("📓", "Updating memory", "memory update"),
+        "search_memory" => ("📓", "Searching memory", "memory search"),
+        "github_api" => ("🐙", "Checking GitHub", "GitHub"),
+        "create_feature_request" => ("📝", "Filing a feature request", "feature request"),
+        "edit_feature_request" => ("📝", "Updating a feature request", "feature request"),
+        "prepare_feature_development" => {
+            ("🛠️", "Preparing feature development", "feature development")
+        }
+        "read" => ("📦", "Reading a file", "file read"),
+        "write" => ("📦", "Writing a file", "file write"),
+        "edit" => ("📦", "Editing a file", "file edit"),
+        "shell" => ("📦", "Running a command", "command"),
         _ => return None,
     };
-    Some(pair)
+    Some(labels)
 }
 
 /// User-facing status shown while an agent tool is executing.
 pub fn tool_status(tool_name: &str) -> String {
     match tool_label(tool_name) {
-        Some((icon, label)) => format!("{icon} **{label}...**"),
+        Some((icon, label, _)) => format!("{icon} **{label}...**"),
         None => format!("🔧 **Running `{}`...**", display_tool_name(tool_name)),
     }
+}
+
+/// One line summing up a turn's tool calls, grouped by tool in first-call
+/// order: `🛠️ **4 tool calls** · 🔎 web search ×2 · 🌐 webpage ×2`.
+pub fn tool_summary(tools: &[String]) -> String {
+    let mut groups: Vec<(&str, usize)> = Vec::new();
+    for tool in tools {
+        match groups.iter_mut().find(|(name, _)| name == tool) {
+            Some((_, count)) => *count += 1,
+            None => groups.push((tool, 1)),
+        }
+    }
+    let calls = if tools.len() == 1 { "call" } else { "calls" };
+    let mut summary = format!("🛠️ **{} tool {calls}**", tools.len());
+    for (tool, count) in groups {
+        let name = match tool_label(tool) {
+            Some((icon, _, noun)) => format!("{icon} {noun}"),
+            None => format!("🔧 `{}`", display_tool_name(tool)),
+        };
+        summary.push_str(&format!(" · {name}"));
+        if count > 1 {
+            summary.push_str(&format!(" ×{count}"));
+        }
+    }
+    summary
 }
 
 pub fn extract_code_files(text: &str) -> (String, Vec<(String, Vec<u8>)>) {
@@ -219,19 +250,6 @@ pub fn extract_code_files(text: &str) -> (String, Vec<(String, Vec<u8>)>) {
         format!("*(see attached: `{filename}`)*")
     });
     (modified.into_owned(), files)
-}
-
-pub fn append_tool_summary(text: &str, tools: &[String]) -> String {
-    let summary = if tools.is_empty() {
-        "none".to_string()
-    } else {
-        tools
-            .iter()
-            .map(|tool| format!("`{tool}`"))
-            .collect::<Vec<_>>()
-            .join(", ")
-    };
-    format!("{text}\n\n🛠️ **Tools used:** {summary}")
 }
 
 /// Render a token count to three significant figures once it reaches the
@@ -292,20 +310,45 @@ mod tests {
     }
 
     #[test]
-    fn tool_message_keeps_the_one_line_hint_for_other_tools() {
-        let message = tool_message("web_search", &json!({"query": "rust"}));
-        assert_eq!(message, "🔎 **Searching the web — rust...**");
+    fn tool_message_puts_the_detail_after_the_label() {
+        let message = tool_message("web_search", &json!({"query": "rust `async`"}));
+        assert_eq!(message, "🔎 **Searching the web** · `rust 'async'`");
         assert_eq!(
             tool_message("get_bot_features", &json!({})),
-            "🤖 **Checking my features...**"
+            "🤖 **Checking my features**"
         );
     }
 
     #[test]
-    fn tool_message_falls_back_to_the_status_for_an_empty_shell_command() {
+    fn tool_message_suppresses_the_link_preview_of_a_url() {
+        let message = tool_message("fetch_webpage", &json!({"url": "https://example.com/a"}));
+        assert_eq!(
+            message,
+            "🌐 **Reading a webpage** · <https://example.com/a>"
+        );
+    }
+
+    #[test]
+    fn tool_summary_groups_calls_in_first_call_order() {
+        let tools: Vec<String> = ["web_search", "fetch_webpage", "web_search", "new_tool"]
+            .into_iter()
+            .map(String::from)
+            .collect();
+        assert_eq!(
+            tool_summary(&tools),
+            "🛠️ **4 tool calls** · 🔎 web search ×2 · 🌐 webpage · 🔧 `new_tool`"
+        );
+        assert_eq!(
+            tool_summary(&["shell".to_string()]),
+            "🛠️ **1 tool call** · 📦 command"
+        );
+    }
+
+    #[test]
+    fn tool_message_falls_back_to_the_label_for_an_empty_shell_command() {
         assert_eq!(
             tool_message("shell", &json!({"command": "  "})),
-            "📦 **Running a command...**"
+            "📦 **Running a command**"
         );
     }
 
